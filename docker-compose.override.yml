@@ -1,0 +1,36 @@
+services:
+  django:
+    env_file:
+      - .env.local
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "python manage.py collectstatic --noinput &&
+             python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+    depends_on:
+      - redis
+      - db
+  celery:
+    env_file:
+      - .env.local
+    command: ["celery", "-A", "base", "worker", "-l", "INFO"]
+    depends_on:
+      - django
+  redis:
+    image: redis:7-alpine
+    env_file:
+      - .env.local
+    ports:
+      - "6379:6379"
+
+  db:
+    image: postgres:15-alpine
+    env_file:
+      - .env.local
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: PossibleMe2025
+    ports:
+      - "5432:5432"

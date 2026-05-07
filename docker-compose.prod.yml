@@ -1,0 +1,25 @@
+services:
+  django:
+    env_file:
+      - .env.prod
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "python manage.py collectstatic --noinput &&
+             python manage.py migrate --noinput &&
+             daphne -b 0.0.0.0 -p 8000 base.asgi:application"
+    depends_on:
+      - redis
+  celery:
+    env_file:
+      - .env.prod
+    command: ["celery", "-A", "base", "worker", "-l", "INFO"]
+    depends_on:
+      - django
+  redis:
+    image: redis:7-alpine
+    env_file:
+      - .env.prod
+    ports:
+      - "6379:6379"
+

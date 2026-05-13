@@ -16,15 +16,20 @@ REDIS_URL=os.environ.get('REDIS_URL','redis://redis:6379')
 DEBUG_ENV=os.environ.get('DEBUG_ENV','False')
 DEBUG = DEBUG_ENV=='True'
 
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
-if DEBUG_ENV=='True':
-    CSRF_ALLOW_ALL_ORIGINS = True
-else:
-    csrf_trusted_origins = os.environ.get('CSRF_TRUSTED_ORIGINS', '')
-    if csrf_trusted_origins:
-        CSRF_TRUSTED_ORIGINS = csrf_trusted_origins.split(',')
-    else:
-        CSRF_TRUSTED_ORIGINS = []
+# ALLOWED_HOSTS: wildcard is allowed in DEBUG only. A production deployment
+# without the env var would otherwise accept any Host header, enabling cache
+# poisoning and host-header injection. Fail fast at boot.
+_allowed_hosts_raw = os.environ.get('ALLOWED_HOSTS', '*' if DEBUG else '')
+ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_raw.split(',') if h.strip()]
+if not DEBUG and not ALLOWED_HOSTS:
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured(
+        "ALLOWED_HOSTS must be set (comma-separated) when DEBUG=False."
+    )
+
+# CSRF trusted origins for any browser session (admin web).
+_csrf_raw = os.environ.get('CSRF_TRUSTED_ORIGINS', '')
+CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf_raw.split(',') if o.strip()]
 
 
 # Application definition
@@ -67,13 +72,16 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'base.urls'
-REST_FRAMEWORK={
-    'DEFAULT_AUTHENTICATION_CLASSES':[
+# JWT-only API authentication. SessionAuthentication is intentionally absent —
+# our clients (mobile, admin web) authenticate with bearer tokens; keeping
+# session auth in the default list would let a CSRF on a logged-in browser
+# session (Django admin) authorise DRF write calls.
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-        'rest_framework.authentication.SessionAuthentication'
     ],
-    'DEFAULT_PAGINATION_CLASS':'rest_framework.pagination.LimitOffsetPagination',
-    'PAGE_SIZE':20
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
+    'PAGE_SIZE': 20,
 }
 from datetime import timedelta
 SIMPLE_JWT={
@@ -95,7 +103,26 @@ CACHES={
     },
     
 }
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS allowlist: wildcard in DEBUG only. In production, set
+# CORS_ALLOWED_ORIGINS to a comma-separated list of trusted origins
+# (admin web, marketing site). Empty + non-DEBUG = no cross-origin access.
+_cors_raw = os.environ.get('CORS_ALLOWED_ORIGINS', '')
+CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_raw.split(',') if o.strip()]
+CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
+
+# Production security headers. No-ops in DEBUG.
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 60 * 60 * 24 * 365  # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+    X_FRAME_OPTIONS = 'DENY'
+
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -214,6 +241,9 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+# Root log level is env-driven; default WARNING in production so SQL queries,
+# request bodies, OTPs, and tokens do not bleed into CloudWatch.
+LOG_LEVEL = os.environ.get('LOG_LEVEL', 'DEBUG' if DEBUG else 'WARNING').upper()
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -224,7 +254,7 @@ LOGGING = {
     },
     'root': {
         'handlers': ['console'],
-        'level': 'DEBUG',
+        'level': LOG_LEVEL,
     },
 }
 

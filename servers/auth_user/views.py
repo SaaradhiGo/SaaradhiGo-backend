@@ -128,16 +128,13 @@ def request_otp(request):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE
             )
         
-        # Don't expose OTP in response for security
-        logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id}, otp: {otp}")
         return success_response(
             data={
                 'message': "OTP sent successfully",
                 'task_id': str(task_id),
-                'otp':otp,
-                'expires_in': OTP_EXPIRY
+                'expires_in': OTP_EXPIRY,
             },
-            status_code=status.HTTP_200_OK
+            status_code=status.HTTP_200_OK,
         )
     
     except Exception as e:

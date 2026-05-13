@@ -2,7 +2,7 @@ import json
 import logging
 from django.conf import settings
 from django.utils import timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
@@ -372,25 +372,71 @@ def _handle_cashfree_webhook(payload, gateway):
 
         # Check if it's a Wallet Transaction
         from servers.rider.models import WalletTransaction, Wallet
-        wallet_txn = WalletTransaction.objects.filter(
+        wallet_txn_pk = WalletTransaction.objects.filter(
             models.Q(cashfree_order_id=order_id) | models.Q(gateway_order_id=order_id)
-        ).first()
-        
-        if wallet_txn:
-            if wallet_txn.status == 'completed':
-                return JsonResponse({'status': 'already_completed'}, status=200)
-            
+        ).values_list('pk', flat=True).first()
+
+        if wallet_txn_pk is not None:
+            # Server-verify the amount with the gateway. We never credit on
+            # webhook-supplied numbers alone — a forged-but-signed body (e.g.
+            # from a stolen secret) would otherwise let an attacker mint
+            # balance. The gateway's get_order_status is authoritative.
+            order_info = gateway.get_order_status(order_id) if gateway else None
+            if not order_info or order_info.get('order_status') != 'PAID':
+                logger.warning(
+                    f"Cashfree Webhook: order {order_id} not PAID at gateway "
+                    f"(status={order_info.get('order_status') if order_info else 'unknown'}); "
+                    f"refusing to credit wallet"
+                )
+                return JsonResponse(
+                    {'status': 'skipped', 'reason': 'order not PAID at gateway'},
+                    status=200,
+                )
+            try:
+                gateway_amount = Decimal(str(order_info.get('order_amount'))).quantize(Decimal('0.01'))
+            except (InvalidOperation, TypeError):
+                logger.error(
+                    f"Cashfree Webhook: malformed amount from gateway "
+                    f"for wallet order {order_id}: {order_info}"
+                )
+                return JsonResponse(
+                    {'status': 'skipped', 'reason': 'malformed gateway amount'},
+                    status=200,
+                )
+
+            # Atomic + row-locked: prevents a concurrent verify_wallet_payment
+            # from double-crediting the same transaction.
             with transaction.atomic():
+                wallet_txn = (
+                    WalletTransaction.objects.select_for_update().get(pk=wallet_txn_pk)
+                )
+
+                if wallet_txn.status == 'completed':
+                    return JsonResponse({'status': 'already_completed'}, status=200)
+
+                if wallet_txn.amount != gateway_amount:
+                    logger.error(
+                        f"Cashfree Webhook: wallet amount mismatch order={order_id} "
+                        f"txn={wallet_txn.amount} gateway={gateway_amount}; refusing"
+                    )
+                    return JsonResponse(
+                        {'status': 'skipped', 'reason': 'amount mismatch'},
+                        status=200,
+                    )
+
                 wallet_txn.status = 'completed'
                 wallet_txn.cashfree_payment_id = str(payment_id)
                 wallet_txn.gateway_payment_id = str(payment_id)
-                wallet_txn.save()
+                wallet_txn.save(update_fields=['status', 'cashfree_payment_id', 'gateway_payment_id'])
 
-                wallet, _ = Wallet.objects.get_or_create(user_id=wallet_txn.user_id)
-                wallet.balance = float(wallet.balance) + float(wallet_txn.amount)
-                wallet.save()
-                
-            logger.info(f"Cashfree Webhook: Wallet Top-up {wallet_txn.id} completed for user {wallet_txn.user_id.id}")
+                wallet, _ = Wallet.objects.select_for_update().get_or_create(user_id=wallet_txn.user_id)
+                wallet.balance = wallet.balance + gateway_amount  # Decimal + Decimal
+                wallet.save(update_fields=['balance'])
+
+            logger.info(
+                f"Cashfree Webhook: Wallet Top-up {wallet_txn.id} "
+                f"completed for user {wallet_txn.user_id.id} amount={gateway_amount}"
+            )
             return JsonResponse({'status': 'ok'}, status=200)
 
         # Check if it's a Trip Payment

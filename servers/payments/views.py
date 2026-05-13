@@ -948,6 +948,87 @@ def refund_payment(request):
     }, status.HTTP_200_OK)
 
 
+def _settle_payment_if_paid_at_gateway(trip_id_value, gateway):
+    """Reconcile this trip's latest non-refunded payment with the gateway.
+
+    If the gateway reports the order as PAID, finalize the local Payment,
+    mark the Trip paid, write the rider-side TransactionHistory, and credit
+    the driver — all inside one atomic block keyed on Payment.status under
+    select_for_update. Idempotent against concurrent webhook delivery: the
+    lock + status check is the only gate that lets credit_driver_wallet run.
+
+    Returns True if local state ends up 'completed' (either because we just
+    made it so, or because another path beat us to it).
+    """
+    if not gateway:
+        return False
+
+    payment = (
+        Payment.objects.filter(trip_id=trip_id_value)
+        .exclude(status='refunded')
+        .order_by('-created_at')
+        .first()
+    )
+    if not payment:
+        return False
+    if payment.status == 'completed':
+        return True
+
+    order_id = payment.cashfree_order_id or payment.gateway_order_id
+    if not order_id:
+        return False
+
+    try:
+        info = gateway.get_order_status(order_id)
+    except Exception as e:
+        logger.warning(f"Gateway status check failed for order {order_id}: {e}")
+        return False
+    if not info or info.get('order_status') != 'PAID':
+        return False
+
+    with transaction.atomic():
+        p = Payment.objects.select_for_update().select_related(
+            'trip_id', 'trip_id__driver_id', 'user_id'
+        ).get(pk=payment.pk)
+        if p.status == 'completed':
+            return True
+
+        p.status = 'completed'
+        p.save(update_fields=['status', 'updated_at'])
+
+        trip = p.trip_id
+        trip.payment_status = 'completed'
+        trip.payment_method = 'online'
+        trip.save(update_fields=['payment_status', 'payment_method'])
+
+        if trip.driver_id:
+            TransactionHistory.objects.get_or_create(
+                trip_id=trip,
+                gateway_payment_id=(
+                    p.cashfree_payment_id or p.gateway_payment_id or order_id
+                ),
+                defaults={
+                    'user_id': p.user_id,
+                    'driver_id': trip.driver_id,
+                    'amount': p.amount,
+                    'method': 'online',
+                    'payment_gateway': p.payment_gateway,
+                    'cashfree_payment_id': p.cashfree_payment_id,
+                    'user_name': p.user_id.full_name or p.user_id.phone_number,
+                    'status': 'completed',
+                    'txn_type': 'payment',
+                },
+            )
+            from servers.driver.utils import credit_driver_wallet
+            credit_driver_wallet(trip)
+
+    logger.info(
+        f"Settled payment {payment.pk} for trip {trip_id_value} via gateway poll "
+        f"(order {order_id})"
+    )
+    return True
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def switch_payment_method(request):
@@ -1022,7 +1103,7 @@ def switch_payment_method(request):
         )
     
     # Find existing payment
-    existing = Payment.objects.filter(trip_id=trip).first()
+    existing = Payment.objects.filter(trip_id=trip).order_by('-created_at').first()
     if not existing:
         return error_response(
             code='NO_PAYMENT',
@@ -1031,9 +1112,37 @@ def switch_payment_method(request):
             issue='Cannot switch payment method without existing payment',
             status=status.HTTP_404_NOT_FOUND
         )
-    
+
+    # Before we mark the existing payment failed and create a new order,
+    # check with the gateway whether the existing order has actually been
+    # paid. If the rider completed the original checkout right before
+    # tapping "switch", the late webhook would otherwise land on a now-
+    # deactivated payment row, leaving the trip paid AND a fresh order
+    # outstanding (and the driver potentially double-credited).
+    poll_gateway = get_payment_gateway_for_payments()
+    if _settle_payment_if_paid_at_gateway(trip.id, poll_gateway):
+        return error_response(
+            code='ALREADY_PAID',
+            message='Your previous payment has already succeeded at the gateway',
+            field='trip_id',
+            issue='Existing order was reported PAID by the gateway',
+            status=status.HTTP_409_CONFLICT
+        )
+
     # D-02: Replace original payment
     with transaction.atomic():
+        # Re-fetch with a row lock so two concurrent switch requests can't
+        # both deactivate the same payment row.
+        existing = Payment.objects.select_for_update().get(pk=existing.pk)
+        if existing.status == 'completed':
+            return error_response(
+                code='ALREADY_PAID',
+                message='Payment has already been completed',
+                field='trip_id',
+                issue='Cannot switch a completed payment',
+                status=status.HTTP_409_CONFLICT
+            )
+
         existing.status = 'failed'
         existing.switch_reason = 'user_requested'
         existing.save()
@@ -1127,12 +1236,12 @@ def retry_payment(request):
             status=status.HTTP_403_FORBIDDEN
         )
     
-    # Get failed payment
+    # Get the latest failed payment
     payment = Payment.objects.filter(
         trip_id=trip,
         status='failed'
-    ).first()
-    
+    ).order_by('-created_at').first()
+
     if not payment:
         return error_response(
             code='NO_FAILED_PAYMENT',
@@ -1141,27 +1250,51 @@ def retry_payment(request):
             issue='Cannot retry - no failed payment exists',
             status=status.HTTP_404_NOT_FOUND
         )
-    
-    # D-07: Manual retry - create new payment order
-    amount = trip.final_fare or trip.estimated_fare
-    
+
     # Use payment gateway abstraction
     gateway = get_payment_gateway_for_payments()
-    order = gateway.create_order(
-        amount=float(amount),
-        trip_id=trip.id,
-        currency='INR'
-    )
-    
-    payment.gateway_order_id = order.get('order_id') if order else None
-    payment.cashfree_order_id = order.get('order_id') if order else None
-    payment.payment_gateway = gateway.get_name()
-    payment.status = 'processing'
-    payment.save()
-    
-    trip.payment_status = 'processing'
-    trip.save(update_fields=['payment_status'])
-    
+
+    # Before re-issuing an order, ask the gateway whether the failed payment
+    # was actually paid. Cashfree may report PAID even when our local row is
+    # 'failed' (e.g. the rider closed the app before the verify call). A
+    # blind retry would create a second order, the late webhook on the old
+    # order would credit the trip via the old row, and a second payment
+    # would still be outstanding.
+    if _settle_payment_if_paid_at_gateway(trip.id, gateway):
+        payment.refresh_from_db()
+        return success_response({
+            'message': 'Payment already completed at gateway',
+            'payment_id': payment.id,
+            'status': payment.status,
+        }, status.HTTP_200_OK)
+
+    # D-07: Manual retry - create new payment order
+    amount = trip.final_fare or trip.estimated_fare
+
+    with transaction.atomic():
+        payment = Payment.objects.select_for_update().get(pk=payment.pk)
+        if payment.status == 'completed':
+            return success_response({
+                'message': 'Payment already completed',
+                'payment_id': payment.id,
+                'status': 'completed',
+            }, status.HTTP_200_OK)
+
+        order = gateway.create_order(
+            amount=float(amount),
+            trip_id=trip.id,
+            currency='INR'
+        )
+
+        payment.gateway_order_id = order.get('order_id') if order else None
+        payment.cashfree_order_id = order.get('order_id') if order else None
+        payment.payment_gateway = gateway.get_name()
+        payment.status = 'processing'
+        payment.save()
+
+        trip.payment_status = 'processing'
+        trip.save(update_fields=['payment_status'])
+
     return success_response({
         'payment_id': payment.id,
         'gateway_order_id': order.get('order_id') if order else None,

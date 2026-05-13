@@ -1,5 +1,6 @@
 import copy
 import logging
+from decimal import Decimal, InvalidOperation
 from rest_framework import status
 from base.utils import success_response, error_response
 from rest_framework.decorators import api_view, permission_classes
@@ -303,10 +304,10 @@ def create_wallet_order(request):
         )
 
     try:
-        amount_val = float(amount)
+        amount_val = Decimal(str(amount)).quantize(Decimal('0.01'))
         if amount_val <= 0:
-            raise ValueError("Amount must be positive")
-    except ValueError:
+            raise InvalidOperation("Amount must be positive")
+    except (InvalidOperation, ValueError):
         return error_response(
             code='INVALID_AMOUNT',
             message='Invalid amount provided',
@@ -329,12 +330,17 @@ def create_wallet_order(request):
         )
 
     try:
-        # Create order using payment gateway
+        # Create order using payment gateway. Pass the real rider phone/email so
+        # Cashfree records and any receipt go to the correct customer, not the
+        # hard-coded placeholder that used to ship on every order.
         order_result = gateway.create_order(
             amount=amount_val,
             currency='INR',
+            customer_id=str(request.user.id),
+            customer_phone=request.user.phone_number,
+            customer_email=request.user.email,
             receipt=f'wallet_{request.user.id}',
-            notes={'purpose': 'wallet_topup', 'user_id': str(request.user.id)}
+            notes={'purpose': 'wallet_topup', 'user_id': str(request.user.id)},
         )
         
         logger.info(f"Cashfree wallet order created for user {request.user.id}: {order_result.get('order_id')}")
@@ -397,10 +403,12 @@ def verify_wallet_payment(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    # Fast-path: outside the lock, check if we already settled this txn.
+    # Saves a DB lock + gateway round-trip on the common idempotent-retry case.
     try:
-        txn = WalletTransaction.objects.get(
+        prelim_txn = WalletTransaction.objects.get(
             gateway_order_id=order_id,
-            user_id=request.user
+            user_id=request.user,
         )
     except WalletTransaction.DoesNotExist:
         return error_response(
@@ -411,10 +419,10 @@ def verify_wallet_payment(request):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    if txn.status == 'completed':
+    if prelim_txn.status == 'completed':
         return success_response({
             'message': 'Payment already verified',
-            'transaction_id': txn.id,
+            'transaction_id': prelim_txn.id,
             'status': 'completed',
         }, status.HTTP_200_OK)
 
@@ -431,55 +439,94 @@ def verify_wallet_payment(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
-    # Verify payment using gateway
-    try:
-        # For Cashfree, we need to check payment status
-        # The gateway should have a method to verify payment
-        is_valid = gateway.verify_payment_signature(
-            order_id=order_id,
-            payment_id=payment_id,
-            signature=None  # Cashfree doesn't use client-side signature verification
+    # The gateway is the only authority on whether this order is paid and for
+    # how much. Never trust txn.amount alone: it was set from the client at
+    # create-order time and could have been tampered with.
+    order_info = gateway.get_order_status(order_id)
+    if not order_info or order_info.get('order_status') != 'PAID':
+        logger.warning(
+            f"Wallet top-up verify failed: order {order_id} status="
+            f"{order_info.get('order_status') if order_info else 'unknown'}"
         )
-        
-        if not is_valid:
-            # If signature verification fails, check payment status directly
-            payment_status = gateway.get_order_status(order_id)
-            if payment_status.get('status') in ['PAID', 'SUCCESS']:
-                is_valid = True
-    except Exception as e:
-        logger.error(f"Payment verification error: {e}")
-        is_valid = False
-
-    if not is_valid:
-        txn.status = 'failed'
-        if payment_id:
-            txn.gateway_payment_id = payment_id
-        txn.save()
         return error_response(
             code='PAYMENT_VERIFICATION_FAILED',
-            message='Payment verification failed',
+            message='Payment not yet confirmed by gateway',
             field='payment_gateway',
-            issue='Payment could not be verified',
+            issue='Order is not PAID at gateway',
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Apply to wallet
+    try:
+        gateway_amount = Decimal(str(order_info.get('order_amount'))).quantize(Decimal('0.01'))
+    except (InvalidOperation, TypeError):
+        logger.error(f"Wallet top-up: malformed amount from gateway for order {order_id}: {order_info}")
+        return error_response(
+            code='PAYMENT_VERIFICATION_FAILED',
+            message='Gateway returned an invalid amount',
+            field='payment_gateway',
+            issue='Malformed order_amount',
+            status=status.HTTP_502_BAD_GATEWAY
+        )
+
+    # Atomic + row-locked settlement. The lock prevents a concurrent webhook
+    # path from also crediting the same transaction. Whoever acquires the lock
+    # first promotes status to 'completed'; the second observer sees the
+    # already-completed status and is a no-op.
     with transaction.atomic():
+        try:
+            txn = WalletTransaction.objects.select_for_update().get(
+                pk=prelim_txn.pk,
+                user_id=request.user,
+            )
+        except WalletTransaction.DoesNotExist:
+            return error_response(
+                code='NOT_FOUND',
+                message='Transaction not found',
+                field='gateway_order_id',
+                issue='No transaction matches this order',
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if txn.status == 'completed':
+            wallet = Wallet.objects.get(user_id=request.user)
+            return success_response({
+                'message': 'Payment already verified',
+                'transaction_id': txn.id,
+                'status': 'completed',
+                'new_balance': str(wallet.balance),
+            }, status.HTTP_200_OK)
+
+        # The amount the rider asked to top up MUST match what the gateway
+        # actually charged. Mismatch = either gateway tamper or our bug.
+        # Either way, refuse to credit on stale data.
+        if txn.amount != gateway_amount:
+            logger.error(
+                f"Wallet top-up amount mismatch for order {order_id}: "
+                f"txn={txn.amount} gateway={gateway_amount}; refusing to credit"
+            )
+            return error_response(
+                code='PAYMENT_AMOUNT_MISMATCH',
+                message='Order amount does not match the requested top-up',
+                field='amount',
+                issue='Gateway recorded a different amount than was requested',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         txn.status = 'completed'
         if payment_id:
             txn.gateway_payment_id = payment_id
-        txn.save()
+        txn.save(update_fields=['status', 'gateway_payment_id'])
 
-        wallet, _ = Wallet.objects.get_or_create(user_id=request.user)
-        wallet.balance = float(wallet.balance) + float(txn.amount) # Add money
-        wallet.save()
+        wallet, _ = Wallet.objects.select_for_update().get_or_create(user_id=request.user)
+        wallet.balance = wallet.balance + gateway_amount  # Decimal + Decimal
+        wallet.save(update_fields=['balance'])
 
-    logger.info(f"Wallet Top-up verified for user {request.user.id}: added {txn.amount}")
+    logger.info(f"Wallet top-up verified for user {request.user.id}: added {gateway_amount}")
     return success_response({
         'message': 'Payment verified successfully',
         'transaction_id': txn.id,
         'status': 'completed',
-        'new_balance': str(wallet.balance)
+        'new_balance': str(wallet.balance),
     }, status.HTTP_200_OK)
 
 @api_view(["GET"])

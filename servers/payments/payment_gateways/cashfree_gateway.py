@@ -56,40 +56,54 @@ class CashfreeGateway(BasePaymentGateway):
 
 
 
-    def create_order(self, amount: float, trip_id: int, currency: str = 'INR') -> Optional[Dict[str, Any]]:
-        """Create a Cashfree order using REST API to bypass SDK validation bugs."""
+    def create_order(
+        self,
+        amount,
+        trip_id=None,
+        currency: str = 'INR',
+        customer_id=None,
+        customer_phone=None,
+        customer_email=None,
+        **_,  # tolerate caller-supplied extras (receipt, notes, ...)
+    ) -> Optional[Dict[str, Any]]:
+        """Create a Cashfree order using REST API to bypass SDK validation bugs.
+
+        Callers from non-trip contexts (e.g. wallet top-up) pass their own
+        customer_id and customer phone/email. We never hard-code a real person's
+        email; the fallback is the platform's no-reply address.
+        """
         try:
-            order_id = str(f"{trip_id}{int(time.time())}")
-            logger.info(f"order_id------------------------------{order_id}")
-            
+            ref = customer_id or (str(trip_id) if trip_id is not None else 'na')
+            order_id = f"{ref}{int(time.time())}"
+
             env = "sandbox" if "sandbox" in settings.CASHFREE_PG_BASE_URL.lower() else "api"
             url = f"https://{env}.cashfree.com/pg/orders"
-            
+
             headers = {
                 "X-Client-Id": settings.CASHFREE_APP_ID,
                 "X-Client-Secret": settings.CASHFREE_SECRET_KEY,
                 "x-api-version": "2023-08-01",
                 "Content-Type": "application/json",
-                "Accept": "application/json"
+                "Accept": "application/json",
             }
-            
+
             # Ensure notify_url has a valid protocol
             notify_url = f"{settings.BACKEND_URL}/api/v1/payments/webhook/"
             if not notify_url.startswith("http"):
                 notify_url = f"http://{notify_url}"
-                
+
             payload = {
                 "order_amount": float(amount),
                 "order_currency": currency,
                 "order_id": order_id,
                 "customer_details": {
-                    "customer_id": str(trip_id),
-                    "customer_phone": "9999999999",
-                    "customer_email": "ankamsaiteja27@gmail.com"
+                    "customer_id": str(ref),
+                    "customer_phone": customer_phone or "9999999999",
+                    "customer_email": customer_email or "noreply@saaradhigo.in",
                 },
                 "order_meta": {
-                    "notify_url": notify_url
-                }
+                    "notify_url": notify_url,
+                },
             }
             logger.info(f"order_request payload------------------------------{payload}")
             
@@ -211,32 +225,40 @@ class CashfreeGateway(BasePaymentGateway):
 
 
     def get_order_status(self, order_id: str) -> Optional[Dict[str, Any]]:
-        """Get order status using REST API to bypass SDK validation bugs."""
+        """Get order status using REST API to bypass SDK validation bugs.
+
+        Returns a dict including the authoritative order_amount and order_currency
+        so callers can server-verify the amount they expected against what
+        Cashfree actually recorded as paid.
+        """
         try:
             env = "sandbox" if "sandbox" in settings.CASHFREE_PG_BASE_URL.lower() else "api"
             url = f"https://{env}.cashfree.com/pg/orders/{order_id}"
-            
+
             headers = {
                 "X-Client-Id": settings.CASHFREE_APP_ID,
                 "X-Client-Secret": settings.CASHFREE_SECRET_KEY,
                 "x-api-version": "2023-08-01",
-                "Accept": "application/json"
+                "Accept": "application/json",
             }
-            
+
             response = requests.get(url, headers=headers)
             response.raise_for_status()
             data = response.json()
-            
+
             return {
                 'gateway': 'cashfree',
                 'order_id': order_id,
                 'order_status': data.get('order_status'),
-                'payment_status': data.get('order_status') == 'PAID' and 'SUCCESS' or data.get('order_status'),
+                'order_amount': data.get('order_amount'),
+                'order_currency': data.get('order_currency'),
+                'payment_status': 'SUCCESS' if data.get('order_status') == 'PAID' else data.get('order_status'),
             }
         except Exception as e:
             logger.error(f"Fetch order failed: {e}")
-            if isinstance(e, requests.exceptions.RequestException) and e.response is not None:
+            if isinstance(e, requests.exceptions.RequestException) and getattr(e, 'response', None) is not None:
                 logger.error(f"Cashfree response: {e.response.text}")
+            return None
   
 
 

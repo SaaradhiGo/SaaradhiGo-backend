@@ -752,19 +752,20 @@ def refund_payment(request):
             status=status.HTTP_409_CONFLICT
         )
 
-    # Determine gateway and get payment ID
+    # Determine gateway and resolve the order id. Cashfree's refund API is
+    # keyed on order_id, NOT the cf_payment_id. The earlier code passed
+    # cf_payment_id and the refund would 404 at the gateway.
     gateway_name = payment.payment_gateway or PaymentGateway.CASHFREE
-    gateway_payment_id = None
-    
+    refund_order_id = None
     if gateway_name == PaymentGateway.CASHFREE:
-        gateway_payment_id = payment.cashfree_payment_id or payment.gateway_payment_id
-    
-    if not gateway_payment_id:
+        refund_order_id = payment.cashfree_order_id or payment.gateway_order_id
+
+    if not refund_order_id:
         return error_response(
             code='NO_PAYMENT_ID',
-            message=f'No {gateway_name} payment ID found',
-            field='gateway_payment_id',
-            issue=f'Cannot process refund without {gateway_name} payment ID',
+            message=f'No {gateway_name} order ID found',
+            field='gateway_order_id',
+            issue=f'Cannot process refund without {gateway_name} order ID',
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -779,34 +780,123 @@ def refund_payment(request):
             status=status.HTTP_503_SERVICE_UNAVAILABLE
         )
 
-    # Create refund via gateway
-    refund = gateway.create_refund(gateway_payment_id)
-    if not refund:
-        return error_response(
-            code='REFUND_FAILED',
-            message='Failed to process refund. Please try again.',
-            field='payment_gateway',
-            issue=f'{gateway.get_name()} refund creation failed',
-            status=status.HTTP_502_BAD_GATEWAY
-        )
+    from servers.rider.models import Wallet
+    from decimal import Decimal
 
+    # The whole refund flow runs inside one atomic block so the gateway call,
+    # the payment status flip, the driver wallet reversal, and the ledger row
+    # all commit together. select_for_update on the Payment row prevents two
+    # concurrent refund requests from both reaching the gateway.
     with transaction.atomic():
-        payment.status = 'refunded'
-        payment.save(update_fields=['status', 'updated_at'])
+        try:
+            locked_payment = Payment.objects.select_for_update().select_related(
+                'trip_id', 'trip_id__driver_id', 'trip_id__driver_id__user_id'
+            ).get(pk=payment.pk)
+        except Payment.DoesNotExist:
+            return error_response(
+                code='NOT_FOUND',
+                message='Payment not found',
+                field='payment_id',
+                issue='Payment row vanished between read and lock',
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if locked_payment.status == 'refunded':
+            return error_response(
+                code='ALREADY_REFUNDED',
+                message='Payment has already been refunded',
+                field='trip_id',
+                issue='Duplicate refund not allowed',
+                status=status.HTTP_409_CONFLICT
+            )
+
+        refund = gateway.create_refund(refund_order_id, amount=locked_payment.amount)
+        if not refund:
+            return error_response(
+                code='REFUND_FAILED',
+                message='Failed to process refund. Please try again.',
+                field='payment_gateway',
+                issue=f'{gateway.get_name()} refund creation failed',
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+        locked_payment.status = 'refunded'
+        locked_payment.save(update_fields=['status', 'updated_at'])
 
         trip.payment_status = 'refunded'
         trip.save(update_fields=['payment_status'])
 
+        # If we previously credited the driver for this trip, reverse that
+        # credit now. Without this, the platform pays out the driver AND
+        # refunds the rider, leaking the full net amount on every cancel.
+        driver = locked_payment.trip_id.driver_id
+        credit_txn = TransactionHistory.objects.filter(
+            trip_id=trip,
+            driver_id=driver,
+            txn_type='credit',
+            status='completed',
+        ).order_by('-created_at').first() if driver else None
+
+        if credit_txn:
+            credit_amount = Decimal(str(credit_txn.amount))
+            driver_wallet = (
+                Wallet.objects.select_for_update()
+                .filter(user_id=driver.user_id)
+                .first()
+            )
+            if driver_wallet:
+                driver_wallet.balance = (
+                    Decimal(str(driver_wallet.balance)) - credit_amount
+                )
+                driver_wallet.save(update_fields=['balance'])
+
+            TransactionHistory.objects.create(
+                trip_id=trip,
+                user_id=request.user,
+                driver_id=driver,
+                amount=credit_amount,
+                method='online',
+                payment_gateway=gateway_name,
+                gateway_payment_id=locked_payment.cashfree_payment_id or locked_payment.gateway_payment_id,
+                cashfree_payment_id=locked_payment.cashfree_payment_id,
+                user_name=request.user.full_name or request.user.phone_number,
+                status='completed',
+                txn_type='debit',
+            )
+
+        # Rider-side refund ledger row. Driver FK is required on the model;
+        # populate with the trip's driver if any, else only write the row
+        # when we have a driver (which is the typical refundable case).
+        if driver:
+            TransactionHistory.objects.create(
+                trip_id=trip,
+                user_id=request.user,
+                driver_id=driver,
+                amount=locked_payment.amount,
+                method='online',
+                payment_gateway=gateway_name,
+                gateway_payment_id=locked_payment.cashfree_payment_id or locked_payment.gateway_payment_id,
+                cashfree_payment_id=locked_payment.cashfree_payment_id,
+                user_name=request.user.full_name or request.user.phone_number,
+                status='completed',
+                txn_type='refund',
+                gateway_metadata={'refund_id': refund.get('refund_id') or refund.get('id')},
+            )
+
         Notification.objects.create(
             user_id=request.user,
             title='Refund Processed',
-            message=f'Your refund of ₹{payment.amount} for Trip #{trip.id} has been initiated. It may take 5-7 business days to reflect in your account.',
+            message=(
+                f"Your refund of ₹{locked_payment.amount} for Trip "
+                f"#{trip.id} has been initiated. It may take 5-7 business "
+                f"days to reflect in your account."
+            ),
         )
 
     return success_response({
         'message': 'Refund initiated successfully',
-        'refund_id': refund.get('id') or refund.get('refund_id'),
-        'amount': str(payment.amount),
+        'refund_id': refund.get('refund_id') or refund.get('id'),
+        'amount': str(locked_payment.amount),
         'trip_id': trip.id,
         'gateway': gateway.get_name(),
     }, status.HTTP_200_OK)

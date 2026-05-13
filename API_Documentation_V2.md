@@ -39,11 +39,12 @@ Generate an OTP. Sends via SNS.
   "data": {
     "message": "OTP sent successfully",
     "task_id": "848e029f-...",
-    "otp": "123456",
     "expires_in": 600
   }
 }
 ```
+
+> **Note:** The OTP is delivered exclusively via SMS. It is never returned in this response and never logged server-side. Earlier versions of this endpoint echoed the OTP back for development convenience; that behaviour has been removed for security.
 
 ### 1.2 Login & Token Generation
 Verify OTP, create user if missing, setup profile, return JWT.

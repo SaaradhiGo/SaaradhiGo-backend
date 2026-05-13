@@ -20,7 +20,7 @@ def admin_list_trips(request):
     try:
         trips = Trip.objects.select_related(
             'status_id', 'driver_id', 'vehicle_id', 'user_id', 'requested_vehicle_type'
-        ).all().order_by('-created_at')
+        ).all().order_by('-requested_at')
 
         status_filter = request.query_params.get('status')
         if status_filter:

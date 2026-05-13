@@ -194,21 +194,38 @@ class CashfreeGateway(BasePaymentGateway):
             return False
 
     def create_refund(self, payment_id: str, amount: Optional[float] = None) -> Optional[Dict[str, Any]]:
-        """Create a Cashfree refund using PG SDK."""
-        if not self.pg_client: return None
+        """Create a Cashfree refund using PG SDK.
+
+        Note: Cashfree's PGOrderCreateRefund is keyed on the *order id*, not the
+        cf_payment_id. The `payment_id` parameter name is kept for the abstract
+        BasePaymentGateway interface, but callers MUST pass the Cashfree
+        order_id (or the equivalent stored on `Payment.cashfree_order_id`).
+        Passing a cf_payment_id will return 404 at Cashfree.
+
+        `amount` is required. Cashfree rejects 0-amount refunds; passing None
+        is a caller bug, so we fail fast rather than letting the gateway
+        produce a confusing 400.
+        """
+        if not self.pg_client:
+            return None
+        if amount is None or float(amount) <= 0:
+            logger.error(
+                f"CashfreeGateway.create_refund: amount must be positive, got {amount} "
+                f"(order_id={payment_id})"
+            )
+            return None
         try:
             from cashfree_pg.models.order_create_refund_request import OrderCreateRefundRequest
-            
+
             refund_id = f"refund_{payment_id}_{int(time.time())}"
-            
-            # Note: For full refunds, amount must still be provided in Cashfree, but we'll pass what's given.
+
             refund_request = OrderCreateRefundRequest(
-                refund_amount=float(amount) if amount else 0.0,
+                refund_amount=float(amount),
                 refund_id=refund_id,
                 refund_note="Trip cancellation"
             )
-            
-            # payment_id in the interface holds order_id for Cashfree
+
+            # payment_id here is the Cashfree order_id (see docstring).
             response = self.pg_client.PGOrderCreateRefund("2023-08-01", payment_id, refund_request)
             if response and hasattr(response, 'data'):
                 return {

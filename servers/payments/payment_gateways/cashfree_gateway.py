@@ -119,21 +119,61 @@ class CashfreeGateway(BasePaymentGateway):
         order_status = self.get_order_status(order_id)
         return order_status.get('payment_status') == 'SUCCESS' if order_status else False
 
+    # Reject webhooks whose timestamp drifts more than this from server time.
+    # Cashfree retries on failure, so a small window is fine and replays are blocked.
+    WEBHOOK_TIMESTAMP_WINDOW_SECONDS = 5 * 60
+
     def verify_webhook_signature(self, body: bytes, signature: str, timestamp: Optional[str] = None) -> bool:
-        """Verify Cashfree webhook signature (V2/V3)."""
-        if not getattr(settings, 'CASHFREE_WEBHOOK_SECRET', None):
-            return True # Dev fallback
-        
+        """Verify Cashfree webhook signature (V2/V3) and freshness.
+
+        Returns False — fail closed — when the webhook secret is not configured
+        or the timestamp is outside the freshness window. A misconfigured
+        production deployment would otherwise accept any forged "payment success"
+        payload from the public internet.
+        """
+        secret = getattr(settings, 'CASHFREE_WEBHOOK_SECRET', None)
+        if not secret:
+            logger.error(
+                "Cashfree webhook rejected: CASHFREE_WEBHOOK_SECRET is not configured"
+            )
+            return False
+
+        if not signature:
+            logger.warning("Cashfree webhook rejected: missing signature header")
+            return False
+
+        # Cashfree V3 always sends x-webhook-timestamp. Requiring it gives us a
+        # replay window; treating it as optional would re-open the very hole we
+        # are closing here.
+        if not timestamp:
+            logger.warning("Cashfree webhook rejected: missing timestamp header")
+            return False
+
+        try:
+            ts_val = int(timestamp)
+            # Cashfree may send seconds (10-11 digits) or milliseconds (13 digits).
+            if ts_val > 10 ** 11:
+                ts_val //= 1000
+            event_age = int(time.time()) - ts_val
+            if abs(event_age) > self.WEBHOOK_TIMESTAMP_WINDOW_SECONDS:
+                logger.warning(
+                    f"Cashfree webhook rejected: timestamp out of window "
+                    f"(age={event_age}s, max={self.WEBHOOK_TIMESTAMP_WINDOW_SECONDS}s)"
+                )
+                return False
+        except (TypeError, ValueError):
+            logger.warning("Cashfree webhook rejected: malformed timestamp header")
+            return False
+
         try:
             body_str = body.decode('utf-8') if isinstance(body, bytes) else str(body)
-            secret = settings.CASHFREE_WEBHOOK_SECRET.encode('utf-8')
-            
-            if timestamp:
-                message = timestamp + body_str
-                computed = base64.b64encode(hmac.new(secret, message.encode('utf-8'), hashlib.sha256).digest()).decode('utf-8')
-            else:
-                computed = hmac.new(secret, body_str.encode('utf-8'), hashlib.sha256).hexdigest()
-            
+            secret_bytes = secret.encode('utf-8')
+
+            message = timestamp + body_str
+            computed = base64.b64encode(
+                hmac.new(secret_bytes, message.encode('utf-8'), hashlib.sha256).digest()
+            ).decode('utf-8')
+
             return hmac.compare_digest(computed, signature)
         except Exception as e:
             logger.error(f"Webhook signature verification failed: {e}")

@@ -1278,11 +1278,18 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             from servers.payments.payment_gateways.factory import get_payment_gateway
 
             gateway = get_payment_gateway()
+            # Pass the rider's real phone/email so Cashfree records the
+            # actual customer, not the legacy placeholder.
+            rider_user = trip.user_id
             order_result = gateway.create_order(
                 amount=amount,
+                trip_id=trip.id,
                 currency='INR',
+                customer_id=str(rider_user.id),
+                customer_phone=rider_user.phone_number,
+                customer_email=rider_user.email,
                 receipt=f'trip_{trip.id}',
-                notes={'trip_id': str(trip.id), 'user_id': str(trip.user_id.id)}
+                notes={'trip_id': str(trip.id), 'user_id': str(rider_user.id)},
             )
             Payment.objects.create(
                 trip_id=trip,

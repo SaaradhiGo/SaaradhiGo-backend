@@ -103,10 +103,18 @@ def create_order(request):
             status=status.HTTP_503_SERVICE_UNAVAILABLE
         )
 
-    # Create payment order using gateway
-    order = gateway.create_order(amount=amount, trip_id=trip.id)
-    logger.info(f"{order}")
-    logger.info(f"Payment order created via {gateway.get_name()}: {order}")
+    # Create payment order using gateway. Pass the real rider phone and email
+    # so receipts and Cashfree-dashboard rows carry the actual customer's
+    # identity, not the placeholder phone/email that used to ship on every
+    # order (security audit H5).
+    order = gateway.create_order(
+        amount=amount,
+        trip_id=trip.id,
+        customer_id=str(request.user.id),
+        customer_phone=request.user.phone_number,
+        customer_email=request.user.email,
+    )
+    logger.info(f"Payment order created via {gateway.get_name()}: order_id={order.get('order_id') if order else None}")
     if not order:
         return error_response(
             code='PAYMENT_GATEWAY_ERROR',
@@ -1156,7 +1164,10 @@ def switch_payment_method(request):
             order = gateway.create_order(
                 amount=float(amount),
                 trip_id=trip.id,
-                currency='INR'
+                currency='INR',
+                customer_id=str(request.user.id),
+                customer_phone=request.user.phone_number,
+                customer_email=request.user.email,
             )
             new_payment = Payment.objects.create(
                 trip_id=trip,
@@ -1283,7 +1294,10 @@ def retry_payment(request):
         order = gateway.create_order(
             amount=float(amount),
             trip_id=trip.id,
-            currency='INR'
+            currency='INR',
+            customer_id=str(request.user.id),
+            customer_phone=request.user.phone_number,
+            customer_email=request.user.email,
         )
 
         payment.gateway_order_id = order.get('order_id') if order else None

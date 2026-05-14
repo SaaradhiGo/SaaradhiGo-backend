@@ -82,27 +82,29 @@ def estimate_fare(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Distance sanity check
+    # Server-side distance + duration (authoritative for fare).
     is_valid, validated_km, validated_min, msg = validate_distance(
         distance_km, duration_min, pickup_lat, pickup_long, destination_lat, destination_long
     )
     if not is_valid:
         return error_response(
-            code='DISTANCE_MISMATCH',
+            code='DISTANCE_INVALID',
             message=msg,
             field='distance_km / duration_min',
-            issue=f'Validated distance: {validated_km} km',
+            issue=f'Server could not validate distance: {msg}',
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Estimate fare
+    # Fare is computed from the SERVER-computed validated_km/min, not the
+    # client-supplied numbers. Trusting the client distance was the audit's
+    # primary fare-tampering vector.
     fare = estimate_amount(
-        distance_km, 
-        duration_min, 
+        validated_km,
+        validated_min,
         vehicle_type=vehicle_type,
         pickup_lat=pickup_lat,
         pickup_long=pickup_long,
-        rider_id=request.user.id
+        rider_id=request.user.id,
     )
 
     return success_response({

@@ -493,18 +493,24 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             except (ValueError, TypeError):
                 dist, dur = 0, 0
 
-            is_valid, validated_km, validated_min, msg = validate_distance(dist, dur, pickup_lat, pickup_lng, destination_lat, destination_lng)
+            is_valid, validated_km, validated_min, msg = validate_distance(
+                dist, dur, pickup_lat, pickup_lng, destination_lat, destination_lng
+            )
             if not is_valid:
-                logger.warning(f"Distance spoofing attempt: {msg}")
+                logger.warning(f"Distance validation failed: {msg}")
                 raise ValueError(f"Invalid distance: {msg}")
 
+            # Fare is computed from the SERVER-computed validated distance
+            # and duration, not the client-supplied values. The client
+            # numbers are advisory only (used to flag suspicious deviation
+            # inside validate_distance).
             fare = estimate_amount(
-                dist, 
-                dur, 
+                validated_km,
+                validated_min,
                 vehicle_type=vehicle_type,
                 pickup_lat=pickup_lat,
                 pickup_long=pickup_lng,
-                rider_id=self.user.id
+                rider_id=self.user.id,
             )
 
             # Resolve VehicleType for storing on Trip

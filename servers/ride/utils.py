@@ -16,10 +16,25 @@ DEFAULT_PER_MIN_FARE = Decimal('2.00')
 DEFAULT_MIN_FARE = Decimal('50.00')
 DEFAULT_NIGHT_SURGE = Decimal('1.50')
 
-# Distance sanity check: max allowed ratio of reported distance to straight-line distance
-MAX_DISTANCE_RATIO = 3.0
-# Minimum straight-line distance (km) to apply sanity check (skip for very short trips)
-MIN_STRAIGHT_LINE_KM = 0.5
+# Minimum straight-line distance (km) below which we treat pickup and drop
+# as the same point and refuse the trip (rider mis-tap or zero-distance
+# fare-mining attempt).
+MIN_STRAIGHT_LINE_KM = 0.1
+
+# When Google Distance Matrix is unavailable we approximate road distance
+# as straight-line × this factor. Hyderabad's road network is dense; 1.4
+# is a conservative empirical multiplier (Manhattan-like grids tend to
+# 1.3, dense city centres tend to 1.5).
+ROAD_DISTANCE_FACTOR = 1.4
+
+# Average speed (km/h) we assume for duration estimation when Google fails.
+# Hyderabad city traffic averages 20-30 km/h depending on time of day.
+FALLBACK_AVG_SPEED_KMH = 25.0
+
+# If client-reported distance deviates more than this ratio from
+# server-computed distance, we log it as suspicious — but we never use
+# the client distance for the fare computation.
+SUSPICIOUS_DEVIATION_RATIO = 0.3
 
 
 def _haversine_km(lat1, lon1, lat2, lon2):
@@ -70,53 +85,71 @@ def get_google_maps_distance(pickup_lat, pickup_long, dest_lat, dest_long):
 
 
 def validate_distance(distance_km, duration_min, pickup_lat, pickup_long, dest_lat, dest_long):
-    """
-    Sanity-check the frontend-reported distance and duration using Google Maps Distance Matrix,
-    falling back to straight-line distance if API fails.
-    
+    """Compute the authoritative server-side distance and duration for a trip.
+
+    The returned (validated_km, validated_min) is what MUST drive the fare
+    computation. Callers used to pass the original frontend-supplied
+    distance_km into estimate_amount, which let a tampered client inflate
+    fare by inflating distance (or under-pay by deflating it). That path
+    is no longer trusted: we always recompute server-side.
+
+    Resolution order:
+      1. Google Distance Matrix (authoritative for road distance + duration).
+      2. Haversine × ROAD_DISTANCE_FACTOR as a fallback when Google fails.
+
+    The frontend-supplied values are kept only for fraud monitoring: a
+    significant deviation gets logged.
+
     Returns:
         tuple: (is_valid: bool, validated_km: float, validated_min: float, message: str)
     """
     try:
-        distance_km = float(distance_km)
-        duration_min = float(duration_min)
-        
-        # Try Google Maps API first
-        gm_distance, gm_duration = get_google_maps_distance(pickup_lat, pickup_long, dest_lat, dest_long)
-        
+        try:
+            client_km = float(distance_km) if distance_km is not None else None
+        except (ValueError, TypeError):
+            client_km = None
+
+        # Try Google Maps first — authoritative if available.
+        gm_distance, gm_duration = get_google_maps_distance(
+            pickup_lat, pickup_long, dest_lat, dest_long
+        )
+
         if gm_distance is not None and gm_duration is not None:
-            distance_diff_ratio = abs(distance_km - gm_distance) / max(gm_distance, 0.1)
-            
-            if distance_diff_ratio > 0.2 and abs(distance_km - gm_distance) > 1.0:
-                return False, round(gm_distance, 2), round(gm_duration, 2), (
-                    f'Reported distance ({distance_km:.1f} km) deviates significantly from '
-                    f'Google Maps ({gm_distance:.1f} km)'
-                )
-                
+            # Log significant client/server deviations for fraud monitoring,
+            # but compute the fare from the server number regardless.
+            if client_km is not None and gm_distance > 0:
+                deviation = abs(client_km - gm_distance) / gm_distance
+                if deviation > SUSPICIOUS_DEVIATION_RATIO and abs(client_km - gm_distance) > 1.0:
+                    logger.warning(
+                        f"Suspicious client distance: client={client_km:.2f}km "
+                        f"google={gm_distance:.2f}km deviation={deviation:.0%}"
+                    )
             return True, round(gm_distance, 2), round(gm_duration, 2), 'OK'
 
-        # Fallback to straight-line distance
-        straight_line = _haversine_km(pickup_lat, pickup_long, dest_lat, dest_long)
+        # Google failed (no key / rate limited / network). Approximate road
+        # distance from the great-circle distance plus a road-factor. Never
+        # use the client-supplied distance for the fare.
+        try:
+            straight_line = _haversine_km(pickup_lat, pickup_long, dest_lat, dest_long)
+        except (ValueError, TypeError) as e:
+            return False, 0, 0, f'Invalid coordinates: {e}'
 
-        # Skip check for very short trips
         if straight_line < MIN_STRAIGHT_LINE_KM:
-            return True, round(straight_line, 2), duration_min, 'OK'
+            return False, 0, 0, 'Pickup and drop locations are too close'
 
-        # Reported distance must be >= straight-line (can't be shorter than bird-flies)
-        if distance_km < straight_line * 0.8:
-            return False, round(straight_line, 2), duration_min, (
-                f'Reported distance ({distance_km:.1f} km) is less than '
-                f'straight-line distance ({straight_line:.1f} km)'
-            )
+        road_km = round(straight_line * ROAD_DISTANCE_FACTOR, 2)
+        road_min = round((road_km / FALLBACK_AVG_SPEED_KMH) * 60, 2)
 
-        # Reported distance shouldn't be absurdly more than straight-line
-        if distance_km > straight_line * MAX_DISTANCE_RATIO:
-            return False, round(straight_line, 2), duration_min, (
-                f'Reported distance ({distance_km:.1f} km) is more than '
-                f'{MAX_DISTANCE_RATIO}x the straight-line distance ({straight_line:.1f} km)'
-            )
+        if client_km is not None and road_km > 0:
+            deviation = abs(client_km - road_km) / road_km
+            if deviation > SUSPICIOUS_DEVIATION_RATIO and abs(client_km - road_km) > 1.0:
+                logger.warning(
+                    f"Suspicious client distance (Haversine fallback): "
+                    f"client={client_km:.2f}km server={road_km:.2f}km "
+                    f"deviation={deviation:.0%}"
+                )
 
-        return True, round(straight_line, 2), duration_min, 'OK'
+        return True, road_km, road_min, 'estimated_from_haversine'
     except (ValueError, TypeError) as e:
         logger.warning(f"Distance validation error: {e}")
         return False, 0, 0, f'Invalid coordinates or distance: {e}'

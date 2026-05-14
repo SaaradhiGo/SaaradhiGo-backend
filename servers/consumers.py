@@ -38,8 +38,7 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
             print("WSREJECT 4003: User is not a driver")
             await self.close(code=4003)
             return
-        if self.driver.approved==False:
-            # print("WSREJECT 4004: User is not approved")
+        if not self.driver.approved:
             await self.close(code=4004)
             return
         lat = self.scope.get('lat')
@@ -906,6 +905,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _accept_trip(self):
         from servers.ride.models import Trip, TripStatus
+        from servers.driver.models import Driver
         from django.utils import timezone
         from django.db import transaction
 
@@ -917,7 +917,40 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 if trip.driver_id is not None:
                     return {'success': False, 'error': 'Trip already accepted by another driver'}
 
-                driver = self.user.driver
+                # Re-validate the driver's approval state INSIDE the lock.
+                # The WS connect-time check is stale: an admin may have
+                # revoked approval since this socket was opened, or the
+                # driver's status may have flipped to 'blocked' (e.g. by
+                # an expiry sweeper). Without this re-check, an unapproved
+                # or blocked driver holding an old token could still take
+                # rides.
+                try:
+                    driver = (
+                        Driver.objects.select_for_update()
+                        .select_related('user_id', 'active_vehicle')
+                        .get(pk=self.user.driver.id)
+                    )
+                except Driver.DoesNotExist:
+                    return {'success': False, 'error': 'Driver profile not found'}
+
+                if not driver.approved:
+                    return {
+                        'success': False,
+                        'error': 'Your driver profile is not approved yet. '
+                                 'Contact support if you believe this is in error.',
+                    }
+                if (driver.status or '').strip().lower() == 'blocked':
+                    return {
+                        'success': False,
+                        'error': 'Your driver account is blocked.',
+                    }
+                if not driver.active_vehicle:
+                    return {
+                        'success': False,
+                        'error': 'No active vehicle on file. Add or activate '
+                                 'a vehicle before accepting rides.',
+                    }
+
                 status_obj, _ = TripStatus.objects.get_or_create(
                     status_code='accepted',
                     defaults={'description': 'Trip accepted by driver'}
@@ -926,7 +959,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 trip.driver_id = driver
                 trip.status_id = status_obj
                 trip.accepted_at = timezone.now()
-                
+
                 # Generate and save OTP for the trip
                 otp = generate_otp(6)
                 trip.otp = otp

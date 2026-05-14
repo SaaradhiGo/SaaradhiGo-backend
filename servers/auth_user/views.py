@@ -1,8 +1,13 @@
 import logging
 import re
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes, parser_classes
+from rest_framework.decorators import (
+    api_view, permission_classes, parser_classes, throttle_classes,
+)
 from base.utils import success_response, error_response, generate_otp, send_otp_via_sns
+from base.throttles import (
+    OtpRequestThrottle, OtpRequestBurstThrottle, OtpVerifyThrottle,
+)
 from django.core.cache import cache
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
@@ -45,9 +50,16 @@ def _validate_phone_number(phone_number):
 
 
 @api_view(['POST'])
+@throttle_classes([OtpRequestBurstThrottle, OtpRequestThrottle])
 def request_otp(request):
     """
     Request OTP for authentication.
+
+    Rate limits (per phone_number, configured in settings.REST_FRAMEWORK):
+      - 1 request per 30 seconds (anti-spam burst)
+      - 5 requests per hour (sustained cap)
+    Without these, an attacker could repeatedly request OTPs to either
+    exhaust the SNS budget or reset the verify-attempt counter.
     
     Expected request data:
     {
@@ -147,9 +159,15 @@ def request_otp(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 @api_view(['POST'])
+@throttle_classes([OtpVerifyThrottle])
 def login(request):
     """
     Authenticate user with OTP.
+
+    Rate limit (per phone_number): 10 verify attempts per hour. The
+    existing per-OTP attempt counter (MAX_OTP_ATTEMPTS) only caps brute
+    force against a single issued OTP; this throttle bounds the attack
+    across multiple OTP issues.
     
     Expected request data:
     {

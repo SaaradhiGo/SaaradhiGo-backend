@@ -82,6 +82,14 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
     'PAGE_SIZE': 20,
+    # Rates are defined here; the actual throttle classes are wired per-view
+    # (see base/throttles.py + decorators on auth endpoints) so we don't
+    # accidentally rate-limit unrelated endpoints.
+    'DEFAULT_THROTTLE_RATES': {
+        'otp_request': '5/hour',
+        'otp_request_burst': '1/30sec',
+        'otp_verify': '10/hour',
+    },
 }
 from datetime import timedelta
 SIMPLE_JWT={

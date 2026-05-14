@@ -1,8 +1,5 @@
-from rest_framework.permissions import BasePermission
+# Re-export the canonical IsAdmin so existing imports keep working.
+# Single source of truth lives in base/permissions.py.
+from base.permissions import IsAdmin
 
-class IsAdmin(BasePermission):
-    """
-    Allows access only to admin users.
-    """
-    def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated and request.user.role == 'admin')
+__all__ = ['IsAdmin']

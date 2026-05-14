@@ -1,15 +1,16 @@
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
 from base.utils import success_response, error_response
+from base.permissions import IsAdmin
 from django.contrib.auth import get_user_model
 from servers.auth_user.serializers import UserModelSerializer
-from servers.driver.permissions import IsAdmin
 from rest_framework.pagination import PageNumberPagination
 
 user_model = get_user_model()
 
 @api_view(['GET'])
-@permission_classes([IsAdmin])
+@permission_classes([IsAuthenticated, IsAdmin])
 def admin_list_users(request):
     """
     Admin view to list all users with pagination and filtering.

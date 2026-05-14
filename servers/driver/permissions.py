@@ -1,8 +1,18 @@
 from rest_framework.permissions import BasePermission
 
+# Re-export the canonical IsAdmin from base/permissions.py so existing
+# imports keep working without two divergent admin checks coexisting.
+from base.permissions import IsAdmin  # noqa: F401
+
+
 class IsDriver(BasePermission):
     def has_permission(self, request, view):
-        return request.user and request.user.is_authenticated and request.user.driver
-class IsAdmin(BasePermission):
-    def has_permission(self, request, view):
-        return request.user and request.user.is_authenticated and request.user.is_superuser and request.user.role=="admin"
+        user = request.user
+        return bool(
+            user
+            and user.is_authenticated
+            and hasattr(user, 'driver')
+        )
+
+
+__all__ = ['IsAdmin', 'IsDriver']

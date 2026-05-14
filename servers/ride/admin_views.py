@@ -1,14 +1,15 @@
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
 from base.utils import success_response, error_response
+from base.permissions import IsAdmin
 from servers.ride.models import Trip
 from servers.ride.serializers import TripListSerializer
-from servers.driver.permissions import IsAdmin
 from rest_framework.pagination import PageNumberPagination
 from servers.redis_client import get_all_active_drivers, get_all_active_riders
 
 @api_view(['GET'])
-@permission_classes([IsAdmin])
+@permission_classes([IsAuthenticated, IsAdmin])
 def admin_list_trips(request):
     """
     Admin view to list all trips with pagination and filtering.
@@ -53,7 +54,7 @@ def admin_list_trips(request):
         )
 
 @api_view(['GET'])
-@permission_classes([IsAdmin])
+@permission_classes([IsAuthenticated, IsAdmin])
 def admin_live_locations(request):
     """
     Admin view to get all active riders and drivers from Redis.

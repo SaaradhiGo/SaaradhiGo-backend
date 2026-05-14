@@ -448,7 +448,7 @@ def trip_detail(request, trip_id):
             status=status.HTTP_403_FORBIDDEN
         )
 
-    serializer = TripDetailSerializer(trip)
+    serializer = TripDetailSerializer(trip, context={'request': request})
     return success_response(serializer.data, status.HTTP_200_OK)
 
 @api_view(['GET'])
@@ -456,7 +456,9 @@ def trip_detail(request, trip_id):
 def trip_driver_details(request,trip_id):
     from servers.redis_client import get_cached_trip
     
-    # Check cache first for rapid response
+    # Check cache first for rapid response. NOTE: this endpoint returns
+    # DRIVER details — the rider's OTP is never returned here. The OTP is
+    # only visible to the rider via /ride/active/ or /ride/trip/<id>/.
     cached = get_cached_trip(trip_id)
     if cached and 'driver_id' in cached:
         return success_response({
@@ -471,7 +473,6 @@ def trip_driver_details(request,trip_id):
                 'model': cached.get('vehicle_model'),
                 'color': cached.get('vehicle_color')
             },
-            'otp': cached.get('otp'),
             'source': 'cache'
         }, status.HTTP_200_OK)
 
@@ -700,5 +701,5 @@ def get_active_trip(request):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    serializer = TripDetailSerializer(trip)
+    serializer = TripDetailSerializer(trip, context={'request': request})
     return success_response(serializer.data, status.HTTP_200_OK)

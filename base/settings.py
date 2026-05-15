@@ -197,6 +197,29 @@ TEMPLATES = [
     },
 ]
 
+# --- Test phone numbers (QA bypass for OTP delivery) -------------------------
+# Maps phone number → fixed OTP. Listed phones:
+#   - never trigger an AWS SNS send
+#   - never count against the OTP-issue / OTP-verify throttles
+#   - log in with the configured OTP every time
+#
+# Set via env, comma-separated `phone:otp` pairs. Empty by default so
+# production never has a bypass unless the operator opts in. Example:
+#   TEST_PHONE_NUMBERS="+919999000001:100001,+919999000002:100002"
+#
+# Anyone with the env var contents can authenticate as those phones —
+# treat them like shared test credentials. Don't reuse a real user's
+# phone here.
+TEST_PHONE_NUMBERS = {}
+_test_phones_raw = os.environ.get('TEST_PHONE_NUMBERS', '')
+if _test_phones_raw:
+    for _entry in _test_phones_raw.split(','):
+        if ':' in _entry:
+            _phone, _otp = _entry.split(':', 1)
+            _phone, _otp = _phone.strip(), _otp.strip()
+            if _phone and _otp:
+                TEST_PHONE_NUMBERS[_phone] = _otp
+
 #URLS
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 BACKEND_URL  = os.environ.get("BACKEND_URL", "http://localhost:8000")

@@ -5,6 +5,7 @@ from rest_framework.decorators import (
     api_view, permission_classes, parser_classes, throttle_classes,
 )
 from base.utils import success_response, error_response, generate_otp, send_otp_via_sns
+from django.conf import settings
 from base.throttles import (
     OtpRequestThrottle, OtpRequestBurstThrottle, OtpVerifyThrottle,
 )
@@ -104,42 +105,59 @@ def request_otp(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Generate OTP
-        otp = generate_otp(6)
-        if not otp:
-            logger.error("Failed to generate OTP")
-            return error_response(
-                code="AUTH_OTP_GENERATION_FAILED",
-                message='Failed to generate OTP',
-                field='otp',
-                issue='OTP generation error',
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        # Test-phone bypass: if this phone is configured in
+        # settings.TEST_PHONE_NUMBERS, use the operator-supplied fixed OTP
+        # and skip the AWS SNS round-trip. The login path is unchanged —
+        # the cache is populated identically — so attempt counters,
+        # role binding, expiry, and post-login flows all still work.
+        # Empty TEST_PHONE_NUMBERS (the production default) = no bypass.
+        test_otp = settings.TEST_PHONE_NUMBERS.get(phone_number)
+
+        if test_otp:
+            otp = test_otp
+            task_id = 'test-phone-no-sms'
+            logger.info(
+                f"OTP test-phone bypass for {phone_number[:5]}*** — "
+                f"no SMS sent"
             )
-        
-        # Store in cache
+        else:
+            # Generate OTP
+            otp = generate_otp(6)
+            if not otp:
+                logger.error("Failed to generate OTP")
+                return error_response(
+                    code="AUTH_OTP_GENERATION_FAILED",
+                    message='Failed to generate OTP',
+                    field='otp',
+                    issue='OTP generation error',
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+        # Store in cache (test phones and real phones share this path)
         cache.set(
             f'otp_role_{phone_number}',
             {'otp': otp, 'role': role, 'attempts': 0},
             OTP_EXPIRY
         )
-        
-        try:
-            # Send OTP via SNS (async task)
-            task_id = send_otp_via_sns.delay(
-                phone_number,
-                f"Your OTP for VahanGo is {otp}. It will expire in 10 minutes."
-            )
-            logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id}")
-        except Exception as e:
-            logger.error(f"Failed to queue OTP send task: {str(e)}")
-            return error_response(
-                code="AUTH_OTP_REQUEST",
-                message="Unable to send OTP at this moment",
-                field="otp",
-                issue="SMS gateway error",
-                status=status.HTTP_503_SERVICE_UNAVAILABLE
-            )
-        
+
+        if not test_otp:
+            try:
+                # Send OTP via SNS (async task)
+                task_id = send_otp_via_sns.delay(
+                    phone_number,
+                    f"Your OTP for VahanGo is {otp}. It will expire in 10 minutes."
+                )
+                logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id}")
+            except Exception as e:
+                logger.error(f"Failed to queue OTP send task: {str(e)}")
+                return error_response(
+                    code="AUTH_OTP_REQUEST",
+                    message="Unable to send OTP at this moment",
+                    field="otp",
+                    issue="SMS gateway error",
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE
+                )
+
         return success_response(
             data={
                 'message': "OTP sent successfully",

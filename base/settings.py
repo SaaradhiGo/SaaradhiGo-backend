@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     'servers.driver',
     'servers.ride',
     'servers.payments',
+    'servers.admin_audit',
     'django_cleanup.apps.CleanupConfig',
     # 'servers.support',
     

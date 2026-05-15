@@ -369,15 +369,36 @@ def refresh(request):
             )
         
         try:
-            refresh_obj = RefreshToken(refresh_token)
-            new_access_token = str(refresh_obj.access_token)
-            new_refresh_token = str(refresh_obj)
-            
-            logger.info("Token refreshed successfully")
+            old_refresh = RefreshToken(refresh_token)
+            # Capture the user id BEFORE blacklisting (the blacklist call
+            # may invalidate the in-memory object).
+            user_id = old_refresh['user_id']
+
+            # Rotation: blacklist the just-used refresh token so it cannot
+            # be redeemed twice. Combined with ROTATE_REFRESH_TOKENS +
+            # BLACKLIST_AFTER_ROTATION in settings, this makes a stolen
+            # refresh token single-use.
+            try:
+                old_refresh.blacklist()
+            except AttributeError:
+                # token_blacklist app not installed — log loudly so we
+                # notice the rotation isn't actually in effect.
+                logger.error(
+                    "Refresh-token rotation requested but token_blacklist "
+                    "is not installed."
+                )
+
+            # Mint a fresh refresh + access token pair for the same user.
+            user = user_model.objects.get(pk=user_id)
+            new_refresh_obj = RefreshToken.for_user(user)
+            new_refresh_token = str(new_refresh_obj)
+            new_access_token = str(new_refresh_obj.access_token)
+
+            logger.info(f"Token refreshed and rotated for user {user_id}")
             return success_response(
                 data={
                     'token': new_access_token,
-                    'refresh_token': new_refresh_token
+                    'refresh_token': new_refresh_token,
                 },
                 status_code=status.HTTP_200_OK
             )
@@ -410,6 +431,91 @@ def refresh(request):
             issue=str(e),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def logout(request):
+    """Log out the caller by blacklisting their refresh token.
+
+    Expected request data:
+        { "refresh_token": str (required) }
+
+    Why a logout endpoint exists at all when tokens have a TTL:
+      - The access token will expire on its own in 15 min, but the
+        refresh token has a 14-day life. Without a logout-side
+        blacklist, a user who taps "log out" can have their stolen
+        refresh token still produce new access tokens for two weeks.
+      - Pairs with ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_ROTATION
+        in settings to make stolen refresh tokens both single-use AND
+        explicitly revocable on logout.
+    """
+    refresh_token = request.data.get('refresh_token')
+    if not refresh_token:
+        return error_response(
+            code='AUTH_REFRESH_TOKEN_MISSING',
+            message='Refresh token is required',
+            field='refresh_token',
+            issue='Provide the refresh token to blacklist',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        token = RefreshToken(refresh_token)
+        # The endpoint is authenticated, so we know who is calling. Guard
+        # against a malicious caller trying to log someone else out.
+        token_user_id = token.get('user_id')
+        if token_user_id is not None and str(token_user_id) != str(request.user.id):
+            logger.warning(
+                f"Logout attempt with mismatched user_id "
+                f"(caller={request.user.id}, token={token_user_id})"
+            )
+            return error_response(
+                code='AUTH_TOKEN_MISMATCH',
+                message='Refresh token does not belong to this user',
+                field='refresh_token',
+                issue='Authenticated user does not own the supplied refresh token',
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            token.blacklist()
+        except AttributeError:
+            logger.error(
+                "Logout requested but token_blacklist app is not installed; "
+                "refresh token cannot be revoked."
+            )
+            return error_response(
+                code='AUTH_BLACKLIST_UNAVAILABLE',
+                message='Token revocation is currently unavailable',
+                field='general',
+                issue='token_blacklist app not configured',
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        logger.info(f"User {request.user.id} logged out (refresh blacklisted)")
+        return success_response(
+            data={'message': 'Logged out'},
+            status_code=status.HTTP_200_OK,
+        )
+    except (InvalidToken, TokenError) as e:
+        logger.warning(f"Invalid refresh token at logout: {e}")
+        return error_response(
+            code='AUTH_INVALID_REFRESH_TOKEN',
+            message='Refresh token is invalid',
+            field='refresh_token',
+            issue='The provided refresh token is invalid or already revoked',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error in logout: {e}")
+        return error_response(
+            code='AUTH_INTERNAL_ERROR',
+            message='An unexpected error occurred',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
 
 @api_view(['PATCH'])
 @permission_classes([IsAuthenticated])

@@ -533,7 +533,7 @@ def rate_trip(request):
     from servers.ride.models import Rating
     from servers.driver.models import Driver
     from servers.rider.models import Rider
-    from django.db.models import Avg
+    from django.db.models import Avg, F
 
     trip_id = request.data.get('trip_id')
     score = request.data.get('score')
@@ -620,28 +620,37 @@ def rate_trip(request):
             comments=comments
         )
 
-        # Update the rated person's average
+        # Recompute the rated person's average across ALL their trips.
+        #
+        # The previous query filtered `rater_id=trip.user_id`, which scoped
+        # the average to ratings given by *this single rider*, then excluded
+        # the driver themselves. That meant a driver's "average score" was
+        # actually "average score the current rider has given this driver"
+        # — usually one or two data points, often the just-submitted score.
+        #
+        # The correct query for a driver's average is: every Rating whose
+        # trip's driver was this driver AND whose rater was that trip's
+        # rider. F('trip_id__user_id') checks the rater of each row equals
+        # the rider of THAT row's trip — confirming it's a rider→driver
+        # rating, not the other direction.
         if is_rider and trip.driver_id:
-            # Rider is rating the driver
             driver = trip.driver_id
             avg = Rating.objects.filter(
                 trip_id__driver_id=driver,
-                rater_id=trip.user_id
-            ).exclude(
-                rater_id__in=[driver.user_id]
+                rater_id=F('trip_id__user_id'),
             ).aggregate(avg_score=Avg('score'))['avg_score']
             if avg:
                 driver.ratings = round(Decimal(str(avg)), 2)
                 driver.save(update_fields=['ratings'])
 
         elif is_driver:
-            # Driver is rating the rider
+            # Driver→rider average: every Rating whose trip's rider was
+            # this rider AND whose rater was that trip's driver's user.
             try:
                 rider = Rider.objects.get(user_id=trip.user_id)
                 avg = Rating.objects.filter(
-                    trip_id__user_id=trip.user_id
-                ).exclude(
-                    rater_id=trip.user_id
+                    trip_id__user_id=trip.user_id,
+                    rater_id=F('trip_id__driver_id__user_id'),
                 ).aggregate(avg_score=Avg('score'))['avg_score']
                 if avg:
                     rider.rating = round(Decimal(str(avg)), 1)

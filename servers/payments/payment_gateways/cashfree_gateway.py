@@ -276,7 +276,167 @@ class CashfreeGateway(BasePaymentGateway):
             if isinstance(e, requests.exceptions.RequestException) and getattr(e, 'response', None) is not None:
                 logger.error(f"Cashfree response: {e.response.text}")
             return None
-  
+
+    # ---------------------------------------------------------------------
+    # Payouts (Cashfree Payouts API — separate product from PG)
+    # ---------------------------------------------------------------------
+
+    _payout_token = None
+    _payout_token_expires_at = 0  # epoch seconds
+
+    def _payout_base_url(self):
+        return getattr(
+            settings,
+            'CASHFREE_PAYOUT_BASE_URL',
+            'https://payout-api.cashfree.com',
+        )
+
+    def _payout_credentials(self):
+        """Return (client_id, client_secret) for Cashfree Payouts or (None, None).
+
+        Payouts use a *different* credential pair from the PG side. If
+        the platform isn't onboarded for payouts yet, both will be empty
+        and the caller falls back to the failure path.
+        """
+        client_id = getattr(settings, 'CASHFREE_PAYOUT_APP_ID', '') or ''
+        client_secret = getattr(settings, 'CASHFREE_PAYOUT_SECRET_KEY', '') or ''
+        return client_id or None, client_secret or None
+
+    def _get_payout_token(self):
+        """Authorize against Cashfree Payouts and cache the token in-process.
+
+        Cashfree Payouts tokens are valid ~30 min. We refresh ~25 min in.
+        """
+        now = int(time.time())
+        if self._payout_token and now < self._payout_token_expires_at:
+            return self._payout_token
+
+        client_id, client_secret = self._payout_credentials()
+        if not client_id or not client_secret:
+            logger.error(
+                "CashfreeGateway.create_upi_payout: CASHFREE_PAYOUT_APP_ID / "
+                "CASHFREE_PAYOUT_SECRET_KEY are not configured; payouts will fail. "
+                "Configure them in env once the platform is onboarded for Cashfree Payouts."
+            )
+            return None
+
+        try:
+            resp = requests.post(
+                f"{self._payout_base_url()}/payout/v1/authorize",
+                headers={
+                    "X-Client-Id": client_id,
+                    "X-Client-Secret": client_secret,
+                    "Accept": "application/json",
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            token = data.get('data', {}).get('token')
+            if not token:
+                logger.error(f"CashfreeGateway: payout authorize returned no token: {data}")
+                return None
+            type(self)._payout_token = token
+            # Refresh 5 min before the 30-min expiry.
+            type(self)._payout_token_expires_at = now + (25 * 60)
+            return token
+        except Exception as e:
+            logger.error(f"CashfreeGateway: payout authorize failed: {e}")
+            if isinstance(e, requests.exceptions.RequestException) and getattr(e, 'response', None) is not None:
+                logger.error(f"Cashfree response: {e.response.text}")
+            return None
+
+    def create_upi_payout(
+        self,
+        upi_id: str,
+        amount,
+        purpose: str = "payout",
+        currency: str = "INR",
+        reference_id: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Create a UPI payout via Cashfree Payouts (request_transfer flavour).
+
+        Returns a dict with at least:
+            { 'payout_id': str, 'status': str, 'contact_id': str|None,
+              'fund_account_id': str|None }
+        or None on failure (caller marks the withdrawal failed).
+
+        Phase-0 note: this implementation uses the Cashfree Payouts V1
+        request_transfer endpoint with the in-line beneficiary form so
+        we don't have to maintain a beneId. Once we onboard for V2 and
+        want to reuse beneficiaries, this method should switch to
+        addBeneficiary + requestTransfer with beneId.
+        """
+        if not upi_id:
+            logger.error("create_upi_payout: upi_id is required")
+            return None
+        try:
+            amount_val = float(amount)
+        except (TypeError, ValueError):
+            logger.error(f"create_upi_payout: bad amount {amount!r}")
+            return None
+        if amount_val <= 0:
+            logger.error(f"create_upi_payout: non-positive amount {amount_val}")
+            return None
+
+        token = self._get_payout_token()
+        if not token:
+            return None
+
+        transfer_id = reference_id or f"payout_{int(time.time())}"
+
+        payload = {
+            "beneId": "",  # leaving empty triggers in-line beneficiary mode
+            "amount": str(round(amount_val, 2)),
+            "transferId": transfer_id,
+            "transferMode": "upi",
+            "remarks": purpose or "Driver earnings payout",
+            "beneficiaryDetails": {
+                "name": (name or "Driver")[:50],
+                "vpa": upi_id,
+            },
+        }
+
+        try:
+            resp = requests.post(
+                f"{self._payout_base_url()}/payout/v1.2/requestTransfer",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json=payload,
+                timeout=15,
+            )
+            data = resp.json() if resp.content else {}
+        except Exception as e:
+            logger.error(f"create_upi_payout: network failure: {e}")
+            return None
+
+        if resp.status_code not in (200, 201):
+            logger.error(
+                f"create_upi_payout: HTTP {resp.status_code} from Cashfree: {data}"
+            )
+            return None
+
+        # Cashfree returns various envelope shapes across versions. Be defensive.
+        status_val = data.get('status') or (data.get('data') or {}).get('status')
+        if status_val and str(status_val).upper() in ('ERROR', 'FAILED'):
+            logger.error(f"create_upi_payout: gateway rejected transfer: {data}")
+            return None
+
+        body = data.get('data') or {}
+        return {
+            'payout_id': transfer_id,
+            'status': str(status_val or 'PENDING'),
+            'gateway_reference': body.get('referenceId') or body.get('reference_id'),
+            'contact_id': body.get('contact_id'),
+            'fund_account_id': body.get('fund_account_id'),
+            'raw': data,
+        }
+
+
 
 
 

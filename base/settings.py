@@ -98,7 +98,22 @@ SIMPLE_JWT={
 
 }
 # celery
-CELERY_BROKER_URL=REDIS_URL+'/0'
+CELERY_BROKER_URL = REDIS_URL + '/0'
+
+# Celery Beat — periodic tasks.
+# The compose `celery` service runs with `-B` so beat is embedded in the
+# worker. That's fine while we run a single celery instance; when we
+# scale to multiple workers, beat must move to a standalone container
+# (or adopt django-celery-beat for a DB-backed schedule lock).
+from celery.schedules import crontab as _crontab
+CELERY_BEAT_SCHEDULE = {
+    'driver-block-expired-licenses-daily': {
+        'task': 'driver.block_expired_driver_licenses',
+        # 02:00 in TIME_ZONE (Asia/Kolkata) — quiet hours.
+        'schedule': _crontab(hour=2, minute=0),
+    },
+}
+CELERY_TIMEZONE = 'Asia/Kolkata'
 # cache
 CACHES={
     'default':{

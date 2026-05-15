@@ -518,7 +518,12 @@ def verify_wallet_payment(request):
         txn.save(update_fields=['status', 'gateway_payment_id'])
 
         wallet, _ = Wallet.objects.select_for_update().get_or_create(user_id=request.user)
-        wallet.balance = wallet.balance + gateway_amount  # Decimal + Decimal
+        # Defense in depth: model's default is a Decimal but a freshly-
+        # constructed Wallet from `get_or_create` may still carry a Python
+        # float in memory if the default literal was 0.00 instead of
+        # Decimal('0.00'). Coerce before adding to avoid `float + Decimal`
+        # TypeErrors for first-time wallet users.
+        wallet.balance = Decimal(str(wallet.balance)) + gateway_amount
         wallet.save(update_fields=['balance'])
 
     logger.info(f"Wallet top-up verified for user {request.user.id}: added {gateway_amount}")

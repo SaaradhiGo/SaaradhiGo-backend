@@ -352,14 +352,23 @@ def payment_webhook(request):
         # Idempotency gate. The signature is a function of (body, timestamp,
         # secret) and is unique per delivery, so it doubles as a perfect
         # dedupe key for both legitimate retries and forged replays.
+        #
+        # The INSERT runs inside `transaction.atomic()` so an IntegrityError
+        # from the unique constraint rolls back just the savepoint instead
+        # of poisoning the surrounding transaction. Without the explicit
+        # savepoint, Django's autocommit hides the bug in production but
+        # any caller that wraps webhook handling in a transaction (and the
+        # test runner does) sees a TransactionManagementError on the next
+        # query.
         event_type = (payload.get('type') or payload.get('event') or '')[:64]
         try:
-            WebhookEvent.objects.create(
-                gateway=gateway_name,
-                dedupe_key=signature[:512],
-                event_type=event_type,
-                raw_payload=payload,
-            )
+            with transaction.atomic():
+                WebhookEvent.objects.create(
+                    gateway=gateway_name,
+                    dedupe_key=signature[:512],
+                    event_type=event_type,
+                    raw_payload=payload,
+                )
         except IntegrityError:
             logger.info(
                 f"Webhook deduplicated (gateway={gateway_name}, "
@@ -409,10 +418,14 @@ def _handle_cashfree_webhook(payload, gateway):
         if not order_id:
             return JsonResponse({'status': 'skipped', 'reason': 'no order_id'}, status=200)
 
-        # Check if it's a Wallet Transaction
+        # Check if it's a Wallet Transaction.
+        # NOTE: WalletTransaction only has `gateway_order_id` — unlike
+        # Payment which has both `gateway_order_id` and `cashfree_order_id`.
+        # The previous Q-filter referencing both fields raised FieldError on
+        # every wallet-top-up webhook (QA-8).
         from servers.rider.models import WalletTransaction, Wallet
         wallet_txn_pk = WalletTransaction.objects.filter(
-            models.Q(cashfree_order_id=order_id) | models.Q(gateway_order_id=order_id)
+            gateway_order_id=order_id,
         ).values_list('pk', flat=True).first()
 
         if wallet_txn_pk is not None:

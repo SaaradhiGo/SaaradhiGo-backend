@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import models
 from django.contrib.auth import get_user_model
 
@@ -17,7 +19,11 @@ class FavoritePlace(models.Model):
         return f'{self.user_id} - {self.address_text}'
 class Wallet(models.Model):
     user_id=models.OneToOneField(User,on_delete=models.CASCADE,related_name='wallet')
-    balance=models.DecimalField(max_digits=12,decimal_places=2,default=0.00)
+    # default uses Decimal explicitly so a freshly-constructed Wallet
+    # instance holds a Decimal in memory (not a Python float). The
+    # mismatch caused `wallet.balance + Decimal(amount)` to TypeError on
+    # the first ever top-up. See QA-7 in the Phase-0 QA report.
+    balance=models.DecimalField(max_digits=12,decimal_places=2,default=Decimal('0.00'))
     def __str__(self):
         return f'{self.user_id} - {self.balance}'
 

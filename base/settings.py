@@ -210,6 +210,17 @@ CASHFREE_API_VERSION=os.environ.get("CASHFREE_API_VERSION", "2023-08-01")
 CASHFREE_ENVIRONMENT=os.environ.get("CASHFREE_ENVIRONMENT", "sandbox")  # sandbox or production
 CASHFREE_PG_BASE_URL = os.environ.get("CASHFREE_PG_BASE_URL", "https://sandbox.cashfree.com")
 
+# Cashfree Payouts uses a separate credential pair from the Payment
+# Gateway side and a different base URL. Production:
+#   CASHFREE_PAYOUT_BASE_URL = https://payout-api.cashfree.com
+# Sandbox:
+#   CASHFREE_PAYOUT_BASE_URL = https://payout-gamma.cashfree.com
+CASHFREE_PAYOUT_BASE_URL = os.environ.get(
+    "CASHFREE_PAYOUT_BASE_URL", "https://payout-gamma.cashfree.com"
+)
+CASHFREE_PAYOUT_APP_ID = os.environ.get("CASHFREE_PAYOUT_APP_ID", "")
+CASHFREE_PAYOUT_SECRET_KEY = os.environ.get("CASHFREE_PAYOUT_SECRET_KEY", "")
+
 # Payment Gateway Selection
 PAYMENT_GATEWAY=os.environ.get("PAYMENT_GATEWAY", "cashfree")
 PAYOUT_GATEWAY=os.environ.get("PAYOUT_GATEWAY", "cashfree")

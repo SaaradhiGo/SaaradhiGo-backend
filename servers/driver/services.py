@@ -332,7 +332,7 @@ def detect_upi_fraud(driver, amount, upi_id=None):
     recent_upi_withdrawals = WithdrawalRequest.objects.filter(
         driver=driver,
         payout_method='upi',
-        created_at__gte=one_hour_ago,
+        requested_at__gte=one_hour_ago,
         status__in=['pending', 'processing', 'completed']
     ).count()
     
@@ -561,7 +561,7 @@ def get_upi_payout_monitoring_metrics(start_date=None, end_date=None):
     today = timezone.now().date()
     daily_upi_withdrawals = WithdrawalRequest.objects.filter(
         payout_method='upi',
-        created_at__date=today,
+        requested_at__date=today,
         status__in=['completed', 'processing']
     ).aggregate(
         total_amount=Sum('amount'),
@@ -576,7 +576,7 @@ def get_upi_payout_monitoring_metrics(start_date=None, end_date=None):
     # 2. UPI vs bank payout success rates
     upi_success_rate = WithdrawalRequest.objects.filter(
         payout_method='upi',
-        created_at__range=[start_date, end_date]
+        requested_at__range=[start_date, end_date]
     ).aggregate(
         total=Count('id'),
         successful=Count('id', filter=Q(status='completed')),
@@ -585,7 +585,7 @@ def get_upi_payout_monitoring_metrics(start_date=None, end_date=None):
     
     bank_success_rate = WithdrawalRequest.objects.filter(
         payout_method='bank',
-        created_at__range=[start_date, end_date]
+        requested_at__range=[start_date, end_date]
     ).aggregate(
         total=Count('id'),
         successful=Count('id', filter=Q(status='completed')),
@@ -674,12 +674,12 @@ def check_upi_payout_alerts():
     upi_failures_last_hour = WithdrawalRequest.objects.filter(
         payout_method='upi',
         status='failed',
-        created_at__gte=one_hour_ago
+        requested_at__gte=one_hour_ago
     ).count()
     
     upi_total_last_hour = WithdrawalRequest.objects.filter(
         payout_method='upi',
-        created_at__gte=one_hour_ago
+        requested_at__gte=one_hour_ago
     ).count()
     
     if upi_total_last_hour > 0:
@@ -735,7 +735,7 @@ def generate_npci_compliance_report(report_date=None):
     # 1. Daily UPI transaction summary
     daily_transactions = WithdrawalRequest.objects.filter(
         payout_method='upi',
-        created_at__range=[start_of_day, end_of_day]
+        requested_at__range=[start_of_day, end_of_day]
     ).aggregate(
         total_count=Count('id'),
         total_amount=Sum('amount'),
@@ -749,9 +749,9 @@ def generate_npci_compliance_report(report_date=None):
     large_transactions = WithdrawalRequest.objects.filter(
         payout_method='upi',
         amount__gt=50000,
-        created_at__range=[start_of_day, end_of_day]
+        requested_at__range=[start_of_day, end_of_day]
     ).values(
-        'id', 'driver__user__username', 'amount', 'status', 'created_at'
+        'id', 'driver__user__username', 'amount', 'status', 'requested_at'
     ).order_by('-amount')
     
     # 3. Monthly limit utilization (for the month containing report_date)
@@ -763,7 +763,7 @@ def generate_npci_compliance_report(report_date=None):
     
     monthly_transactions = WithdrawalRequest.objects.filter(
         payout_method='upi',
-        created_at__range=[month_start_dt, month_end_dt],
+        requested_at__range=[month_start_dt, month_end_dt],
         status='completed'
     ).aggregate(
         total_amount=Sum('amount'),
@@ -1350,7 +1350,7 @@ def initiate_upi_payout(withdrawal, driver):
             # Non-critical error, continue
         
         logger.info(f"UPI payout successfully initiated for withdrawal {withdrawal.id}: "
-                   f"Cashfree payout ID: {withdrawal.gateway_payout_id}, "
+                   f"Cashfree payout ID: {withdrawal.payout_reference_id}, "
                    f"Amount: {withdrawal.amount}, UPI ID: {driver.upi_id}")
         
         return True

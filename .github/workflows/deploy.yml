@@ -1,16 +1,69 @@
-name: Deploy to EC2
+name: Test and deploy
+
+# Push to dev runs the test suite first; only if all tests pass does the
+# deploy step SSH into EC2 and roll the containers. The QA pass that
+# preceded this gate caught two regressions that had already shipped to
+# production (PR #27, PR #28). The whole point of `needs: test` is to
+# make sure that can't happen again.
+
 on:
   push:
     branches:
       - dev
 
+# Don't run more than one deploy at a time on the same branch; queue them
+# so the second push waits for the first to settle on EC2.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-django
+
+      - name: Run pytest
+        env:
+          # Test-only values — never reach production. SECRET_KEY just has
+          # to satisfy Django's startup checks; DEBUG_ENV=True keeps the
+          # boot-time guards (CASHFREE_WEBHOOK_SECRET / ALLOWED_HOSTS)
+          # permissive for the suite. The locmem cache fixture in
+          # tests/conftest.py replaces the Redis cache; no Redis service
+          # is needed in CI.
+          DJANGO_SECRET_KEY: ci-test-secret-not-for-prod
+          ALLOWED_HOSTS: localhost,127.0.0.1
+          DEBUG_ENV: 'True'
+          CASHFREE_WEBHOOK_SECRET: ci-test-secret
+          REDIS_URL: redis://localhost:6379
+          DJANGO_SETTINGS_MODULE: base.settings
+        run: pytest tests/ -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    # Only deploy from a real push to dev. Prevents accidental deploys
+    # from forks or workflow_dispatch trial-runs.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Setup SSH
         run: |

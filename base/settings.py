@@ -121,6 +121,12 @@ CELERY_BEAT_SCHEDULE = {
         # 02:00 in TIME_ZONE (Asia/Kolkata) — quiet hours.
         'schedule': _crontab(hour=2, minute=0),
     },
+    'payments-reconcile-stuck-every-5-min': {
+        # Sweep payments/wallets stuck in pending/processing against the
+        # gateway so a missed webhook can never strand money on its own.
+        'task': 'payments.reconcile_stuck_payments',
+        'schedule': _crontab(minute='*/5'),
+    },
 }
 CELERY_TIMEZONE = 'Asia/Kolkata'
 # cache

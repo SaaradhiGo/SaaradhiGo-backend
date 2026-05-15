@@ -9,6 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
 from django.http import JsonResponse
 from django.db import models, transaction, IntegrityError
 from base.utils import success_response, error_response
@@ -313,11 +314,13 @@ def verify_payment(request):
 
 
 @csrf_exempt
+@require_POST
 def payment_webhook(request):
     """
     Payment gateway webhook endpoint.
     Handles webhooks from Cashfree.
-    No JWT auth — verified via gateway signature header.
+    POST-only (enforced by @require_POST so GETs from probes return
+    405 not 200). No JWT auth — verified via gateway signature header.
     """
     if request.method != 'POST':
         return JsonResponse({'error': 'Method not allowed'}, status=405)
@@ -548,11 +551,12 @@ def _handle_cashfree_webhook(payload, gateway):
 
 
 @csrf_exempt
+@require_POST
 def payout_webhook(request):
     """
     Payout gateway webhook endpoint.
     Handles webhooks from Cashfree for payout events.
-    No JWT auth — verified via gateway signature header.
+    POST-only. No JWT auth — verified via gateway signature header.
     """
     if request.method != 'POST':
         return JsonResponse({'error': 'Method not allowed'}, status=405)
@@ -631,7 +635,16 @@ def _handle_cashfree_payout_webhook(payload, gateway):
             withdrawal.status = 'completed'
             withdrawal.payout_status = status if status else 'success'
             withdrawal.save(update_fields=['status', 'payout_status'])
-            
+
+            # Stamp last_withdrawal_at on the driver ONLY now — at confirmed
+            # TRANSFER_SUCCESS. trigger_payout_creation used to set this at
+            # request time, which meant a failed payout still blocked the
+            # driver from new withdrawals for 7 days even though no money
+            # moved. Audit M8.
+            driver = withdrawal.driver
+            driver.last_withdrawal_at = timezone.now()
+            driver.save(update_fields=['last_withdrawal_at'])
+
             # Create transaction history entry
             TransactionHistory.objects.get_or_create(
                 withdrawal_request=withdrawal,
@@ -649,7 +662,7 @@ def _handle_cashfree_payout_webhook(payload, gateway):
                     'txn_type': 'payout',
                 }
             )
-        
+
         logger.info(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} completed successfully")
         return JsonResponse({'status': 'ok'}, status=200)
     

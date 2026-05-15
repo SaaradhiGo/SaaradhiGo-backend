@@ -214,3 +214,121 @@ def reconcile_stuck_payments():
         'wallets_settled': wallets_settled,
         'skipped': skipped,
     }
+
+
+# --- Withdrawal (driver payout) reconciliation -----------------------------
+
+WITHDRAWAL_RECON_GRACE_MINUTES = 5
+WITHDRAWAL_RECON_LOOKBACK_HOURS = 48
+WITHDRAWAL_RECON_BATCH_SIZE = 100
+
+
+@shared_task(name='payments.reconcile_stuck_withdrawals')
+def reconcile_stuck_withdrawals():
+    """Sweep driver withdrawal requests stuck in 'processing' / 'approved'.
+
+    Twin to reconcile_stuck_payments. A missed Cashfree payout webhook
+    leaves the driver's withdrawal in 'processing' forever even though
+    the gateway has long since settled (or failed) the transfer. This
+    task polls each stuck row's payout reference and converges status.
+
+    Driver wallet debit happens at request time, NOT here — the only
+    thing this task does is move 'processing' → 'completed' or 'failed'
+    so the driver sees a final state and ops dashboards don't show
+    eternal-pending rows.
+    """
+    from servers.driver.models import WithdrawalRequest
+    from servers.payments.payment_gateways.factory import (
+        get_payment_gateway_for_payouts,
+    )
+    from datetime import timedelta
+
+    now = timezone.now()
+    grace_cutoff = now - timedelta(minutes=WITHDRAWAL_RECON_GRACE_MINUTES)
+    lookback_cutoff = now - timedelta(hours=WITHDRAWAL_RECON_LOOKBACK_HOURS)
+
+    try:
+        gateway = get_payment_gateway_for_payouts()
+    except Exception as e:
+        logger.error(f"reconcile_stuck_withdrawals: cannot get payout gateway: {e}")
+        return {'ok': False, 'reason': 'no gateway'}
+    if not gateway:
+        logger.warning("reconcile_stuck_withdrawals: payout gateway unavailable")
+        return {'ok': False, 'reason': 'no gateway'}
+
+    stuck = (
+        WithdrawalRequest.objects.filter(
+            status__in=['processing', 'approved'],
+            requested_at__lt=grace_cutoff,
+            requested_at__gt=lookback_cutoff,
+        )
+        .exclude(Q(payout_reference_id__isnull=True) | Q(payout_reference_id=''))
+        .order_by('requested_at')[:WITHDRAWAL_RECON_BATCH_SIZE]
+    )
+
+    settled = 0
+    failed = 0
+    skipped = 0
+
+    # Cashfree's payout-status endpoint isn't currently abstracted on
+    # CashfreeGateway. Fail soft: if the gateway doesn't implement the
+    # method, log once and skip the batch.
+    status_fn = getattr(gateway, 'get_payout_status', None)
+    if not callable(status_fn):
+        logger.warning(
+            "reconcile_stuck_withdrawals: gateway has no get_payout_status; "
+            "skipping batch. Implement on CashfreeGateway to enable recon."
+        )
+        return {'ok': False, 'reason': 'no get_payout_status'}
+
+    for w in stuck:
+        try:
+            info = status_fn(w.payout_reference_id)
+        except Exception as e:
+            logger.warning(
+                f"recon-withdrawal: get_payout_status failed for {w.payout_reference_id}: {e}"
+            )
+            skipped += 1
+            continue
+        if not info:
+            skipped += 1
+            continue
+
+        gateway_state = str(info.get('status', '')).upper()
+        try:
+            with transaction.atomic():
+                row = WithdrawalRequest.objects.select_for_update().get(pk=w.pk)
+                if row.status not in ('processing', 'approved'):
+                    continue  # someone else moved it
+                if gateway_state in ('SUCCESS', 'COMPLETED', 'PROCESSED'):
+                    row.status = 'completed'
+                    row.payout_status = gateway_state
+                    row.processed_at = timezone.now()
+                    row.save(update_fields=['status', 'payout_status', 'processed_at'])
+                    settled += 1
+                elif gateway_state in ('FAILED', 'REVERSED', 'CANCELLED', 'REJECTED'):
+                    row.status = 'failed'
+                    row.payout_status = gateway_state
+                    row.failure_reason = (info.get('failure_reason') or 'gateway reported failure')[:255]
+                    row.failure_count = (row.failure_count or 0) + 1
+                    row.last_failure_at = timezone.now()
+                    row.save(update_fields=[
+                        'status', 'payout_status', 'failure_reason',
+                        'failure_count', 'last_failure_at',
+                    ])
+                    failed += 1
+                else:
+                    skipped += 1
+        except Exception as e:
+            logger.error(f"recon-withdrawal: failed to settle {w.pk}: {e}")
+            skipped += 1
+
+    logger.info(
+        f"recon-withdrawal: settled={settled} failed={failed} skipped={skipped}"
+    )
+    return {
+        'ok': True,
+        'settled': settled,
+        'failed': failed,
+        'skipped': skipped,
+    }

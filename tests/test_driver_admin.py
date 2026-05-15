@@ -102,27 +102,60 @@ def test_retrieve_driver_admin_not_found(auth_client_admin):
 
 @pytest.mark.django_db
 def test_update_kyc_status_admin(auth_client_admin, auth_client_driver):
-    """Test updating the KYC status of a driver."""
+    """Approving a driver requires the documents the KYC gate insists on
+    (license doc + expiry in the future + active vehicle with RC doc).
+
+    We set the file-field values to placeholder paths directly rather
+    than going through SimpleUploadedFile; the latter would upload to
+    S3 via private_document_storage and is flaky in CI without moto."""
+    from datetime import date, timedelta
+    from servers.driver.models import Vehicle, VehicleType
     client, admin_user = auth_client_admin
     driver_client, driver_user = auth_client_driver
-    
+
     driver = Driver.objects.get(user_id=driver_user)
     assert driver.approved is False
-    
+
+    # Seed the documents the KYC gate requires (just the truthy values —
+    # the serializer only checks presence, not content).
+    vt, _ = VehicleType.objects.get_or_create(type='sedan')
+    vehicle = Vehicle.objects.create(
+        driver_id=driver,
+        vehicle_type_id=vt,
+        vehicle_number='KA01TEST1234',
+    )
+    vehicle.rc_doc = 'rc_docs/fake.pdf'
+    vehicle.save(update_fields=['rc_doc'])
+    driver.license_doc = 'license_docs/fake.pdf'
+    driver.license_expiry = date.today() + timedelta(days=365)
+    driver.active_vehicle = vehicle
+    driver.save(update_fields=['license_doc', 'license_expiry', 'active_vehicle'])
+
     url = f"/api/v1/driver/admin/{driver.id}/update-kyc/"
-    payload = {
-        "approved": True,
-        "status": "active"
-    }
-    
+    payload = {"approved": True, "status": "active"}
     response = client.patch(url, data=payload, format="json")
-    
-    assert response.status_code == status.HTTP_200_OK
-    
-    # Reload from DB
+
+    assert response.status_code == status.HTTP_200_OK, response.content
+
     driver.refresh_from_db()
     assert driver.approved is True
     assert driver.status == "active"
+
+
+@pytest.mark.django_db
+def test_update_kyc_status_admin_rejects_without_documents(auth_client_admin, auth_client_driver):
+    """KYC gate: approving a driver with no documents on file must fail.
+
+    Regression guard for the Phase-0 KYC document gate. Without this
+    serializer-level validation, an admin (or compromised admin session)
+    could mark a driver approved with zero verification."""
+    client, _ = auth_client_admin
+    driver_client, driver_user = auth_client_driver
+    driver = Driver.objects.get(user_id=driver_user)
+
+    url = f"/api/v1/driver/admin/{driver.id}/update-kyc/"
+    response = client.patch(url, data={"approved": True}, format="json")
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
 
 @pytest.mark.django_db
 def test_delete_driver_admin(auth_client_admin, auth_client_driver):

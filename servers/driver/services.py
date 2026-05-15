@@ -1154,11 +1154,13 @@ def trigger_payout_creation(withdrawal):
     logger = logging.getLogger(__name__)
     
     try:
-        # Update driver's last withdrawal timestamp
         driver = withdrawal.driver
-        driver.last_withdrawal_at = timezone.now()
-        driver.save()
-        
+        # NOTE: driver.last_withdrawal_at is intentionally NOT set here.
+        # It is stamped only when the Cashfree payout webhook delivers
+        # TRANSFER_SUCCESS, so a failed payout doesn't unfairly block
+        # the driver from new withdrawals for 7 days. See audit M8 and
+        # _handle_cashfree_payout_webhook.
+
         # Use atomic transaction for wallet operations to ensure consistency
         with transaction.atomic():
             # Lock wallet row for update to prevent race conditions

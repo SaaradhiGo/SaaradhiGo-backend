@@ -191,16 +191,21 @@ def login(request):
     {
         "phone_number": str (E.164 format, required),
         "otp": str (required),
-        "device_token": str (optional),
-        "password": str (optional)
+        "device_token": str (optional)
     }
+
+    Note: an optional `password` field used to be accepted on the very
+    first login for a phone and silently `set_password()`-ed onto the
+    user. That dual-factor was never actually enforced anywhere later
+    (no password-login flow exists), it could be used to clobber a
+    chosen password by an attacker who briefly knew an OTP, and it had
+    no rotation path. The field is now ignored.
     """
     try:
         # Validate required fields first
         phone_number = request.data.get('phone_number', None)
         otp = request.data.get('otp', None)
         device_token = request.data.get('device_token', None)
-        password = request.data.get('password', None)
         
         if phone_number is None:
             logger.warning("Login attempt without phone number")
@@ -274,10 +279,10 @@ def login(request):
                     # If existing user logs in as a different role, we might want to update it or reject, but let's keep it simple
                     created = False
                 except user_model.DoesNotExist:
+                    # Password not accepted — see docstring.
                     user = user_model.objects.create_user(
-                        phone_number=phone_number, 
-                        password=password, 
-                        role=role
+                        phone_number=phone_number,
+                        role=role,
                     )
                     created = True
                 

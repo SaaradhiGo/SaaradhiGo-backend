@@ -82,6 +82,22 @@ def estimate_fare(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    # Service-area enforcement. Phase-0 only serves Hyderabad metro; both
+    # pickup and drop must sit inside the polygon. Without this check, a
+    # tampered client can have us produce fares for any city.
+    from base.service_area import validate_service_area
+    area_ok, area_msg = validate_service_area(
+        pickup_lat, pickup_long, destination_lat, destination_long,
+    )
+    if not area_ok:
+        return error_response(
+            code='OUT_OF_SERVICE_AREA',
+            message=area_msg,
+            field='pickup / destination',
+            issue='Coordinates fall outside the SaaradhiGo Hyderabad service area',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     # Server-side distance + duration (authoritative for fare).
     is_valid, validated_km, validated_min, msg = validate_distance(
         distance_km, duration_min, pickup_lat, pickup_long, destination_lat, destination_long

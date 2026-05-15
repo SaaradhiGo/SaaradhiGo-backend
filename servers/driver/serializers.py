@@ -64,9 +64,63 @@ class DriverAdminListSerializer(serializers.ModelSerializer):
         fields = ['id', 'user_details', 'license_doc', 'license_expiry', 'status', 'total_trips', 'ratings', 'approved', 'active_vehicle']
 
 class KYCApprovalSerializer(serializers.ModelSerializer):
+    """KYC approval is the gate that lets a driver accept rides on the
+    platform. We refuse to mark `approved=True` unless the driver has
+    the credentials we're legally required to verify under the MoRTH
+    Motor Vehicles Aggregator Guidelines 2020:
+
+    - license_doc must be uploaded
+    - license_expiry must be set and in the future
+    - at least one Vehicle must exist with rc_doc uploaded
+    - the active_vehicle must be assigned (so the driver can actually
+      take rides post-approval)
+
+    Approval can still be REJECTED (approved=False) at any time without
+    these checks — withdrawal of approval doesn't depend on documents.
+    """
     class Meta:
         model = Driver
         fields = ['approved', 'status']
+
+    def validate(self, attrs):
+        from django.utils import timezone
+        approved = attrs.get('approved')
+        if approved is not True:
+            return attrs  # Rejection / status-only updates don't need docs.
+
+        driver = self.instance
+        if driver is None:
+            raise serializers.ValidationError(
+                'KYCApprovalSerializer requires an existing Driver instance.'
+            )
+
+        missing = []
+        if not driver.license_doc:
+            missing.append('license_doc')
+        if not driver.license_expiry:
+            missing.append('license_expiry')
+        elif driver.license_expiry <= timezone.localdate():
+            raise serializers.ValidationError({
+                'license_expiry': (
+                    f"License has already expired ({driver.license_expiry}); "
+                    "refusing to approve. Have the driver upload a renewed "
+                    "license before re-attempting approval."
+                )
+            })
+        if not driver.active_vehicle:
+            missing.append('active_vehicle')
+        elif not getattr(driver.active_vehicle, 'rc_doc', None):
+            missing.append('active_vehicle.rc_doc')
+
+        if missing:
+            raise serializers.ValidationError({
+                'documents': (
+                    f"Cannot approve driver — missing: {', '.join(missing)}. "
+                    "Phase-0 KYC gate requires license doc + expiry, an active "
+                    "vehicle, and that vehicle's RC document on file."
+                )
+            })
+        return attrs
 
 class DriverAdminDetailSerializer(serializers.ModelSerializer):
     user_details = UserModelSerializer(source='user_id', read_only=True)

@@ -134,6 +134,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'payments.reconcile_stuck_payments',
         'schedule': _crontab(minute='*/5'),
     },
+    'withdrawals-reconcile-stuck-every-10-min': {
+        # Sweep withdrawals stuck in processing/approved. Lower cadence
+        # than payments (10 vs 5 min) — driver payouts aren't on the hot
+        # rider-facing path so a slightly longer window is fine.
+        'task': 'payments.reconcile_stuck_withdrawals',
+        'schedule': _crontab(minute='*/10'),
+    },
 }
 CELERY_TIMEZONE = 'Asia/Kolkata'
 # cache
@@ -337,12 +344,33 @@ AUTH_PASSWORD_VALIDATORS = [
 # Root log level is env-driven; default WARNING in production so SQL queries,
 # request bodies, OTPs, and tokens do not bleed into CloudWatch.
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'DEBUG' if DEBUG else 'WARNING').upper()
+# Format: 'json' for CloudWatch / structured ingestion, 'text' for human eyes.
+LOG_FORMAT = os.environ.get('DJANGO_LOG_FORMAT', 'text' if DEBUG else 'json')
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'formatters': {
+        'text': {
+            'format': '%(asctime)s %(levelname)s %(name)s %(message)s',
+        },
+        'json': {
+            '()': 'base.logging_filters.JSONFormatter',
+        },
+    },
+    'filters': {
+        # Scrubs OTPs, bearer tokens, JWTs, AWS keys, last 8 digits of
+        # E.164 phone numbers from every log message before they hit the
+        # handler. Belt-and-braces — never rely on devs remembering to
+        # avoid logging PII.
+        'pii_redact': {
+            '()': 'base.logging_filters.PIIRedactionFilter',
+        },
+    },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
+            'formatter': LOG_FORMAT,
+            'filters': ['pii_redact'],
         },
     },
     'root': {

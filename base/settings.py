@@ -157,13 +157,27 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 
 # Production security headers. No-ops in DEBUG.
 if not DEBUG:
+    # Tell Django the upstream proxy/ALB terminates TLS.
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-    SECURE_SSL_REDIRECT = True
+
+    # SSL redirect is gated by an env var because Django-level redirect requires
+    # nginx (or the ALB) to forward X-Forwarded-Proto. If the proxy doesn't,
+    # Django sees every request as HTTP and issues a 301 to itself — infinite
+    # redirect loop. Default OFF so a fresh deploy can never lock itself out;
+    # operator opts in with DJANGO_SECURE_SSL_REDIRECT=True after confirming
+    # nginx sets `proxy_set_header X-Forwarded-Proto $scheme;`.
+    SECURE_SSL_REDIRECT = os.environ.get('DJANGO_SECURE_SSL_REDIRECT', 'False') == 'True'
+
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    SECURE_HSTS_SECONDS = 60 * 60 * 24 * 365  # 1 year
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-    SECURE_HSTS_PRELOAD = True
+
+    # HSTS is also opt-in via env: once a browser has seen HSTS, it will
+    # refuse plain-HTTP to this host for SECURE_HSTS_SECONDS — a wrong
+    # default here is hard to undo.
+    SECURE_HSTS_SECONDS = int(os.environ.get('DJANGO_HSTS_SECONDS', '0'))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+    SECURE_HSTS_PRELOAD = SECURE_HSTS_SECONDS > 0
+
     SECURE_CONTENT_TYPE_NOSNIFF = True
     SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
     X_FRAME_OPTIONS = 'DENY'

@@ -73,6 +73,18 @@ class Payment(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        constraints = [
+            # Belt-and-braces against the switch/retry double-pay vector:
+            # at most one *completed* Payment may exist per trip. PR #8
+            # added a runtime poll-then-settle guard; this is the DB-level
+            # invariant that catches anything the application-layer guard
+            # misses (e.g. a race that slipped past select_for_update).
+            models.UniqueConstraint(
+                fields=['trip_id'],
+                condition=models.Q(status='completed'),
+                name='one_completed_payment_per_trip',
+            ),
+        ]
 
 
 class TransactionHistory(models.Model):

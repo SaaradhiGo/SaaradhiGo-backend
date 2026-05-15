@@ -492,6 +492,17 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             except (ValueError, TypeError):
                 dist, dur = 0, 0
 
+            # Service-area gate: reject the request before any fare work
+            # if either coordinate is outside the Hyderabad polygon. Same
+            # check the REST estimate-fare endpoint runs.
+            from base.service_area import validate_service_area
+            area_ok, area_msg = validate_service_area(
+                pickup_lat, pickup_lng, destination_lat, destination_lng,
+            )
+            if not area_ok:
+                logger.warning(f"Service area rejection: {area_msg}")
+                raise ValueError(area_msg)
+
             is_valid, validated_km, validated_min, msg = validate_distance(
                 dist, dur, pickup_lat, pickup_lng, destination_lat, destination_lng
             )

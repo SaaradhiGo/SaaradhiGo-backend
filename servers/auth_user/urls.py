@@ -8,6 +8,7 @@ from .views import (
     get_user_profile,
 )
 from .admin_views import admin_list_users
+from .dpdp_views import me_export, me_delete
 
 urlpatterns = [
     path('otp/', request_otp),
@@ -17,4 +18,7 @@ urlpatterns = [
     path('update/', update_user),
     path('profile/', get_user_profile),
     path('admin/users/', admin_list_users),
+    # DPDP Act 2023 data-subject endpoints.
+    path('me/export/', me_export),
+    path('me/delete/', me_delete),
 ]

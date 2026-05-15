@@ -50,8 +50,11 @@ class AdminAuditLog(models.Model):
     class Meta:
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['target_type', 'target_id']),
-            models.Index(fields=['actor', '-created_at']),
+            # Names pinned explicitly so they match the 0001_initial migration;
+            # without name=, Django auto-generates a hashed name and
+            # `makemigrations --check` produces phantom rename migrations.
+            models.Index(fields=['target_type', 'target_id'], name='admin_audit_target_idx'),
+            models.Index(fields=['actor', '-created_at'], name='admin_audit_actor_idx'),
         ]
 
     def __str__(self):

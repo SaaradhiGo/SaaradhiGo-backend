@@ -10,9 +10,9 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
-from django.db import models, transaction
+from django.db import models, transaction, IntegrityError
 from base.utils import success_response, error_response
-from servers.payments.models import Payment, TransactionHistory, PaymentGateway
+from servers.payments.models import Payment, TransactionHistory, PaymentGateway, WebhookEvent
 from servers.payments.payment_gateways.factory import get_payment_gateway, get_payment_gateway_for_payments, get_payment_gateway_for_payouts
 from servers.ride.models import Trip
 
@@ -348,9 +348,40 @@ def payment_webhook(request):
 
     try:
         payload = json.loads(body)
-        
+
+        # Idempotency gate. The signature is a function of (body, timestamp,
+        # secret) and is unique per delivery, so it doubles as a perfect
+        # dedupe key for both legitimate retries and forged replays.
+        event_type = (payload.get('type') or payload.get('event') or '')[:64]
+        try:
+            WebhookEvent.objects.create(
+                gateway=gateway_name,
+                dedupe_key=signature[:512],
+                event_type=event_type,
+                raw_payload=payload,
+            )
+        except IntegrityError:
+            logger.info(
+                f"Webhook deduplicated (gateway={gateway_name}, "
+                f"sig={signature[:16]}…)"
+            )
+            return JsonResponse({'status': 'already_processed'}, status=200)
+
         # Handle Cashfree webhook payload
-        return _handle_cashfree_webhook(payload, gateway)
+        response = _handle_cashfree_webhook(payload, gateway)
+
+        # Mark this event as processed for observability.
+        try:
+            WebhookEvent.objects.filter(
+                gateway=gateway_name, dedupe_key=signature[:512]
+            ).update(
+                processed_at=timezone.now(),
+                result='ok' if response.status_code == 200 else 'error',
+            )
+        except Exception:
+            pass
+
+        return response
 
     except (json.JSONDecodeError, KeyError) as e:
         logger.error(f"Webhook: Invalid payload: {e}")

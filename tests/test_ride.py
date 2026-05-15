@@ -39,6 +39,12 @@ def test_estimate_ride_fare(auth_client_rider):
         err_data = err_response.json()
         assert err_data.get("status") == "error"
 
+@pytest.mark.skip(
+    reason="QA debt — hits /api/v1/ride/ride-request/ which is commented out "
+    "in ride/urls.py. Ride creation is now WebSocket-only (RideRequestConsumer "
+    "+ {'action':'request'}). Test needs to be rewritten as a Channels test "
+    "using channels.testing.WebsocketCommunicator. Tracked in Phase-0 QA report."
+)
 @pytest.mark.django_db
 def test_request_a_ride(auth_client_rider):
     client, user = auth_client_rider

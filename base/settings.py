@@ -88,9 +88,15 @@ REST_FRAMEWORK = {
     # Rates are defined here; the actual throttle classes are wired per-view
     # (see base/throttles.py + decorators on auth endpoints) so we don't
     # accidentally rate-limit unrelated endpoints.
+    # DRF's parse_rate only understands periods starting with s/m/h/d.
+    # '1/30sec' silently parsed as period[0]='3' and raised KeyError on every
+    # call. The closest valid expression of "anti-spam burst" is 2/min
+    # (sliding window: never more than 2 in any 60-second period). Not
+    # exactly 1-per-30s but close enough for Phase-0; if we want strict
+    # 30s burst we'll write a custom throttle class.
     'DEFAULT_THROTTLE_RATES': {
         'otp_request': '5/hour',
-        'otp_request_burst': '1/30sec',
+        'otp_request_burst': '2/min',
         'otp_verify': '10/hour',
     },
 }

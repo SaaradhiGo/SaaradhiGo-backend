@@ -195,29 +195,40 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=Non
         distance_km = Decimal('0')
         duration_min = Decimal('0')
 
-    if vehicle_type:
-        try:
-            from servers.ride.models import VehicleFarePricing
-            from servers.driver.models import VehicleType
-
-            vt = VehicleType.objects.filter(type__iexact=vehicle_type).first()
-            if vt:
-                pricing = VehicleFarePricing.objects.filter(vehicle_type_id=vt).first()
-                if pricing:
-                    base_fare = pricing.base_fare
-                    per_km = pricing.per_km_fare
-                    per_min = pricing.per_min_fare
-                    min_fare = pricing.min_fare
-                    night_surge = pricing.night_surge_multiplier
-                    source = 'db'
-                else:
-                    logger.info(f"No fare pricing found for vehicle type '{vehicle_type}', using defaults")
-            else:
-                logger.info(f"Vehicle type '{vehicle_type}' not found, using defaults")
-        except Exception as e:
-            logger.warning(f"DB lookup failed for vehicle type '{vehicle_type}': {e}, using defaults")
-    else:
+    if not vehicle_type:
         raise ValueError("Vehicle type is required")
+
+    # Initialize from defaults FIRST. The DB lookup below either overwrites
+    # all of them or leaves the defaults in place. Without these baseline
+    # assignments, any "use defaults" path produced an UnboundLocalError
+    # when distance_fare = per_km * distance_km ran below.
+    base_fare = DEFAULT_BASE_FARE
+    per_km = DEFAULT_PER_KM_FARE
+    per_min = DEFAULT_PER_MIN_FARE
+    min_fare = DEFAULT_MIN_FARE
+    night_surge = DEFAULT_NIGHT_SURGE
+    source = 'default'
+
+    try:
+        from servers.ride.models import VehicleFarePricing
+        from servers.driver.models import VehicleType
+
+        vt = VehicleType.objects.filter(type__iexact=vehicle_type).first()
+        if vt:
+            pricing = VehicleFarePricing.objects.filter(vehicle_type_id=vt).first()
+            if pricing:
+                base_fare = pricing.base_fare
+                per_km = pricing.per_km_fare
+                per_min = pricing.per_min_fare
+                min_fare = pricing.min_fare
+                night_surge = pricing.night_surge_multiplier
+                source = 'db'
+            else:
+                logger.info(f"No fare pricing found for vehicle type '{vehicle_type}', using defaults")
+        else:
+            logger.info(f"Vehicle type '{vehicle_type}' not found, using defaults")
+    except Exception as e:
+        logger.warning(f"DB lookup failed for vehicle type '{vehicle_type}': {e}, using defaults")
 
     # Calculate fare components
     distance_fare = per_km * distance_km

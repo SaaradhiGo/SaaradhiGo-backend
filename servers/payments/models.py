@@ -154,7 +154,9 @@ class WebhookEvent(models.Model):
             ),
         ]
         indexes = [
-            models.Index(fields=['gateway', '-received_at']),
+            # Name pinned to match the 0009_webhookevent migration to keep
+            # `makemigrations --check` clean.
+            models.Index(fields=['gateway', '-received_at'], name='webhook_event_gw_recv_idx'),
         ]
         ordering = ['-received_at']
 

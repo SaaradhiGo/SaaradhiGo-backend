@@ -75,8 +75,10 @@ class SOSEvent(models.Model):
     class Meta:
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['status', '-created_at']),
-            models.Index(fields=['trip', '-created_at']),
+            # Names pinned to match the 0001_initial migration to keep
+            # `makemigrations --check` clean.
+            models.Index(fields=['status', '-created_at'], name='sos_status_created_idx'),
+            models.Index(fields=['trip', '-created_at'], name='sos_trip_created_idx'),
         ]
 
     def __str__(self):

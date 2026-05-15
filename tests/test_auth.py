@@ -7,14 +7,17 @@ def test_request_otp(mock_send, api_client):
     mock_send.return_value = "dummy-task-id"
     url = "/api/v1/auth/otp/"
     payload = {"phone_number": "+917396918971"}
-    
+
     response = api_client.post(url, payload, format='json')
     assert response.status_code == 200
-    
+
     data = response.json()
     assert data["status"] == "success"
-    assert "otp" in data["data"]
+    # OTP is delivered only via SMS — explicitly assert it is NOT echoed in
+    # the response body (regression guard for the Phase-0 security fix).
+    assert "otp" not in data["data"]
     assert "expires_in" in data["data"]
+    assert "task_id" in data["data"]
 
 @pytest.fixture
 def setup_otp(db):

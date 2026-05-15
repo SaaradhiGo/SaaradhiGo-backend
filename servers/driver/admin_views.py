@@ -64,14 +64,34 @@ def update_kyc_status_admin(request, driver_id):
     """
     Approve or reject KYC for a driver (updates 'approved' and/or 'status').
     """
+    from servers.admin_audit.services import record_admin_action
+
     try:
         driver = Driver.objects.get(id=driver_id)
-        
+        before = {
+            'approved': driver.approved,
+            'status': driver.status,
+        }
+
         serializer = KYCApprovalSerializer(driver, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
+            driver.refresh_from_db()
+            after = {
+                'approved': driver.approved,
+                'status': driver.status,
+            }
+            record_admin_action(
+                request,
+                action='kyc_update',
+                target_type='driver',
+                target_id=driver.id,
+                before=before,
+                after=after,
+                reason=request.data.get('reason', ''),
+            )
             return success_response(serializer.data, status.HTTP_200_OK)
-            
+
         return error_response(
             code="VALIDATION_ERROR",
             message="Invalid update data",
@@ -94,9 +114,26 @@ def delete_driver_admin(request, driver_id):
     """
     Delete a driver profile and their associated objects.
     """
+    from servers.admin_audit.services import record_admin_action
+
     try:
         driver = Driver.objects.get(id=driver_id)
+        snapshot = {
+            'approved': driver.approved,
+            'status': driver.status,
+            'phone': getattr(driver.user_id, 'phone_number', None),
+            'full_name': getattr(driver.user_id, 'full_name', None),
+        }
         driver.delete()
+        record_admin_action(
+            request,
+            action='driver_deleted',
+            target_type='driver',
+            target_id=driver_id,
+            before=snapshot,
+            after={'deleted': True},
+            reason=request.data.get('reason', '') if hasattr(request, 'data') else '',
+        )
         return success_response({"message": "Driver deleted successfully"}, status.HTTP_200_OK)
     except Driver.DoesNotExist:
         return error_response(
@@ -209,9 +246,21 @@ def approve_withdrawal_admin(request, withdrawal_id):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    from servers.admin_audit.services import record_admin_action
+
+    before = {'status': withdrawal.status, 'amount': str(withdrawal.amount)}
     withdrawal.status = 'approved'
     withdrawal.processed_at = timezone.now()
     withdrawal.save()
+    record_admin_action(
+        request,
+        action='withdrawal_approved',
+        target_type='withdrawal_request',
+        target_id=withdrawal.id,
+        before=before,
+        after={'status': 'approved', 'amount': str(withdrawal.amount)},
+        reason=request.data.get('reason', '') if hasattr(request, 'data') else '',
+    )
 
     # Trigger payout creation
     from .services import trigger_payout_creation
@@ -252,11 +301,23 @@ def reject_withdrawal_admin(request, withdrawal_id):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    from servers.admin_audit.services import record_admin_action
+
     admin_notes = request.data.get('admin_notes', '')
+    before = {'status': withdrawal.status, 'amount': str(withdrawal.amount)}
     withdrawal.status = 'rejected'
     withdrawal.admin_notes = admin_notes
     withdrawal.processed_at = timezone.now()
     withdrawal.save()
+    record_admin_action(
+        request,
+        action='withdrawal_rejected',
+        target_type='withdrawal_request',
+        target_id=withdrawal.id,
+        before=before,
+        after={'status': 'rejected', 'admin_notes': admin_notes},
+        reason=admin_notes,
+    )
 
     from .serializers import WithdrawalRequestSerializer
     serializer = WithdrawalRequestSerializer(withdrawal)

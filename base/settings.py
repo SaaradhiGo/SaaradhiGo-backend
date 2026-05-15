@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'channels',
     'storages',
@@ -93,10 +94,17 @@ REST_FRAMEWORK = {
     },
 }
 from datetime import timedelta
-SIMPLE_JWT={
-    'ACCESS_TOKEN_LIFETIME':timedelta(days=1),
-    'REFRESH_TOKEN_LIFETIME':timedelta(days=7),
-
+# JWT lifetimes match the system-design doc:
+#   - Access:  15 min (short window; minimises blast radius of a leaked token)
+#   - Refresh: 14 days (rotating; old refresh blacklisted after rotation)
+# Rotation + blacklist together mean a stolen refresh token is single-use:
+# whichever client uses it first invalidates it for the other.
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=14),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'ALGORITHM': 'HS256',
 }
 # celery
 CELERY_BROKER_URL = REDIS_URL + '/0'

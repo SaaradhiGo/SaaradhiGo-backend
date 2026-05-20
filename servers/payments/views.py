@@ -432,6 +432,24 @@ def _handle_cashfree_webhook(payload, gateway):
         ).values_list('pk', flat=True).first()
 
         if wallet_txn_pk is not None:
+            # Phase-0 closed-loop posture: when WALLET_TOPUPS_ENABLED is False
+            # we refuse to credit even on a valid Cashfree webhook. This
+            # protects against the case where an older app build (or a
+            # racing in-flight order) reaches the webhook after the policy
+            # has flipped. The webhook acks 200 OK with a clear reason so
+            # Cashfree does not retry forever.
+            from django.conf import settings as dj_settings
+            if not getattr(dj_settings, 'WALLET_TOPUPS_ENABLED', False):
+                logger.warning(
+                    'Cashfree Webhook: wallet top-up received but '
+                    'WALLET_TOPUPS_ENABLED=False; refusing to credit '
+                    'order=%s txn_pk=%s', order_id, wallet_txn_pk,
+                )
+                return JsonResponse(
+                    {'status': 'skipped', 'reason': 'wallet_topups_disabled'},
+                    status=200,
+                )
+
             # Server-verify the amount with the gateway. We never credit on
             # webhook-supplied numbers alone — a forged-but-signed body (e.g.
             # from a stolen secret) would otherwise let an attacker mint
@@ -792,12 +810,33 @@ def refund_payment(request):
     """
     Initiate refund for a cancelled trip.
 
-    Expected: { "trip_id": int }
+    Expected: {
+        "trip_id": int,
+        "mode": "original" | "credit"   (optional, default "original")
+    }
+
+    mode="original" -- refund goes back to the card/UPI/bank that paid for
+        the trip. Settles in 5-7 business days via the payment gateway.
+    mode="credit"   -- amount is added instantly to the rider's VahanGo
+        Credits (closed-loop wallet). Subject to the credit balance cap.
+        The original payment is still marked refunded on our side so the
+        driver wallet is reversed as usual; the rider keeps the value as
+        spendable credit instead of waiting for a card refund.
+
     Only works if the trip is cancelled and payment was completed online.
     """
     from servers.rider.models import Notification
 
     trip_id = request.data.get('trip_id')
+    refund_mode = (request.data.get('mode') or 'original').lower()
+    if refund_mode not in ('original', 'credit'):
+        return error_response(
+            code='INVALID_MODE',
+            message='mode must be one of: original, credit',
+            field='mode',
+            issue=f'Got mode={refund_mode!r}',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     if not trip_id:
         return error_response(
             code='MISSING_FIELDS',
@@ -921,15 +960,38 @@ def refund_payment(request):
                 status=status.HTTP_409_CONFLICT
             )
 
-        refund = gateway.create_refund(refund_order_id, amount=locked_payment.amount)
-        if not refund:
-            return error_response(
-                code='REFUND_FAILED',
-                message='Failed to process refund. Please try again.',
-                field='payment_gateway',
-                issue=f'{gateway.get_name()} refund creation failed',
-                status=status.HTTP_502_BAD_GATEWAY
+        credit_result = None
+        refund = None
+        if refund_mode == 'credit':
+            # Instant credit path -- closed-loop wallet, no gateway call.
+            # The idempotency key is derived from (payment.pk, 'refund-credit')
+            # so a retried refund request never double-credits.
+            from servers.rider.credits import issue_refund_credit
+            credit_result = issue_refund_credit(
+                user=request.user,
+                amount=locked_payment.amount,
+                trip_id=trip.id,
+                idempotency_key=f'refund-credit:payment={locked_payment.pk}',
             )
+            if not credit_result.ok:
+                # Common reason: cap_exceeded. Fall back to original-method
+                # refund so the rider is never left without recourse.
+                logger.info(
+                    'refund-to-credit failed (reason=%s) for trip=%s; '
+                    'falling back to original-method refund',
+                    credit_result.reason, trip.id,
+                )
+                refund_mode = 'original'
+        if refund_mode == 'original':
+            refund = gateway.create_refund(refund_order_id, amount=locked_payment.amount)
+            if not refund:
+                return error_response(
+                    code='REFUND_FAILED',
+                    message='Failed to process refund. Please try again.',
+                    field='payment_gateway',
+                    issue=f'{gateway.get_name()} refund creation failed',
+                    status=status.HTTP_502_BAD_GATEWAY
+                )
 
         locked_payment.status = 'refunded'
         locked_payment.save(update_fields=['status', 'updated_at'])
@@ -979,6 +1041,16 @@ def refund_payment(request):
         # populate with the trip's driver if any, else only write the row
         # when we have a driver (which is the typical refundable case).
         if driver:
+            if refund_mode == 'credit':
+                ledger_meta = {
+                    'mode': 'credit',
+                    'credit_txn_id': credit_result.transaction_id if credit_result else None,
+                }
+            else:
+                ledger_meta = {
+                    'mode': 'original',
+                    'refund_id': (refund or {}).get('refund_id') or (refund or {}).get('id'),
+                }
             TransactionHistory.objects.create(
                 trip_id=trip,
                 user_id=request.user,
@@ -991,22 +1063,37 @@ def refund_payment(request):
                 user_name=request.user.full_name or request.user.phone_number,
                 status='completed',
                 txn_type='refund',
-                gateway_metadata={'refund_id': refund.get('refund_id') or refund.get('id')},
+                gateway_metadata=ledger_meta,
             )
 
-        Notification.objects.create(
-            user_id=request.user,
-            title='Refund Processed',
-            message=(
-                f"Your refund of ₹{locked_payment.amount} for Trip "
-                f"#{trip.id} has been initiated. It may take 5-7 business "
-                f"days to reflect in your account."
-            ),
-        )
+        if refund_mode == 'credit':
+            # issue_refund_credit already created its own notification with
+            # the credit-specific copy; nothing extra to send here.
+            pass
+        else:
+            Notification.objects.create(
+                user_id=request.user,
+                title='Refund Processed',
+                message=(
+                    f"Your refund of Rs.{locked_payment.amount} for Trip "
+                    f"#{trip.id} has been initiated. It may take 5-7 business "
+                    f"days to reflect in your account."
+                ),
+            )
 
+    if refund_mode == 'credit':
+        return success_response({
+            'message': 'Refund credited as VahanGo Credits',
+            'mode': 'credit',
+            'amount': str(locked_payment.amount),
+            'trip_id': trip.id,
+            'credit_transaction_id': credit_result.transaction_id if credit_result else None,
+            'new_credit_balance': str(credit_result.new_balance) if credit_result else None,
+        }, status.HTTP_200_OK)
     return success_response({
         'message': 'Refund initiated successfully',
-        'refund_id': refund.get('refund_id') or refund.get('id'),
+        'mode': 'original',
+        'refund_id': (refund or {}).get('refund_id') or (refund or {}).get('id'),
         'amount': str(locked_payment.amount),
         'trip_id': trip.id,
         'gateway': gateway.get_name(),

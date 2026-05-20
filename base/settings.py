@@ -232,6 +232,29 @@ if _test_phones_raw:
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 BACKEND_URL  = os.environ.get("BACKEND_URL", "http://localhost:8000")
 
+# --- Wallet / Credits posture ------------------------------------------------
+# Phase-0 runs the rider wallet as a *closed-loop credit store* -- it can hold
+# refunds, promo cashbacks, and customer-service goodwill credits, but cannot
+# be topped up from external money. This keeps us out of the RBI Prepaid
+# Payment Instrument (PPI) regulatory perimeter; we move to a co-branded PPI
+# (or our own license) in a later phase. See ADR-0003 in SaaradhiGo-docs.
+#
+# WALLET_TOPUPS_ENABLED  -- master switch for the rider top-up endpoints.
+#   When False (default), POST /rider/wallet/create-order/, /wallet/verify/,
+#   and the Cashfree wallet-top-up webhook path all return 503. Driver
+#   earnings + withdrawal flows are unaffected (those are an internal
+#   intermediated payout, not a PPI).
+# RIDER_CREDIT_BALANCE_CAP -- maximum rupee balance a rider wallet may hold.
+#   Refund / promo / support credits that would push the balance above this
+#   are rejected; the issuer must split or refund-to-original-method instead.
+# RIDER_CREDIT_EXPIRY_DAYS -- credits expire after this many days from issue.
+#   A daily Celery job (TBD) sweeps and writes them off.
+from decimal import Decimal as _Decimal
+
+WALLET_TOPUPS_ENABLED = os.environ.get('WALLET_TOPUPS_ENABLED', 'False') == 'True'
+RIDER_CREDIT_BALANCE_CAP = _Decimal(os.environ.get('RIDER_CREDIT_BALANCE_CAP', '2000.00'))
+RIDER_CREDIT_EXPIRY_DAYS = int(os.environ.get('RIDER_CREDIT_EXPIRY_DAYS', '365'))
+
 #AWS
 AWS_SECRET_ACCESS_KEY=os.environ.get("AWS_SECRET_ACCESS_KEY")
 AWS_ACCESS_KEY_ID=os.environ.get("AWS_ACCESS_KEY_ID")

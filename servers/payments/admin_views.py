@@ -1,13 +1,14 @@
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
 from base.utils import success_response, error_response
+from base.permissions import IsAdmin
 from servers.payments.models import Payment, TransactionHistory
 from servers.payments.serializers import PaymentSerializer, TransactionHistorySerializer
-from servers.driver.permissions import IsAdmin
 from rest_framework.pagination import PageNumberPagination
 
 @api_view(['GET'])
-@permission_classes([IsAdmin])
+@permission_classes([IsAuthenticated, IsAdmin])
 def admin_list_payments(request):
     """
     Admin view to list all payments.
@@ -39,7 +40,7 @@ def admin_list_payments(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAdmin])
+@permission_classes([IsAuthenticated, IsAdmin])
 def admin_list_transactions(request):
     """
     Admin view to list all transaction history logs.

@@ -63,11 +63,16 @@ class TripDetailSerializer(TripListSerializer):
     """Full serializer for single trip detail with fare breakdown and ratings."""
     fare_breakdown = serializers.SerializerMethodField()
     ratings = RatingSerializer(many=True, read_only=True)
+    # OTP is the rider's secret to read aloud to the driver at pickup. The
+    # driver enters whatever the rider says; they must NEVER see the OTP
+    # via the API. SerializerMethodField + request-context check enforces
+    # that: only the trip's own rider gets the OTP value back.
+    otp = serializers.SerializerMethodField()
 
     class Meta(TripListSerializer.Meta):
         fields = TripListSerializer.Meta.fields + [
             'accepted_at', 'started_at',
-            'fare_breakdown', 'ratings','otp'
+            'fare_breakdown', 'ratings', 'otp',
         ]
 
     def get_fare_breakdown(self, obj):
@@ -75,4 +80,13 @@ class TripDetailSerializer(TripListSerializer):
         pricing_list = obj.fare_pricing.all()
         if pricing_list:
             return FarePricingSerializer(pricing_list[0]).data
+        return None
+
+    def get_otp(self, obj):
+        request = self.context.get('request') if hasattr(self, 'context') else None
+        if not request or not getattr(request, 'user', None):
+            return None
+        # Only the rider on this trip gets to see the OTP.
+        if getattr(request.user, 'id', None) == getattr(obj, 'user_id_id', None):
+            return obj.otp
         return None

@@ -1,8 +1,14 @@
 import logging
 import re
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes, parser_classes
+from rest_framework.decorators import (
+    api_view, permission_classes, parser_classes, throttle_classes,
+)
 from base.utils import success_response, error_response, generate_otp, send_otp_via_sns
+from django.conf import settings
+from base.throttles import (
+    OtpRequestThrottle, OtpRequestBurstThrottle, OtpVerifyThrottle,
+)
 from django.core.cache import cache
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
@@ -45,9 +51,16 @@ def _validate_phone_number(phone_number):
 
 
 @api_view(['POST'])
+@throttle_classes([OtpRequestBurstThrottle, OtpRequestThrottle])
 def request_otp(request):
     """
     Request OTP for authentication.
+
+    Rate limits (per phone_number, configured in settings.REST_FRAMEWORK):
+      - 1 request per 30 seconds (anti-spam burst)
+      - 5 requests per hour (sustained cap)
+    Without these, an attacker could repeatedly request OTPs to either
+    exhaust the SNS budget or reset the verify-attempt counter.
     
     Expected request data:
     {
@@ -92,42 +105,59 @@ def request_otp(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Generate OTP
-        otp = generate_otp(6)
-        if not otp:
-            logger.error("Failed to generate OTP")
-            return error_response(
-                code="AUTH_OTP_GENERATION_FAILED",
-                message='Failed to generate OTP',
-                field='otp',
-                issue='OTP generation error',
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        # Test-phone bypass: if this phone is configured in
+        # settings.TEST_PHONE_NUMBERS, use the operator-supplied fixed OTP
+        # and skip the AWS SNS round-trip. The login path is unchanged —
+        # the cache is populated identically — so attempt counters,
+        # role binding, expiry, and post-login flows all still work.
+        # Empty TEST_PHONE_NUMBERS (the production default) = no bypass.
+        test_otp = settings.TEST_PHONE_NUMBERS.get(phone_number)
+
+        if test_otp:
+            otp = test_otp
+            task_id = 'test-phone-no-sms'
+            logger.info(
+                f"OTP test-phone bypass for {phone_number[:5]}*** — "
+                f"no SMS sent"
             )
-        
-        # Store in cache
+        else:
+            # Generate OTP
+            otp = generate_otp(6)
+            if not otp:
+                logger.error("Failed to generate OTP")
+                return error_response(
+                    code="AUTH_OTP_GENERATION_FAILED",
+                    message='Failed to generate OTP',
+                    field='otp',
+                    issue='OTP generation error',
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+        # Store in cache (test phones and real phones share this path)
         cache.set(
             f'otp_role_{phone_number}',
             {'otp': otp, 'role': role, 'attempts': 0},
             OTP_EXPIRY
         )
-        
-        try:
-            # Send OTP via SNS (async task)
-            task_id = send_otp_via_sns.delay(
-                phone_number,
-                f"Your OTP for VahanGo is {otp}. It will expire in 10 minutes."
-            )
-            logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id},otp: {otp}  ")
-        except Exception as e:
-            logger.error(f"Failed to queue OTP send task: {str(e)}")
-            return error_response(
-                code="AUTH_OTP_REQUEST",
-                message="Unable to send OTP at this moment",
-                field="otp",
-                issue="SMS gateway error",
-                status=status.HTTP_503_SERVICE_UNAVAILABLE
-            )
-        
+
+        if not test_otp:
+            try:
+                # Send OTP via SNS (async task)
+                task_id = send_otp_via_sns.delay(
+                    phone_number,
+                    f"Your OTP for VahanGo is {otp}. It will expire in 10 minutes."
+                )
+                logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id}")
+            except Exception as e:
+                logger.error(f"Failed to queue OTP send task: {str(e)}")
+                return error_response(
+                    code="AUTH_OTP_REQUEST",
+                    message="Unable to send OTP at this moment",
+                    field="otp",
+                    issue="SMS gateway error",
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE
+                )
+
         return success_response(
             data={
                 'message': "OTP sent successfully",
@@ -147,24 +177,35 @@ def request_otp(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 @api_view(['POST'])
+@throttle_classes([OtpVerifyThrottle])
 def login(request):
     """
     Authenticate user with OTP.
+
+    Rate limit (per phone_number): 10 verify attempts per hour. The
+    existing per-OTP attempt counter (MAX_OTP_ATTEMPTS) only caps brute
+    force against a single issued OTP; this throttle bounds the attack
+    across multiple OTP issues.
     
     Expected request data:
     {
         "phone_number": str (E.164 format, required),
         "otp": str (required),
-        "device_token": str (optional),
-        "password": str (optional)
+        "device_token": str (optional)
     }
+
+    Note: an optional `password` field used to be accepted on the very
+    first login for a phone and silently `set_password()`-ed onto the
+    user. That dual-factor was never actually enforced anywhere later
+    (no password-login flow exists), it could be used to clobber a
+    chosen password by an attacker who briefly knew an OTP, and it had
+    no rotation path. The field is now ignored.
     """
     try:
         # Validate required fields first
         phone_number = request.data.get('phone_number', None)
         otp = request.data.get('otp', None)
         device_token = request.data.get('device_token', None)
-        password = request.data.get('password', None)
         
         if phone_number is None:
             logger.warning("Login attempt without phone number")
@@ -238,10 +279,10 @@ def login(request):
                     # If existing user logs in as a different role, we might want to update it or reject, but let's keep it simple
                     created = False
                 except user_model.DoesNotExist:
+                    # Password not accepted — see docstring.
                     user = user_model.objects.create_user(
-                        phone_number=phone_number, 
-                        password=password, 
-                        role=role
+                        phone_number=phone_number,
+                        role=role,
                     )
                     created = True
                 
@@ -351,15 +392,36 @@ def refresh(request):
             )
         
         try:
-            refresh_obj = RefreshToken(refresh_token)
-            new_access_token = str(refresh_obj.access_token)
-            new_refresh_token = str(refresh_obj)
-            
-            logger.info("Token refreshed successfully")
+            old_refresh = RefreshToken(refresh_token)
+            # Capture the user id BEFORE blacklisting (the blacklist call
+            # may invalidate the in-memory object).
+            user_id = old_refresh['user_id']
+
+            # Rotation: blacklist the just-used refresh token so it cannot
+            # be redeemed twice. Combined with ROTATE_REFRESH_TOKENS +
+            # BLACKLIST_AFTER_ROTATION in settings, this makes a stolen
+            # refresh token single-use.
+            try:
+                old_refresh.blacklist()
+            except AttributeError:
+                # token_blacklist app not installed — log loudly so we
+                # notice the rotation isn't actually in effect.
+                logger.error(
+                    "Refresh-token rotation requested but token_blacklist "
+                    "is not installed."
+                )
+
+            # Mint a fresh refresh + access token pair for the same user.
+            user = user_model.objects.get(pk=user_id)
+            new_refresh_obj = RefreshToken.for_user(user)
+            new_refresh_token = str(new_refresh_obj)
+            new_access_token = str(new_refresh_obj.access_token)
+
+            logger.info(f"Token refreshed and rotated for user {user_id}")
             return success_response(
                 data={
                     'token': new_access_token,
-                    'refresh_token': new_refresh_token
+                    'refresh_token': new_refresh_token,
                 },
                 status_code=status.HTTP_200_OK
             )
@@ -392,6 +454,91 @@ def refresh(request):
             issue=str(e),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def logout(request):
+    """Log out the caller by blacklisting their refresh token.
+
+    Expected request data:
+        { "refresh_token": str (required) }
+
+    Why a logout endpoint exists at all when tokens have a TTL:
+      - The access token will expire on its own in 15 min, but the
+        refresh token has a 14-day life. Without a logout-side
+        blacklist, a user who taps "log out" can have their stolen
+        refresh token still produce new access tokens for two weeks.
+      - Pairs with ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_ROTATION
+        in settings to make stolen refresh tokens both single-use AND
+        explicitly revocable on logout.
+    """
+    refresh_token = request.data.get('refresh_token')
+    if not refresh_token:
+        return error_response(
+            code='AUTH_REFRESH_TOKEN_MISSING',
+            message='Refresh token is required',
+            field='refresh_token',
+            issue='Provide the refresh token to blacklist',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        token = RefreshToken(refresh_token)
+        # The endpoint is authenticated, so we know who is calling. Guard
+        # against a malicious caller trying to log someone else out.
+        token_user_id = token.get('user_id')
+        if token_user_id is not None and str(token_user_id) != str(request.user.id):
+            logger.warning(
+                f"Logout attempt with mismatched user_id "
+                f"(caller={request.user.id}, token={token_user_id})"
+            )
+            return error_response(
+                code='AUTH_TOKEN_MISMATCH',
+                message='Refresh token does not belong to this user',
+                field='refresh_token',
+                issue='Authenticated user does not own the supplied refresh token',
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            token.blacklist()
+        except AttributeError:
+            logger.error(
+                "Logout requested but token_blacklist app is not installed; "
+                "refresh token cannot be revoked."
+            )
+            return error_response(
+                code='AUTH_BLACKLIST_UNAVAILABLE',
+                message='Token revocation is currently unavailable',
+                field='general',
+                issue='token_blacklist app not configured',
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        logger.info(f"User {request.user.id} logged out (refresh blacklisted)")
+        return success_response(
+            data={'message': 'Logged out'},
+            status_code=status.HTTP_200_OK,
+        )
+    except (InvalidToken, TokenError) as e:
+        logger.warning(f"Invalid refresh token at logout: {e}")
+        return error_response(
+            code='AUTH_INVALID_REFRESH_TOKEN',
+            message='Refresh token is invalid',
+            field='refresh_token',
+            issue='The provided refresh token is invalid or already revoked',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error in logout: {e}")
+        return error_response(
+            code='AUTH_INTERNAL_ERROR',
+            message='An unexpected error occurred',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
 
 @api_view(['PATCH'])
 @permission_classes([IsAuthenticated])

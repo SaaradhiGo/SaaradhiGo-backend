@@ -10,7 +10,10 @@ services:
     build:
       context: .
       dockerfile: dockerfile
-    command: ["celery", "-A", "base", "worker", "-l", "INFO"]
+    # `-B` embeds Celery beat in the worker process so scheduled tasks fire.
+    # When we scale to multiple workers this needs to move to a standalone
+    # service (or use django-celery-beat) so beat only runs in one place.
+    command: ["celery", "-A", "base", "worker", "-B", "-l", "INFO"]
     volumes:
       - .:/App
     depends_on:

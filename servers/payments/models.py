@@ -73,6 +73,18 @@ class Payment(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        constraints = [
+            # Belt-and-braces against the switch/retry double-pay vector:
+            # at most one *completed* Payment may exist per trip. PR #8
+            # added a runtime poll-then-settle guard; this is the DB-level
+            # invariant that catches anything the application-layer guard
+            # misses (e.g. a race that slipped past select_for_update).
+            models.UniqueConstraint(
+                fields=['trip_id'],
+                condition=models.Q(status='completed'),
+                name='one_completed_payment_per_trip',
+            ),
+        ]
 
 
 class TransactionHistory(models.Model):
@@ -117,3 +129,48 @@ class TransactionHistory(models.Model):
     class Meta:
         verbose_name_plural = 'Transaction histories'
         ordering = ['-created_at']
+
+
+class WebhookEvent(models.Model):
+    """Idempotency record for inbound webhook deliveries.
+
+    Webhook delivery is at-least-once: a gateway will retry a delivery
+    until it sees a 2xx. Without dedupe, the same signed payload —
+    whether a legitimate retry or a captured-and-replayed one — fires
+    the side effects (status flips, driver credits) more than once.
+
+    We key on (gateway, dedupe_key) and use the row's existence as the
+    idempotency gate: a duplicate insertion attempt fails the unique
+    constraint and the handler short-circuits with a 200 'already
+    processed' response.
+
+    `dedupe_key` is whatever uniquely identifies a single delivery for
+    the gateway. For Cashfree we prefer the webhook signature (which
+    is timestamp+body HMAC'd with the secret — varies per delivery
+    even for replays of the same event), falling back to a composite
+    of cf_payment_id + event_type.
+    """
+    gateway = models.CharField(max_length=32, db_index=True)
+    dedupe_key = models.CharField(max_length=512)
+    event_type = models.CharField(max_length=64, blank=True)
+    raw_payload = models.JSONField(default=dict, blank=True)
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    result = models.CharField(max_length=32, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['gateway', 'dedupe_key'],
+                name='webhook_event_unique_per_gateway',
+            ),
+        ]
+        indexes = [
+            # Name pinned to match the 0009_webhookevent migration to keep
+            # `makemigrations --check` clean.
+            models.Index(fields=['gateway', '-received_at'], name='webhook_event_gw_recv_idx'),
+        ]
+        ordering = ['-received_at']
+
+    def __str__(self):
+        return f'WebhookEvent {self.gateway}:{self.dedupe_key[:32]}'

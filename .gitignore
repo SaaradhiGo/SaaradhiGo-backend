@@ -18,3 +18,7 @@ global-bundle.pem
 .pytest_cache
 .tests/
 .planning/
+.venv-qa/
+.venv/
+db.sqlite3
+

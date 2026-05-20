@@ -3,7 +3,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from base.utils import success_response, error_response
-from servers.auth_user.permissions import IsAdmin
+from base.permissions import IsAdmin
 from servers.driver.models import Driver,Vehicle
 from servers.driver.serializers import DriverAdminListSerializer, DriverAdminDetailSerializer, KYCApprovalSerializer, VehicleSerializer
 from rest_framework.pagination import PageNumberPagination
@@ -64,14 +64,34 @@ def update_kyc_status_admin(request, driver_id):
     """
     Approve or reject KYC for a driver (updates 'approved' and/or 'status').
     """
+    from servers.admin_audit.services import record_admin_action
+
     try:
         driver = Driver.objects.get(id=driver_id)
-        
+        before = {
+            'approved': driver.approved,
+            'status': driver.status,
+        }
+
         serializer = KYCApprovalSerializer(driver, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
+            driver.refresh_from_db()
+            after = {
+                'approved': driver.approved,
+                'status': driver.status,
+            }
+            record_admin_action(
+                request,
+                action='kyc_update',
+                target_type='driver',
+                target_id=driver.id,
+                before=before,
+                after=after,
+                reason=request.data.get('reason', ''),
+            )
             return success_response(serializer.data, status.HTTP_200_OK)
-            
+
         return error_response(
             code="VALIDATION_ERROR",
             message="Invalid update data",
@@ -94,9 +114,26 @@ def delete_driver_admin(request, driver_id):
     """
     Delete a driver profile and their associated objects.
     """
+    from servers.admin_audit.services import record_admin_action
+
     try:
         driver = Driver.objects.get(id=driver_id)
+        snapshot = {
+            'approved': driver.approved,
+            'status': driver.status,
+            'phone': getattr(driver.user_id, 'phone_number', None),
+            'full_name': getattr(driver.user_id, 'full_name', None),
+        }
         driver.delete()
+        record_admin_action(
+            request,
+            action='driver_deleted',
+            target_type='driver',
+            target_id=driver_id,
+            before=snapshot,
+            after={'deleted': True},
+            reason=request.data.get('reason', '') if hasattr(request, 'data') else '',
+        )
         return success_response({"message": "Driver deleted successfully"}, status.HTTP_200_OK)
     except Driver.DoesNotExist:
         return error_response(
@@ -187,35 +224,77 @@ def approve_withdrawal_admin(request, withdrawal_id):
     Approve request (status: PENDING → APPROVED).
     """
     from .models import WithdrawalRequest
+    from django.db import transaction
     from django.utils import timezone
+    from servers.admin_audit.services import record_admin_action
 
+    # The whole state-flip-and-payout-dispatch runs inside one atomic
+    # block with select_for_update on the WithdrawalRequest row so two
+    # admins clicking Approve at the same time cannot both pass the
+    # status=='pending' check and both fire trigger_payout_creation
+    # (which would double-deduct the driver's wallet).
     try:
-        withdrawal = WithdrawalRequest.objects.get(id=withdrawal_id)
-    except WithdrawalRequest.DoesNotExist:
+        with transaction.atomic():
+            try:
+                withdrawal = (
+                    WithdrawalRequest.objects.select_for_update()
+                    .select_related('driver', 'driver__user_id')
+                    .get(id=withdrawal_id)
+                )
+            except WithdrawalRequest.DoesNotExist:
+                return error_response(
+                    code="NOT_FOUND",
+                    message="Withdrawal request not found",
+                    field="withdrawal_id",
+                    issue=f"No withdrawal matches id {withdrawal_id}",
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if withdrawal.status != 'pending':
+                return error_response(
+                    code="INVALID_STATUS",
+                    message="Only pending withdrawals can be approved",
+                    field="status",
+                    issue=f"Current status is {withdrawal.status}",
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            before = {'status': withdrawal.status, 'amount': str(withdrawal.amount)}
+            withdrawal.status = 'approved'
+            withdrawal.processed_at = timezone.now()
+            withdrawal.save(update_fields=['status', 'processed_at'])
+
+            record_admin_action(
+                request,
+                action='withdrawal_approved',
+                target_type='withdrawal_request',
+                target_id=withdrawal.id,
+                before=before,
+                after={'status': 'approved', 'amount': str(withdrawal.amount)},
+                reason=request.data.get('reason', '') if hasattr(request, 'data') else '',
+            )
+    except Exception as e:
+        logger.error(f"approve_withdrawal_admin atomic block failed: {e}")
         return error_response(
-            code="NOT_FOUND",
-            message="Withdrawal request not found",
-            field="withdrawal_id",
-            issue=f"No withdrawal matches id {withdrawal_id}",
-            status=status.HTTP_404_NOT_FOUND
+            code="INTERNAL_ERROR",
+            message="Failed to approve withdrawal",
+            field="general",
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-    if withdrawal.status != 'pending':
-        return error_response(
-            code="INVALID_STATUS",
-            message="Only pending withdrawals can be approved",
-            field="status",
-            issue=f"Current status is {withdrawal.status}",
-            status=status.HTTP_400_BAD_REQUEST
+    # Gateway dispatch happens OUTSIDE the atomic block so we don't hold
+    # the row lock for the duration of the Cashfree round-trip. The
+    # approve-side state flip is already durable; if the payout fails,
+    # the gateway hook flips the row to 'failed' and ops can retry.
+    try:
+        from .services import trigger_payout_creation
+        trigger_payout_creation(withdrawal)
+    except Exception as e:
+        logger.error(
+            f"approve_withdrawal_admin: trigger_payout_creation failed for "
+            f"withdrawal {withdrawal.id}: {e}"
         )
-
-    withdrawal.status = 'approved'
-    withdrawal.processed_at = timezone.now()
-    withdrawal.save()
-
-    # Trigger payout creation
-    from .services import trigger_payout_creation
-    trigger_payout_creation(withdrawal)
 
     from .serializers import WithdrawalRequestSerializer
     serializer = WithdrawalRequestSerializer(withdrawal)
@@ -230,33 +309,61 @@ def reject_withdrawal_admin(request, withdrawal_id):
     Reject request with admin notes (status: PENDING → REJECTED).
     """
     from .models import WithdrawalRequest
+    from django.db import transaction
     from django.utils import timezone
-
-    try:
-        withdrawal = WithdrawalRequest.objects.get(id=withdrawal_id)
-    except WithdrawalRequest.DoesNotExist:
-        return error_response(
-            code="NOT_FOUND",
-            message="Withdrawal request not found",
-            field="withdrawal_id",
-            issue=f"No withdrawal matches id {withdrawal_id}",
-            status=status.HTTP_404_NOT_FOUND
-        )
-
-    if withdrawal.status != 'pending':
-        return error_response(
-            code="INVALID_STATUS",
-            message="Only pending withdrawals can be rejected",
-            field="status",
-            issue=f"Current status is {withdrawal.status}",
-            status=status.HTTP_400_BAD_REQUEST
-        )
+    from servers.admin_audit.services import record_admin_action
 
     admin_notes = request.data.get('admin_notes', '')
-    withdrawal.status = 'rejected'
-    withdrawal.admin_notes = admin_notes
-    withdrawal.processed_at = timezone.now()
-    withdrawal.save()
+
+    try:
+        with transaction.atomic():
+            try:
+                withdrawal = (
+                    WithdrawalRequest.objects.select_for_update()
+                    .get(id=withdrawal_id)
+                )
+            except WithdrawalRequest.DoesNotExist:
+                return error_response(
+                    code="NOT_FOUND",
+                    message="Withdrawal request not found",
+                    field="withdrawal_id",
+                    issue=f"No withdrawal matches id {withdrawal_id}",
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if withdrawal.status != 'pending':
+                return error_response(
+                    code="INVALID_STATUS",
+                    message="Only pending withdrawals can be rejected",
+                    field="status",
+                    issue=f"Current status is {withdrawal.status}",
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            before = {'status': withdrawal.status, 'amount': str(withdrawal.amount)}
+            withdrawal.status = 'rejected'
+            withdrawal.admin_notes = admin_notes
+            withdrawal.processed_at = timezone.now()
+            withdrawal.save(update_fields=['status', 'admin_notes', 'processed_at'])
+
+            record_admin_action(
+                request,
+                action='withdrawal_rejected',
+                target_type='withdrawal_request',
+                target_id=withdrawal.id,
+                before=before,
+                after={'status': 'rejected', 'admin_notes': admin_notes},
+                reason=admin_notes,
+            )
+    except Exception as e:
+        logger.error(f"reject_withdrawal_admin atomic block failed: {e}")
+        return error_response(
+            code="INTERNAL_ERROR",
+            message="Failed to reject withdrawal",
+            field="general",
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
     from .serializers import WithdrawalRequestSerializer
     serializer = WithdrawalRequestSerializer(withdrawal)
@@ -271,10 +378,18 @@ def bulk_action_withdrawal_admin(request):
     Bulk approve/reject multiple requests.
     """
     from .models import WithdrawalRequest
+    from django.db import transaction
     from django.utils import timezone
+    from servers.admin_audit.services import record_admin_action
+
+    # Cap to prevent an admin (or a compromised admin session) from
+    # locking the entire withdrawals table or processing the platform's
+    # full backlog in a single accidental request.
+    BULK_MAX = 50
 
     action = request.data.get('action')  # 'approve' or 'reject'
     withdrawal_ids = request.data.get('withdrawal_ids', [])
+    admin_notes = request.data.get('admin_notes', '')
 
     if action not in ['approve', 'reject']:
         return error_response(
@@ -282,7 +397,7 @@ def bulk_action_withdrawal_admin(request):
             message="Action must be 'approve' or 'reject'",
             field="action",
             issue=f"Invalid action: {action}",
-            status=status.HTTP_400_BAD_REQUEST
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     if not withdrawal_ids:
@@ -291,36 +406,90 @@ def bulk_action_withdrawal_admin(request):
             message="No withdrawal IDs provided",
             field="withdrawal_ids",
             issue="Provide at least one withdrawal ID",
-            status=status.HTTP_400_BAD_REQUEST
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
-    withdrawals = WithdrawalRequest.objects.filter(id__in=withdrawal_ids, status='pending')
-    if not withdrawals.exists():
+    if len(withdrawal_ids) > BULK_MAX:
         return error_response(
-            code="NO_PENDING",
-            message="No pending withdrawals found for the given IDs",
+            code="TOO_MANY",
+            message=f"At most {BULK_MAX} withdrawals can be processed at once",
             field="withdrawal_ids",
-            issue="All withdrawals are already processed or do not exist",
-            status=status.HTTP_400_BAD_REQUEST
+            issue=f"Received {len(withdrawal_ids)} ids; limit is {BULK_MAX}",
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
-    updated_count = 0
-    for withdrawal in withdrawals:
-        if action == 'approve':
-            withdrawal.status = 'approved'
-            withdrawal.processed_at = timezone.now()
-            withdrawal.save()
-            # Trigger payout creation for approved withdrawals
-            from .services import trigger_payout_creation
-            trigger_payout_creation(withdrawal)
-        else:
-            withdrawal.status = 'rejected'
-            withdrawal.admin_notes = request.data.get('admin_notes', '')
-            withdrawal.processed_at = timezone.now()
-            withdrawal.save()
-        updated_count += 1
+    # Process each row inside its own atomic + select_for_update so:
+    #  - two concurrent bulk calls can't both flip the same row
+    #  - a transient failure on one row doesn't roll back the rest
+    #  - each audit row is written within the same transaction as its
+    #    state flip
+    approved_for_payout = []
+    updated_ids = []
+    skipped_ids = []
+
+    for wid in withdrawal_ids:
+        try:
+            with transaction.atomic():
+                try:
+                    w = WithdrawalRequest.objects.select_for_update().get(id=wid)
+                except WithdrawalRequest.DoesNotExist:
+                    skipped_ids.append(wid)
+                    continue
+
+                if w.status != 'pending':
+                    skipped_ids.append(wid)
+                    continue
+
+                before = {'status': w.status, 'amount': str(w.amount)}
+                if action == 'approve':
+                    w.status = 'approved'
+                    w.processed_at = timezone.now()
+                    w.save(update_fields=['status', 'processed_at'])
+                    record_admin_action(
+                        request,
+                        action='withdrawal_approved',
+                        target_type='withdrawal_request',
+                        target_id=w.id,
+                        before=before,
+                        after={'status': 'approved', 'amount': str(w.amount)},
+                        reason='bulk action',
+                    )
+                    approved_for_payout.append(w)
+                else:
+                    w.status = 'rejected'
+                    w.admin_notes = admin_notes
+                    w.processed_at = timezone.now()
+                    w.save(update_fields=['status', 'admin_notes', 'processed_at'])
+                    record_admin_action(
+                        request,
+                        action='withdrawal_rejected',
+                        target_type='withdrawal_request',
+                        target_id=w.id,
+                        before=before,
+                        after={'status': 'rejected', 'admin_notes': admin_notes},
+                        reason=admin_notes or 'bulk action',
+                    )
+                updated_ids.append(w.id)
+        except Exception as e:
+            logger.error(f"bulk_action_withdrawal_admin: row {wid} failed: {e}")
+            skipped_ids.append(wid)
+
+    # Payouts dispatch outside the per-row transactions to avoid holding
+    # locks through the gateway round-trip.
+    if approved_for_payout:
+        from .services import trigger_payout_creation
+        for w in approved_for_payout:
+            try:
+                trigger_payout_creation(w)
+            except Exception as e:
+                logger.error(
+                    f"bulk_action_withdrawal_admin: payout dispatch failed "
+                    f"for withdrawal {w.id}: {e}"
+                )
 
     return success_response({
-        'message': f'Successfully {action}d {updated_count} withdrawal(s)',
-        'updated_count': updated_count,
+        'message': f'Bulk {action} processed',
+        'updated_ids': updated_ids,
+        'skipped_ids': skipped_ids,
+        'updated_count': len(updated_ids),
     }, status.HTTP_200_OK)

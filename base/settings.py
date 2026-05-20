@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'channels',
     'storages',
@@ -52,6 +53,9 @@ INSTALLED_APPS = [
     'servers.driver',
     'servers.ride',
     'servers.payments',
+    'servers.admin_audit',
+    'servers.sos',
+    'servers.pricing',
     'django_cleanup.apps.CleanupConfig',
     # 'servers.support',
     
@@ -82,15 +86,64 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
     'PAGE_SIZE': 20,
+    # Rates are defined here; the actual throttle classes are wired per-view
+    # (see base/throttles.py + decorators on auth endpoints) so we don't
+    # accidentally rate-limit unrelated endpoints.
+    # DRF's parse_rate only understands periods starting with s/m/h/d.
+    # '1/30sec' silently parsed as period[0]='3' and raised KeyError on every
+    # call. The closest valid expression of "anti-spam burst" is 2/min
+    # (sliding window: never more than 2 in any 60-second period). Not
+    # exactly 1-per-30s but close enough for Phase-0; if we want strict
+    # 30s burst we'll write a custom throttle class.
+    'DEFAULT_THROTTLE_RATES': {
+        'otp_request': '5/hour',
+        'otp_request_burst': '2/min',
+        'otp_verify': '10/hour',
+    },
 }
 from datetime import timedelta
-SIMPLE_JWT={
-    'ACCESS_TOKEN_LIFETIME':timedelta(days=1),
-    'REFRESH_TOKEN_LIFETIME':timedelta(days=7),
-
+# JWT lifetimes match the system-design doc:
+#   - Access:  15 min (short window; minimises blast radius of a leaked token)
+#   - Refresh: 14 days (rotating; old refresh blacklisted after rotation)
+# Rotation + blacklist together mean a stolen refresh token is single-use:
+# whichever client uses it first invalidates it for the other.
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=14),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'ALGORITHM': 'HS256',
 }
 # celery
-CELERY_BROKER_URL=REDIS_URL+'/0'
+CELERY_BROKER_URL = REDIS_URL + '/0'
+
+# Celery Beat — periodic tasks.
+# The compose `celery` service runs with `-B` so beat is embedded in the
+# worker. That's fine while we run a single celery instance; when we
+# scale to multiple workers, beat must move to a standalone container
+# (or adopt django-celery-beat for a DB-backed schedule lock).
+from celery.schedules import crontab as _crontab
+CELERY_BEAT_SCHEDULE = {
+    'driver-block-expired-licenses-daily': {
+        'task': 'driver.block_expired_driver_licenses',
+        # 02:00 in TIME_ZONE (Asia/Kolkata) — quiet hours.
+        'schedule': _crontab(hour=2, minute=0),
+    },
+    'payments-reconcile-stuck-every-5-min': {
+        # Sweep payments/wallets stuck in pending/processing against the
+        # gateway so a missed webhook can never strand money on its own.
+        'task': 'payments.reconcile_stuck_payments',
+        'schedule': _crontab(minute='*/5'),
+    },
+    'withdrawals-reconcile-stuck-every-10-min': {
+        # Sweep withdrawals stuck in processing/approved. Lower cadence
+        # than payments (10 vs 5 min) — driver payouts aren't on the hot
+        # rider-facing path so a slightly longer window is fine.
+        'task': 'payments.reconcile_stuck_withdrawals',
+        'schedule': _crontab(minute='*/10'),
+    },
+}
+CELERY_TIMEZONE = 'Asia/Kolkata'
 # cache
 CACHES={
     'default':{
@@ -112,13 +165,27 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 
 # Production security headers. No-ops in DEBUG.
 if not DEBUG:
+    # Tell Django the upstream proxy/ALB terminates TLS.
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-    SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'False') == 'True'
+
+    # SSL redirect is gated by an env var because Django-level redirect requires
+    # nginx (or the ALB) to forward X-Forwarded-Proto. If the proxy doesn't,
+    # Django sees every request as HTTP and issues a 301 to itself — infinite
+    # redirect loop. Default OFF so a fresh deploy can never lock itself out;
+    # operator opts in with DJANGO_SECURE_SSL_REDIRECT=True after confirming
+    # nginx sets `proxy_set_header X-Forwarded-Proto $scheme;`.
+    SECURE_SSL_REDIRECT = os.environ.get('DJANGO_SECURE_SSL_REDIRECT', 'False') == 'True'
+
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    SECURE_HSTS_SECONDS = int(os.environ.get('SECURE_HSTS_SECONDS', 0))
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = os.environ.get('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'False') == 'True'
-    SECURE_HSTS_PRELOAD = os.environ.get('SECURE_HSTS_PRELOAD', 'False') == 'True'
+
+    # HSTS is also opt-in via env: once a browser has seen HSTS, it will
+    # refuse plain-HTTP to this host for SECURE_HSTS_SECONDS — a wrong
+    # default here is hard to undo.
+    SECURE_HSTS_SECONDS = int(os.environ.get('DJANGO_HSTS_SECONDS', '0'))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+    SECURE_HSTS_PRELOAD = SECURE_HSTS_SECONDS > 0
+
     SECURE_CONTENT_TYPE_NOSNIFF = True
     SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
     X_FRAME_OPTIONS = 'DENY'
@@ -137,6 +204,29 @@ TEMPLATES = [
         },
     },
 ]
+
+# --- Test phone numbers (QA bypass for OTP delivery) -------------------------
+# Maps phone number → fixed OTP. Listed phones:
+#   - never trigger an AWS SNS send
+#   - never count against the OTP-issue / OTP-verify throttles
+#   - log in with the configured OTP every time
+#
+# Set via env, comma-separated `phone:otp` pairs. Empty by default so
+# production never has a bypass unless the operator opts in. Example:
+#   TEST_PHONE_NUMBERS="+919999000001:100001,+919999000002:100002"
+#
+# Anyone with the env var contents can authenticate as those phones —
+# treat them like shared test credentials. Don't reuse a real user's
+# phone here.
+TEST_PHONE_NUMBERS = {}
+_test_phones_raw = os.environ.get('TEST_PHONE_NUMBERS', '')
+if _test_phones_raw:
+    for _entry in _test_phones_raw.split(','):
+        if ':' in _entry:
+            _phone, _otp = _entry.split(':', 1)
+            _phone, _otp = _phone.strip(), _otp.strip()
+            if _phone and _otp:
+                TEST_PHONE_NUMBERS[_phone] = _otp
 
 #URLS
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
@@ -249,12 +339,33 @@ AUTH_PASSWORD_VALIDATORS = [
 # Root log level is env-driven; default WARNING in production so SQL queries,
 # request bodies, OTPs, and tokens do not bleed into CloudWatch.
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'DEBUG' if DEBUG else 'WARNING').upper()
+# Format: 'json' for CloudWatch / structured ingestion, 'text' for human eyes.
+LOG_FORMAT = os.environ.get('DJANGO_LOG_FORMAT', 'text' if DEBUG else 'json')
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'formatters': {
+        'text': {
+            'format': '%(asctime)s %(levelname)s %(name)s %(message)s',
+        },
+        'json': {
+            '()': 'base.logging_filters.JSONFormatter',
+        },
+    },
+    'filters': {
+        # Scrubs OTPs, bearer tokens, JWTs, AWS keys, last 8 digits of
+        # E.164 phone numbers from every log message before they hit the
+        # handler. Belt-and-braces — never rely on devs remembering to
+        # avoid logging PII.
+        'pii_redact': {
+            '()': 'base.logging_filters.PIIRedactionFilter',
+        },
+    },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
+            'formatter': LOG_FORMAT,
+            'filters': ['pii_redact'],
         },
     },
     'root': {

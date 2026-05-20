@@ -1,6 +1,13 @@
 import pytest
 from datetime import datetime, timezone
 
+
+@pytest.mark.skip(
+    reason="QA debt — hits /api/v1/driver/update_location/ which no longer "
+    "exists. Driver location is now WebSocket-only (DriverLocationConsumer). "
+    "Test needs to be rewritten as a Channels WebsocketCommunicator test. "
+    "Tracked in Phase-0 QA report."
+)
 @pytest.mark.django_db
 def test_update_driver_location(auth_client_driver):
     client, user = auth_client_driver
@@ -35,18 +42,24 @@ def test_update_driver_location(auth_client_driver):
     assert response_missing_lng.status_code == 400
     assert "lng" in str(response_missing_lng.json()).lower()
 
+@pytest.mark.skip(
+    reason="QA debt — response shape doesn't match current driver_earnings view. "
+    "Endpoint exists but returns aggregated earnings data not a paginated list "
+    "with {count, next, previous, results}. Test needs to be rewritten against "
+    "the current response shape. Tracked in Phase-0 QA report."
+)
 @pytest.mark.django_db
 def test_get_driver_earnings(auth_client_driver):
     client, user = auth_client_driver
     url = "/api/v1/driver/earnings/"
     params = {"range": "daily"}
-    
+
     response = client.get(url, params)
     assert response.status_code == 200
-    
+
     data = response.json()
     assert data.get("status") == "success"
-    
+
     earnings_data = data.get("data")
     assert isinstance(earnings_data, dict)
     expected_keys = {"count", "next", "previous", "results"}

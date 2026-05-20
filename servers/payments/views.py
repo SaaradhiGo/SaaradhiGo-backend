@@ -9,10 +9,11 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
 from django.http import JsonResponse
-from django.db import models, transaction
+from django.db import models, transaction, IntegrityError
 from base.utils import success_response, error_response
-from servers.payments.models import Payment, TransactionHistory, PaymentGateway
+from servers.payments.models import Payment, TransactionHistory, PaymentGateway, WebhookEvent
 from servers.payments.payment_gateways.factory import get_payment_gateway, get_payment_gateway_for_payments, get_payment_gateway_for_payouts
 from servers.ride.models import Trip
 
@@ -103,10 +104,18 @@ def create_order(request):
             status=status.HTTP_503_SERVICE_UNAVAILABLE
         )
 
-    # Create payment order using gateway
-    order = gateway.create_order(amount=amount, trip_id=trip.id)
-    logger.info(f"{order}")
-    logger.info(f"Payment order created via {gateway.get_name()}: {order}")
+    # Create payment order using gateway. Pass the real rider phone and email
+    # so receipts and Cashfree-dashboard rows carry the actual customer's
+    # identity, not the placeholder phone/email that used to ship on every
+    # order (security audit H5).
+    order = gateway.create_order(
+        amount=amount,
+        trip_id=trip.id,
+        customer_id=str(request.user.id),
+        customer_phone=request.user.phone_number,
+        customer_email=request.user.email,
+    )
+    logger.info(f"Payment order created via {gateway.get_name()}: order_id={order.get('order_id') if order else None}")
     if not order:
         return error_response(
             code='PAYMENT_GATEWAY_ERROR',
@@ -305,11 +314,13 @@ def verify_payment(request):
 
 
 @csrf_exempt
+@require_POST
 def payment_webhook(request):
     """
     Payment gateway webhook endpoint.
     Handles webhooks from Cashfree.
-    No JWT auth — verified via gateway signature header.
+    POST-only (enforced by @require_POST so GETs from probes return
+    405 not 200). No JWT auth — verified via gateway signature header.
     """
     if request.method != 'POST':
         return JsonResponse({'error': 'Method not allowed'}, status=405)
@@ -340,9 +351,49 @@ def payment_webhook(request):
 
     try:
         payload = json.loads(body)
-        
+
+        # Idempotency gate. The signature is a function of (body, timestamp,
+        # secret) and is unique per delivery, so it doubles as a perfect
+        # dedupe key for both legitimate retries and forged replays.
+        #
+        # The INSERT runs inside `transaction.atomic()` so an IntegrityError
+        # from the unique constraint rolls back just the savepoint instead
+        # of poisoning the surrounding transaction. Without the explicit
+        # savepoint, Django's autocommit hides the bug in production but
+        # any caller that wraps webhook handling in a transaction (and the
+        # test runner does) sees a TransactionManagementError on the next
+        # query.
+        event_type = (payload.get('type') or payload.get('event') or '')[:64]
+        try:
+            with transaction.atomic():
+                WebhookEvent.objects.create(
+                    gateway=gateway_name,
+                    dedupe_key=signature[:512],
+                    event_type=event_type,
+                    raw_payload=payload,
+                )
+        except IntegrityError:
+            logger.info(
+                f"Webhook deduplicated (gateway={gateway_name}, "
+                f"sig={signature[:16]}…)"
+            )
+            return JsonResponse({'status': 'already_processed'}, status=200)
+
         # Handle Cashfree webhook payload
-        return _handle_cashfree_webhook(payload, gateway)
+        response = _handle_cashfree_webhook(payload, gateway)
+
+        # Mark this event as processed for observability.
+        try:
+            WebhookEvent.objects.filter(
+                gateway=gateway_name, dedupe_key=signature[:512]
+            ).update(
+                processed_at=timezone.now(),
+                result='ok' if response.status_code == 200 else 'error',
+            )
+        except Exception:
+            pass
+
+        return response
 
     except (json.JSONDecodeError, KeyError) as e:
         logger.error(f"Webhook: Invalid payload: {e}")
@@ -370,10 +421,14 @@ def _handle_cashfree_webhook(payload, gateway):
         if not order_id:
             return JsonResponse({'status': 'skipped', 'reason': 'no order_id'}, status=200)
 
-        # Check if it's a Wallet Transaction
+        # Check if it's a Wallet Transaction.
+        # NOTE: WalletTransaction only has `gateway_order_id` — unlike
+        # Payment which has both `gateway_order_id` and `cashfree_order_id`.
+        # The previous Q-filter referencing both fields raised FieldError on
+        # every wallet-top-up webhook (QA-8).
         from servers.rider.models import WalletTransaction, Wallet
         wallet_txn_pk = WalletTransaction.objects.filter(
-            models.Q(cashfree_order_id=order_id) | models.Q(gateway_order_id=order_id)
+            gateway_order_id=order_id,
         ).values_list('pk', flat=True).first()
 
         if wallet_txn_pk is not None:
@@ -496,11 +551,12 @@ def _handle_cashfree_webhook(payload, gateway):
 
 
 @csrf_exempt
+@require_POST
 def payout_webhook(request):
     """
     Payout gateway webhook endpoint.
     Handles webhooks from Cashfree for payout events.
-    No JWT auth — verified via gateway signature header.
+    POST-only. No JWT auth — verified via gateway signature header.
     """
     if request.method != 'POST':
         return JsonResponse({'error': 'Method not allowed'}, status=405)
@@ -579,7 +635,16 @@ def _handle_cashfree_payout_webhook(payload, gateway):
             withdrawal.status = 'completed'
             withdrawal.payout_status = status if status else 'success'
             withdrawal.save(update_fields=['status', 'payout_status'])
-            
+
+            # Stamp last_withdrawal_at on the driver ONLY now — at confirmed
+            # TRANSFER_SUCCESS. trigger_payout_creation used to set this at
+            # request time, which meant a failed payout still blocked the
+            # driver from new withdrawals for 7 days even though no money
+            # moved. Audit M8.
+            driver = withdrawal.driver
+            driver.last_withdrawal_at = timezone.now()
+            driver.save(update_fields=['last_withdrawal_at'])
+
             # Create transaction history entry
             TransactionHistory.objects.get_or_create(
                 withdrawal_request=withdrawal,
@@ -597,7 +662,7 @@ def _handle_cashfree_payout_webhook(payload, gateway):
                     'txn_type': 'payout',
                 }
             )
-        
+
         logger.info(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} completed successfully")
         return JsonResponse({'status': 'ok'}, status=200)
     
@@ -1156,7 +1221,10 @@ def switch_payment_method(request):
             order = gateway.create_order(
                 amount=float(amount),
                 trip_id=trip.id,
-                currency='INR'
+                currency='INR',
+                customer_id=str(request.user.id),
+                customer_phone=request.user.phone_number,
+                customer_email=request.user.email,
             )
             new_payment = Payment.objects.create(
                 trip_id=trip,
@@ -1283,7 +1351,10 @@ def retry_payment(request):
         order = gateway.create_order(
             amount=float(amount),
             trip_id=trip.id,
-            currency='INR'
+            currency='INR',
+            customer_id=str(request.user.id),
+            customer_phone=request.user.phone_number,
+            customer_email=request.user.email,
         )
 
         payment.gateway_order_id = order.get('order_id') if order else None

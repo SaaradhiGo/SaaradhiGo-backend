@@ -61,6 +61,16 @@ class Vehicle(models.Model):
         ('active','Active'),('inactive','Inactive'),
         ('under_maintenance','Under Maintenance')
     ],default='active')
+    # MVA 2020 mandates the platform verify and enforce these. Daily
+    # Celery sweeper (servers.driver.tasks.block_expired_driver_credentials)
+    # blocks any driver whose active vehicle has any expired credential.
+    # Nullable so legacy rows continue to work; new vehicles should be
+    # required to supply them via the admin UI.
+    insurance_expiry = models.DateField(blank=True, null=True)
+    permit_expiry = models.DateField(blank=True, null=True)
+    fitness_expiry = models.DateField(blank=True, null=True)
+    puc_expiry = models.DateField(blank=True, null=True)
+
     def __str__(self) -> str:
         return f'{self.vehicle_number} - {self.driver_id}'
 class WithdrawalRequest(models.Model):

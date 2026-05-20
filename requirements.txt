@@ -43,4 +43,10 @@ psycopg2-binary==2.9.9
 cashfree-pg==3.2.12
 pydantic>=1.10.5,<2.0.0
 cryptography==44.0.0
+
+# Geo (service-area enforcement). shapely is a pure-Python geometry
+# library; no PostGIS extension required on the database side. Hyderabad
+# service-area check uses a polygon defined in base/service_area.py.
+shapely==2.0.6
+
 sentry-sdk[django]==1.32.0

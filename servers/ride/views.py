@@ -82,27 +82,45 @@ def estimate_fare(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Distance sanity check
+    # Service-area enforcement. Phase-0 only serves Hyderabad metro; both
+    # pickup and drop must sit inside the polygon. Without this check, a
+    # tampered client can have us produce fares for any city.
+    from base.service_area import validate_service_area
+    area_ok, area_msg = validate_service_area(
+        pickup_lat, pickup_long, destination_lat, destination_long,
+    )
+    if not area_ok:
+        return error_response(
+            code='OUT_OF_SERVICE_AREA',
+            message=area_msg,
+            field='pickup / destination',
+            issue='Coordinates fall outside the SaaradhiGo Hyderabad service area',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Server-side distance + duration (authoritative for fare).
     is_valid, validated_km, validated_min, msg = validate_distance(
         distance_km, duration_min, pickup_lat, pickup_long, destination_lat, destination_long
     )
     if not is_valid:
         return error_response(
-            code='DISTANCE_MISMATCH',
+            code='DISTANCE_INVALID',
             message=msg,
             field='distance_km / duration_min',
-            issue=f'Validated distance: {validated_km} km',
+            issue=f'Server could not validate distance: {msg}',
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Estimate fare
+    # Fare is computed from the SERVER-computed validated_km/min, not the
+    # client-supplied numbers. Trusting the client distance was the audit's
+    # primary fare-tampering vector.
     fare = estimate_amount(
-        distance_km, 
-        duration_min, 
+        validated_km,
+        validated_min,
         vehicle_type=vehicle_type,
         pickup_lat=pickup_lat,
         pickup_long=pickup_long,
-        rider_id=request.user.id
+        rider_id=request.user.id,
     )
 
     return success_response({
@@ -448,7 +466,7 @@ def trip_detail(request, trip_id):
             status=status.HTTP_403_FORBIDDEN
         )
 
-    serializer = TripDetailSerializer(trip)
+    serializer = TripDetailSerializer(trip, context={'request': request})
     return success_response(serializer.data, status.HTTP_200_OK)
 
 @api_view(['GET'])
@@ -456,7 +474,9 @@ def trip_detail(request, trip_id):
 def trip_driver_details(request,trip_id):
     from servers.redis_client import get_cached_trip
     
-    # Check cache first for rapid response
+    # Check cache first for rapid response. NOTE: this endpoint returns
+    # DRIVER details — the rider's OTP is never returned here. The OTP is
+    # only visible to the rider via /ride/active/ or /ride/trip/<id>/.
     cached = get_cached_trip(trip_id)
     if cached and 'driver_id' in cached:
         return success_response({
@@ -471,7 +491,6 @@ def trip_driver_details(request,trip_id):
                 'model': cached.get('vehicle_model'),
                 'color': cached.get('vehicle_color')
             },
-            'otp': cached.get('otp'),
             'source': 'cache'
         }, status.HTTP_200_OK)
 
@@ -530,7 +549,7 @@ def rate_trip(request):
     from servers.ride.models import Rating
     from servers.driver.models import Driver
     from servers.rider.models import Rider
-    from django.db.models import Avg
+    from django.db.models import Avg, F
 
     trip_id = request.data.get('trip_id')
     score = request.data.get('score')
@@ -617,28 +636,37 @@ def rate_trip(request):
             comments=comments
         )
 
-        # Update the rated person's average
+        # Recompute the rated person's average across ALL their trips.
+        #
+        # The previous query filtered `rater_id=trip.user_id`, which scoped
+        # the average to ratings given by *this single rider*, then excluded
+        # the driver themselves. That meant a driver's "average score" was
+        # actually "average score the current rider has given this driver"
+        # — usually one or two data points, often the just-submitted score.
+        #
+        # The correct query for a driver's average is: every Rating whose
+        # trip's driver was this driver AND whose rater was that trip's
+        # rider. F('trip_id__user_id') checks the rater of each row equals
+        # the rider of THAT row's trip — confirming it's a rider→driver
+        # rating, not the other direction.
         if is_rider and trip.driver_id:
-            # Rider is rating the driver
             driver = trip.driver_id
             avg = Rating.objects.filter(
                 trip_id__driver_id=driver,
-                rater_id=trip.user_id
-            ).exclude(
-                rater_id__in=[driver.user_id]
+                rater_id=F('trip_id__user_id'),
             ).aggregate(avg_score=Avg('score'))['avg_score']
             if avg:
                 driver.ratings = round(Decimal(str(avg)), 2)
                 driver.save(update_fields=['ratings'])
 
         elif is_driver:
-            # Driver is rating the rider
+            # Driver→rider average: every Rating whose trip's rider was
+            # this rider AND whose rater was that trip's driver's user.
             try:
                 rider = Rider.objects.get(user_id=trip.user_id)
                 avg = Rating.objects.filter(
-                    trip_id__user_id=trip.user_id
-                ).exclude(
-                    rater_id=trip.user_id
+                    trip_id__user_id=trip.user_id,
+                    rater_id=F('trip_id__driver_id__user_id'),
                 ).aggregate(avg_score=Avg('score'))['avg_score']
                 if avg:
                     rider.rating = round(Decimal(str(avg)), 1)
@@ -699,7 +727,7 @@ def get_active_trip(request):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    serializer = TripDetailSerializer(trip)
+    serializer = TripDetailSerializer(trip, context={'request': request})
     return success_response(serializer.data, status.HTTP_200_OK)
 
 from servers.redis_client import check_maps_rate_limit, get_cached_map_data, cache_map_data

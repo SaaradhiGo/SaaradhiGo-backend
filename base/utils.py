@@ -1,6 +1,7 @@
 import boto3
 import logging
 import random
+import secrets
 from typing import Dict, Any, Optional
 from django.utils import timezone
 from rest_framework.response import Response
@@ -101,21 +102,19 @@ def error_response(
 
 
 def generate_otp(n: int) -> str:
-    """
-    Generate a random OTP of n digits.
-    
-    Args:
-        n: Number of digits for OTP
-    
-    Returns:
-        String of n random digits
+    """Generate a cryptographically secure n-digit OTP.
+
+    Previously used random.choices(), which seeds from a non-CSPRNG that an
+    attacker who observes a few outputs can predict. For a security token
+    that gates account access we use secrets.choice (backed by os.urandom)
+    so each digit is independently unpredictable.
     """
     if n <= 0:
         logger.warning(f"Invalid OTP length requested: {n}")
         return ""
-    
-    otp = ''.join(map(str, random.choices(range(0, 10), k=n)))
-    return otp
+
+    digits = '0123456789'
+    return ''.join(secrets.choice(digits) for _ in range(n))
 
 
 @shared_task

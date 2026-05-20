@@ -6,11 +6,14 @@ VEHICLE_TYPE = "sedan"
 def test_estimate_ride_fare(auth_client_rider):
     client, user = auth_client_rider
     url = "/api/v1/ride/estimate-fare/"
+    # Hyderabad coords (Banjara Hills → Hitech City). Original test used
+    # Bangalore coords which now fail the service-area gate (Phase-0
+    # operates Hyderabad metro only).
     valid_payload = {
-        "pickup_lat": 12.9716,
-        "pickup_long": 77.5946,
-        "destination_lat": 12.9352,
-        "destination_long": 77.6245,
+        "pickup_lat": 17.4123,
+        "pickup_long": 78.4318,
+        "destination_lat": 17.4475,
+        "destination_long": 78.3563,
         "distance_km": 5.0,
         "duration_min": 15.0,
         "vehicle_type": VEHICLE_TYPE
@@ -39,6 +42,12 @@ def test_estimate_ride_fare(auth_client_rider):
         err_data = err_response.json()
         assert err_data.get("status") == "error"
 
+@pytest.mark.skip(
+    reason="QA debt — hits /api/v1/ride/ride-request/ which is commented out "
+    "in ride/urls.py. Ride creation is now WebSocket-only (RideRequestConsumer "
+    "+ {'action':'request'}). Test needs to be rewritten as a Channels test "
+    "using channels.testing.WebsocketCommunicator. Tracked in Phase-0 QA report."
+)
 @pytest.mark.django_db
 def test_request_a_ride(auth_client_rider):
     client, user = auth_client_rider

@@ -3,9 +3,17 @@ import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import AnonymousUser
+from django.core.cache import cache
 from base.utils import generate_otp
 
 logger = logging.getLogger(__name__)
+
+# OTP brute-force lock on the trip-start (rider's OTP entered by driver).
+# Cache key: trip_otp_attempts:<trip_id>. Once attempts >= limit, the start
+# action is refused until the TTL expires (forces driver to ask rider for
+# OTP again rather than enumerating 1M possibilities).
+TRIP_OTP_MAX_ATTEMPTS = 5
+TRIP_OTP_ATTEMPT_TTL_SECONDS = 5 * 60
 
 
 class DriverLocationConsumer(AsyncWebsocketConsumer):
@@ -30,8 +38,7 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
             print("WSREJECT 4003: User is not a driver")
             await self.close(code=4003)
             return
-        if self.driver.approved==False:
-            # print("WSREJECT 4004: User is not approved")
+        if not self.driver.approved:
             await self.close(code=4004)
             return
         lat = self.scope.get('lat')
@@ -485,18 +492,35 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             except (ValueError, TypeError):
                 dist, dur = 0, 0
 
-            is_valid, validated_km, validated_min, msg = validate_distance(dist, dur, pickup_lat, pickup_lng, destination_lat, destination_lng)
+            # Service-area gate: reject the request before any fare work
+            # if either coordinate is outside the Hyderabad polygon. Same
+            # check the REST estimate-fare endpoint runs.
+            from base.service_area import validate_service_area
+            area_ok, area_msg = validate_service_area(
+                pickup_lat, pickup_lng, destination_lat, destination_lng,
+            )
+            if not area_ok:
+                logger.warning(f"Service area rejection: {area_msg}")
+                raise ValueError(area_msg)
+
+            is_valid, validated_km, validated_min, msg = validate_distance(
+                dist, dur, pickup_lat, pickup_lng, destination_lat, destination_lng
+            )
             if not is_valid:
-                logger.warning(f"Distance spoofing attempt: {msg}")
+                logger.warning(f"Distance validation failed: {msg}")
                 raise ValueError(f"Invalid distance: {msg}")
 
+            # Fare is computed from the SERVER-computed validated distance
+            # and duration, not the client-supplied values. The client
+            # numbers are advisory only (used to flag suspicious deviation
+            # inside validate_distance).
             fare = estimate_amount(
-                dist, 
-                dur, 
+                validated_km,
+                validated_min,
                 vehicle_type=vehicle_type,
                 pickup_lat=pickup_lat,
                 pickup_long=pickup_lng,
-                rider_id=self.user.id
+                rider_id=self.user.id,
             )
 
             # Resolve VehicleType for storing on Trip
@@ -653,18 +677,29 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             action = data.get('action')
             otp_input = data.get('otp')
 
-            if action not in ('accept', 'reached', 'start', 'complete', 'cancel'):
+            if action not in ('accept', 'reached', 'start', 'complete', 'cancel', 'confirm_cash'):
                 await self.send(text_data=json.dumps({
                     'type': 'error',
-                    'message': 'Invalid action. Must be: accept, reached, start, complete, or cancel'
+                    'message': 'Invalid action. Must be: accept, reached, start, complete, cancel, or confirm_cash'
                 }))
                 return
 
-            # Check if user is the driver for this trip (or accepting driver)
-            is_driver = await self._is_driver()
+            # Authorisation ladder:
+            #  - accept:    any logged-in driver (the race to assignment is
+            #               handled by select_for_update in _accept_trip).
+            #  - reached / start / complete / confirm_cash:
+            #               must be the ASSIGNED driver of THIS trip, not
+            #               just any driver who happens to be subscribed
+            #               to the trip group.
+            #  - cancel:    must be the assigned driver OR the trip's rider.
+            #
+            # Previously every post-accept action only checked "is this user
+            # A driver", and `cancel` had no role check at all — meaning any
+            # logged-in user subscribed to /ws/ride/trip/<id>/ could cancel
+            # an arbitrary trip.
 
             if action == 'accept':
-                if not is_driver:
+                if not await self._is_driver():
                     await self.send(text_data=json.dumps({
                         'type': 'error',
                         'message': 'Only drivers can accept rides'
@@ -672,18 +707,18 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                     return
                 result = await self._accept_trip()
             elif action == 'reached':
-                if not is_driver:
+                if not await self._is_assigned_driver():
                     await self.send(text_data=json.dumps({
                         'type': 'error',
-                        'message': 'Only drivers can mark as reached'
+                        'message': 'Only the assigned driver can mark this trip as reached'
                     }))
                     return
                 result = await self._update_trip_status('reached')
             elif action == 'start':
-                if not is_driver:
+                if not await self._is_assigned_driver():
                     await self.send(text_data=json.dumps({
                         'type': 'error',
-                        'message': 'Only drivers can start rides'
+                        'message': 'Only the assigned driver can start this trip'
                     }))
                     return
                 if not otp_input:
@@ -692,24 +727,50 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                         'message': 'OTP is required to start the ride'
                     }))
                     return
-                result = await self._update_trip_status('in_progress', otp_input=otp_input)
-            elif action == 'complete':
-                if not is_driver:
+                # Brute-force lock: refuse start if too many wrong OTPs have
+                # been submitted for this trip recently.
+                attempt_key = f"trip_otp_attempts:{self.trip_id}"
+                attempts = cache.get(attempt_key, 0)
+                if attempts >= TRIP_OTP_MAX_ATTEMPTS:
                     await self.send(text_data=json.dumps({
                         'type': 'error',
-                        'message': 'Only drivers can complete rides'
+                        'message': 'Too many invalid OTP attempts. Ask the rider for the OTP again.'
+                    }))
+                    return
+                result = await self._update_trip_status('in_progress', otp_input=otp_input)
+                if not result.get('success') and 'OTP' in (result.get('error') or ''):
+                    # Increment attempt counter on OTP failure
+                    try:
+                        cache.set(attempt_key, attempts + 1, TRIP_OTP_ATTEMPT_TTL_SECONDS)
+                    except Exception:
+                        pass
+                elif result.get('success'):
+                    cache.delete(attempt_key)
+            elif action == 'complete':
+                if not await self._is_assigned_driver():
+                    await self.send(text_data=json.dumps({
+                        'type': 'error',
+                        'message': 'Only the assigned driver can complete this trip'
                     }))
                     return
                 result = await self._update_trip_status('completed')
             elif action == 'confirm_cash':
-                if not is_driver:
+                if not await self._is_assigned_driver():
                     await self.send(text_data=json.dumps({
                         'type': 'error',
-                        'message': 'Only drivers can confirm cash payments'
+                        'message': 'Only the assigned driver can confirm cash payment'
                     }))
                     return
                 result = await self._confirm_cash_payment()
             elif action == 'cancel':
+                is_rider = await self._is_rider()
+                is_assigned = await self._is_assigned_driver()
+                if not (is_rider or is_assigned):
+                    await self.send(text_data=json.dumps({
+                        'type': 'error',
+                        'message': 'Only the rider or assigned driver can cancel this trip'
+                    }))
+                    return
                 result = await self._update_trip_status('cancelled')
 
             if result.get('success'):
@@ -826,8 +887,36 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             return False
 
     @database_sync_to_async
+    def _is_assigned_driver(self):
+        """True only if self.user is THE assigned driver for this trip.
+
+        Used to gate post-acceptance actions (reached/start/complete/cancel)
+        — any other driver who managed to subscribe to /ws/ride/trip/<id>/
+        must NOT be able to advance the trip state.
+        """
+        from servers.ride.models import Trip
+        try:
+            trip = Trip.objects.select_related('driver_id').get(id=self.trip_id)
+            if not trip.driver_id or not hasattr(self.user, 'driver'):
+                return False
+            return trip.driver_id_id == self.user.driver.id
+        except Trip.DoesNotExist:
+            return False
+
+    @database_sync_to_async
+    def _is_rider(self):
+        """True only if self.user is the rider for this trip."""
+        from servers.ride.models import Trip
+        try:
+            trip = Trip.objects.get(id=self.trip_id)
+            return trip.user_id_id == self.user.id
+        except Trip.DoesNotExist:
+            return False
+
+    @database_sync_to_async
     def _accept_trip(self):
         from servers.ride.models import Trip, TripStatus
+        from servers.driver.models import Driver
         from django.utils import timezone
         from django.db import transaction
 
@@ -839,7 +928,40 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 if trip.driver_id is not None:
                     return {'success': False, 'error': 'Trip already accepted by another driver'}
 
-                driver = self.user.driver
+                # Re-validate the driver's approval state INSIDE the lock.
+                # The WS connect-time check is stale: an admin may have
+                # revoked approval since this socket was opened, or the
+                # driver's status may have flipped to 'blocked' (e.g. by
+                # an expiry sweeper). Without this re-check, an unapproved
+                # or blocked driver holding an old token could still take
+                # rides.
+                try:
+                    driver = (
+                        Driver.objects.select_for_update()
+                        .select_related('user_id', 'active_vehicle')
+                        .get(pk=self.user.driver.id)
+                    )
+                except Driver.DoesNotExist:
+                    return {'success': False, 'error': 'Driver profile not found'}
+
+                if not driver.approved:
+                    return {
+                        'success': False,
+                        'error': 'Your driver profile is not approved yet. '
+                                 'Contact support if you believe this is in error.',
+                    }
+                if (driver.status or '').strip().lower() == 'blocked':
+                    return {
+                        'success': False,
+                        'error': 'Your driver account is blocked.',
+                    }
+                if not driver.active_vehicle:
+                    return {
+                        'success': False,
+                        'error': 'No active vehicle on file. Add or activate '
+                                 'a vehicle before accepting rides.',
+                    }
+
                 status_obj, _ = TripStatus.objects.get_or_create(
                     status_code='accepted',
                     defaults={'description': 'Trip accepted by driver'}
@@ -848,7 +970,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 trip.driver_id = driver
                 trip.status_id = status_obj
                 trip.accepted_at = timezone.now()
-                
+
                 # Generate and save OTP for the trip
                 otp = generate_otp(6)
                 trip.otp = otp
@@ -981,7 +1103,9 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                     'reached': ['accepted'],
                     'in_progress': ['accepted', 'reached'],
                     'completed': ['in_progress'],
-                    'cancelled': ['accepted', 'reached', 'in_progress'],
+                    # 'requested' added so the rider can cancel a trip that
+                    # has not yet been accepted by any driver.
+                    'cancelled': ['requested', 'accepted', 'reached', 'in_progress'],
                 }
 
                 # Enforcement of status transitions
@@ -1204,11 +1328,18 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             from servers.payments.payment_gateways.factory import get_payment_gateway
 
             gateway = get_payment_gateway()
+            # Pass the rider's real phone/email so Cashfree records the
+            # actual customer, not the legacy placeholder.
+            rider_user = trip.user_id
             order_result = gateway.create_order(
                 amount=amount,
+                trip_id=trip.id,
                 currency='INR',
+                customer_id=str(rider_user.id),
+                customer_phone=rider_user.phone_number,
+                customer_email=rider_user.email,
                 receipt=f'trip_{trip.id}',
-                notes={'trip_id': str(trip.id), 'user_id': str(trip.user_id.id)}
+                notes={'trip_id': str(trip.id), 'user_id': str(rider_user.id)},
             )
             Payment.objects.create(
                 trip_id=trip,

@@ -3,6 +3,9 @@ from .models import Driver, Vehicle, VehicleType, WithdrawalRequest, DriverUPICo
 # Register your models here.
 admin.site.register(Driver)
 admin.site.register(Vehicle)
-admin.site.register(VehicleType)
+@admin.register(VehicleType)
+class VehicleTypeAdmin(admin.ModelAdmin):
+    search_fields = ('type',)
+    list_display = ('type',)
 admin.site.register(WithdrawalRequest)
 admin.site.register(DriverUPIContact)

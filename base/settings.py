@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     'servers.payments',
     'servers.admin_audit',
     'servers.sos',
+    'servers.pricing',
     'django_cleanup.apps.CleanupConfig',
     # 'servers.support',
     

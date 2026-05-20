@@ -117,7 +117,7 @@ def request_otp(request):
                 phone_number,
                 f"Your OTP for VahanGo is {otp}. It will expire in 10 minutes."
             )
-            logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id}")
+            logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id},otp: {otp}  ")
         except Exception as e:
             logger.error(f"Failed to queue OTP send task: {str(e)}")
             return error_response(

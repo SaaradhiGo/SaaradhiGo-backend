@@ -113,12 +113,12 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 # Production security headers. No-ops in DEBUG.
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-    SECURE_SSL_REDIRECT = True
+    SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'False') == 'True'
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    SECURE_HSTS_SECONDS = 60 * 60 * 24 * 365  # 1 year
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-    SECURE_HSTS_PRELOAD = True
+    SECURE_HSTS_SECONDS = int(os.environ.get('SECURE_HSTS_SECONDS', 0))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = os.environ.get('SECURE_HSTS_INCLUDE_SUBDOMAINS', 'False') == 'True'
+    SECURE_HSTS_PRELOAD = os.environ.get('SECURE_HSTS_PRELOAD', 'False') == 'True'
     SECURE_CONTENT_TYPE_NOSNIFF = True
     SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
     X_FRAME_OPTIONS = 'DENY'
@@ -171,6 +171,11 @@ CASHFREE_WEBHOOK_SECRET=os.environ.get("CASHFREE_WEBHOOK_SECRET", "")
 CASHFREE_API_VERSION=os.environ.get("CASHFREE_API_VERSION", "2023-08-01")
 CASHFREE_ENVIRONMENT=os.environ.get("CASHFREE_ENVIRONMENT", "sandbox")  # sandbox or production
 CASHFREE_PG_BASE_URL = os.environ.get("CASHFREE_PG_BASE_URL", "https://sandbox.cashfree.com")
+
+CASHFREE_PAYOUTS_CLIENT_ID = os.environ.get("CASHFREE_PAYOUTS_CLIENT_ID", "")
+CASHFREE_PAYOUTS_CLIENT_SECRET = os.environ.get("CASHFREE_PAYOUTS_CLIENT_SECRET", "")
+CASHFREE_PAYOUTS_BASE_URL = os.environ.get("CASHFREE_PAYOUTS_BASE_URL", "https://payout-api.cashfree.com/payout/v1")
+
 
 # Payment Gateway Selection
 PAYMENT_GATEWAY=os.environ.get("PAYMENT_GATEWAY", "cashfree")
@@ -279,3 +284,32 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Sentry Configuration
+SENTRY_DSN = os.environ.get('SENTRY_DSN')
+if SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.redis import RedisIntegration
+    from django.dispatch.dispatcher import Signal
+
+    # WORKAROUND: sentry-sdk 1.32.0 crashes on Django 5.0 due to a bug in signal receiver patching
+    # (TypeError: 'tuple' object does not support item assignment). We must use 1.32.0 for cashfree-pg.
+    # We bypass this by restoring the original _live_receivers function after sentry_sdk init.
+    original_live_receivers = getattr(Signal, '_live_receivers', None)
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[
+            DjangoIntegration(),
+            CeleryIntegration(),
+            RedisIntegration(),
+        ],
+        traces_sample_rate=1.0,
+        send_default_pii=True,
+        environment=os.environ.get('ENVIRONMENT', 'production' if not DEBUG else 'development')
+    )
+
+    if original_live_receivers:
+        Signal._live_receivers = original_live_receivers

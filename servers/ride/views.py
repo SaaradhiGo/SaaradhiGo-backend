@@ -696,9 +696,128 @@ def get_active_trip(request):
             code='NO_ACTIVE_TRIP',
             message='No active trip found',
             field='trip',
-            issue='User has no active or recent trip',
             status=status.HTTP_404_NOT_FOUND
         )
 
     serializer = TripDetailSerializer(trip)
     return success_response(serializer.data, status.HTTP_200_OK)
+
+from servers.redis_client import check_maps_rate_limit, get_cached_map_data, cache_map_data
+from servers.ride.maps_utils import google_places_autocomplete, google_directions
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def proxy_geocode(request):
+    """
+    Proxy for Google Places Autocomplete/Geocode.
+    Expected data: {"input": "search string", "location": "lat,lng" (optional)}
+    """
+    user_id = request.user.id
+    if not check_maps_rate_limit(user_id, limit=100, period=3600):
+        return error_response(
+            code='RATE_LIMIT_EXCEEDED',
+            message='You have exceeded your API rate limit',
+            field='api',
+            issue='Too many requests to maps proxy',
+            status=status.HTTP_429_TOO_MANY_REQUESTS
+        )
+
+    search_text = request.data.get('input')
+    location = request.data.get('location')
+
+    if not search_text:
+        return error_response(
+            code='MISSING_FIELDS',
+            message='input field is required',
+            field='input',
+            issue='Search text not provided',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    cache_key = f"maps:geocode:{search_text.lower().strip()}:{location or ''}"
+    cached_data = get_cached_map_data(cache_key)
+    if cached_data:
+        return success_response(cached_data, status.HTTP_200_OK)
+
+    result = google_places_autocomplete(search_text, location=location)
+    if result is None:
+        return error_response(
+            code='API_ERROR',
+            message='Failed to fetch data from Maps API',
+            field='api',
+            issue='Upstream service error',
+            status=status.HTTP_502_BAD_GATEWAY
+        )
+
+    # Cache for 30 days
+    cache_map_data(cache_key, result, ttl_seconds=30*24*60*60)
+    return success_response(result, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def proxy_directions(request):
+    """
+    Proxy for Google Directions.
+    Expected data: {
+        "origin_lat": float, "origin_lng": float,
+        "dest_lat": float, "dest_lng": float
+    }
+    """
+    user_id = request.user.id
+    if not check_maps_rate_limit(user_id, limit=100, period=3600):
+        return error_response(
+            code='RATE_LIMIT_EXCEEDED',
+            message='You have exceeded your API rate limit',
+            field='api',
+            issue='Too many requests to maps proxy',
+            status=status.HTTP_429_TOO_MANY_REQUESTS
+        )
+
+    origin_lat = request.data.get('origin_lat')
+    origin_lng = request.data.get('origin_lng')
+    dest_lat = request.data.get('dest_lat')
+    dest_lng = request.data.get('dest_lng')
+
+    if not all([origin_lat, origin_lng, dest_lat, dest_lng]):
+        return error_response(
+            code='MISSING_FIELDS',
+            message='origin and destination coordinates are required',
+            field='coordinates',
+            issue='Missing lat/lng fields',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Round to 4 decimal places for caching (~11m precision)
+    try:
+        origin_lat = round(float(origin_lat), 4)
+        origin_lng = round(float(origin_lng), 4)
+        dest_lat = round(float(dest_lat), 4)
+        dest_lng = round(float(dest_lng), 4)
+    except (ValueError, TypeError):
+        return error_response(
+            code='INVALID_TYPE',
+            message='Coordinates must be numbers',
+            field='coordinates',
+            issue='Invalid type',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    cache_key = f"maps:directions:{origin_lat},{origin_lng}:{dest_lat},{dest_lng}"
+    cached_data = get_cached_map_data(cache_key)
+    if cached_data:
+        return success_response(cached_data, status.HTTP_200_OK)
+
+    result = google_directions(origin_lat, origin_lng, dest_lat, dest_lng)
+    if result is None:
+        return error_response(
+            code='API_ERROR',
+            message='Failed to fetch data from Maps API',
+            field='api',
+            issue='Upstream service error',
+            status=status.HTTP_502_BAD_GATEWAY
+        )
+
+    # Cache for 5 minutes
+    cache_map_data(cache_key, result, ttl_seconds=300)
+    return success_response(result, status.HTTP_200_OK)

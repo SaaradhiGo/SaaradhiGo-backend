@@ -98,20 +98,20 @@ class BasePaymentGateway(ABC):
     #     """
     #     pass
     
-    # @abstractmethod
-    # def create_upi_payout(
-    #     self,
-    #     upi_id: str,
-    #     amount: float,
-    #     purpose: str = "payout",
-    #     currency: str = "INR",
-    #     reference_id: Optional[str] = None,
-    #     name: Optional[str] = None
-    # ) -> Optional[Dict[str, Any]]:
-    #     """
-    #     Create a payout to a UPI ID.
-    #     """
-    #     pass
+    @abstractmethod
+    def create_upi_payout(
+        self,
+        upi_id: str,
+        amount: float,
+        purpose: str = "payout",
+        currency: str = "INR",
+        reference_id: Optional[str] = None,
+        name: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Create a payout to a UPI ID.
+        """
+        pass
 
     # @abstractmethod
     # def create_beneficiary(

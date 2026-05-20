@@ -1,4 +1,4 @@
-﻿amqp==5.3.1
+amqp==5.3.1
 asgiref==3.11.0
 billiard==4.2.4
 boto3==1.42.2
@@ -43,4 +43,4 @@ psycopg2-binary==2.9.9
 cashfree-pg==3.2.12
 pydantic>=1.10.5,<2.0.0
 cryptography==44.0.0
-
+sentry-sdk[django]==1.32.0

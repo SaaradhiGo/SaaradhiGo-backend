@@ -276,8 +276,84 @@ class CashfreeGateway(BasePaymentGateway):
             if isinstance(e, requests.exceptions.RequestException) and getattr(e, 'response', None) is not None:
                 logger.error(f"Cashfree response: {e.response.text}")
             return None
-  
+            
+    def _get_payout_token(self) -> Optional[str]:
+        """Get bearer token for Cashfree Payouts V1."""
+        client_id = getattr(settings, 'CASHFREE_PAYOUTS_CLIENT_ID', None)
+        client_secret = getattr(settings, 'CASHFREE_PAYOUTS_CLIENT_SECRET', None)
+        base_url = getattr(settings, 'CASHFREE_PAYOUTS_BASE_URL', 'https://payout-api.cashfree.com/payout/v1')
 
+        if not client_id or not client_secret:
+            logger.error("Cashfree Payouts credentials not configured.")
+            return None
 
+        url = f"{base_url}/authorize"
+        headers = {
+            "X-Client-Id": client_id,
+            "X-Client-Secret": client_secret,
+        }
+        try:
+            response = requests.post(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            if data.get("subCode") == "200":
+                return data["data"]["token"]
+            else:
+                logger.error(f"Failed to authorize Cashfree Payouts: {data.get('message')}")
+                return None
+        except Exception as e:
+            logger.error(f"Error authenticating with Cashfree Payouts: {e}")
+            return None
 
+    def create_upi_payout(
+        self,
+        upi_id: str,
+        amount: float,
+        purpose: str = "payout",
+        currency: str = "INR",
+        reference_id: Optional[str] = None,
+        name: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Create a payout to a UPI ID using Cashfree Payouts V1."""
+        token = self._get_payout_token()
+        if not token:
+            return None
 
+        base_url = getattr(settings, 'CASHFREE_PAYOUTS_BASE_URL', 'https://payout-api.cashfree.com/payout/v1')
+        url = f"{base_url}/requestTransfer"
+        
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "beneId": reference_id,
+            "amount": float(amount),
+            "transferId": reference_id,
+            "transferMode": "upi",
+            "vpa": upi_id,
+            "remarks": purpose,
+            "name": name or "Driver"
+        }
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get("subCode") == "200":
+                return {
+                    "payout_id": data["data"]["referenceId"], # Cashfree reference
+                    "status": "pending",
+                    "contact_id": reference_id,
+                    "fund_account_id": reference_id
+                }
+            else:
+                logger.error(f"Cashfree Payout Failed: {data.get('message')}")
+                return None
+        except Exception as e:
+            logger.error(f"Error creating Cashfree UPI payout: {e}")
+            if isinstance(e, requests.exceptions.RequestException) and getattr(e, 'response', None) is not None:
+                logger.error(f"Cashfree API Error Response: {e.response.text}")
+            return None

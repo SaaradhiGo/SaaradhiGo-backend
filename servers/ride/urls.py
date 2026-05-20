@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import estimate_fare, ride_history, driver_history, trip_detail, rate_trip,trip_driver_details, get_active_trip
+from .views import estimate_fare, ride_history, driver_history, trip_detail, rate_trip,trip_driver_details, get_active_trip, proxy_geocode, proxy_directions
 from .admin_views import admin_list_trips, admin_live_locations
 
 urlpatterns = [
@@ -12,6 +12,10 @@ urlpatterns = [
     path('trip/<int:trip_id>/details/',trip_driver_details),
     path('rate-trip/', rate_trip),
     
+    # Maps Proxy
+    path('maps/geocode', proxy_geocode),
+    path('maps/directions', proxy_directions),
+
     # Admin Panel APIs
     path('admin/trips/', admin_list_trips),
     path('admin/live-locations/', admin_live_locations),

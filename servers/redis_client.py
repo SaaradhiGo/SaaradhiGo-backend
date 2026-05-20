@@ -551,3 +551,55 @@ def get_all_active_riders():
     except Exception as e:
         logger.error(f"Failed to get active riders: {e}")
         return []
+
+# --- Maps Proxy Caching & Rate Limiting ---
+
+def check_maps_rate_limit(user_id, limit=100, period=3600):
+    """
+    Check if a user has exceeded their Maps API proxy rate limit.
+    Uses a simple fixed-window counter.
+    """
+    if redis_client is None:
+        return True  # Fail open if Redis is down
+    try:
+        key = f"maps_rate_limit:{user_id}"
+        count = redis_client.incr(key)
+        if count == 1:
+            redis_client.expire(key, period)
+        if count > limit:
+            logger.warning(f"User {user_id} exceeded maps rate limit")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Failed to check maps rate limit for {user_id}: {e}")
+        return True
+
+import json
+
+def get_cached_map_data(key):
+    """
+    Retrieve cached map data from Redis.
+    """
+    if redis_client is None:
+        return None
+    try:
+        data = redis_client.get(key)
+        if data:
+            return json.loads(data)
+        return None
+    except Exception as e:
+        logger.error(f"Failed to get cached map data for {key}: {e}")
+        return None
+
+def cache_map_data(key, data, ttl_seconds):
+    """
+    Cache map data in Redis.
+    """
+    if redis_client is None:
+        return False
+    try:
+        redis_client.setex(key, ttl_seconds, json.dumps(data))
+        return True
+    except Exception as e:
+        logger.error(f"Failed to cache map data for {key}: {e}")
+        return False

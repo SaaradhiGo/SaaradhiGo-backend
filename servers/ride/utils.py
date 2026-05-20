@@ -162,140 +162,42 @@ def _is_night_hours():
 
 
 def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=None, pickup_long=None, rider_id=None):
-    """
-    Estimate fare using VehicleFarePricing from DB.
-    Falls back to default constants if vehicle type pricing not found.
-    Calculates dynamic surge based on ratio of nearby demand to supply.
-    
-    Args:
-        distance_km: Distance in kilometers (from frontend/Google Maps)
-        duration_min: Duration in minutes (from frontend/Google Maps)
-        vehicle_type: Vehicle type name (e.g. 'bike', 'auto', 'car', 'suv', 'luxury') or None for defaults
-        pickup_lat: Latitude where ride starts
-        pickup_long: Longitude where ride starts
-        rider_id: The ID of the authenticated rider
-    
-    Returns:
-        dict: {
-            'total_fare': Decimal,
-            'base_fare': Decimal,
-            'distance_fare': Decimal,
-            'time_fare': Decimal,
-            'surge_multiplier': Decimal,
-            'min_fare_applied': bool,
-            'vehicle_type': str,
-            'source': str  ('db' or 'default')
-        }
-    """
-    try:
-        distance_km = max(Decimal(str(distance_km)), Decimal('0'))
-        duration_min = max(Decimal(str(duration_min)), Decimal('0'))
-    except (ValueError, TypeError, ArithmeticError) as e:
-        logger.warning(f"Invalid fare input: {e}, returning defaults with zero distance")
-        distance_km = Decimal('0')
-        duration_min = Decimal('0')
+    """Estimate fare for a trip.
 
+    Backwards-compatibility wrapper. The fare logic lives in
+    `servers.pricing.services.quote_fare` -- this function exists so
+    existing callers (estimate_fare view, consumers) keep working
+    without per-caller edits.
+
+    Returns the same dict shape callers used to consume from the
+    legacy implementation, with two new keys exposed:
+        zone_code, rate_card_version
+    """
     if not vehicle_type:
         raise ValueError("Vehicle type is required")
 
-    # Initialize from defaults FIRST. The DB lookup below either overwrites
-    # all of them or leaves the defaults in place. Without these baseline
-    # assignments, any "use defaults" path produced an UnboundLocalError
-    # when distance_fare = per_km * distance_km ran below.
-    base_fare = DEFAULT_BASE_FARE
-    per_km = DEFAULT_PER_KM_FARE
-    per_min = DEFAULT_PER_MIN_FARE
-    min_fare = DEFAULT_MIN_FARE
-    night_surge = DEFAULT_NIGHT_SURGE
-    source = 'default'
+    from servers.pricing.services import quote_fare
 
-    try:
-        from servers.ride.models import VehicleFarePricing
-        from servers.driver.models import VehicleType
-
-        vt = VehicleType.objects.filter(type__iexact=vehicle_type).first()
-        if vt:
-            pricing = VehicleFarePricing.objects.filter(vehicle_type_id=vt).first()
-            if pricing:
-                base_fare = pricing.base_fare
-                per_km = pricing.per_km_fare
-                per_min = pricing.per_min_fare
-                min_fare = pricing.min_fare
-                night_surge = pricing.night_surge_multiplier
-                source = 'db'
-            else:
-                logger.info(f"No fare pricing found for vehicle type '{vehicle_type}', using defaults")
-        else:
-            logger.info(f"Vehicle type '{vehicle_type}' not found, using defaults")
-    except Exception as e:
-        logger.warning(f"DB lookup failed for vehicle type '{vehicle_type}': {e}, using defaults")
-
-    # Calculate fare components
-    distance_fare = per_km * distance_km
-    time_fare = per_min * duration_min
-    subtotal = base_fare + distance_fare + time_fare
-
-    # Track overall surge 
-    surge_multiplier = Decimal('1.00')
-    
-    # 1. Apply night surge rules
-    # if _is_night_hours():
-    #     surge_multiplier = night_surge
-    #     subtotal = subtotal * surge_multiplier
-
-    # 2. Dynamic Micro-Surge based on real-time Density
-    dynamic_surge = Decimal('1.00')
-    if pickup_lat and pickup_long:
-        from servers.redis_client import nearby_drivers, add_rider_ping, count_nearby_active_riders
-        
-        # Ping the rider's presence if id is available
-        if rider_id:
-            add_rider_ping(rider_id, pickup_long, pickup_lat)
-            
-        try:
-            # Get supply (drivers nearby in 3km)
-            nearby_supply_list = nearby_drivers(pickup_long, pickup_lat, radius=3000, count=100) or []
-            supply = len(nearby_supply_list)
-            
-            # Get demand (riders nearby pinging in last 3 mins)
-            demand = count_nearby_active_riders(pickup_long, pickup_lat, radius=3000)
-            
-            safe_supply = max(supply, 1) # Prevent div-zero
-            ratio = demand / safe_supply
-            
-            # Apply tiered surge limits
-            if ratio >= 5:
-                dynamic_surge = Decimal('1.50')
-            elif ratio >= 3:
-                dynamic_surge = Decimal('1.30')
-            elif ratio >= 1.5:
-                dynamic_surge = Decimal('1.15')
-            elif ratio < 0.5 and supply >= 10:
-                # Give a minor discount if supply heavily outweighs demand
-                dynamic_surge = Decimal('0.90')
-                
-            subtotal = subtotal * dynamic_surge
-            surge_multiplier = surge_multiplier * dynamic_surge
-        except Exception as e:
-            logger.error(f"Failed to calculate dynamic surge: {e}")
-
-    # Apply minimum fare constraint after all surges applied
-    min_fare_applied = False
-    if subtotal < min_fare:
-        subtotal = min_fare
-        min_fare_applied = True
-
-    total_fare = round(subtotal, 2)
-
+    fare = quote_fare(
+        distance_km=distance_km,
+        duration_min=duration_min,
+        vehicle_type=vehicle_type,
+        pickup_lat=pickup_lat,
+        pickup_lon=pickup_long,
+        rider_id=rider_id,
+    )
+    # Preserve the legacy dict shape for existing consumers.
     return {
-        'total_fare': total_fare,
-        'base_fare': round(base_fare, 2),
-        'distance_fare': round(distance_fare, 2),
-        'time_fare': round(time_fare, 2),
-        'surge_multiplier': round(surge_multiplier, 2),
-        'min_fare_applied': min_fare_applied,
-        'vehicle_type': vehicle_type or 'default',
-        'source': source,
+        'total_fare': fare['total_fare'],
+        'base_fare': fare['base_fare'],
+        'distance_fare': fare['distance_fare'],
+        'time_fare': fare['time_fare'],
+        'surge_multiplier': fare['surge_multiplier'],
+        'min_fare_applied': fare['min_fare_applied'],
+        'vehicle_type': fare['vehicle_type'],
+        'source': fare['source'],
+        'zone_code': fare.get('zone_code', ''),
+        'rate_card_version': fare.get('rate_card_version'),
     }
 
 def get_trip_details(trip_id):

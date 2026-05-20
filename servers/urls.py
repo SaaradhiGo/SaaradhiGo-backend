@@ -6,6 +6,7 @@ from servers.driver import urls as driver_urls
 from servers.ride import urls as ride_urls
 from servers.payments import urls as payments_urls
 from servers.sos import urls as sos_urls
+from servers.pricing import urls as pricing_urls
 
 urlpatterns = [
     path('auth/', include(auth_user_urls.urlpatterns)),
@@ -14,4 +15,5 @@ urlpatterns = [
     path('ride/', include(ride_urls)),
     path('payments/', include(payments_urls)),
     path('sos/', include(sos_urls.urlpatterns)),
+    path('pricing/', include(pricing_urls)),
 ]

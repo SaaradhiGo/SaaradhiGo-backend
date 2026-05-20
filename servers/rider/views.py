@@ -287,12 +287,31 @@ def get_wallet_balance(request):
 def create_wallet_order(request):
     """
     Create a Cashfree order for a wallet top-up.
-    
+
     Expected: { "amount": "500.00" }
+
+    Phase-0: External top-ups are disabled by default
+    (`settings.WALLET_TOPUPS_ENABLED = False`) so the wallet stays a
+    closed-loop credit store -- outside the RBI Prepaid Payment
+    Instrument perimeter. See ADR-0003 / legal/credits-policy.md.
     """
+    from django.conf import settings as dj_settings
+    if not getattr(dj_settings, 'WALLET_TOPUPS_ENABLED', False):
+        return error_response(
+            code='FEATURE_DISABLED',
+            message=(
+                'Wallet top-ups are temporarily unavailable. '
+                'VahanGo Credits earned from refunds, promos, and support '
+                'credits remain spendable on your next ride.'
+            ),
+            field='wallet_topups',
+            issue='WALLET_TOPUPS_ENABLED=False (closed-loop credits posture)',
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
     from .models import WalletTransaction
     from servers.payments.payment_gateways.factory import get_payment_gateway
-    
+
     amount = request.data.get('amount')
     if not amount:
         return error_response(
@@ -381,12 +400,26 @@ def create_wallet_order(request):
 def verify_wallet_payment(request):
     """
     Verify a wallet top-up payment.
-    
+
     Expected: {
         "gateway_order_id": str,
         "gateway_payment_id": str
     }
+
+    Phase-0: gated behind WALLET_TOPUPS_ENABLED. Returns 503 when the
+    closed-loop credits posture is in force so older app builds do not
+    silently move money around behind the user's back.
     """
+    from django.conf import settings as dj_settings
+    if not getattr(dj_settings, 'WALLET_TOPUPS_ENABLED', False):
+        return error_response(
+            code='FEATURE_DISABLED',
+            message='Wallet top-ups are temporarily unavailable.',
+            field='wallet_topups',
+            issue='WALLET_TOPUPS_ENABLED=False (closed-loop credits posture)',
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
     from .models import WalletTransaction, Wallet
     from servers.payments.payment_gateways.factory import get_payment_gateway
     from django.db import transaction

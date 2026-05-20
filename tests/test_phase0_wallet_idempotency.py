@@ -20,6 +20,18 @@ from unittest.mock import patch
 import pytest
 
 
+# These tests pre-date the Phase-0 closed-loop wallet posture
+# (WALLET_TOPUPS_ENABLED=False by default; see ADR-0003). They exercise
+# the OLD top-up code path to lock in the idempotency fix from PR #6.
+# Re-enable the flag for every test in this module so the gate doesn't
+# short-circuit the assertions about gateway verification / double-credit
+# / amount-mismatch behaviour. The closed-loop gate itself is asserted
+# separately in tests/test_closed_loop_wallet.py.
+@pytest.fixture(autouse=True)
+def _enable_topups_for_idempotency_tests(settings):
+    settings.WALLET_TOPUPS_ENABLED = True
+
+
 # A test-only stand-in for `gateway` — must implement the methods the
 # wallet flow calls (get_order_status). create_order isn't exercised
 # in these tests; we seed the WalletTransaction directly.

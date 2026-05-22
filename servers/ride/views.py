@@ -660,17 +660,14 @@ def rate_trip(request):
                 driver.save(update_fields=['ratings'])
 
         elif is_driver:
-            # Driver→rider average: every Rating whose trip's rider was
-            # this rider AND whose rater was that trip's driver's user.
+            # Driver -> rider rating. Routed through the rating-decay
+            # service so flag-for-review + soft-block thresholds are
+            # honoured. Previous code did a raw running average that
+            # never touched flagged_for_review.
             try:
                 rider = Rider.objects.get(user_id=trip.user_id)
-                avg = Rating.objects.filter(
-                    trip_id__user_id=trip.user_id,
-                    rater_id=F('trip_id__driver_id__user_id'),
-                ).aggregate(avg_score=Avg('score'))['avg_score']
-                if avg:
-                    rider.rating = round(Decimal(str(avg)), 1)
-                    rider.save(update_fields=['rating'])
+                from servers.rider.rating_decay import apply_rider_rating
+                apply_rider_rating(rider, score)
             except Rider.DoesNotExist:
                 pass
 
@@ -681,6 +678,149 @@ def rate_trip(request):
         'comments': rating.comments,
         'message': 'Rating submitted successfully',
     }, status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def receipt_pdf(request, trip_id):
+    """Return a signed URL to the latest Receipt's PDF for this trip.
+
+    Rider-only (or admin). Returns 404 if no receipt exists yet, or if
+    the receipt has no PDF (very early trips, or PDF generation
+    failed). Use /receipt/resend/ to force re-issue, which retries the
+    PDF render too.
+    """
+    from servers.ride.models import Receipt, Trip
+    try:
+        trip = Trip.objects.get(id=trip_id)
+    except Trip.DoesNotExist:
+        return error_response(
+            code='NOT_FOUND', message='Trip not found.',
+            field='trip_id', issue=f'No trip {trip_id}',
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    if not (trip.user_id_id == request.user.id or request.user.is_staff):
+        return error_response(
+            code='FORBIDDEN', message='Not your trip.',
+            field='trip_id', issue='User mismatch',
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    receipt = Receipt.objects.filter(trip_id=trip).order_by('-version', '-id').first()
+    if not receipt or not receipt.pdf_file:
+        return error_response(
+            code='PDF_UNAVAILABLE',
+            message='No PDF available for this trip yet. Try resending the receipt.',
+            field='trip_id', issue='no pdf_file on latest Receipt',
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    return success_response(
+        {
+            'trip_id': trip.id,
+            'receipt_number': receipt.receipt_number,
+            'pdf_url': receipt.pdf_file.url,
+            'version': receipt.version,
+        },
+        status.HTTP_200_OK,
+    )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def apply_promo_endpoint(request):
+    """Preview a promo code against a fare quote.
+
+    Body: {"code": str, "fare": "150.00",
+           "pickup_lat": ..., "pickup_long": ...}
+    The pickup is used to scope zone-bound promos. We don't redeem
+    yet; that happens once the trip is created. The response is the
+    same shape as PromoResult.to_dict().
+    """
+    from servers.ride.promos import apply_promo
+    from servers.pricing.services import find_zone_for_point
+    code = (request.data.get('code') or '').strip()
+    fare = request.data.get('fare')
+    if not code or fare is None:
+        return error_response(
+            code='MISSING_FIELDS', message='code + fare required',
+            field='code,fare', issue='Both required',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        fare_dec = Decimal(str(fare))
+    except Exception:
+        return error_response(
+            code='INVALID_TYPE', message='fare must be numeric',
+            field='fare', issue=str(fare),
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    zone = None
+    p_lat = request.data.get('pickup_lat')
+    p_lon = request.data.get('pickup_long')
+    if p_lat is not None and p_lon is not None:
+        try:
+            zone = find_zone_for_point(float(p_lat), float(p_lon))
+        except Exception:
+            zone = None
+    result = apply_promo(code, request.user, fare_dec, zone=zone)
+    http_status = status.HTTP_200_OK if result.ok else status.HTTP_400_BAD_REQUEST
+    return success_response(result.to_dict(), http_status) if result.ok else error_response(
+        code=result.reason or 'PROMO_INVALID',
+        message=result.description or 'Promo could not be applied.',
+        field='code', issue=result.reason,
+        status=http_status,
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def trip_chat_history(request, trip_id):
+    """Paginated chat history for a trip.
+
+    Both rider and driver may read; admin too. Messages are returned
+    in chronological order. Marks all the caller's unread messages as
+    read on each fetch (cheap query, sets read_at).
+    """
+    from servers.ride.models import ChatMessage, Trip
+    from django.utils import timezone
+    try:
+        trip = Trip.objects.select_related('driver_id').get(id=trip_id)
+    except Trip.DoesNotExist:
+        return error_response(
+            code='NOT_FOUND', message='Trip not found.',
+            field='trip_id', issue=f'No trip {trip_id}',
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    is_rider = trip.user_id_id == request.user.id
+    is_driver = trip.driver_id and trip.driver_id.user_id_id == request.user.id
+    if not (is_rider or is_driver or request.user.is_staff):
+        return error_response(
+            code='FORBIDDEN', message='Not a participant.',
+            field='trip_id', issue='User mismatch',
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    qs = ChatMessage.objects.filter(trip=trip).order_by('created_at')
+    paginator = PageNumberPagination()
+    paginator.page_size = 50
+    page = paginator.paginate_queryset(qs, request)
+    payload = [
+        {
+            'id': m.id,
+            'sender_role': m.sender_role,
+            'body': m.body,
+            'is_system': m.is_system,
+            'created_at': m.created_at.isoformat(),
+            'read_at': m.read_at.isoformat() if m.read_at else None,
+        }
+        for m in page
+    ]
+    # Mark peer messages as read for this caller.
+    role = 'rider' if is_rider else ('driver' if is_driver else None)
+    if role:
+        ChatMessage.objects.filter(trip=trip).exclude(
+            sender_role=role,
+        ).filter(read_at__isnull=True).update(read_at=timezone.now())
+    return paginator.get_paginated_response(payload)
 
 
 @api_view(['POST'])

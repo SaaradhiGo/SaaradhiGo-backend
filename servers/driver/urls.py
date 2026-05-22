@@ -5,7 +5,8 @@ from .views import (
     driver_withdrawal_balance, driver_withdrawal_request, driver_withdrawal_history, driver_withdrawal_block_status
 )
 from .admin_views import (
-    list_drivers_admin, retrieve_driver_admin, update_kyc_status_admin, delete_driver_admin, get_vehicle_details,
+    list_drivers_admin, retrieve_driver_admin, driver_full_detail_admin,
+    update_kyc_status_admin, delete_driver_admin, get_vehicle_details,
     list_withdrawals_admin, approve_withdrawal_admin, reject_withdrawal_admin, bulk_action_withdrawal_admin
 )
 
@@ -33,6 +34,7 @@ urlpatterns = [
     # Admin URLs
     path('admin/', list_drivers_admin),
     path('admin/<int:driver_id>/', retrieve_driver_admin),
+    path('admin/<int:driver_id>/full/', driver_full_detail_admin),
     path('admin/<int:driver_id>/update-kyc/', update_kyc_status_admin),
     path('admin/<int:driver_id>/delete/', delete_driver_admin),
     path('admin/<int:driver_id>/vehicles/', get_vehicle_details),

@@ -58,6 +58,216 @@ def retrieve_driver_admin(request, driver_id):
             status=status.HTTP_404_NOT_FOUND
         )
 
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsAdmin])
+def driver_full_detail_admin(request, driver_id):
+    """Driver aggregate for the ops console driver-detail page.
+
+    One endpoint, one round-trip. Mirrors the admin_trip_detail
+    pattern: ops opens this page when there's a question about a
+    driver and we'd rather return everything than fan out to N
+    endpoints.
+
+    Aggregates across nine surfaces:
+      core driver row (rating, status, fatigue lockout, license expiry)
+      user_id (phone, full_name, email)
+      vehicles[]  -- every vehicle on file with all four credential
+                     expiries; active_vehicle is flagged
+      earnings_summary: lifetime earned, today, current-month, last
+                        withdrawal date
+      sessions[] (last 20)  -- online/offline ledger for the fatigue
+                               audit story
+      cancellations_24h / cancellations_7d / cancellations_30d counts
+      withdrawals[] (last 10)
+      recent_trips[] (last 20)
+      fatigue_status -- computed via driver.fatigue.get_fatigue_status
+
+    Heavier paginated views (full trip history, full withdrawal log)
+    stay on their existing endpoints.
+    """
+    from datetime import timedelta
+    from decimal import Decimal
+    from django.db.models import Sum
+    from django.utils import timezone
+
+    try:
+        driver = Driver.objects.select_related(
+            'user_id', 'active_vehicle', 'active_vehicle__vehicle_type_id',
+        ).get(id=driver_id)
+    except Driver.DoesNotExist:
+        return error_response(
+            code='NOT_FOUND', message='Driver not found.',
+            field='driver_id', issue=f'No driver {driver_id}',
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    user = driver.user_id
+    now = timezone.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = today_start.replace(day=1)
+    last_24h = now - timedelta(hours=24)
+    last_7d = now - timedelta(days=7)
+    last_30d = now - timedelta(days=30)
+
+    # ---- vehicles ----
+    vehicles_payload = []
+    for v in driver.vehicle_set.select_related('vehicle_type_id').all():
+        vehicles_payload.append({
+            'id': v.id,
+            'type': v.vehicle_type_id.type if v.vehicle_type_id else None,
+            'brand': v.brand,
+            'model': v.model,
+            'color': v.color,
+            'year': v.year,
+            'vehicle_number': v.vehicle_number,
+            'status': v.status,
+            'insurance_expiry': v.insurance_expiry.isoformat() if v.insurance_expiry else None,
+            'permit_expiry': v.permit_expiry.isoformat() if v.permit_expiry else None,
+            'fitness_expiry': v.fitness_expiry.isoformat() if v.fitness_expiry else None,
+            'puc_expiry': v.puc_expiry.isoformat() if v.puc_expiry else None,
+            'is_active_vehicle': bool(driver.active_vehicle_id and driver.active_vehicle_id == v.id),
+        })
+
+    # ---- fatigue status (computes live + persists lockout if breached) ----
+    fatigue_payload = None
+    try:
+        from servers.driver.fatigue import get_fatigue_status
+        fatigue_payload = get_fatigue_status(driver).to_dict()
+    except Exception:
+        pass
+
+    # ---- driver sessions (last 20) ----
+    sessions_payload = []
+    try:
+        from servers.driver.models import DriverSession
+        for s in DriverSession.objects.filter(driver=driver).order_by('-started_at')[:20]:
+            sessions_payload.append({
+                'id': s.id,
+                'started_at': s.started_at.isoformat() if s.started_at else None,
+                'ended_at': s.ended_at.isoformat() if s.ended_at else None,
+                'duration_seconds': s.duration_seconds,
+                'end_reason': s.end_reason,
+            })
+    except Exception:
+        pass
+
+    # ---- cancellation counts ----
+    cancellations_payload = {'last_24h': 0, 'last_7d': 0, 'last_30d': 0}
+    try:
+        from servers.driver.models import DriverCancellation
+        cancellations_payload['last_24h'] = DriverCancellation.objects.filter(
+            driver=driver, created_at__gte=last_24h,
+        ).count()
+        cancellations_payload['last_7d'] = DriverCancellation.objects.filter(
+            driver=driver, created_at__gte=last_7d,
+        ).count()
+        cancellations_payload['last_30d'] = DriverCancellation.objects.filter(
+            driver=driver, created_at__gte=last_30d,
+        ).count()
+    except Exception:
+        pass
+
+    # ---- withdrawals (last 10) ----
+    withdrawals_payload = []
+    try:
+        from servers.driver.models import WithdrawalRequest
+        for w in WithdrawalRequest.objects.filter(driver=driver).order_by('-requested_at')[:10]:
+            withdrawals_payload.append({
+                'id': w.id,
+                'amount': str(w.amount),
+                'status': w.status,
+                'payout_method': w.payout_method,
+                'requested_at': w.requested_at.isoformat() if w.requested_at else None,
+                'processed_at': w.processed_at.isoformat() if w.processed_at else None,
+                'payout_status': w.payout_status,
+                'failure_count': w.failure_count,
+            })
+    except Exception:
+        pass
+
+    # ---- recent trips (last 20) ----
+    recent_trips = []
+    try:
+        from servers.ride.models import Trip
+        for t in Trip.objects.filter(driver_id=driver).select_related('status_id').order_by('-requested_at')[:20]:
+            recent_trips.append({
+                'id': t.id,
+                'status': t.status_id.status_code if t.status_id else None,
+                'pickup_address': t.pickup_address,
+                'destination_address': t.destination_address,
+                'estimated_fare': str(t.estimated_fare) if t.estimated_fare is not None else None,
+                'final_fare': str(t.final_fare) if t.final_fare is not None else None,
+                'requested_at': t.requested_at.isoformat() if t.requested_at else None,
+                'completed_at': t.completed_at.isoformat() if t.completed_at else None,
+            })
+    except Exception:
+        pass
+
+    # ---- earnings summary ----
+    earnings_payload = {
+        'lifetime': '0.00', 'today': '0.00', 'this_month': '0.00',
+        'last_withdrawal_at': driver.last_withdrawal_at.isoformat() if driver.last_withdrawal_at else None,
+        'wallet_balance': '0.00',
+    }
+    try:
+        from servers.rider.models import Wallet
+        try:
+            w = Wallet.objects.get(user_id=user)
+            earnings_payload['wallet_balance'] = str(w.balance)
+        except Wallet.DoesNotExist:
+            pass
+    except Exception:
+        pass
+    try:
+        # Driver earnings are recorded as completed trips' final_fare
+        # net of platform commission inside the payments flow. For the
+        # ops "how much has this driver earned" question, summing
+        # completed Trip.final_fare is a reasonable approximation that
+        # matches how the dashboard's GMV is computed. The full ledger
+        # lives in TransactionHistory + DriverEarning rows (see
+        # /driver/earnings/ for the authoritative view).
+        from servers.ride.models import Trip
+        completed_qs = Trip.objects.filter(
+            driver_id=driver, status_id__status_code='completed',
+        )
+        lifetime = completed_qs.aggregate(s=Sum('final_fare'))['s'] or Decimal('0.00')
+        today_amt = completed_qs.filter(completed_at__gte=today_start).aggregate(s=Sum('final_fare'))['s'] or Decimal('0.00')
+        month_amt = completed_qs.filter(completed_at__gte=month_start).aggregate(s=Sum('final_fare'))['s'] or Decimal('0.00')
+        earnings_payload['lifetime'] = str(lifetime)
+        earnings_payload['today'] = str(today_amt)
+        earnings_payload['this_month'] = str(month_amt)
+    except Exception:
+        pass
+
+    payload = {
+        'id': driver.id,
+        'status': driver.status,
+        'approved': driver.approved,
+        'ratings': str(driver.ratings),
+        'total_trips': driver.total_trips,
+        'license_expiry': driver.license_expiry.isoformat() if driver.license_expiry else None,
+        'license_doc_url': driver.license_doc.url if driver.license_doc else None,
+        'upi_id': driver.upi_id,
+        'fatigue_lockout_until': driver.fatigue_lockout_until.isoformat() if driver.fatigue_lockout_until else None,
+        'user': {
+            'id': user.id if user else None,
+            'phone_number': getattr(user, 'phone_number', None) if user else None,
+            'full_name': getattr(user, 'full_name', None) if user else None,
+            'email': getattr(user, 'email', None) if user else None,
+            'is_active': getattr(user, 'is_active', None) if user else None,
+        },
+        'active_vehicle_id': driver.active_vehicle_id,
+        'vehicles': vehicles_payload,
+        'fatigue': fatigue_payload,
+        'sessions': sessions_payload,
+        'cancellations': cancellations_payload,
+        'withdrawals': withdrawals_payload,
+        'recent_trips': recent_trips,
+        'earnings': earnings_payload,
+    }
+    return success_response(payload, status.HTTP_200_OK)
+
 @api_view(['PATCH'])
 @permission_classes([IsAuthenticated, IsAdmin])
 def update_kyc_status_admin(request, driver_id):

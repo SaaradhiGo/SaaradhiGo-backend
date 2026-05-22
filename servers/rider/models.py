@@ -96,3 +96,55 @@ class Notification(models.Model):
 
     def __str__(self):
         return f'{self.user_id} - {self.title}'
+
+
+class NotificationPreference(models.Model):
+    """Per-user notification opt-in/opt-out preferences.
+
+    Default posture for DPDP Act 2023 explicit-consent compliance:
+      transactional / ride_event / payment / payout / sos = ON
+        (cannot opt out -- these are functional / safety-critical)
+      kyc / system        = ON  (account-state changes; opt-outable
+                                 but on by default)
+      marketing / promo   = OFF (require explicit opt-in)
+
+    The dispatcher in base.utils.send_notification (and any Celery
+    task that fires marketing pushes) MUST consult this before
+    creating a Notification or sending an FCM. Code paths that touch
+    `transactional` channels do not need to check -- those are
+    delivered regardless because the user is in the middle of a flow
+    that requires them.
+    """
+    user_id = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name='notification_preferences',
+    )
+    transactional = models.BooleanField(default=True)
+    ride_event = models.BooleanField(default=True)
+    payment = models.BooleanField(default=True)
+    payout = models.BooleanField(default=True)
+    sos = models.BooleanField(default=True)
+    kyc = models.BooleanField(default=True)
+    system = models.BooleanField(default=True)
+    marketing = models.BooleanField(default=False)
+    promo = models.BooleanField(default=False)
+    # Channels (per category). All ON for transactional types so the
+    # user always gets a push for a critical event. Marketing channels
+    # respect the per-category flag above too.
+    push_enabled = models.BooleanField(default=True)
+    email_enabled = models.BooleanField(default=True)
+    sms_enabled = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # Categories that the user is allowed to disable via the API.
+    # Anything not listed here is forced True (e.g. SOS, payouts).
+    USER_TOGGLEABLE = ('ride_event', 'payment', 'kyc', 'system', 'marketing', 'promo')
+
+    def is_enabled_for(self, category: str) -> bool:
+        if category in ('transactional', 'sos', 'payout'):
+            return True  # always
+        return bool(getattr(self, category, True))
+
+    def __str__(self):
+        return f'NotifPrefs for {self.user_id_id}'

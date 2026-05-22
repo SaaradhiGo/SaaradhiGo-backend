@@ -159,20 +159,46 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
             return None
     @database_sync_to_async
     def _active_the_driver(self):
+        """Flip the driver online + open a DriverSession.
+
+        Returns {'ok': True} on success or
+        {'ok': False, 'error': ..., 'fatigue': {...}} when the driver
+        is in a fatigue / cancel lockout. The WS receive handler should
+        check `ok` and reflect the message to the client instead of
+        silently accepting the online toggle.
+        """
         try:
+            from servers.driver.fatigue import get_fatigue_status, record_session_start
+            status = get_fatigue_status(self.driver)
+            if status.locked:
+                return {
+                    'ok': False,
+                    'error': (
+                        'You are temporarily locked out from going online. '
+                        f'Try again after {status.locked_until.isoformat() if status.locked_until else "soon"}.'
+                    ),
+                    'fatigue': status.to_dict(),
+                }
             self.driver.status = "online"
             self.driver.save()
+            record_session_start(self.driver)
+            return {'ok': True, 'fatigue': status.to_dict()}
         except Exception as e:
             print(f"Error in _active_the_driver: {e}")
-            return None
+            return {'ok': False, 'error': str(e)}
+
     @database_sync_to_async
     def _deactive_the_driver(self):
+        """Flip the driver offline + close the open DriverSession."""
         try:
+            from servers.driver.fatigue import record_session_end
             self.driver.status = "off"
             self.driver.save()
+            record_session_end(self.driver, reason='offline')
+            return {'ok': True}
         except Exception as e:
             print(f"Error in _deactive_the_driver: {e}")
-            return None
+            return {'ok': False, 'error': str(e)}
     @database_sync_to_async
     def _update_driver_location(self, lng, lat):
         from servers.driver.utils import update_driver_location
@@ -962,6 +988,25 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                                  'a vehicle before accepting rides.',
                     }
 
+                # MVA 2020 fatigue gate. A driver who has done 12h in
+                # the last 24h, OR is in a cancellation lockout, cannot
+                # accept a new trip. Status is computed against
+                # DriverSession + Driver.fatigue_lockout_until and
+                # stamps the lockout column on the first breach so
+                # subsequent checks are O(1).
+                from servers.driver.fatigue import get_fatigue_status
+                fatigue = get_fatigue_status(driver)
+                if fatigue.locked:
+                    return {
+                        'success': False,
+                        'error': (
+                            'You have reached the 12-hour daily limit, or '
+                            'are in a cooldown after recent cancellations. '
+                            f'Try again after {fatigue.locked_until.isoformat() if fatigue.locked_until else "the cooldown ends"}.'
+                        ),
+                        'fatigue': fatigue.to_dict(),
+                    }
+
                 status_obj, _ = TripStatus.objects.get_or_create(
                     status_code='accepted',
                     defaults={'description': 'Trip accepted by driver'}
@@ -1156,21 +1201,31 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                     trip.completed_at = timezone.now()
                     # Create payment on trip completion within the same transaction
                     self._create_payment_on_complete(trip)
-                    
+
                     from servers.rider.models import Notification
                     Notification.objects.create(
                         user_id=trip.user_id,
                         title='Ride Completed',
-                        message=f'Your ride has been completed. Final fare: ₹{trip.final_fare or trip.estimated_fare}',
+                        message=f'Your ride has been completed. Final fare: Rs.{trip.final_fare or trip.estimated_fare}',
                     )
-                    
+
                     from servers.auth_user.services import send_push_notification
                     send_push_notification(
                         trip.user_id,
                         "Ride Completed",
-                        f"Your ride has been completed. Final fare: ₹{trip.final_fare or trip.estimated_fare}",
+                        f"Your ride has been completed. Final fare: Rs.{trip.final_fare or trip.estimated_fare}",
                         {"trip_id": str(trip.id), "type": "ride_completed"}
                     )
+
+                    # Issue + email the rider's receipt. Best-effort:
+                    # a failure to mail does not unwind the trip
+                    # completion. The receipt row is still saved so
+                    # support can resend later.
+                    try:
+                        from servers.ride.receipts import issue_receipt
+                        issue_receipt(trip)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"issue_receipt failed for trip {trip.id}: {exc}")
                 elif status_code == 'cancelled':
                     trip.cancelled_at = timezone.now()
                     self._process_refund_on_cancel(trip)

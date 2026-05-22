@@ -25,6 +25,12 @@ class Driver(models.Model):
     active_vehicle=models.ForeignKey('Vehicle',on_delete=models.SET_NULL,null=True,blank=True)
     last_withdrawal_at=models.DateTimeField(null=True,blank=True)
     upi_id=models.CharField(max_length=256,blank=True,null=True,help_text='UPI ID for UPI payouts')
+    # If set in the future, the driver is locked out of going online
+    # (and out of accepting new trips) until this timestamp. Used by:
+    #   - MVA 2020 12h/24h fatigue cap (servers.driver.services)
+    #   - Rolling cancellation cooldown (3 cancels in 24h -> 1h lockout)
+    # Nullable so legacy drivers continue to work; default unlocked.
+    fatigue_lockout_until=models.DateTimeField(null=True,blank=True,db_index=True)
     def __str__(self) -> str:
         return self.user_id.full_name if self.user_id.full_name else self.user_id.phone_number
 class VehicleType(models.Model):
@@ -73,6 +79,81 @@ class Vehicle(models.Model):
 
     def __str__(self) -> str:
         return f'{self.vehicle_number} - {self.driver_id}'
+class DriverSession(models.Model):
+    """One row per online -> offline interval for fatigue tracking.
+
+    Motor Vehicles Aggregator Guidelines 2020 cap a driver's active
+    duration at 12 hours in any rolling 24-hour window. We use this
+    table to compute the rolling total at trip-accept time; the gate
+    lives in `servers.driver.services.fatigue_check`. A session is
+    created on driver_online (channels consumer) and closed on
+    driver_offline; reconnects within a short grace period extend the
+    same session rather than creating a new one.
+
+    `duration_seconds` is the sum of completed wall-clock seconds; for
+    a still-open session callers should add `now() - started_at` on top.
+    """
+    driver = models.ForeignKey(
+        Driver,
+        on_delete=models.CASCADE,
+        related_name='sessions',
+    )
+    started_at = models.DateTimeField(db_index=True)
+    ended_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    duration_seconds = models.PositiveIntegerField(default=0)
+    # Why the session ended: 'offline', 'disconnect_timeout',
+    # 'forced_logout_fatigue', 'shift_change', 'admin_close'.
+    end_reason = models.CharField(max_length=32, blank=True, default='')
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['driver', '-started_at'], name='session_driver_recent_idx'),
+        ]
+        ordering = ['-started_at']
+
+    def __str__(self):
+        return f'Session {self.id} driver={self.driver_id} {self.started_at}'
+
+
+class DriverCancellation(models.Model):
+    """Tracks driver-initiated cancellations after accepting a trip.
+
+    Used by the rolling-cancellation cooldown rule: N cancellations
+    in 24 hours triggers a temporary online lockout
+    (`Driver.fatigue_lockout_until`). Also fed into the driver rating
+    decay so a chronic canceller's rating drifts down.
+    """
+    REASON_CHOICES = [
+        ('no_show', 'Rider no-show'),
+        ('vehicle_issue', 'Vehicle issue'),
+        ('safety', 'Safety concern'),
+        ('personal', 'Personal'),
+        ('other', 'Other'),
+    ]
+    driver = models.ForeignKey(
+        Driver,
+        on_delete=models.CASCADE,
+        related_name='cancellations',
+    )
+    trip = models.ForeignKey(
+        'ride.Trip',
+        on_delete=models.CASCADE,
+        related_name='driver_cancellations',
+    )
+    reason = models.CharField(max_length=32, choices=REASON_CHOICES)
+    note = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['driver', '-created_at'], name='cancel_driver_recent_idx'),
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'Cancel driver={self.driver_id} trip={self.trip_id} reason={self.reason}'
+
+
 class WithdrawalRequest(models.Model):
     STATUS_CHOICES = [
         ('pending', 'Pending'),

@@ -683,6 +683,178 @@ def rate_trip(request):
     }, status.HTTP_201_CREATED)
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def resend_receipt(request, trip_id):
+    """Re-send the rider's receipt for a completed trip.
+
+    The rider, or an admin, may trigger this. Sends the most recent
+    Receipt row's stored html_body via email; does NOT create a new
+    Receipt version (for that, an admin uses Django admin to issue a
+    new version after a fare adjustment).
+    """
+    from servers.ride.models import Trip, Receipt
+    from servers.ride.receipts import issue_receipt
+
+    try:
+        trip = Trip.objects.select_related('user_id', 'status_id').get(id=trip_id)
+    except Trip.DoesNotExist:
+        return error_response(
+            code='NOT_FOUND', message='Trip not found.', field='trip_id',
+            issue=f'No trip with id={trip_id}', status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if not (trip.user_id_id == request.user.id or request.user.is_staff):
+        return error_response(
+            code='FORBIDDEN', message='Only the rider or an admin may resend.',
+            field='trip_id', issue='User mismatch',
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if not trip.status_id or trip.status_id.status_code != 'completed':
+        return error_response(
+            code='INVALID_STATE',
+            message='Receipts are only available for completed trips.',
+            field='trip_id',
+            issue=f'Trip status is {trip.status_id.status_code if trip.status_id else "unknown"!r}',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    receipt = issue_receipt(trip, force_resend=True)
+    if not receipt:
+        return error_response(
+            code='RECEIPT_UNAVAILABLE', message='Could not issue receipt.',
+            field='trip_id', issue='issue_receipt returned None',
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    return success_response(
+        {
+            'trip_id': trip.id,
+            'receipt_number': receipt.receipt_number,
+            'sent_to': receipt.sent_to_email,
+            'last_sent_at': receipt.last_sent_at.isoformat() if receipt.last_sent_at else None,
+            'failure_reason': receipt.send_failure_reason or None,
+        },
+        status.HTTP_200_OK,
+    )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, IsDriver])
+def driver_cancel_trip(request, trip_id):
+    """Driver cancels a trip AFTER accepting it (before the trip starts).
+
+    Body: {"reason": "no_show|vehicle_issue|safety|personal|other",
+           "note": "optional free-text"}
+
+    Cancelling a trip carries a penalty:
+        * Recorded in DriverCancellation (24h rolling counter).
+        * 3 cancels in 24h -> 1-hour online lockout
+          (Driver.fatigue_lockout_until).
+        * Rating decremented by 0.1 (clamped at 0).
+
+    Only the trip's driver may call this, and only while the trip is
+    in 'accepted' or 'reached' state. Once the trip is in 'in_progress'
+    the driver cannot cancel from the app -- they must use support.
+    """
+    from django.utils import timezone
+    from servers.ride.models import Trip, TripStatus
+    from servers.driver.fatigue import apply_cancellation_penalty
+    from servers.rider.models import Notification
+
+    reason = (request.data.get('reason') or '').strip()
+    note = (request.data.get('note') or '').strip()
+    valid_reasons = {'no_show', 'vehicle_issue', 'safety', 'personal', 'other'}
+    if reason not in valid_reasons:
+        return error_response(
+            code='INVALID_REASON',
+            message=f'reason must be one of: {", ".join(sorted(valid_reasons))}',
+            field='reason',
+            issue=f'Got reason={reason!r}',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        with transaction.atomic():
+            trip = Trip.objects.select_for_update().select_related(
+                'status_id', 'driver_id', 'driver_id__user_id', 'user_id',
+            ).get(id=trip_id)
+
+            if not trip.driver_id or trip.driver_id.user_id_id != request.user.id:
+                return error_response(
+                    code='FORBIDDEN',
+                    message='Only the assigned driver can cancel this trip.',
+                    field='trip_id',
+                    issue='Driver mismatch',
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            current_state = (trip.status_id.status_code if trip.status_id else '').lower()
+            if current_state not in ('accepted', 'reached'):
+                return error_response(
+                    code='INVALID_STATE',
+                    message=(
+                        'A driver-initiated cancel is only allowed before the '
+                        'trip starts. Use support if the trip is already in '
+                        'progress.'
+                    ),
+                    field='trip_id',
+                    issue=f'Trip is in {current_state!r}',
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            cancelled_status, _ = TripStatus.objects.get_or_create(
+                status_code='cancelled',
+                defaults={'description': 'Trip cancelled'},
+            )
+            trip.status_id = cancelled_status
+            trip.cancelled_at = timezone.now()
+            trip.save(update_fields=['status_id', 'cancelled_at'])
+
+            driver = trip.driver_id
+            penalty = apply_cancellation_penalty(driver, trip, reason, note)
+
+        # Free the driver from the Redis active-trip map so they can be
+        # offered new requests once any lockout expires.
+        try:
+            from servers.redis_client import clear_driver_active_trip
+            clear_driver_active_trip(driver.id)
+        except Exception:  # noqa: BLE001
+            logger.exception('clear_driver_active_trip failed for driver=%s', driver.id)
+
+        try:
+            Notification.objects.create(
+                user_id=trip.user_id,
+                title='Driver cancelled your trip',
+                message=(
+                    f"Your assigned driver cancelled Trip #{trip.id}. "
+                    f"We're finding another driver. Reason: {reason.replace('_', ' ')}."
+                ),
+                notif_type='ride_event',
+                trip=trip,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('Rider cancel notification failed: %s', exc)
+
+        return success_response(
+            {
+                'trip_id': trip.id,
+                'status': 'cancelled',
+                'penalty': penalty.to_dict(),
+            },
+            status.HTTP_200_OK,
+        )
+
+    except Trip.DoesNotExist:
+        return error_response(
+            code='NOT_FOUND',
+            message='Trip not found.',
+            field='trip_id',
+            issue=f'No trip with id={trip_id}',
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_active_trip(request):

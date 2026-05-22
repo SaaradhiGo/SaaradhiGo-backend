@@ -217,6 +217,67 @@ def get_nearby_drivers(request):
 
 # ── Notifications ────────────────────────────────────────
 # FCM
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_notification_preferences(request):
+    """Return the caller's NotificationPreference (creating defaults
+    on first access). Used by the mobile app to render the Settings
+    -> Notifications screen."""
+    from .models import NotificationPreference
+    prefs, _ = NotificationPreference.objects.get_or_create(user_id=request.user)
+    return success_response(
+        {
+            'transactional': prefs.transactional,
+            'ride_event': prefs.ride_event,
+            'payment': prefs.payment,
+            'payout': prefs.payout,
+            'sos': prefs.sos,
+            'kyc': prefs.kyc,
+            'system': prefs.system,
+            'marketing': prefs.marketing,
+            'promo': prefs.promo,
+            'push_enabled': prefs.push_enabled,
+            'email_enabled': prefs.email_enabled,
+            'sms_enabled': prefs.sms_enabled,
+            'user_toggleable': list(NotificationPreference.USER_TOGGLEABLE),
+        },
+        status.HTTP_200_OK,
+    )
+
+
+@api_view(['PATCH', 'POST'])
+@permission_classes([IsAuthenticated])
+def update_notification_preferences(request):
+    """Patch the caller's NotificationPreference.
+
+    Only categories listed in NotificationPreference.USER_TOGGLEABLE
+    may be changed by the user themselves. Attempts to flip a
+    locked-on category (transactional, sos, payout) silently ignore
+    the value -- we never let the user opt out of safety-critical
+    deliveries.
+    """
+    from .models import NotificationPreference
+    prefs, _ = NotificationPreference.objects.get_or_create(user_id=request.user)
+
+    updated = []
+    for field in NotificationPreference.USER_TOGGLEABLE:
+        if field in request.data:
+            setattr(prefs, field, bool(request.data.get(field)))
+            updated.append(field)
+    for ch in ('push_enabled', 'email_enabled', 'sms_enabled'):
+        if ch in request.data:
+            setattr(prefs, ch, bool(request.data.get(ch)))
+            updated.append(ch)
+    if updated:
+        prefs.save(update_fields=updated + ['updated_at'])
+    return success_response(
+        {'updated': updated, 'preferences': {f: getattr(prefs, f) for f in
+            NotificationPreference.USER_TOGGLEABLE + ('push_enabled', 'email_enabled', 'sms_enabled')}},
+        status.HTTP_200_OK,
+    )
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_notifications(request):

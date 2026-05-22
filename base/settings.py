@@ -56,9 +56,9 @@ INSTALLED_APPS = [
     'servers.admin_audit',
     'servers.sos',
     'servers.pricing',
+    'servers.support',
     'django_cleanup.apps.CleanupConfig',
-    # 'servers.support',
-    
+
 ]
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

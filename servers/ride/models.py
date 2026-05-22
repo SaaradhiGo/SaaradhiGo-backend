@@ -77,3 +77,40 @@ class Rating(models.Model):
     created_at=models.DateTimeField(auto_now_add=True)
     def __str__(self):
         return f'Rating {self.score} for Trip {self.trip_id.id}'
+
+
+class Receipt(models.Model):
+    """Per-completed-trip receipt sent to the rider.
+
+    Generated at trip-completion time. Stores the rendered HTML so
+    Support can re-send the exact body the rider received, even if
+    the trip / fare / driver records change later. GST captured at
+    issue time as a snapshot (rate may change in future rate cards
+    but the issued receipt stays correct).
+
+    Multiple rows per trip = re-issues (e.g. dispute resolved,
+    fare adjusted, new receipt version). Resending the latest
+    receipt updates last_sent_at only.
+    """
+    trip_id=models.ForeignKey(Trip,on_delete=models.CASCADE,related_name='receipts')
+    user_id=models.ForeignKey(User,on_delete=models.CASCADE,related_name='receipts')
+    receipt_number=models.CharField(max_length=64,unique=True,db_index=True)
+    total_fare=models.DecimalField(max_digits=10,decimal_places=2)
+    gst_amount=models.DecimalField(max_digits=10,decimal_places=2,default=0)
+    payment_method=models.CharField(max_length=32,blank=True,default='')
+    payment_status=models.CharField(max_length=32,blank=True,default='')
+    sent_to_email=models.EmailField(blank=True,default='')
+    html_body=models.TextField()
+    version=models.IntegerField(default=1)
+    issued_at=models.DateTimeField(auto_now_add=True,db_index=True)
+    last_sent_at=models.DateTimeField(null=True,blank=True)
+    send_failure_reason=models.TextField(blank=True,default='')
+
+    class Meta:
+        ordering = ['-issued_at']
+        indexes = [
+            models.Index(fields=['trip_id', '-version'], name='receipt_trip_ver_idx'),
+        ]
+
+    def __str__(self):
+        return f'Receipt {self.receipt_number} trip={self.trip_id_id}'

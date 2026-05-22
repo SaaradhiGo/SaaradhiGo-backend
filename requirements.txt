@@ -50,3 +50,8 @@ cryptography==44.0.0
 shapely==2.0.6
 
 sentry-sdk[django]==1.32.0
+
+# PDF receipts (CGST Sec 31). reportlab is pure-Python so no system
+# packages required on the deploy host — chosen over WeasyPrint which
+# needs Cairo / Pango installed at the OS level.
+reportlab==4.2.5

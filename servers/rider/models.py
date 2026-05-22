@@ -5,9 +5,29 @@ from django.contrib.auth import get_user_model
 
 User=get_user_model()
 class Rider(models.Model):
+    """Rider profile.
+
+    `rating` is the EWMA-style score driven by ratings drivers leave
+    after each trip. New riders start at 5.0; below 3.0 they're
+    flagged for ops review (drivers can decline) and below 2.5 they're
+    soft-blocked from booking until support clears them.
+
+    `rating_total` / `rating_count` track the underlying observation
+    counts so we can reconstruct or audit the EWMA path later if a
+    rider disputes a low score.
+    """
     user_id=models.OneToOneField(User,on_delete=models.CASCADE,related_name='rider')
     created_at=models.DateTimeField(auto_now_add=True)
-    rating=models.DecimalField(decimal_places=1,max_digits=2,default=5.0)
+    rating=models.DecimalField(decimal_places=2,max_digits=3,default=5.00)
+    rating_count=models.PositiveIntegerField(default=0)
+    # Set when rating drops below RIDER_REVIEW_RATING_THRESHOLD (default
+    # 3.0). Until ops clears it, drivers see a "low-rated rider" badge
+    # at the ride-request stage and may decline without penalty.
+    flagged_for_review=models.BooleanField(default=False,db_index=True)
+    review_flagged_at=models.DateTimeField(null=True,blank=True)
+    review_cleared_at=models.DateTimeField(null=True,blank=True)
+    review_notes=models.TextField(blank=True,default='')
+
     def __str__(self):
         return self.user_id.full_name if self.user_id.full_name else self.user_id.phone_number
 class FavoritePlace(models.Model):

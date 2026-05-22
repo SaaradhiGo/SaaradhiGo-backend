@@ -155,19 +155,191 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount, fare
     )
 
 
+def _build_receipt_pdf(receipt) -> Optional[bytes]:
+    """Render a PDF blob for a Receipt using ReportLab.
+
+    Pure-Python (no Cairo / Pango / wkhtmltopdf on the deploy host).
+    Returns the PDF as bytes, or None if ReportLab is unavailable
+    (the receipt still gets emailed as HTML in that case).
+    """
+    try:
+        from io import BytesIO
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+        )
+    except ImportError:  # noqa: BLE001
+        logger.warning('reportlab not installed; PDF skipped for receipt=%s', receipt.id)
+        return None
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=18 * mm, rightMargin=18 * mm,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        title=f'VahanGo receipt {receipt.receipt_number}',
+        author='SaaradhiGo Mobility',
+    )
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle('h1', parent=styles['Heading1'], textColor=colors.HexColor('#C59A1D'))
+    h2 = styles['Heading3']
+    body = styles['BodyText']
+    small = ParagraphStyle('small', parent=styles['BodyText'], fontSize=8, textColor=colors.grey)
+
+    trip = receipt.trip_id
+    rider = receipt.user_id
+    rider_name = (getattr(rider, 'full_name', '') or rider.phone_number or 'Rider')
+    driver_name = ''
+    vehicle = ''
+    if trip.driver_id and trip.driver_id.user_id:
+        driver_name = trip.driver_id.user_id.full_name or trip.driver_id.user_id.phone_number or ''
+    if trip.vehicle_id:
+        v = trip.vehicle_id
+        vehicle = f"{v.brand or ''} {v.model or ''} ({v.vehicle_number or ''})".strip()
+
+    story = []
+    story.append(Paragraph('VahanGo / SaaradhiGo Mobility', h1))
+    story.append(Paragraph('Tax invoice / Trip receipt', h2))
+    story.append(Spacer(1, 6))
+
+    meta_rows = [
+        ['Receipt number', receipt.receipt_number],
+        ['Issued to', rider_name],
+        ['Trip ID', f'#{trip.id}'],
+        ['Date', (trip.completed_at or receipt.issued_at).strftime('%d %b %Y, %H:%M')],
+        ['Pickup', trip.pickup_address or '—'],
+        ['Drop', trip.destination_address or '—'],
+        ['Distance', f"{trip.actual_distance_km or trip.estimated_distance_km or '—'} km"],
+        ['Driver', driver_name or '—'],
+        ['Vehicle', vehicle or '—'],
+    ]
+    meta_table = Table(meta_rows, colWidths=[55 * mm, 110 * mm])
+    meta_table.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#F9FAFB')),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    story.append(meta_table)
+    story.append(Spacer(1, 12))
+
+    # Fare breakdown table -- pulled from the FarePricing snapshot if
+    # present, falling back to the trip's totals.
+    from servers.ride.models import FarePricing
+    fp = FarePricing.objects.filter(trip_id=trip).order_by('-id').first()
+    base_fare = (fp.base_fare if fp else None) or 0
+    distance_fare = (fp.distance_fare if fp else None) or 0
+    time_fare = (fp.time_fare if fp else None) or 0
+    surge = (fp.surge_multiplier if fp else None) or 1
+
+    fare_rows = [
+        ['Description', 'Amount (Rs.)'],
+        ['Base fare', f'{base_fare}'],
+        ['Distance fare', f'{distance_fare}'],
+        ['Time fare', f'{time_fare}'],
+        ['Surge multiplier', f'x {surge}'],
+        ['GST', f'{receipt.gst_amount}'],
+        ['Total fare', f'{receipt.total_fare}'],
+    ]
+    fare_table = Table(fare_rows, colWidths=[110 * mm, 55 * mm])
+    fare_table.setStyle(TableStyle([
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#EEBD2B')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#F9FAFB')),
+        ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
+        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+    ]))
+    story.append(fare_table)
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(
+        f'<b>Payment method:</b> {receipt.payment_method or "—"} '
+        f'&nbsp;&nbsp;&nbsp;<b>Status:</b> {receipt.payment_status or "—"}',
+        body,
+    ))
+    story.append(Spacer(1, 16))
+    story.append(Paragraph(
+        'SaaradhiGo Mobility (operating VahanGo) is an aggregator under the '
+        'Motor Vehicles Aggregator Guidelines 2020 issued by the Ministry of '
+        'Road Transport &amp; Highways, Government of India. For any dispute '
+        'about this fare, please contact support within 30 days quoting the '
+        'Receipt number above.',
+        small,
+    ))
+
+    try:
+        doc.build(story)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception('reportlab PDF build failed for receipt=%s: %s', receipt.id, exc)
+        return None
+    return buf.getvalue()
+
+
+def _attach_pdf_to_receipt(receipt) -> bool:
+    """Generate + save the PDF blob onto receipt.pdf_file. Returns True
+    if a PDF was successfully attached, False otherwise (also False
+    when reportlab is missing, so the caller knows to skip the
+    attachment in the email)."""
+    if receipt.pdf_file:
+        return True
+    pdf_bytes = _build_receipt_pdf(receipt)
+    if not pdf_bytes:
+        return False
+    try:
+        from django.core.files.base import ContentFile
+        receipt.pdf_file.save(
+            f'{receipt.receipt_number}.pdf',
+            ContentFile(pdf_bytes),
+            save=True,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('failed to persist PDF blob for receipt=%s: %s', receipt.id, exc)
+        return False
+
+
 def _send_receipt_email(receipt):
-    """Send via configured email backend. Returns (sent_ok, error_str)."""
+    """Send via configured email backend. Returns (sent_ok, error_str).
+
+    Attempts to attach the PDF blob as a file attachment; falls back to
+    HTML-only if PDF generation fails."""
     to_addr = receipt.sent_to_email
     if not to_addr:
         return False, 'no_email'
     try:
         msg = EmailMultiAlternatives(
             subject=f'Your VahanGo receipt {receipt.receipt_number}',
-            body='Your VahanGo trip receipt is enclosed (HTML).',
+            body='Your VahanGo trip receipt is enclosed (HTML + PDF).',
             from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'no-reply@vahango.in'),
             to=[to_addr],
         )
         msg.attach_alternative(receipt.html_body, 'text/html')
+        # Attach the PDF if we managed to render one.
+        try:
+            if receipt.pdf_file:
+                receipt.pdf_file.open('rb')
+                msg.attach(
+                    f'{receipt.receipt_number}.pdf',
+                    receipt.pdf_file.read(),
+                    'application/pdf',
+                )
+                receipt.pdf_file.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('attach pdf failed for receipt=%s: %s', receipt.id, exc)
         msg.send(fail_silently=False)
         return True, ''
     except Exception as exc:  # noqa: BLE001
@@ -230,6 +402,10 @@ def issue_receipt(trip, force_resend: bool = False):
             version=1,
         )
 
+    # Build + attach the PDF blob BEFORE we email so we can include it
+    # as an attachment. Failure to render PDF does not block the email.
+    _attach_pdf_to_receipt(receipt)
+
     ok, err = _send_receipt_email(receipt)
     if ok:
         receipt.last_sent_at = timezone.now()
@@ -269,6 +445,7 @@ def reissue_receipt(trip):
         ),
         version=new_version,
     )
+    _attach_pdf_to_receipt(receipt)
     ok, err = _send_receipt_email(receipt)
     if ok:
         receipt.last_sent_at = timezone.now()

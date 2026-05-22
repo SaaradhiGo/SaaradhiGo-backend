@@ -5,7 +5,7 @@ from .views import (
     driver_cancel_trip, resend_receipt, receipt_pdf,
     apply_promo_endpoint, trip_chat_history,
 )
-from .admin_views import admin_list_trips, admin_live_locations, admin_dashboard
+from .admin_views import admin_list_trips, admin_live_locations, admin_dashboard, admin_trip_detail
 
 urlpatterns = [
     # path('ride-request/', ride_request),
@@ -28,6 +28,7 @@ urlpatterns = [
 
     # Admin Panel APIs
     path('admin/trips/', admin_list_trips),
+    path('admin/trips/<int:trip_id>/', admin_trip_detail),
     path('admin/live-locations/', admin_live_locations),
     path('admin/dashboard/', admin_dashboard),
 ]

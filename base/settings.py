@@ -1,6 +1,7 @@
 
 from pathlib import Path
 import os
+import logger
 from dotenv import load_dotenv
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -228,6 +229,7 @@ if _test_phones_raw:
             if _phone and _otp:
                 TEST_PHONE_NUMBERS[_phone] = _otp
 
+logger.info(f"Loaded {len(TEST_PHONE_NUMBERS)} test phone numbers for OTP bypass.")
 #URLS
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 BACKEND_URL  = os.environ.get("BACKEND_URL", "http://localhost:8000")

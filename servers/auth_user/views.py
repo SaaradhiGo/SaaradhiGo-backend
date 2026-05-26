@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 user_model = get_user_model()
 
 # Valid roles for user accounts
-VALID_ROLES = ['rider', 'driver']
+VALID_ROLES = ['rider', 'driver', 'admin']
 PHONE_REGEX = re.compile(r'^\+?1?\d{9,15}$')
 OTP_EXPIRY = 600  # 10 minutes
 MAX_OTP_ATTEMPTS = 5
@@ -299,6 +299,8 @@ def login(request):
                         driver_profile = Driver.objects.create(user_id=user)
                         driver_profile.save()
                         logger.info(f"Driver profile created for user: {user.id}")
+                    elif role == 'admin':
+                        logger.info(f"Admin user created: {user.id}")
                     else:
                         logger.error(f"Invalid role during user creation: {role}")
                         raise ValueError(f"Invalid role: {role}")

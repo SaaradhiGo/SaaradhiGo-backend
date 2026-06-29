@@ -243,3 +243,46 @@ def get_trip_details(trip_id):
         cache_data['driver_rating'] = str(obj.driver_id.ratings)
         
     return cache_data
+
+
+def process_refund_on_cancel(trip):
+    """Process refund if payment was completed online.
+
+    Extracted from TripStatusConsumer._process_refund_on_cancel so both
+    the REST endpoint and the WebSocket consumer can share the same logic.
+    Callers MUST hold a transaction or ensure the trip row is locked
+    (select_for_update) to avoid race conditions with the WebSocket path.
+
+    Returns:
+        dict: {'refunded': bool, 'amount': Decimal|None}
+    """
+    from servers.payments.models import Payment
+    from servers.payments.payment_gateways.factory import get_payment_gateway
+    from servers.rider.models import Notification
+
+    payment = Payment.objects.filter(
+        trip_id=trip, method='online', status='completed'
+    ).first()
+    if not payment or not payment.gateway_payment_id:
+        return {'refunded': False, 'amount': None}
+
+    gateway = get_payment_gateway()
+    refund = gateway.create_refund(payment.gateway_payment_id)
+    if refund:
+        payment.status = 'refunded'
+        payment.save(update_fields=['status'])
+
+        trip.payment_status = 'refunded'
+        trip.save(update_fields=['payment_status'])
+
+        Notification.objects.create(
+            user_id=trip.user_id,
+            title='Refund Processed',
+            message=(
+                f'Your refund of ₹{payment.amount} has been initiated '
+                f'due to cancellation.'
+            ),
+        )
+        return {'refunded': True, 'amount': payment.amount}
+
+    return {'refunded': False, 'amount': None}

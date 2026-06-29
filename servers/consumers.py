@@ -1409,25 +1409,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             trip.save(update_fields=['payment_status'])
 
     def _process_refund_on_cancel(self, trip):
-        """Process refund if payment was completed online."""
-        from servers.payments.models import Payment
-        from servers.payments.payment_gateways.factory import get_payment_gateway
-        from servers.rider.models import Notification
-
-        payment = Payment.objects.filter(trip_id=trip, method='online', status='completed').first()
-        if payment and payment.gateway_payment_id:
-            gateway = get_payment_gateway()
-            refund = gateway.create_refund(payment.gateway_payment_id)
-            if refund:
-                payment.status = 'refunded'
-                payment.save()
-                
-                trip.payment_status = 'refunded'
-                trip.save(update_fields=['payment_status'])
-                
-                Notification.objects.create(
-                    user_id=trip.user_id,
-                    title='Refund Processed',
-                    message=f'Your refund of ₹{payment.amount} has been initiated due to cancellation.',
-                )
+        """Process refund if payment was completed online (delegates to shared utility)."""
+        from servers.ride.utils import process_refund_on_cancel
+        return process_refund_on_cancel(trip)
 

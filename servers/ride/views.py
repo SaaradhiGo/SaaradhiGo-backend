@@ -995,6 +995,184 @@ def driver_cancel_trip(request, trip_id):
         )
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def rider_cancel_trip(request, trip_id):
+    """Rider cancels their own trip.
+
+    Body (optional):
+        {"reason": "no_show|wrong_location|too_long|safety|other",
+         "note": "optional free-text"}
+
+    The rider can cancel in any active state: 'requested', 'accepted',
+    'reached', or 'in_progress'. If a driver is assigned, they are
+    notified via push + WebSocket and their active-trip flag is cleared.
+    If an online payment was completed, a refund is initiated.
+    """
+    from django.utils import timezone
+    from servers.ride.models import Trip, TripStatus
+    from servers.ride.utils import process_refund_on_cancel
+    from servers.rider.models import Notification
+    from servers.auth_user.services import send_push_notification
+
+    reason = (request.data.get('reason') or '').strip()
+    note = (request.data.get('note') or '').strip()
+
+    # Optional: validate reason if provided
+    if reason:
+        valid_reasons = {'no_show', 'wrong_location', 'too_long', 'safety', 'other'}
+        if reason not in valid_reasons:
+            return error_response(
+                code='INVALID_REASON',
+                message=f'reason must be one of: {", ".join(sorted(valid_reasons))}',
+                field='reason',
+                issue=f'Got reason={reason!r}',
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    try:
+        with transaction.atomic():
+            trip = Trip.objects.select_for_update().select_related(
+                'status_id', 'driver_id', 'driver_id__user_id', 'user_id',
+            ).get(id=trip_id)
+
+            # 1. Authorization: only the trip's rider
+            if trip.user_id_id != request.user.id:
+                return error_response(
+                    code='FORBIDDEN',
+                    message='Only the rider who booked this trip can cancel it.',
+                    field='trip_id',
+                    issue='Rider mismatch',
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            # 2. State validation
+            current_state = (
+                trip.status_id.status_code if trip.status_id else ''
+            ).lower()
+            if current_state in ('completed', 'cancelled'):
+                return error_response(
+                    code='INVALID_STATE',
+                    message=f'Trip is already {current_state}.',
+                    field='trip_id',
+                    issue=f'Cannot cancel a {current_state} trip',
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if current_state not in ('requested', 'accepted', 'reached', 'in_progress'):
+                return error_response(
+                    code='INVALID_STATE',
+                    message=f'Cannot cancel trip in {current_state!r} state.',
+                    field='trip_id',
+                    issue='Unexpected trip state',
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # 3. Apply cancellation
+            cancelled_status, _ = TripStatus.objects.get_or_create(
+                status_code='cancelled',
+                defaults={'description': 'Trip cancelled'},
+            )
+            trip.status_id = cancelled_status
+            trip.cancelled_at = timezone.now()
+            trip.save(update_fields=['status_id', 'cancelled_at'])
+
+            # 4. Process refund if applicable
+            refund_result = process_refund_on_cancel(trip)
+
+            # 5. Notification for the rider
+            try:
+                Notification.objects.create(
+                    user_id=trip.user_id,
+                    title='Ride Cancelled',
+                    message='Your ride has been cancelled.',
+                    notif_type='ride_event',
+                    trip=trip,
+                )
+            except Exception as exc:
+                logger.warning('Rider cancel notification failed: %s', exc)
+
+            # 6. Push notification to rider
+            try:
+                send_push_notification(
+                    trip.user_id,
+                    'Ride Cancelled',
+                    'Your ride has been cancelled.',
+                    {'trip_id': str(trip.id), 'type': 'ride_cancelled'},
+                )
+            except Exception as exc:
+                logger.warning('Rider cancel push failed: %s', exc)
+
+            driver_id = trip.driver_id_id
+
+        # --- End of transaction.atomic() ---
+
+        # 7. Clear driver's active trip in Redis (if assigned)
+        if driver_id:
+            try:
+                from servers.redis_client import clear_driver_active_trip
+                clear_driver_active_trip(driver_id)
+            except Exception:
+                logger.exception(
+                    'clear_driver_active_trip failed for driver=%s', driver_id
+                )
+
+        # 8. Invalidate trip cache in Redis
+        try:
+            from servers.redis_client import invalidate_trip
+            invalidate_trip(trip.id)
+        except Exception:
+            logger.exception('invalidate_trip failed for trip=%s', trip.id)
+
+        # 9. Notify driver if assigned (push + in-app notification)
+        if driver_id:
+            try:
+                Notification.objects.create(
+                    user_id=trip.driver_id.user_id,
+                    title='Ride Cancelled by Rider',
+                    message=(
+                        f'Rider cancelled Trip #{trip.id}.'
+                        + (f' Reason: {reason.replace("_", " ")}.' if reason else '')
+                    ),
+                    notif_type='ride_event',
+                    trip=trip,
+                )
+            except Exception as exc:
+                logger.warning('Driver cancel notification failed: %s', exc)
+
+            try:
+                send_push_notification(
+                    trip.driver_id.user_id,
+                    'Ride Cancelled',
+                    f'Rider cancelled Trip #{trip.id}.',
+                    {'trip_id': str(trip.id), 'type': 'ride_cancelled'},
+                )
+            except Exception as exc:
+                logger.warning('Driver cancel push failed: %s', exc)
+
+        # 10. Build response
+        response_data = {
+            'trip_id': trip.id,
+            'status': 'cancelled',
+            'cancelled_at': trip.cancelled_at.isoformat(),
+        }
+        if refund_result.get('refunded'):
+            response_data['refund'] = {
+                'amount': str(refund_result['amount']),
+                'status': 'initiated',
+            }
+
+        return success_response(response_data, status.HTTP_200_OK)
+
+    except Trip.DoesNotExist:
+        return error_response(
+            code='NOT_FOUND',
+            message='Trip not found.',
+            field='trip_id',
+            issue=f'No trip with id={trip_id}',
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_active_trip(request):

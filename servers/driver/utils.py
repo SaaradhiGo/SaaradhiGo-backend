@@ -72,6 +72,18 @@ def credit_driver_wallet(trip):
         wallet.balance = Decimal(str(wallet.balance)) + net_amount
         wallet.save()
 
+        # Create wallet transaction for the driver earnings
+        from servers.rider.models import WalletTransaction
+        WalletTransaction.objects.create(
+            user_id=trip.driver_id.user_id,
+            amount=net_amount,
+            txn_type='credit',
+            status='completed',
+            purpose='trip_earnings',
+            reference_id=f'TRIP_{trip.id}',
+            idempotency_key=f'TRIP_{trip.id}_EARNING'
+        )
+
         # Create transaction history for the credit
         TransactionHistory.objects.create(
             trip_id=trip,

@@ -165,6 +165,12 @@ _cors_raw = os.environ.get('CORS_ALLOWED_ORIGINS', '')
 CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_raw.split(',') if o.strip()]
 CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 
+# Allow local development on arbitrary ports (like Flutter web)
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^http://localhost:\d+$",
+    r"^http://127\.0\.0\.1:\d+$",
+]
+
 # Production security headers. No-ops in DEBUG.
 if not DEBUG:
     # Tell Django the upstream proxy/ALB terminates TLS.

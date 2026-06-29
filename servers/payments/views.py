@@ -939,7 +939,7 @@ def refund_payment(request):
     # concurrent refund requests from both reaching the gateway.
     with transaction.atomic():
         try:
-            locked_payment = Payment.objects.select_for_update().select_related(
+            locked_payment = Payment.objects.select_for_update(of=('self',)).select_related(
                 'trip_id', 'trip_id__driver_id', 'trip_id__driver_id__user_id'
             ).get(pk=payment.pk)
         except Payment.DoesNotExist:

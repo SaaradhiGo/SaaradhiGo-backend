@@ -40,51 +40,6 @@ def test_public_config_reports_closed_loop_posture(api_client):
     assert 'original' in wallet['refund_modes']
 
 
-# ---------------------------------------------------------------------------
-# Top-up endpoints gated
-# ---------------------------------------------------------------------------
-
-@pytest.mark.django_db
-def test_create_wallet_order_returns_503_when_disabled(auth_client_rider):
-    client, _ = auth_client_rider
-    resp = client.post(
-        '/api/v1/rider/wallet/create-order/',
-        {'amount': '500.00'}, format='json',
-    )
-    assert resp.status_code == 503
-    assert resp.json()['error']['code'] == 'FEATURE_DISABLED'
-
-
-@pytest.mark.django_db
-def test_verify_wallet_payment_returns_503_when_disabled(auth_client_rider):
-    client, _ = auth_client_rider
-    resp = client.post(
-        '/api/v1/rider/wallet/verify/',
-        {'gateway_order_id': 'any-id'}, format='json',
-    )
-    assert resp.status_code == 503
-    assert resp.json()['error']['code'] == 'FEATURE_DISABLED'
-
-
-@pytest.mark.django_db
-def test_create_wallet_order_works_when_explicitly_enabled(auth_client_rider, settings):
-    """Sanity check: future PPI work re-enables this without re-deploying code."""
-    settings.WALLET_TOPUPS_ENABLED = True
-    client, _ = auth_client_rider
-    with patch(
-        'servers.payments.payment_gateways.factory.get_payment_gateway'
-    ) as mocked:
-        mocked.return_value.create_order.return_value = {
-            'order_id': 'cf_order_test_123',
-            'payment_session_id': 'sess_test',
-            'order_token': 'tok_test',
-        }
-        resp = client.post(
-            '/api/v1/rider/wallet/create-order/',
-            {'amount': '100.00'}, format='json',
-        )
-    assert resp.status_code == 201, resp.content
-
 
 # ---------------------------------------------------------------------------
 # Credit issuance

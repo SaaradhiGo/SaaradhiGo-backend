@@ -369,71 +369,7 @@ Uses Redis to fetch active online drivers within the radius.
 }
 ```
 
-### 2.9 Create Wallet Order
-Initiates a Cashfree order for adding money to the wallet.
-- **URL**: `/rider/wallet/create-order/`
-- **Method**: `POST`
-- **Auth Required**: Yes
-
-**Parameters**:
-| Name | Type | Required | Description |
-| ---- | ---- | -------- | ----------- |
-| `amount` | string | **Yes** | Amount to add. |
-
-**Sample Request**:
-```json
-{ "amount": "500.00" }
-```
-**Sample Response (201 Created)**:
-```json
-{
-  "status": "success",
-  "data": {
-    "transaction_id": 1,
-    "gateway_order_id": "order_Fxy...",
-    "amount": "500.00",
-    "currency": "INR",
-    "description": "Wallet Top-up",
-    "payment_session_id": "session_xyz...",
-    "order_token": "token_abc...",
-    "gateway": "cashfree"
-  }
-}
-```
-
-### 2.10 Verify Wallet Payment
-Secures the transaction and augments the wallet balance upon success.
-- **URL**: `/rider/wallet/verify/`
-- **Method**: `POST`
-- **Auth Required**: Yes
-
-**Parameters**:
-| Name | Type | Required | Description |
-| ---- | ---- | -------- | ----------- |
-| `gateway_order_id`| string | **Yes** | From 2.9 |
-| `gateway_payment_id`| string | **Yes** | Issued by Cashfree. |
-
-**Sample Request**:
-```json
-{
-  "gateway_order_id": "order_Fxy...",
-  "gateway_payment_id": "pay_Fxy..."
-}
-```
-**Sample Response (200 OK)**:
-```json
-{
-  "status": "success",
-  "data": {
-    "message": "Payment verified successfully",
-    "transaction_id": 1,
-    "status": "completed",
-    "new_balance": "850.00"
-  }
-}
-```
-
-### 2.11 Get Wallet Transactions
+### 2.9 Get Wallet Transactions
 Get all wallet transactions for the authenticated user.
 - **URL**: `/rider/wallet/transactions/`
 - **Method**: `GET`
@@ -464,7 +400,7 @@ Get all wallet transactions for the authenticated user.
 }
 ```
 
-### 2.12 Direct Wallet Payment
+### 2.10 Direct Wallet Payment
 Initiate a direct payment from wallet without external gateway. Used for internal payments like trip payments.
 - **URL**: `/rider/wallet/payment/`
 - **Method**: `POST`

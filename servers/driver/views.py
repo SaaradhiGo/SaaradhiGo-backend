@@ -331,23 +331,55 @@ def driver_withdrawal_request(request):
 
     amount = serializer.validated_data['amount']
 
-    # Validate amount against balance
-    is_valid, error_msg = validate_withdrawal_amount(driver, amount)
-    if not is_valid:
-        return error_response(
-            code='INSUFFICIENT_BALANCE',
-            message=error_msg,
-            field='amount',
-            issue=error_msg,
-            status=status.HTTP_400_BAD_REQUEST
+    from django.db import transaction
+    from servers.rider.models import Wallet, WalletTransaction
+    from decimal import Decimal
+    import uuid
+
+    with transaction.atomic():
+        wallet, _ = Wallet.objects.select_for_update().get_or_create(user_id=driver.user_id)
+        if wallet.balance is None:
+            wallet.balance = Decimal('0.00')
+            
+        if amount < 500:
+            return error_response(
+                code='INSUFFICIENT_BALANCE',
+                message="Minimum withdrawal amount is ₹500",
+                field='amount',
+                issue="Minimum withdrawal amount is ₹500",
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        if amount > wallet.balance:
+            return error_response(
+                code='INSUFFICIENT_BALANCE',
+                message=f"Insufficient balance. Available: ₹{wallet.balance:.2f}",
+                field='amount',
+                issue=f"Insufficient balance. Available: ₹{wallet.balance:.2f}",
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        print(serializer.validated_data)
+        # Create withdrawal request
+        withdrawal = WithdrawalRequest.objects.create(
+            driver=driver,
+            amount=amount,
+            status='pending'
         )
-    print(serializer.validated_data)
-    # Create withdrawal request
-    withdrawal = WithdrawalRequest.objects.create(
-        driver=driver,
-        amount=amount,
-        status='pending'
-    )
+        
+        # Instantly deduct from wallet
+        idempotency_key = f"withdrawal_{withdrawal.id}_{uuid.uuid4().hex[:16]}"
+        WalletTransaction.objects.create(
+            user_id=driver.user_id,
+            amount=amount,
+            txn_type='debit',
+            status='pending',
+            purpose='withdrawal',
+            reference_id=f"withdrawal_{withdrawal.id}",
+            idempotency_key=idempotency_key
+        )
+        wallet.balance -= amount
+        wallet.save(update_fields=['balance'])
 
     # Return created withdrawal
     from .serializers import WithdrawalRequestSerializer

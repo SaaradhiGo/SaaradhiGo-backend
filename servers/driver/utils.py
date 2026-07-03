@@ -50,10 +50,10 @@ def update_driver_location(driver_id, lng, lat):
 def credit_driver_wallet(trip):
     """Credit driver's wallet with earnings from completed trip."""
     from servers.payments.models import TransactionHistory
-    from servers.rider.models import Wallet
+    from servers.rider.models import Wallet, WalletTransaction
     from django.conf import settings
     from decimal import Decimal
-    from django.db import transaction
+    from django.db import transaction, IntegrityError
 
     if not trip.driver_id:
         return
@@ -65,33 +65,54 @@ def credit_driver_wallet(trip):
     net_amount = amount - commission
 
     with transaction.atomic():
-        # Credit the driver's wallet
-        wallet, created = Wallet.objects.get_or_create(user_id=trip.driver_id.user_id)
+        # Lock wallet row for update
+        wallet, created = Wallet.objects.select_for_update().get_or_create(user_id=trip.driver_id.user_id)
         if wallet.balance is None:
             wallet.balance = Decimal('0.00')
-        wallet.balance = Decimal(str(wallet.balance)) + net_amount
-        wallet.save()
+            
+        current_balance = Decimal(str(wallet.balance))
+        
+        # Handle cash vs non-cash trips
+        if trip.payment_method == 'cash':
+            # Driver collected full fare in cash, so they owe the platform the commission
+            txn_amount = commission
+            txn_type = 'debit'
+            purpose = 'trip_commission'
+            new_balance = current_balance - commission
+        else:
+            # Online/Wallet payment, platform owes driver the net amount
+            txn_amount = net_amount
+            txn_type = 'credit'
+            purpose = 'trip_earnings'
+            new_balance = current_balance + net_amount
 
-        # Create wallet transaction for the driver earnings
-        from servers.rider.models import WalletTransaction
-        WalletTransaction.objects.create(
-            user_id=trip.driver_id.user_id,
-            amount=net_amount,
-            txn_type='credit',
-            status='completed',
-            purpose='trip_earnings',
-            reference_id=f'TRIP_{trip.id}',
-            idempotency_key=f'TRIP_{trip.id}_EARNING'
-        )
+        # Idempotency block
+        try:
+            with transaction.atomic():
+                WalletTransaction.objects.create(
+                    user_id=trip.driver_id.user_id,
+                    amount=txn_amount,
+                    txn_type=txn_type,
+                    status='completed',
+                    purpose=purpose,
+                    reference_id=f'TRIP_{trip.id}',
+                    idempotency_key=f'TRIP_{trip.id}_EARNING'
+                )
+        except IntegrityError:
+            # Duplicate webhook/retry: already processed
+            return
 
-        # Create transaction history for the credit
+        wallet.balance = new_balance
+        wallet.save(update_fields=['balance'])
+
+        # Create transaction history
         TransactionHistory.objects.create(
             trip_id=trip,
             user_id=trip.user_id,
             driver_id=trip.driver_id,
-            amount=net_amount,
+            amount=txn_amount,
             method=trip.payment_method or 'online',
             status='completed',
-            txn_type='credit',
+            txn_type=txn_type,
             user_name=trip.user_id.full_name or trip.user_id.phone_number,
         )

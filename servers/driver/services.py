@@ -13,9 +13,11 @@ def calculate_available_balance(driver):
     """
     try:
         wallet = Wallet.objects.get(user_id=driver.user_id)
-        return float(wallet.balance) if wallet.balance else 0.0
+        from decimal import Decimal
+        return wallet.balance if wallet.balance else Decimal('0.00')
     except Wallet.DoesNotExist:
-        return 0.0
+        from decimal import Decimal
+        return Decimal('0.00')
 
 
 def validate_withdrawal_amount(driver, amount):
@@ -1161,41 +1163,8 @@ def trigger_payout_creation(withdrawal):
         # the driver from new withdrawals for 7 days. See audit M8 and
         # _handle_cashfree_payout_webhook.
 
-        # Use atomic transaction for wallet operations to ensure consistency
-        with transaction.atomic():
-            # Lock wallet row for update to prevent race conditions
-            wallet = Wallet.objects.select_for_update().get(user_id=driver.user_id)
-            
-            # Initialize balance if None
-            if wallet.balance is None:
-                wallet.balance = Decimal('0.00')
-            
-            # Check wallet balance with lock
-            if wallet.balance < withdrawal.amount:
-                logger.error(f"Insufficient wallet balance for withdrawal {withdrawal.id}. "
-                            f"Balance: {wallet.balance}, Amount: {withdrawal.amount}")
-                return False
-            
-            # Create wallet transaction record for the payout (debit from wallet)
-            # Generate unique idempotency key to prevent duplicate transactions
-            idempotency_key = f"withdrawal_{withdrawal.id}_{uuid.uuid4().hex[:16]}"
-            
-            WalletTransaction.objects.create(
-                user_id=driver.user_id,
-                amount=withdrawal.amount,
-                txn_type='debit',
-                status='pending',
-                purpose='withdrawal',
-                reference_id=f"withdrawal_{withdrawal.id}",
-                idempotency_key=idempotency_key
-            )
-            
-            # Deduct amount from driver's wallet
-            wallet.balance -= withdrawal.amount
-            wallet.save()
-        
-        # Actually initiate payout via payment gateway API
-        # Check payout method and call appropriate function
+        # Wallet deduction has already happened during WithdrawalRequest creation.
+        # We just initiate payout via payment gateway API.
         payout_success = False
         if withdrawal.payout_method == 'upi':
             print('UPI')
@@ -1205,24 +1174,60 @@ def trigger_payout_creation(withdrawal):
             # Bank payout (default)
             payout_success = initiate_bank_payout(withdrawal, driver)
         print(payout_success)
+        
         if payout_success:
             # Update withdrawal status to processed
             withdrawal.status = 'processed'
             withdrawal.save()
             logger.info(f"Payout successfully initiated for withdrawal {withdrawal.id}, amount: {withdrawal.amount}, method: {withdrawal.payout_method}")
+            return True
         else:
             # Payout failed, update status to failed
             withdrawal.status = 'failed'
             withdrawal.save()
             logger.error(f"Failed to initiate payout for withdrawal {withdrawal.id}, amount: {withdrawal.amount}, method: {withdrawal.payout_method}")
+            
+            # Refund wallet
+            with transaction.atomic():
+                wallet = Wallet.objects.select_for_update().get(user_id=driver.user_id)
+                wallet.balance += withdrawal.amount
+                wallet.save(update_fields=['balance'])
+                idempotency_key = f"refund_withdrawal_{withdrawal.id}_{uuid.uuid4().hex[:16]}"
+                WalletTransaction.objects.create(
+                    user_id=driver.user_id,
+                    amount=withdrawal.amount,
+                    txn_type='credit',
+                    status='completed',
+                    purpose='refund_failed_withdrawal',
+                    reference_id=f"refund_withdrawal_{withdrawal.id}",
+                    idempotency_key=idempotency_key
+                )
             return False
-        
-        return True
+            
     except Exception as e:
         logger.error(f"Failed to trigger payout for withdrawal {withdrawal.id}: {e}")
         # Update withdrawal status to failed on exception
         withdrawal.status = 'failed'
         withdrawal.save()
+        
+        # Refund wallet
+        from django.db import transaction
+        from servers.rider.models import Wallet, WalletTransaction
+        import uuid
+        with transaction.atomic():
+            wallet = Wallet.objects.select_for_update().get(user_id=driver.user_id)
+            wallet.balance += withdrawal.amount
+            wallet.save(update_fields=['balance'])
+            idempotency_key = f"refund_withdrawal_{withdrawal.id}_{uuid.uuid4().hex[:16]}"
+            WalletTransaction.objects.create(
+                user_id=driver.user_id,
+                amount=withdrawal.amount,
+                txn_type='credit',
+                status='completed',
+                purpose='refund_failed_withdrawal',
+                reference_id=f"refund_withdrawal_{withdrawal.id}",
+                idempotency_key=idempotency_key
+            )
         return False
 
 

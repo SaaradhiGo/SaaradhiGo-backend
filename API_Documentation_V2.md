@@ -641,6 +641,216 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 - **Auth Required**: Yes (IsAdmin)
 **Sample Response**: Array of vehicle objects matching 3.5.
 
+### 3.14 Driver Withdrawal Balance
+- **URL**: `/driver/withdrawals/balance/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsDriver)
+
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "available_balance": 1500.0,
+    "blocked": false,
+    "block_remaining_seconds": null,
+    "fee_percent": 2.0,
+    "minimum_withdrawal": 500.0
+  }
+}
+```
+
+### 3.15 Driver Withdrawal Request
+- **URL**: `/driver/withdrawals/request/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsDriver)
+
+**Parameters**:
+| Name | Type | Required | Description |
+| ---- | ---- | -------- | ----------- |
+| `amount` | float | **Yes** | Amount to withdraw (Min ₹500). |
+
+**Sample Request**:
+```json
+{
+  "amount": 1000.0
+}
+```
+**Sample Response (201 Created)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "id": 1,
+    "amount": "1000.00",
+    "status": "pending",
+    "requested_at": "2026-06-29T10:00:00Z"
+  }
+}
+```
+
+### 3.16 Driver Withdrawal History
+- **URL**: `/driver/withdrawals/history/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsDriver)
+- Supports Pagination (`page`, `page_size`).
+
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "count": 1,
+    "results": [
+      {
+        "id": 1,
+        "amount": "1000.00",
+        "status": "pending",
+        "requested_at": "2026-06-29T10:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+### 3.17 Driver Withdrawal Block Status
+- **URL**: `/driver/withdrawals/block-status/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsDriver)
+
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "blocked": false,
+    "last_withdrawal_at": "2026-06-20T10:00:00Z",
+    "block_end_at": "2026-06-27T10:00:00Z",
+    "remaining_seconds": 0,
+    "remaining_human": "0 seconds",
+    "can_withdraw": true
+  }
+}
+```
+
+### 3.18 Admin: List Withdrawals
+- **URL**: `/driver/admin/withdrawals/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsAdmin)
+- Filters: `status`, `driver_id`, `start_date`, `end_date`.
+- Supports Pagination (`page`, `page_size`).
+
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "count": 1,
+    "results": [
+      {
+        "id": 1,
+        "driver_id": 15,
+        "amount": "1000.00",
+        "status": "pending",
+        "requested_at": "2026-06-29T10:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+### 3.19 Admin: Approve Withdrawal
+- **URL**: `/driver/admin/withdrawals/<withdrawal_id>/approve/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsAdmin)
+
+**Parameters**:
+| Name | Type | Required | Description |
+| ---- | ---- | -------- | ----------- |
+| `reason` | string | No | Reason for approval |
+
+**Sample Request**:
+```json
+{
+  "reason": "Approved manually"
+}
+```
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "id": 1,
+    "amount": "1000.00",
+    "status": "approved",
+    "processed_at": "2026-06-29T11:00:00Z"
+  }
+}
+```
+
+### 3.20 Admin: Reject Withdrawal
+- **URL**: `/driver/admin/withdrawals/<withdrawal_id>/reject/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsAdmin)
+
+**Parameters**:
+| Name | Type | Required | Description |
+| ---- | ---- | -------- | ----------- |
+| `admin_notes` | string | No | Reason for rejection |
+
+**Sample Request**:
+```json
+{
+  "admin_notes": "Invalid documents"
+}
+```
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "id": 1,
+    "amount": "1000.00",
+    "status": "rejected",
+    "admin_notes": "Invalid documents",
+    "processed_at": "2026-06-29T11:00:00Z"
+  }
+}
+```
+
+### 3.21 Admin: Bulk Action Withdrawals
+- **URL**: `/driver/admin/withdrawals/bulk-action/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsAdmin)
+
+**Parameters**:
+| Name | Type | Required | Description |
+| ---- | ---- | -------- | ----------- |
+| `action` | string | **Yes** | `approve` or `reject` |
+| `withdrawal_ids` | list[int] | **Yes** | List of withdrawal IDs (Max 50) |
+| `admin_notes` | string | No | Admin notes/reason |
+
+**Sample Request**:
+```json
+{
+  "action": "approve",
+  "withdrawal_ids": [1, 2, 3],
+  "admin_notes": "Bulk approved"
+}
+```
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "message": "Bulk approve processed",
+    "updated_ids": [1, 2, 3],
+    "skipped_ids": [],
+    "updated_count": 3
+  }
+}
+```
+
 ---
 
 ## 4. Rides & Trips (App: `ride`)
@@ -810,7 +1020,73 @@ Post completion review process.
 }
 ```
 
-### 4.7 Admin: Trips List
+### 4.7 Rider Cancel Trip
+Rider cancels their own trip. Can be done in any active state (requested, accepted, reached, in_progress).
+- **URL**: `/ride/trip/<trip_id>/cancel/`
+- **Method**: `POST`
+- **Auth Required**: Yes (Rider)
+
+**Parameters**:
+| Name | Type | Required | Description |
+| ---- | ---- | -------- | ----------- |
+| `reason` | string | No | Valid values: `no_show`, `wrong_location`, `too_long`, `safety`, `other` |
+| `note` | string | No | Free-text note |
+
+**Sample Request**:
+```json
+{
+  "reason": "too_long",
+  "note": "Driver is not moving"
+}
+```
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "trip_id": 101,
+    "status": "cancelled",
+    "cancelled_at": "2026-06-29T10:00:00Z"
+  }
+}
+```
+
+### 4.8 Driver Cancel Trip
+Driver cancels a trip AFTER accepting it (before the trip starts).
+- **URL**: `/ride/trip/<trip_id>/driver-cancel/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsDriver)
+
+**Parameters**:
+| Name | Type | Required | Description |
+| ---- | ---- | -------- | ----------- |
+| `reason` | string | **Yes** | Valid values: `no_show`, `vehicle_issue`, `safety`, `personal`, `other` |
+| `note` | string | No | Free-text note |
+
+**Sample Request**:
+```json
+{
+  "reason": "vehicle_issue",
+  "note": "Flat tire"
+}
+```
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "trip_id": 101,
+    "status": "cancelled",
+    "penalty": {
+      "lockout_until": "2026-06-29T11:00:00Z",
+      "rating_deduction": 0.1,
+      "new_rating": 4.8
+    }
+  }
+}
+```
+
+### 4.9 Admin: Trips List
 - **URL**: `/ride/admin/trips/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsAdmin)
@@ -818,7 +1094,7 @@ Post completion review process.
 
 **Sample Response**: Paginated TripList payloads.
 
-### 4.8 Admin: Live Locations
+### 4.10 Admin: Live Locations
 - **URL**: `/ride/admin/live-locations/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsAdmin)

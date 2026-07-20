@@ -23,7 +23,7 @@ Generate an OTP. Sends via SNS.
 | Name | Type | Required | Description |
 | ---- | ---- | -------- | ----------- |
 | `phone_number` | string | **Yes** | E.164 formatted number (e.g., `+919876543210`). |
-| `role` | string | No | `rider` or `driver`. Default: `rider`. |
+| `role` | string | No | `rider` or `driver` or `admin`. Default: `rider`. |
 
 **Sample Request**:
 ```json

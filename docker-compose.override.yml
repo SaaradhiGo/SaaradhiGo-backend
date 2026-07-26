@@ -1,0 +1,53 @@
+# Local development overrides. Docker Compose applies this file
+# automatically for `docker compose up`, and NOT when the prod stack is
+# started with an explicit `-f docker-compose.yml -f docker-compose.prod.yml`.
+# Anything dev-only (source bind mounts, runserver, an exposed database)
+# belongs here, never in the base file.
+services:
+  django:
+    env_file:
+      - .env.local
+    # Live-reload the source tree. This mount used to live in the base
+    # compose file, which meant production also ran the host checkout
+    # mounted over the image — the image build was decorative, and a
+    # half-finished `git pull` was served live.
+    volumes:
+      - .:/App
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "python manage.py collectstatic --noinput &&
+             python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+    depends_on:
+      - redis
+      - db
+  celery:
+    env_file:
+      - .env.local
+    volumes:
+      - .:/App
+    command: ["celery", "-A", "base", "worker", "-B", "-l", "INFO"]
+    depends_on:
+      - django
+  redis:
+    image: redis:7-alpine
+    env_file:
+      - .env.local
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  db:
+    image: postgres:15-alpine
+    env_file:
+      - .env.local
+    environment:
+      POSTGRES_DB: ${DB_NAME:-postgres}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      # Read from .env.local — never hardcode. The literal that used to sit
+      # here is also the production database password; it is in this repo's
+      # git history, so it must be rotated on RDS and the history scrubbed
+      # before launch (see the launch-readiness runbook).
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env.local}
+    ports:
+      - "127.0.0.1:5432:5432"

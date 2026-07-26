@@ -1,0 +1,24 @@
+env
+.env
+__pycache__
+firebase-credentials.json
+PRD of VahanGo.txt
+docs
+implemented_analysis.md
+staticfiles
+.agents
+openapi.yaml
+postman_collection.json
+pytest.ini
+SaaradhiGo_PRD.md
+VahanGo_API_Collection.json
+global-bundle.pem
+.env.local
+.env.prod
+.pytest_cache
+.tests/
+.planning/
+.venv-qa/
+.venv/
+db.sqlite3
+

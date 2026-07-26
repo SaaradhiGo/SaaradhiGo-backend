@@ -1,0 +1,17 @@
+# Base stack. Environment-agnostic: no ports, no bind mounts, no
+# commands that only make sense in one environment. Local dev layers
+# docker-compose.override.yml on top automatically; production is started
+# explicitly with `-f docker-compose.yml -f docker-compose.prod.yml`.
+services:
+  django:
+    build:
+      context: .
+      dockerfile: dockerfile
+
+  celery:
+    build:
+      context: .
+      dockerfile: dockerfile
+    command: ["celery", "-A", "base", "worker", "-B", "-l", "INFO"]
+    depends_on:
+      - django

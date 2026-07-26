@@ -132,10 +132,34 @@ class DriverAdminDetailSerializer(serializers.ModelSerializer):
 
 
 class WithdrawalRequestSerializer(serializers.ModelSerializer):
+    # Ops approving a payout needs to see WHO they are paying and WHERE the
+    # money is going without opening a second screen. The list previously
+    # returned a bare driver id, which made the approve queue unusable —
+    # and maker-checker meaningless if the checker cannot see the payee.
+    driver_name = serializers.SerializerMethodField()
+    driver_phone = serializers.SerializerMethodField()
+    driver_upi_id = serializers.CharField(source='driver.upi_id', read_only=True, default='')
+    driver_kyc_approved = serializers.BooleanField(source='driver.approved', read_only=True, default=False)
+
     class Meta:
         model = WithdrawalRequest
-        fields = ['id', 'driver', 'amount', 'status', 'requested_at', 'processed_at', 'admin_notes', 'payout_reference_id']
-        read_only_fields = ['id', 'driver', 'status', 'requested_at', 'processed_at', 'admin_notes', 'payout_reference_id']
+        fields = [
+            'id', 'driver', 'driver_name', 'driver_phone', 'driver_upi_id',
+            'driver_kyc_approved', 'amount', 'status', 'requested_at',
+            'processed_at', 'admin_notes', 'payout_reference_id',
+        ]
+        read_only_fields = [
+            'id', 'driver', 'status', 'requested_at', 'processed_at',
+            'admin_notes', 'payout_reference_id',
+        ]
+
+    def get_driver_name(self, obj):
+        user = getattr(obj.driver, 'user_id', None)
+        return getattr(user, 'full_name', '') or ''
+
+    def get_driver_phone(self, obj):
+        user = getattr(obj.driver, 'user_id', None)
+        return getattr(user, 'phone_number', '') or ''
 
 
 class WithdrawalRequestCreateSerializer(serializers.ModelSerializer):

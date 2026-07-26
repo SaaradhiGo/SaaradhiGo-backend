@@ -38,14 +38,55 @@ class FavoritePlace(models.Model):
     def __str__(self):
         return f'{self.user_id} - {self.address_text}'
 class Wallet(models.Model):
-    user_id=models.OneToOneField(User,on_delete=models.CASCADE,related_name='wallet')
+    """A balance held for one user in one role.
+
+    A user who drives *and* rides holds TWO rows: their rider credit
+    balance and their driver settlement balance. They were previously the
+    same row, which meant a driver could spend money the platform owed
+    them as settlement by paying for their own rides through the rider
+    wallet endpoints — and it made the closed-loop credit posture
+    (ADR-0003) unenforceable, because settlement money is not a credit.
+    """
+    SCOPE_RIDER = 'rider'
+    SCOPE_DRIVER = 'driver'
+    SCOPE_CHOICES = [
+        (SCOPE_RIDER, 'Rider credits (closed-loop)'),
+        (SCOPE_DRIVER, 'Driver settlement balance'),
+    ]
+
+    user_id=models.ForeignKey(User,on_delete=models.CASCADE,related_name='wallets')
+    scope=models.CharField(
+        max_length=16, choices=SCOPE_CHOICES, default=SCOPE_RIDER, db_index=True,
+    )
     # default uses Decimal explicitly so a freshly-constructed Wallet
     # instance holds a Decimal in memory (not a Python float). The
     # mismatch caused `wallet.balance + Decimal(amount)` to TypeError on
     # the first ever top-up. See QA-7 in the Phase-0 QA report.
     balance=models.DecimalField(max_digits=12,decimal_places=2,default=Decimal('0.00'))
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user_id', 'scope'], name='wallet_unique_user_scope',
+            ),
+        ]
+
     def __str__(self):
-        return f'{self.user_id} - {self.balance}'
+        return f'{self.user_id} [{self.scope}] - {self.balance}'
+
+
+def get_wallet(user, scope=Wallet.SCOPE_RIDER, lock=False):
+    """Fetch (or create) the wallet for a user in a given role.
+
+    Always go through this rather than `Wallet.objects.get(user_id=...)`,
+    which is now ambiguous. `lock=True` takes SELECT FOR UPDATE — required
+    for every balance mutation.
+    """
+    qs = Wallet.objects.select_for_update() if lock else Wallet.objects
+    wallet, _ = qs.get_or_create(user_id=user, scope=scope)
+    if wallet.balance is None:
+        wallet.balance = Decimal('0.00')
+    return wallet
 
 class WalletTransaction(models.Model):
     user_id = models.ForeignKey(User, on_delete=models.CASCADE, related_name='wallet_transactions')

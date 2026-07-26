@@ -1,7 +1,9 @@
+import asyncio
 import json
 import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 from django.core.cache import cache
 from base.utils import generate_otp
@@ -28,14 +30,14 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
         self.user = self.scope.get('user')
 
         if isinstance(self.user, AnonymousUser) or not self.user.is_authenticated:
-            print(f"WSREJECT 4001: User is anonymous or not auth. User: {self.user}")
+            logger.info("WS reject 4001: unauthenticated driver socket")
             await self.close(code=4001)
             return
 
         # Verify user is a driver
         self.driver = await self._get_driver()
         if not self.driver:
-            print("WSREJECT 4003: User is not a driver")
+            logger.info("WS reject 4003: user has no driver profile")
             await self.close(code=4003)
             return
         if not self.driver.approved:
@@ -83,7 +85,6 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
         """
         try:
             data = json.loads(text_data)
-            print(data)
             lng = data.get('lng')
             lat = data.get('lat')
 
@@ -133,6 +134,14 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
 
     # -- Event handlers (called via channel layer) --
 
+    async def trip_taken(self, event):
+        """Another driver won this ride — dismiss the request card."""
+        await self.send(text_data=json.dumps({
+            'type': 'trip_taken',
+            'trip_id': event['trip_id'],
+            'message': 'This ride was accepted by another driver.',
+        }))
+
     async def ride_request(self, event):
         """Send incoming ride request notification to this driver."""
         await self.send(text_data=json.dumps({
@@ -155,7 +164,7 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
         try:
             return self.user.driver
         except Exception as e:
-            print(f"Error in _get_driver: {e}")
+            logger.debug("driver lookup failed: %s", e)
             return None
     @database_sync_to_async
     def _active_the_driver(self):
@@ -184,7 +193,7 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
             record_session_start(self.driver)
             return {'ok': True, 'fatigue': status.to_dict()}
         except Exception as e:
-            print(f"Error in _active_the_driver: {e}")
+            logger.error("going online failed: %s", e)
             return {'ok': False, 'error': str(e)}
 
     @database_sync_to_async
@@ -197,7 +206,7 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
             record_session_end(self.driver, reason='offline')
             return {'ok': True}
         except Exception as e:
-            print(f"Error in _deactive_the_driver: {e}")
+            logger.error("going offline failed: %s", e)
             return {'ok': False, 'error': str(e)}
     @database_sync_to_async
     def _update_driver_location(self, lng, lat):
@@ -245,6 +254,9 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
         }))
 
     async def disconnect(self, close_code):
+        task = getattr(self, '_dispatch_task', None)
+        if task is not None and not task.done():
+            task.cancel()
         if hasattr(self, 'rider_group'):
             await self.channel_layer.group_discard(self.rider_group, self.channel_name)
 
@@ -314,25 +326,21 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             # Log ride request to Redis Stream (for future analytics, not driver notification)
             await self._publish_ride_request(trip)
 
-            # Find and notify nearby drivers via WebSocket
-            notified_count = await self._notify_nearby_drivers(
-                trip=trip,
-                pickup_lng=float(pickup_lng),
-                pickup_lat=float(pickup_lat),
-                destination_lat=destination_lat,
-                destination_lng=destination_lng,
-                pickup_address=pickup_address,
-                destination_address=destination_address,
-                vehicle_type=vehicle_type,
+            # Rolling fanout. Runs as a background task so this socket stays
+            # responsive (the rider can cancel mid-search) while the waves
+            # play out.
+            self._dispatch_task = asyncio.create_task(
+                self._run_dispatch(
+                    trip=trip,
+                    pickup_lng=float(pickup_lng),
+                    pickup_lat=float(pickup_lat),
+                    destination_lat=destination_lat,
+                    destination_lng=destination_lng,
+                    pickup_address=pickup_address,
+                    destination_address=destination_address,
+                    vehicle_type=vehicle_type,
+                )
             )
-
-            if notified_count > 0:
-                await self.send(text_data=json.dumps({
-                    'type': 'drivers_notified',
-                    'trip_id': trip.id,
-                    'drivers_notified': notified_count,
-                    'message': f'{notified_count} nearby driver(s) notified'
-                }))
 
         except json.JSONDecodeError:
             await self.send(text_data=json.dumps({
@@ -383,7 +391,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
         if trip.requested_vehicle_type:
             vt_name = await database_sync_to_async(lambda: trip.requested_vehicle_type.type)()
 
-        notified_count = await self._notify_nearby_drivers(
+        await self._notify_nearby_drivers(
             trip=trip,
             pickup_lng=float(trip.pickup_long),
             pickup_lat=float(trip.pickup_lat),
@@ -395,67 +403,115 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             vehicle_type=vt_name,
         )
 
-        if notified_count > 0:
-            await self.send(text_data=json.dumps({
-                'type': 'drivers_notified',
-                'trip_id': trip.id,
-                'drivers_notified': notified_count,
-                'message': f'Retry: {notified_count} nearby driver(s) notified'
-            }))
+    async def _run_dispatch(self, **kwargs):
+        """Background wrapper around the fanout.
+
+        A bare `create_task` swallows exceptions: if dispatch died halfway
+        the rider would just sit on "searching" with nothing in the logs.
+        """
+        try:
+            await self._notify_nearby_drivers(**kwargs)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                'Dispatch failed for trip %s: %s', getattr(kwargs.get('trip'), 'id', '?'), exc,
+            )
+            try:
+                await self.send(text_data=json.dumps({
+                    'type': 'error',
+                    'message': 'Could not reach nearby drivers. Please retry.',
+                }))
+            except Exception:  # noqa: BLE001
+                pass  # socket already gone
 
     async def _notify_nearby_drivers(self, trip, pickup_lng, pickup_lat,
                                       destination_lat, destination_lng,
                                       pickup_address, destination_address,
-                                      radius=5000, vehicle_type=None):
-        """
-        Find nearby drivers and send them a ride request via WebSocket.
-        Filters by vehicle_type if provided.
-        Returns the number of drivers notified.
-        """
-        # Fetch more candidates from Redis to allow for post-filtering
-        nearby = await self._find_nearby_drivers(pickup_lng, pickup_lat, vehicle_type)
+                                      radius=None, vehicle_type=None):
+        """Rolling fanout: offer the trip in expanding waves.
 
-        if not nearby:
+        Each wave queries a wider radius and offers the ride only to drivers
+        who have not already been offered it. Waves stop as soon as the trip
+        is accepted (or cancelled), so a driver 4km away is not woken for a
+        ride the driver 400m away is about to take.
+
+        The previous implementation blasted every driver inside a single 5km
+        radius at once and then left the request on their screens for the
+        whole 600s accept timeout.
+        """
+        waves = list(getattr(settings, 'DISPATCH_RADIUS_WAVES_M', (1500, 3000, 5000)))
+        if radius:  # explicit retry radius from the client
+            waves = [min(int(radius), 5000)]
+        wave_gap = float(getattr(settings, 'DISPATCH_WAVE_SECONDS', 20))
+
+        rider_name = await self._get_rider_name()
+        offered: set[str] = set()
+        total_notified = 0
+
+        for wave_index, wave_radius in enumerate(waves):
+            if wave_index > 0:
+                # Give the closer drivers their exclusive window first.
+                await asyncio.sleep(wave_gap)
+                if not await self._trip_still_open(trip.id):
+                    break
+
+            nearby = await self._find_nearby_drivers(
+                pickup_lng, pickup_lat, vehicle_type, radius=wave_radius,
+            ) or []
+
+            wave_ids = []
+            for driver_info in nearby:
+                driver_key = driver_info[0] if isinstance(driver_info, (list, tuple)) else driver_info
+                if isinstance(driver_key, str) and driver_key.startswith('driver:'):
+                    did = driver_key.split(':')[1]
+                    if did not in offered:
+                        wave_ids.append(did)
+
+            if not wave_ids:
+                continue
+
+            offered.update(wave_ids)
+            await self._record_offered(trip.id, wave_ids)
+
+            for driver_id in wave_ids:
+                await self.channel_layer.group_send(f'driver_{driver_id}', {
+                    'type': 'ride_request',
+                    'trip_id': trip.id,
+                    'rider_name': rider_name,
+                    'pickup_lat': str(pickup_lat),
+                    'pickup_lng': str(pickup_lng),
+                    'destination_lat': str(destination_lat),
+                    'destination_lng': str(destination_lng),
+                    'pickup_address': pickup_address,
+                    'destination_address': destination_address,
+                    'estimated_fare': str(trip.estimated_fare) if trip.estimated_fare else '',
+                })
+                total_notified += 1
+                await self._send_driver_push(
+                    driver_id,
+                    "New Ride Request",
+                    f"New ride request from {rider_name}",
+                    {"trip_id": str(trip.id), "type": "ride_request"},
+                )
+
+            await self.send(text_data=json.dumps({
+                'type': 'drivers_notified',
+                'trip_id': trip.id,
+                'wave': wave_index + 1,
+                'radius_m': wave_radius,
+                'drivers_notified': len(wave_ids),
+                'message': f'{len(wave_ids)} nearby driver(s) notified',
+            }))
+
+        if total_notified == 0:
             await self.send(text_data=json.dumps({
                 'type': 'no_drivers',
                 'trip_id': trip.id,
                 'message': 'No nearby drivers found. Please try again shortly.'
             }))
-            return 0
 
-        # Extract driver IDs from Redis results
-        all_driver_ids = []
-        for driver_info in nearby:
-            driver_key = driver_info[0] if isinstance(driver_info, (list, tuple)) else driver_info
-            if isinstance(driver_key, str) and driver_key.startswith('driver:'):
-                all_driver_ids.append(driver_key.split(':')[1])
-
-        rider_name = await self._get_rider_name()
-        notified_count = 0
-        for driver_id in all_driver_ids:
-            driver_group = f'driver_{driver_id}'
-            await self.channel_layer.group_send(driver_group, {
-                'type': 'ride_request',
-                'trip_id': trip.id,
-                'rider_name': rider_name,
-                'pickup_lat': str(pickup_lat),
-                'pickup_lng': str(pickup_lng),
-                'destination_lat': str(destination_lat),
-                'destination_lng': str(destination_lng),
-                'pickup_address': pickup_address,
-                'destination_address': destination_address,
-                'estimated_fare': str(trip.estimated_fare) if trip.estimated_fare else '',
-            })
-            notified_count += 1
-
-            await self._send_driver_push(
-                driver_id,
-                "New Ride Request",
-                f"New ride request from {rider_name}",
-                {"trip_id": str(trip.id), "type": "ride_request"}
-            )
-
-        return notified_count
+        return total_notified
 
     # -- Event handlers --
 
@@ -547,6 +603,8 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                 pickup_lat=pickup_lat,
                 pickup_long=pickup_lng,
                 rider_id=self.user.id,
+                # This IS a booking, so it counts toward demand for surge.
+                record_demand=True,
             )
 
             # Resolve VehicleType for storing on Trip
@@ -554,9 +612,17 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             if vehicle_type:
                 requested_vt = VehicleType.objects.filter(type__iexact=vehicle_type).first()
 
+            # Stamp the zone the pickup fell in. Commission, GST and every
+            # per-city report read this instead of re-running a
+            # point-in-polygon lookup against a zone table that may have
+            # changed since the ride happened.
+            from servers.pricing.services import find_zone_for_point
+            pickup_zone = find_zone_for_point(pickup_lat, pickup_lng)
+
             with transaction.atomic():
                 trip = Trip.objects.create(
                     user_id=self.user,
+                    zone=pickup_zone,
                     pickup_lat=pickup_lat,
                     pickup_long=pickup_lng,
                     destination_lat=destination_lat,
@@ -604,9 +670,30 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             return None
 
     @database_sync_to_async
-    def _find_nearby_drivers(self, lng, lat, vehicle_type=None):
+    def _find_nearby_drivers(self, lng, lat, vehicle_type=None, radius=5000):
         from servers.redis_client import nearby_drivers
-        return nearby_drivers(lng=lng, lat=lat, vehicle_type=vehicle_type)
+        return nearby_drivers(
+            lng=lng, lat=lat, vehicle_type=vehicle_type, radius=radius,
+        )
+
+    @database_sync_to_async
+    def _record_offered(self, trip_id, driver_ids):
+        from servers.redis_client import add_offered_drivers
+        return add_offered_drivers(trip_id, driver_ids)
+
+    @database_sync_to_async
+    def _trip_still_open(self, trip_id):
+        """True while the trip is unassigned and still in 'requested'."""
+        from servers.ride.models import Trip
+        try:
+            trip = Trip.objects.select_related('status_id').only(
+                'id', 'driver_id', 'status_id',
+            ).get(id=trip_id)
+        except Trip.DoesNotExist:
+            return False
+        if trip.driver_id_id:
+            return False
+        return (trip.status_id.status_code if trip.status_id else None) == 'requested'
 
     @database_sync_to_async
     def _publish_ride_request(self, trip):
@@ -673,25 +760,39 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
         self.trip_id = self.scope['url_route']['kwargs']['trip_id']
         self.trip_group = f'trip_{self.trip_id}'
+        self.in_trip_group = False
 
-        # Verify user is part of this trip
-        is_participant = await self._is_trip_participant()
-        if not is_participant:
+        # Resolve *how* this user relates to the trip. Only the rider and
+        # the ASSIGNED driver may join the trip group — a candidate driver
+        # who has been offered the ride connects but stays out of the group
+        # until their accept transaction commits.
+        #
+        # Before this gate, any approved driver could open
+        # /ws/ride/trip/<id>/ for an unassigned trip and then keep
+        # receiving trip_status_update + driver_location_update for the
+        # whole ride even after losing the race — leaking the rider's
+        # pickup/drop and the winning driver's live GPS track.
+        self.participation = await self._resolve_participation()
+        if self.participation == 'none':
             await self.close(code=4003)
             return
 
-        await self.channel_layer.group_add(self.trip_group, self.channel_name)
+        if self.participation in ('rider', 'assigned_driver'):
+            await self.channel_layer.group_add(self.trip_group, self.channel_name)
+            self.in_trip_group = True
 
         await self.accept()
         await self.send(text_data=json.dumps({
             'type': 'connection_established',
             'trip_id': self.trip_id,
+            'subscribed': self.in_trip_group,
             'message': 'Connected to trip updates',
         }))
 
     async def disconnect(self, close_code):
-        if hasattr(self, 'trip_group'):
+        if getattr(self, 'in_trip_group', False):
             await self.channel_layer.group_discard(self.trip_group, self.channel_name)
+            self.in_trip_group = False
 
     async def receive(self, text_data):
         """
@@ -725,13 +826,37 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             # an arbitrary trip.
 
             if action == 'accept':
-                if not await self._is_driver():
+                if self.participation not in ('candidate_driver', 'assigned_driver'):
                     await self.send(text_data=json.dumps({
                         'type': 'error',
                         'message': 'Only drivers can accept rides'
                     }))
                     return
                 result = await self._accept_trip()
+                if result.get('success'):
+                    # Subscription happens only AFTER the accept transaction
+                    # commits and Trip.driver_id points at this driver.
+                    if not self.in_trip_group:
+                        await self.channel_layer.group_add(
+                            self.trip_group, self.channel_name,
+                        )
+                        self.in_trip_group = True
+                    self.participation = 'assigned_driver'
+                    for loser_id in result.pop('notify_losers', []) or []:
+                        await self.channel_layer.group_send(
+                            f'driver_{loser_id}',
+                            {'type': 'trip_taken', 'trip_id': self.trip_id},
+                        )
+                elif result.get('taken'):
+                    # Lost the race. Tell the app to dismiss the request card
+                    # and drop the socket so it cannot observe the trip.
+                    await self.send(text_data=json.dumps({
+                        'type': 'trip_taken',
+                        'trip_id': self.trip_id,
+                        'message': 'This ride was accepted by another driver.',
+                    }))
+                    await self.close(code=4005)
+                    return
             elif action == 'reached':
                 if not await self._is_assigned_driver():
                     await self.send(text_data=json.dumps({
@@ -797,7 +922,14 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                         'message': 'Only the rider or assigned driver can cancel this trip'
                     }))
                     return
-                result = await self._update_trip_status('cancelled')
+                # Record WHO cancelled. Ops, refunds, driver-penalty and the
+                # MVA-2020 cancellation policy all need this; collapsing every
+                # cancel into a single `cancelled` status loses it.
+                result = await self._update_trip_status(
+                    'cancelled',
+                    cancelled_by='rider' if is_rider else 'driver',
+                    cancellation_reason=str(data.get('reason', ''))[:255],
+                )
 
             if result.get('success'):
                 # Broadcast status to all participants in the trip group
@@ -888,22 +1020,41 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
     # -- Database helpers --
 
     @database_sync_to_async
-    def _is_trip_participant(self):
+    def _resolve_participation(self):
+        """Classify this user's relationship to the trip.
+
+        Returns one of:
+          'rider'            -- the rider who booked it
+          'assigned_driver'  -- the driver currently assigned to it
+          'candidate_driver' -- an approved driver, trip still unassigned;
+                                may send {"action": "accept"} but is NOT
+                                subscribed to the trip group
+          'none'             -- reject the connection
+        """
         from servers.ride.models import Trip
         try:
-            trip = Trip.objects.get(id=self.trip_id)
-            # Rider check
-            if trip.user_id_id == self.user.id:
-                return True
-            # Driver check
-            if trip.driver_id and hasattr(self.user, 'driver'):
-                return trip.driver_id_id == self.user.driver.id
-            # Allow any driver to join if no driver assigned yet (for accepting)
-            if not trip.driver_id and hasattr(self.user, 'driver'):
-                return True
-            return False
+            trip = Trip.objects.select_related('status_id').get(id=self.trip_id)
         except Trip.DoesNotExist:
-            return False
+            return 'none'
+
+        if trip.user_id_id == self.user.id:
+            return 'rider'
+
+        driver = getattr(self.user, 'driver', None)
+        if driver is None:
+            return 'none'
+
+        if trip.driver_id_id:
+            return 'assigned_driver' if trip.driver_id_id == driver.id else 'none'
+
+        # Unassigned trip: only an approved, unblocked driver may bid on it,
+        # and only while it is still open for acceptance.
+        current = trip.status_id.status_code if trip.status_id else None
+        if current not in (None, 'requested'):
+            return 'none'
+        if not driver.approved or (driver.status or '').strip().lower() == 'blocked':
+            return 'none'
+        return 'candidate_driver'
 
     @database_sync_to_async
     def _is_driver(self):
@@ -952,7 +1103,21 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
                 # Check if already accepted
                 if trip.driver_id is not None:
-                    return {'success': False, 'error': 'Trip already accepted by another driver'}
+                    return {
+                        'success': False,
+                        'taken': True,
+                        'error': 'Trip already accepted by another driver',
+                    }
+
+                # A trip that timed out or was cancelled while the offer was
+                # on screen must not be acceptable.
+                current = trip.status_id.status_code if trip.status_id else None
+                if current not in (None, 'requested'):
+                    return {
+                        'success': False,
+                        'taken': True,
+                        'error': f'This ride is no longer available ({current}).',
+                    }
 
                 # Re-validate the driver's approval state INSIDE the lock.
                 # The WS connect-time check is stale: an admin may have
@@ -1026,6 +1191,12 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             set_driver_active_trip(driver.id, trip.id)
             remove_driver(driver.id)  # Remove from nearby drivers pool
 
+            # Every other driver who was offered this ride needs an explicit
+            # dismissal, otherwise their request card sits on screen until it
+            # times out and they tap a dead trip.
+            from servers.redis_client import pop_offered_drivers
+            losers = [d for d in pop_offered_drivers(trip.id) if str(d) != str(driver.id)]
+
             # Update ride cache with accepted status and driver assignment
             from servers.redis_client import cache_trip as _cache_trip
             vehicle = driver.active_vehicle
@@ -1084,9 +1255,10 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 'otp': trip.otp,
                 'driver_info': driver_info,
                 'vehicle_info': vehicle_info,
+                'notify_losers': losers,
             }
         except Trip.DoesNotExist:
-            
+
             return {'success': False, 'error': 'Trip not found'}
         except Exception as e:
             logger.error(f"Error accepting trip: {str(e)}")
@@ -1100,30 +1272,51 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
         
         try:
             with transaction.atomic():
-                trip = Trip.objects.select_for_update().get(id=self.trip_id)
+                trip = (
+                    Trip.objects.select_for_update()
+                    .select_related('status_id')
+                    .get(id=self.trip_id)
+                )
+
+                # Cash can only be collected on a finished trip. Without this
+                # gate the assigned driver could mark the fare collected while
+                # the rider was still in the car (or before pickup).
+                current = trip.status_id.status_code if trip.status_id else None
+                if current != 'completed':
+                    return {
+                        'success': False,
+                        'error': f'Cash can only be confirmed on a completed trip (currently {current}).',
+                    }
+
                 payment = trip.payments.filter(method='cash').first()
                 if not payment:
                     return {'success': False, 'error': 'No cash payment found for this trip'}
-                
+
+                # Idempotent: a retried WS frame must not double-count GMV.
+                if payment.status == 'completed':
+                    return {
+                        'success': True,
+                        'message': 'Cash payment already confirmed',
+                        'rider_id': trip.user_id_id,
+                    }
+
                 payment.status = 'completed'
-                payment.save()
-                
-                # Create transaction history
-                TransactionHistory.objects.create(
-                    trip_id=trip,
-                    user_id=trip.user_id,
-                    driver_id=trip.driver_id,
-                    amount=payment.amount,
-                    method='cash',
-                    user_name=trip.user_id.full_name or trip.user_id.phone_number,
-                    status='completed',
-                    txn_type='credit'
-                )
-                
-                # Credit driver's wallet
+                payment.save(update_fields=['status'])
+
+                trip.payment_status = 'completed'
+                trip.save(update_fields=['payment_status'])
+
+                # NOTE: no TransactionHistory row is written here. The cash
+                # branch of _create_payment_on_complete already wrote one at
+                # completion time; writing a second one here double-counted
+                # every cash trip in GMV and commission reporting.
+                #
+                # credit_driver_wallet is idempotent on
+                # WalletTransaction.idempotency_key, so calling it again is a
+                # no-op if the trip was already settled.
                 from servers.driver.utils import credit_driver_wallet
                 credit_driver_wallet(trip)
-                
+
             return {'success': True, 'message': 'Cash payment confirmed', 'rider_id': trip.user_id_id}
         except Trip.DoesNotExist:
             return {'success': False, 'error': 'Trip not found'}
@@ -1132,7 +1325,21 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             return {'success': False, 'error': str(e)}
             
     @database_sync_to_async
-    def _update_trip_status(self, status_code, otp_input=None):
+    def _update_trip_status(self, status_code, otp_input=None,
+                            cancelled_by='', cancellation_reason=''):
+        """Advance the trip state machine.
+
+        Everything inside the `atomic()` block is DB-only. Push
+        notifications, receipt generation (PDF + S3 + email), Redis cache
+        writes and any gateway call are registered with
+        `transaction.on_commit` so that:
+
+          * the Trip row lock is never held across a network round-trip
+            (trip-completion latency used to include a reportlab render,
+            an S3 PUT and an SES send), and
+          * a rolled-back transaction can never fire a push, mail a
+            receipt, or leave a gateway order behind.
+        """
         from servers.ride.models import Trip, TripStatus
         from django.utils import timezone
         from django.db import transaction
@@ -1178,84 +1385,98 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
                 trip.status_id = status_obj
 
+                from servers.auth_user.services import send_push_notification
+                from servers.rider.models import Notification
+
+                push = None  # (title, body, data) queued for after commit
+
                 # Set timestamps based on status
                 if status_code == 'reached':
                     trip.reached_at = timezone.now()
-                    from servers.auth_user.services import send_push_notification
-                    send_push_notification(
-                        trip.user_id,
+                    push = (
                         "Driver Arrived",
                         "Your driver has arrived at the pickup location.",
-                        {"trip_id": str(trip.id), "type": "driver_arrived"}
+                        {"trip_id": str(trip.id), "type": "driver_arrived"},
                     )
                 elif status_code == 'in_progress':
                     trip.started_at = timezone.now()
-                    from servers.auth_user.services import send_push_notification
-                    send_push_notification(
-                        trip.user_id,
+                    push = (
                         "Ride Started",
                         "Your ride is now in progress.",
-                        {"trip_id": str(trip.id), "type": "ride_started"}
+                        {"trip_id": str(trip.id), "type": "ride_started"},
                     )
                 elif status_code == 'completed':
                     trip.completed_at = timezone.now()
                     # Create payment on trip completion within the same transaction
                     self._create_payment_on_complete(trip)
 
-                    from servers.rider.models import Notification
+                    fare = trip.final_fare or trip.estimated_fare
                     Notification.objects.create(
                         user_id=trip.user_id,
                         title='Ride Completed',
-                        message=f'Your ride has been completed. Final fare: Rs.{trip.final_fare or trip.estimated_fare}',
+                        message=f'Your ride has been completed. Final fare: Rs.{fare}',
                     )
-
-                    from servers.auth_user.services import send_push_notification
-                    send_push_notification(
-                        trip.user_id,
+                    push = (
                         "Ride Completed",
-                        f"Your ride has been completed. Final fare: Rs.{trip.final_fare or trip.estimated_fare}",
-                        {"trip_id": str(trip.id), "type": "ride_completed"}
+                        f"Your ride has been completed. Final fare: Rs.{fare}",
+                        {"trip_id": str(trip.id), "type": "ride_completed"},
                     )
 
-                    # Issue + email the rider's receipt. Best-effort:
-                    # a failure to mail does not unwind the trip
-                    # completion. The receipt row is still saved so
-                    # support can resend later.
-                    try:
-                        from servers.ride.receipts import issue_receipt
-                        issue_receipt(trip)
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"issue_receipt failed for trip {trip.id}: {exc}")
+                    # Receipt generation renders a PDF, uploads it to S3 and
+                    # sends an email. That is a Celery job, not something to
+                    # do while holding SELECT FOR UPDATE on this row.
+                    from servers.ride.tasks import issue_receipt_for_trip
+                    trip_pk = trip.id
+                    transaction.on_commit(
+                        lambda: issue_receipt_for_trip.delay(trip_pk)
+                    )
                 elif status_code == 'cancelled':
                     trip.cancelled_at = timezone.now()
+                    trip.cancelled_by = cancelled_by or 'system'
+                    trip.cancellation_reason = cancellation_reason or ''
                     self._process_refund_on_cancel(trip)
-                    
-                    from servers.rider.models import Notification
+
                     Notification.objects.create(
                         user_id=trip.user_id,
                         title='Ride Cancelled',
-                        message=f'Your ride has been cancelled.',
+                        message='Your ride has been cancelled.',
                     )
-                    
-                    from servers.auth_user.services import send_push_notification
-                    send_push_notification(
-                        trip.user_id,
+                    push = (
                         "Ride Cancelled",
                         "Your ride has been cancelled.",
-                        {"trip_id": str(trip.id), "type": "ride_cancelled"}
+                        {"trip_id": str(trip.id), "type": "ride_cancelled"},
                     )
 
                 trip.save()
 
-                # If trip has ended, restore driver's available status + invalidate cache
-                if status_code in ('completed', 'cancelled') and trip.driver_id:
-                    from servers.redis_client import clear_driver_active_trip, invalidate_trip
-                    clear_driver_active_trip(trip.driver_id.id)
-                    invalidate_trip(trip.id)
+                # --- after-commit side effects -------------------------------
+                # None of this may run if the transaction rolls back, and none
+                # of it should run while the row lock is held.
+                if push is not None:
+                    rider = trip.user_id
+                    title, body, data = push
+                    transaction.on_commit(
+                        lambda: send_push_notification(rider, title, body, data)
+                    )
+
+                trip_pk = trip.id
+                driver_pk = trip.driver_id.id if trip.driver_id else None
+                if status_code in ('completed', 'cancelled'):
+                    def _clear_redis():
+                        from servers.redis_client import (
+                            clear_driver_active_trip, invalidate_trip,
+                            clear_offered_drivers,
+                        )
+                        if driver_pk:
+                            clear_driver_active_trip(driver_pk)
+                        clear_offered_drivers(trip_pk)
+                        invalidate_trip(trip_pk)
+                    transaction.on_commit(_clear_redis)
                 else:
-                    # For intermediate states, update cache with new status
-                    from servers.redis_client import cache_trip as _cache_trip
-                    _cache_trip(trip.id, status=status_code)
+                    def _refresh_cache():
+                        from servers.redis_client import cache_trip as _cache_trip
+                        _cache_trip(trip_pk, status=status_code)
+                    transaction.on_commit(_refresh_cache)
 
                 result = {
                     'success': True,
@@ -1292,6 +1513,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
     def _create_payment_on_complete(self, trip):
         """Create a Payment record when trip is completed."""
+        from django.conf import settings
         from servers.payments.models import Payment, TransactionHistory
 
         if trip.payments.exists():
@@ -1327,17 +1549,11 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             trip.payment_status = 'pending'
             trip.save(update_fields=['payment_status'])
 
-            if trip.driver_id:
-                TransactionHistory.objects.create(
-                    trip_id=trip,
-                    user_id=trip.user_id,
-                    driver_id=trip.driver_id,
-                    amount=amount,
-                    method='cash',
-                    user_name=trip.user_id.full_name or trip.user_id.phone_number,
-                    status='completed',
-                )
-            
+            # No TransactionHistory row here: credit_driver_wallet writes
+            # exactly one, keyed on an idempotency key. Writing a second one
+            # inline meant every cash trip was counted twice in GMV and in
+            # the commission report — and a third time if the driver later
+            # tapped "confirm cash".
             from servers.driver.utils import credit_driver_wallet
             credit_driver_wallet(trip)
         elif payment_method == 'wallet':
@@ -1380,30 +1596,20 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 trip.payment_status = 'failed'
                 trip.save(update_fields=['payment_status'])
         else:
-            from servers.payments.payment_gateways.factory import get_payment_gateway
-
-            gateway = get_payment_gateway()
-            # Pass the rider's real phone/email so Cashfree records the
-            # actual customer, not the legacy placeholder.
-            rider_user = trip.user_id
-            order_result = gateway.create_order(
-                amount=amount,
-                trip_id=trip.id,
-                currency='INR',
-                customer_id=str(rider_user.id),
-                customer_phone=rider_user.phone_number,
-                customer_email=rider_user.email,
-                receipt=f'trip_{trip.id}',
-                notes={'trip_id': str(trip.id), 'user_id': str(rider_user.id)},
-            )
+            # Online payment: record the intent only. The Cashfree order is
+            # created by POST /payments/create-order/, which the app calls
+            # from the payment screen. Doing the gateway round-trip here put
+            # a third-party HTTP call inside the trip-completion transaction
+            # — if it timed out, the trip failed to complete; if the
+            # transaction later rolled back, we had orphaned orders at
+            # Cashfree with no local row.
             Payment.objects.create(
                 trip_id=trip,
                 user_id=trip.user_id,
                 amount=amount,
                 method='online',
                 status='pending',
-                gateway_order_id=order_result.get('order_id') if order_result else None,
-                payment_gateway='cashfree'
+                payment_gateway=getattr(settings, 'PAYMENT_GATEWAY', 'cashfree'),
             )
             trip.payment_status = 'pending'
             trip.save(update_fields=['payment_status'])

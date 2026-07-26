@@ -502,7 +502,9 @@ def _handle_cashfree_webhook(payload, gateway):
                 wallet_txn.gateway_payment_id = str(payment_id)
                 wallet_txn.save(update_fields=['status', 'cashfree_payment_id', 'gateway_payment_id'])
 
-                wallet, _ = Wallet.objects.select_for_update().get_or_create(user_id=wallet_txn.user_id)
+                wallet, _ = Wallet.objects.select_for_update().get_or_create(
+                    user_id=wallet_txn.user_id, scope=Wallet.SCOPE_RIDER,
+                )
                 wallet.balance = wallet.balance + gateway_amount  # Decimal + Decimal
                 wallet.save(update_fields=['balance'])
 
@@ -512,19 +514,69 @@ def _handle_cashfree_webhook(payload, gateway):
             )
             return JsonResponse({'status': 'ok'}, status=200)
 
-        # Check if it's a Trip Payment
-        try:
-            payment = Payment.objects.select_related('trip_id', 'trip_id__driver_id').get(
-                models.Q(cashfree_order_id=order_id) | models.Q(gateway_order_id=order_id)
-            )
-        except Payment.DoesNotExist:
+        # Check if it's a Trip Payment.
+        # `.get(Q|Q)` raised MultipleObjectsReturned — an unhandled 500 on a
+        # webhook, which Cashfree then retries forever — whenever two rows
+        # ended up carrying the same order id (retry_payment + switch method
+        # both write these columns). Take the newest deterministically.
+        payment = (
+            Payment.objects
+            .select_related('trip_id', 'trip_id__driver_id')
+            .filter(models.Q(cashfree_order_id=order_id) | models.Q(gateway_order_id=order_id))
+            .order_by('-created_at', '-id')
+            .first()
+        )
+        if payment is None:
             logger.warning(f"Cashfree Webhook: No payment/wallet matching order {order_id}")
             return JsonResponse({'status': 'skipped', 'reason': 'payment not found'}, status=200)
 
         if payment.status == 'completed':
             return JsonResponse({'status': 'already_completed'}, status=200)
 
+        # Confirm with the gateway before moving money, exactly as the wallet
+        # top-up path does. A signed body alone is not proof of payment: if
+        # the webhook secret ever leaks, a forged-but-valid PAYMENT_SUCCESS
+        # would otherwise settle an unpaid trip and credit the driver.
+        order_info = gateway.get_order_status(order_id) if gateway else None
+        if not order_info or order_info.get('order_status') != 'PAID':
+            logger.warning(
+                "Cashfree Webhook: trip order %s not PAID at gateway (status=%s); refusing to settle",
+                order_id,
+                order_info.get('order_status') if order_info else 'unknown',
+            )
+            return JsonResponse(
+                {'status': 'skipped', 'reason': 'order not PAID at gateway'}, status=200,
+            )
+
+        try:
+            gateway_amount = Decimal(str(order_info.get('order_amount'))).quantize(Decimal('0.01'))
+        except (InvalidOperation, TypeError):
+            logger.error(
+                "Cashfree Webhook: malformed amount from gateway for trip order %s: %s",
+                order_id, order_info,
+            )
+            return JsonResponse(
+                {'status': 'skipped', 'reason': 'malformed gateway amount'}, status=200,
+            )
+
+        if Decimal(str(payment.amount)).quantize(Decimal('0.01')) != gateway_amount:
+            logger.error(
+                "Cashfree Webhook: trip amount mismatch order=%s payment=%s gateway=%s; refusing",
+                order_id, payment.amount, gateway_amount,
+            )
+            return JsonResponse(
+                {'status': 'skipped', 'reason': 'amount mismatch'}, status=200,
+            )
+
         with transaction.atomic():
+            # Re-read under a row lock so a concurrent /payments/verify/ for
+            # the same order cannot settle it twice.
+            payment = Payment.objects.select_for_update().select_related(
+                'trip_id', 'trip_id__driver_id',
+            ).get(pk=payment.pk)
+            if payment.status == 'completed':
+                return JsonResponse({'status': 'already_completed'}, status=200)
+
             payment.status = 'completed'
             payment.cashfree_payment_id = str(payment_id)
             payment.gateway_payment_id = str(payment_id)
@@ -1014,7 +1066,7 @@ def refund_payment(request):
             credit_amount = Decimal(str(credit_txn.amount))
             driver_wallet = (
                 Wallet.objects.select_for_update()
-                .filter(user_id=driver.user_id)
+                .filter(user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER)
                 .first()
             )
             if driver_wallet:

@@ -191,3 +191,99 @@ def _admin_transition(request, sos_id, target):
         {'sos_id': event.id, 'status': event.status},
         status.HTTP_200_OK,
     )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, IsAdmin])
+def admin_list_sos(request):
+    """Ops SOS queue.
+
+    Query params:
+      status  -- open | acknowledged | resolved | false_alarm  (default: all)
+      limit   -- page size, max 200 (default 50)
+      offset  -- pagination offset
+
+    The acknowledge / resolve endpoints existed but there was no way to
+    SEE the queue: ops could only act on an SOS whose id they already had,
+    which in practice meant reading it out of a push notification. SOS is
+    the one SLO with a zero error budget, so it needs a list an on-call
+    person can keep open.
+
+    Ordered open-first, then newest-first — an unacknowledged panic from
+    ten minutes ago must never sit below a resolved one from ten seconds
+    ago.
+    """
+    from django.db.models import Case, IntegerField, Value, When
+
+    qs = SOSEvent.objects.select_related('user', 'trip', 'trip__driver_id').all()
+
+    status_filter = (request.query_params.get('status') or '').strip()
+    if status_filter:
+        valid = {c[0] for c in SOSEvent.STATUS_CHOICES}
+        if status_filter not in valid:
+            return error_response(
+                code='INVALID_STATUS',
+                message=f'status must be one of: {", ".join(sorted(valid))}',
+                field='status',
+                issue=f'Got status={status_filter!r}',
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        qs = qs.filter(status=status_filter)
+
+    try:
+        limit = min(int(request.query_params.get('limit', 50)), 200)
+        offset = max(int(request.query_params.get('offset', 0)), 0)
+    except (TypeError, ValueError):
+        limit, offset = 50, 0
+
+    qs = qs.annotate(
+        triage_rank=Case(
+            When(status='open', then=Value(0)),
+            When(status='acknowledged', then=Value(1)),
+            default=Value(2),
+            output_field=IntegerField(),
+        )
+    ).order_by('triage_rank', '-created_at')
+
+    total = qs.count()
+    open_count = SOSEvent.objects.filter(status='open').count()
+
+    results = []
+    for ev in qs[offset:offset + limit]:
+        trip = ev.trip
+        results.append({
+            'id': ev.id,
+            'status': ev.status,
+            'event_type': ev.event_type,
+            'initiated_by': ev.initiated_by,
+            'user_label': ev.user_label,
+            'user_phone': getattr(ev.user, 'phone_number', None),
+            'trip_id': trip.id if trip else None,
+            'driver_label': (
+                str(trip.driver_id) if trip and trip.driver_id else None
+            ),
+            'latitude': str(ev.latitude) if ev.latitude is not None else None,
+            'longitude': str(ev.longitude) if ev.longitude is not None else None,
+            'note': ev.note,
+            'created_at': ev.created_at.isoformat(),
+            'updates': [
+                {
+                    'actor': u.actor_label,
+                    'new_status': u.new_status,
+                    'note': u.note,
+                    'created_at': u.created_at.isoformat(),
+                }
+                for u in ev.updates.all()
+            ],
+        })
+
+    return success_response(
+        {
+            'count': total,
+            'open_count': open_count,
+            'limit': limit,
+            'offset': offset,
+            'results': results,
+        },
+        status.HTTP_200_OK,
+    )

@@ -161,7 +161,8 @@ def _is_night_hours():
     return current_hour >= 23 or current_hour < 5
 
 
-def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=None, pickup_long=None, rider_id=None):
+def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=None,
+                    pickup_long=None, rider_id=None, record_demand=False):
     """Estimate fare for a trip.
 
     Backwards-compatibility wrapper. The fare logic lives in
@@ -185,6 +186,8 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=Non
         pickup_lat=pickup_lat,
         pickup_lon=pickup_long,
         rider_id=rider_id,
+        # Only a booking marks demand. See quote_fare(record_demand=...).
+        record_demand=record_demand,
     )
     # Preserve the legacy dict shape for existing consumers.
     return {

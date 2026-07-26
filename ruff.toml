@@ -1,0 +1,50 @@
+# Ruff config for the CI lint gate.
+#
+# Deliberately narrow. The goal is to block *defects* — undefined names,
+# unreachable code, shadowed definitions, obviously wrong comparisons —
+# not to reformat 24k lines of working code on the eve of launch. Style
+# rules (import order, f-string conversions, Decimal constructor verbosity)
+# are left off; turn them on in a dedicated cleanup PR when there is no
+# launch on the calendar.
+#
+# The first run of this gate caught three real NameErrors that would have
+# raised at runtime: a missing `Count`/`Avg` import in the UPI reporting
+# path and an undefined `vehicle_id` in an admin 404 handler.
+
+target-version = "py312"
+line-length = 120
+
+exclude = [
+    ".git",
+    "__pycache__",
+    "staticfiles",
+    "*/migrations/*",
+]
+
+[lint]
+select = [
+    "F",     # pyflakes: undefined names, unused imports, redefinitions
+    "E9",    # syntax / IO errors
+    "B",     # bugbear: mutable defaults, loop-variable binding, etc.
+    "S105",  # hardcoded password string
+    "S106",  # hardcoded password argument
+    "S324",  # insecure hash function
+    "S501",  # requests call with verify=False
+    "DTZ005",# datetime.now() without tzinfo (we are USE_TZ=True)
+]
+
+ignore = [
+    "F401",  # unused imports — pervasive from the local-import style used
+             # throughout the views; not worth the churn right now
+    "B008",  # function call in argument default (Django idiom)
+    "B904",  # raise ... from err — worth doing, but a separate pass
+]
+
+[lint.per-file-ignores]
+# pytest fixtures legitimately shadow module-level imports (`settings`),
+# and test bodies use asserts and unused unpacking freely.
+"tests/*" = ["F811", "F841", "B011", "B007", "S105", "S106"]
+"servers/*/tests/*" = ["F811", "F841", "B011", "B007", "S105", "S106"]
+# settings.py builds config from the environment; conditional redefinition
+# and star-style assembly are intentional there.
+"base/settings.py" = ["F811"]

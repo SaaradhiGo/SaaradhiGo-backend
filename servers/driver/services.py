@@ -1,4 +1,4 @@
-from django.db.models import Sum, Q
+from django.db.models import Avg, Count, Q, Sum
 from django.utils import timezone
 from datetime import timedelta, datetime
 import re
@@ -12,7 +12,7 @@ def calculate_available_balance(driver):
     Returns the wallet balance of the driver's user account.
     """
     try:
-        wallet = Wallet.objects.get(user_id=driver.user_id)
+        wallet = Wallet.objects.get(user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER)
         from decimal import Decimal
         return wallet.balance if wallet.balance else Decimal('0.00')
     except Wallet.DoesNotExist:
@@ -514,7 +514,9 @@ def validate_upi_payout_security(driver, amount, upi_id=None, ip_address=None):
     })
     
     # 4. Time-based restrictions (e.g., no UPI after 10 PM for fraud prevention)
-    current_hour = datetime.now().hour
+    # Must be IST-aware: datetime.now() on a UTC host put the "no UPI
+    # after 10 PM" fraud window 5.5 hours out of place.
+    current_hour = timezone.localtime(timezone.now()).hour
     if current_hour >= 22 or current_hour < 6:  # 10 PM to 6 AM
         warnings.append(f"UPI payout requested during restricted hours ({current_hour}:00)")
     
@@ -1189,7 +1191,9 @@ def trigger_payout_creation(withdrawal):
             
             # Refund wallet
             with transaction.atomic():
-                wallet = Wallet.objects.select_for_update().get(user_id=driver.user_id)
+                wallet = Wallet.objects.select_for_update().get(
+                    user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER,
+                )
                 wallet.balance += withdrawal.amount
                 wallet.save(update_fields=['balance'])
                 idempotency_key = f"refund_withdrawal_{withdrawal.id}_{uuid.uuid4().hex[:16]}"
@@ -1215,7 +1219,9 @@ def trigger_payout_creation(withdrawal):
         from servers.rider.models import Wallet, WalletTransaction
         import uuid
         with transaction.atomic():
-            wallet = Wallet.objects.select_for_update().get(user_id=driver.user_id)
+            wallet = Wallet.objects.select_for_update().get(
+                user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER,
+            )
             wallet.balance += withdrawal.amount
             wallet.save(update_fields=['balance'])
             idempotency_key = f"refund_withdrawal_{withdrawal.id}_{uuid.uuid4().hex[:16]}"
@@ -1389,7 +1395,7 @@ def initiate_bank_payout(withdrawal, driver):
         # Import Cashfree gateway
         from servers.payments.payment_gateways.factory import get_payment_gateway_for_payouts
         
-        gateway = get_payment_gateway_for_payouts()
+        get_payment_gateway_for_payouts()  # stub: bank payouts not wired yet
         
         # In a real implementation, you would need:
         # 1. Get driver's bank details (account number, IFSC code, name)

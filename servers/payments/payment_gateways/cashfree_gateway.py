@@ -35,6 +35,12 @@ except ImportError:
 
 class CashfreeGateway(BasePaymentGateway):
     """Cashfree payment gateway implementation."""
+
+    # Every outbound gateway call is bounded. Without a timeout a hung
+    # connection holds the worker slot until the OS times out the socket,
+    # which on the payment path means a rider stuck on a spinner and one
+    # fewer worker for everyone else.
+    HTTP_TIMEOUT_SECONDS = 15
     
     def __init__(self):
         # PG SDK Initialization
@@ -105,13 +111,15 @@ class CashfreeGateway(BasePaymentGateway):
                     "notify_url": notify_url,
                 },
             }
-            logger.info(f"order_request payload------------------------------{payload}")
-            
-            response = requests.post(url, headers=headers, json=payload)
+            logger.debug("Cashfree create_order for trip=%s amount=%s", trip_id, amount)
+            response = requests.post(
+                url, headers=headers, json=payload,
+                timeout=self.HTTP_TIMEOUT_SECONDS,
+            )
             response.raise_for_status()
             data = response.json()
             
-            logger.info(f"response.data------------------------------{data}")
+            logger.debug("Cashfree create_order response order_id=%s", data.get("order_id"))
             
             return {
                 'gateway': 'cashfree',
@@ -259,7 +267,9 @@ class CashfreeGateway(BasePaymentGateway):
                 "Accept": "application/json",
             }
 
-            response = requests.get(url, headers=headers)
+            response = requests.get(
+                url, headers=headers, timeout=self.HTTP_TIMEOUT_SECONDS,
+            )
             response.raise_for_status()
             data = response.json()
 

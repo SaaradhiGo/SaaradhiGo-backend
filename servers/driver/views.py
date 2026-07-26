@@ -241,7 +241,7 @@ def driver_earnings_summary(request):
 
     # Get wallet balance
     try:
-        wallet = Wallet.objects.get(user_id=driver.user_id)
+        wallet = Wallet.objects.get(user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER)
         wallet_balance = float(wallet.balance) if wallet.balance else 0.0
     except Wallet.DoesNotExist:
         wallet_balance = 0.0
@@ -337,7 +337,9 @@ def driver_withdrawal_request(request):
     import uuid
 
     with transaction.atomic():
-        wallet, _ = Wallet.objects.select_for_update().get_or_create(user_id=driver.user_id)
+        wallet, _ = Wallet.objects.select_for_update().get_or_create(
+            user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER,
+        )
         if wallet.balance is None:
             wallet.balance = Decimal('0.00')
             
@@ -359,7 +361,6 @@ def driver_withdrawal_request(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        print(serializer.validated_data)
         # Create withdrawal request
         withdrawal = WithdrawalRequest.objects.create(
             driver=driver,

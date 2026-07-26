@@ -30,6 +30,14 @@ from servers.pricing.models import RateCard, ServiceZone
 logger = logging.getLogger(__name__)
 
 
+class PricingUnavailable(Exception):
+    """Raised when no rate card governs a location and defaults are disabled.
+
+    Callers should surface this to the rider as "we don't price rides here
+    yet" rather than quoting a fallback number.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Polygon cache
 # ---------------------------------------------------------------------------
@@ -167,6 +175,66 @@ def get_active_rate_card(zone: ServiceZone, vehicle_type, at=None) -> Optional[R
     return None
 
 
+def rate_card_for_trip(at=None, trip=None):
+    """Resolve the RateCard that governs a trip.
+
+    Prefers the zone stamped on the trip at booking time; falls back to a
+    point-in-polygon lookup on the pickup for legacy rows written before
+    `Trip.zone` existed.
+    """
+    if trip is None:
+        return None
+    zone = getattr(trip, 'zone', None)
+    if zone is None:
+        zone = find_zone_for_point(trip.pickup_lat, trip.pickup_long)
+    if zone is None:
+        return None
+    vt = trip.requested_vehicle_type
+    if vt is None:
+        vehicle = getattr(trip, 'vehicle_id', None)
+        vt = getattr(vehicle, 'vehicle_type_id', None)
+    if vt is None:
+        return None
+    # Price the trip on the card that was in force when it was requested,
+    # not on whatever card is live at settlement time.
+    return get_active_rate_card(zone, vt, at=at or trip.requested_at)
+
+
+def commission_percent_for_trip(trip) -> Decimal:
+    """Platform commission % for a trip.
+
+    Order of authority:
+      1. RateCard.commission_percent for the trip's zone + vehicle type,
+         effective at the time the trip was requested
+      2. settings.PLATFORM_COMMISSION_PERCENT (last-resort fallback)
+    """
+    from django.conf import settings
+
+    try:
+        card = rate_card_for_trip(trip=trip)
+        if card is not None and card.commission_percent is not None:
+            return Decimal(str(card.commission_percent))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('commission lookup failed for trip %s: %s', getattr(trip, 'id', '?'), exc)
+
+    fallback = getattr(settings, 'PLATFORM_COMMISSION_PERCENT', Decimal('18'))
+    try:
+        return Decimal(str(fallback))
+    except (ValueError, ArithmeticError):
+        return Decimal('18')
+
+
+def gst_percent_for_trip(trip) -> Decimal:
+    """GST % applicable to a trip, from its zone's rate card."""
+    try:
+        card = rate_card_for_trip(trip=trip)
+        if card is not None and card.gst_percent is not None:
+            return Decimal(str(card.gst_percent))
+    except Exception:  # noqa: BLE001
+        pass
+    return Decimal('5.00')
+
+
 # ---------------------------------------------------------------------------
 # Surge engine
 # ---------------------------------------------------------------------------
@@ -177,6 +245,7 @@ def compute_surge_multiplier(
     cap: Decimal,
     rider_id: Optional[int] = None,
     radius_m: int = 3000,
+    record_demand: bool = False,
 ) -> Decimal:
     """Tiered demand/supply surge multiplier, capped by the rate card.
 
@@ -197,7 +266,12 @@ def compute_surge_multiplier(
         return Decimal('1.00')
 
     try:
-        if rider_id is not None:
+        # Only a real booking attempt counts as demand. Recording a ping on
+        # every fare *estimate* let a rider inflate the surge they were
+        # quoted just by reopening the estimate screen, and made the surge
+        # signal trivially manipulable from an unauthenticated-ish client
+        # loop. Estimates read demand; bookings write it.
+        if record_demand and rider_id is not None:
             try:
                 add_rider_ping(rider_id, pickup_lon, pickup_lat)
             except Exception as exc:  # noqa: BLE001
@@ -304,6 +378,7 @@ def quote_fare(
     pickup_lon=None,
     rider_id: Optional[int] = None,
     at=None,
+    record_demand: bool = False,
 ) -> dict:
     """Produce a complete fare quote.
 
@@ -335,6 +410,23 @@ def quote_fare(
     card = None
     if zone is not None and vt is not None:
         card = get_active_rate_card(zone, vt, at=at)
+
+    if card is None:
+        # No rate card anywhere in the zone's parent chain. In production
+        # that is a configuration error (a city was seeded without cards),
+        # and quoting the hardcoded Hyderabad-era defaults below would
+        # silently sell rides at the wrong price. Fail loudly instead;
+        # local dev and the test suite keep the defaults.
+        from django.conf import settings as _settings
+        allow_default = getattr(_settings, 'PRICING_ALLOW_DEFAULT_FARE', False)
+        if not allow_default:
+            logger.error(
+                'No RateCard for zone=%s vehicle_type=%s — refusing to quote',
+                zone.code if zone else None, vehicle_type,
+            )
+            raise PricingUnavailable(
+                'Pricing is not configured for this area yet. Please try again later.'
+            )
 
     if card is not None:
         base_fare = card.base_fare
@@ -369,6 +461,7 @@ def quote_fare(
 
     dyn = compute_surge_multiplier(
         pickup_lat, pickup_lon, cap=surge_cap, rider_id=rider_id,
+        record_demand=record_demand,
     )
     if dyn != Decimal('1.00'):
         subtotal = subtotal * dyn

@@ -213,7 +213,7 @@ def driver_full_detail_admin(request, driver_id):
     try:
         from servers.rider.models import Wallet
         try:
-            w = Wallet.objects.get(user_id=user)
+            w = Wallet.objects.get(user_id=user, scope=Wallet.SCOPE_DRIVER)
             earnings_payload['wallet_balance'] = str(w.balance)
         except Wallet.DoesNotExist:
             pass
@@ -368,7 +368,7 @@ def get_vehicle_details(request, driver_id):
             code="NOT_FOUND",
             message="Vehicle not found",
             field="vehicle_id",
-            issue=f"No vehicle matches id {vehicle_id}",
+            issue=f"No vehicle for driver {driver_id}",
             status=status.HTTP_404_NOT_FOUND
         )
 

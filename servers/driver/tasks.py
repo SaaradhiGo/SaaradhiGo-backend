@@ -103,3 +103,22 @@ def block_expired_driver_licenses():
         logger.error(f"Failed to dispatch expiry notifications: {e}")
 
     return {'blocked': count, 'driver_ids': blocked_ids}
+
+
+@shared_task(name='driver.sweep_stale_driver_presence')
+def sweep_stale_driver_presence():
+    """Evict drivers whose presence heartbeat has expired from the geo index.
+
+    A driver's app being force-killed, the phone losing signal, or a Daphne
+    worker crashing all skip the WebSocket `disconnect()` handler, so the
+    driver stayed matchable forever. Riders then wait out the whole accept
+    timeout on a driver who is not there.
+
+    Runs every 60s on Celery beat; the heartbeat TTL is 45s.
+    """
+    from servers.redis_client import sweep_stale_drivers
+
+    evicted = sweep_stale_drivers()
+    if evicted:
+        logger.info('Presence sweep evicted %s stale driver(s)', evicted)
+    return {'evicted': evicted}

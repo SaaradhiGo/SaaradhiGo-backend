@@ -48,28 +48,35 @@ def update_driver_location(driver_id, lng, lat):
     )
 
 def credit_driver_wallet(trip):
-    """Credit driver's wallet with earnings from completed trip."""
+    """Settle a completed trip against the driver's settlement balance."""
     from servers.payments.models import TransactionHistory
-    from servers.rider.models import Wallet, WalletTransaction
-    from django.conf import settings
-    from decimal import Decimal
+    from servers.rider.models import Wallet, WalletTransaction, get_wallet
+    from servers.pricing.services import commission_percent_for_trip
+    from decimal import Decimal, ROUND_HALF_UP
     from django.db import transaction, IntegrityError
 
     if not trip.driver_id:
         return
 
     amount = trip.final_fare or trip.estimated_fare or Decimal('0.00')
-    commission_rate = Decimal(str(getattr(settings, 'PLATFORM_COMMISSION_PERCENT', 20)))
-    
-    commission = (amount * commission_rate) / Decimal('100')
+
+    # Commission comes from the RateCard in force for the trip's zone, not
+    # from a global env var. PLATFORM_COMMISSION_PERCENT defaulted to "0",
+    # so an unset env var meant the platform took nothing on every ride,
+    # and the per-city commission on each RateCard was never applied.
+    commission_rate = commission_percent_for_trip(trip)
+
+    commission = (amount * commission_rate / Decimal('100')).quantize(
+        Decimal('0.01'), rounding=ROUND_HALF_UP,
+    )
     net_amount = amount - commission
 
     with transaction.atomic():
-        # Lock wallet row for update
-        wallet, created = Wallet.objects.select_for_update().get_or_create(user_id=trip.driver_id.user_id)
-        if wallet.balance is None:
-            wallet.balance = Decimal('0.00')
-            
+        # Driver settlement balance — a DIFFERENT row from the rider credit
+        # wallet, so a driver who also rides cannot spend settlement money
+        # through the rider payment path.
+        wallet = get_wallet(trip.driver_id.user_id, Wallet.SCOPE_DRIVER, lock=True)
+
         current_balance = Decimal(str(wallet.balance))
         
         # Handle cash vs non-cash trips

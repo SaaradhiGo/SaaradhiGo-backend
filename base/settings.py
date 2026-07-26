@@ -82,10 +82,16 @@ ROOT_URLCONF = 'base.urls'
 # our clients (mobile, admin web) authenticate with bearer tokens; keeping
 # session auth in the default list would let a CSRF on a logged-in browser
 # session (Django admin) authorise DRF write calls.
+#
+# SessionAuthentication is deliberately NOT in this list. Our clients
+# (mobile, ops console) are bearer-token clients. Leaving session auth in
+# the defaults meant a logged-in Django-admin browser session could be
+# driven by CSRF into authorising DRF writes — approving KYC, refunding a
+# trip, releasing a payout. Tests authenticate with `force_authenticate`
+# or a real JWT instead.
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-        'rest_framework.authentication.SessionAuthentication', # test purpose leave it 
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
     'PAGE_SIZE': 20,
@@ -110,12 +116,21 @@ from datetime import timedelta
 #   - Refresh: 14 days (rotating; old refresh blacklisted after rotation)
 # Rotation + blacklist together mean a stolen refresh token is single-use:
 # whichever client uses it first invalidates it for the other.
+#
+# Tokens are signed with a key distinct from SECRET_KEY. SECRET_KEY also
+# derives password-reset tokens, session signing and CSRF secrets; a leak
+# of one should not mint API tokens for every user. Falls back to
+# SECRET_KEY only so an existing deploy keeps booting — set
+# JWT_SIGNING_KEY in prod (rotating it logs everyone out once).
+JWT_SIGNING_KEY = os.environ.get('JWT_SIGNING_KEY') or SECRET_KEY
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=14),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
     'ALGORITHM': 'HS256',
+    'SIGNING_KEY': JWT_SIGNING_KEY,
+    'ISSUER': os.environ.get('JWT_ISSUER', 'saaradhigo'),
 }
 # celery
 CELERY_BROKER_URL = REDIS_URL + '/0'
@@ -145,6 +160,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'payments.reconcile_stuck_withdrawals',
         'schedule': _crontab(minute='*/10'),
     },
+    'driver-presence-sweep-every-minute': {
+        # Evict drivers whose heartbeat lapsed (app killed, worker crashed)
+        # from the geo index. Heartbeat TTL is 45s, so a ghost is matchable
+        # for at most ~105s.
+        'task': 'driver.sweep_stale_driver_presence',
+        'schedule': 60.0,
+    },
 }
 CELERY_TIMEZONE = 'Asia/Kolkata'
 # cache
@@ -166,11 +188,13 @@ _cors_raw = os.environ.get('CORS_ALLOWED_ORIGINS', '')
 CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_raw.split(',') if o.strip()]
 CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 
-# Allow local development on arbitrary ports (like Flutter web)
+# Allow local development on arbitrary ports (like Flutter web).
+# DEBUG-only: in production this list must stay empty, otherwise any page
+# served from a developer's localhost can read authenticated API responses.
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://localhost:\d+$",
     r"^http://127\.0\.0\.1:\d+$",
-]
+] if DEBUG else []
 
 # Production security headers. No-ops in DEBUG.
 if not DEBUG:
@@ -304,10 +328,36 @@ CASHFREE_PAYOUTS_BASE_URL = os.environ.get("CASHFREE_PAYOUTS_BASE_URL", "https:/
 PAYMENT_GATEWAY=os.environ.get("PAYMENT_GATEWAY", "cashfree")
 PAYOUT_GATEWAY=os.environ.get("PAYOUT_GATEWAY", "cashfree")
 
-# Platform Settings
-PLATFORM_COMMISSION_PERCENT=float(os.environ.get("PLATFORM_COMMISSION_PERCENT", "0"))
-TRIP_ACCEPT_TIMEOUT_SECONDS=int(os.environ.get("TRIP_ACCEPT_TIMEOUT_SECONDS", "600"))
+# --- Platform / dispatch settings -------------------------------------------
+# PLATFORM_COMMISSION_PERCENT is now only the LAST-RESORT fallback. The
+# authoritative rate is RateCard.commission_percent for the trip's zone
+# (see servers/pricing/services.commission_for_trip). Kept as a Decimal —
+# a float here silently produced binary-rounded commission on every trip.
+PLATFORM_COMMISSION_PERCENT=_Decimal(os.environ.get("PLATFORM_COMMISSION_PERCENT", "18"))
+
+# How long a rider's request stays open before auto-cancel. 600s meant a
+# rider stared at "finding a driver" for ten minutes; the rolling fanout
+# below has fully played out well before 90s.
+TRIP_ACCEPT_TIMEOUT_SECONDS=int(os.environ.get("TRIP_ACCEPT_TIMEOUT_SECONDS", "90"))
+
+# Rolling fanout: expanding radius waves rather than one 5km blast. Each
+# wave gets DISPATCH_WAVE_SECONDS of exclusivity before the next widens.
+DISPATCH_RADIUS_WAVES_M = tuple(
+    int(r) for r in os.environ.get('DISPATCH_RADIUS_WAVES_M', '1500,3000,5000').split(',') if r.strip()
+)
+DISPATCH_WAVE_SECONDS = float(os.environ.get('DISPATCH_WAVE_SECONDS', '20'))
+
 GOOGLE_MAPS_API_KEY=os.environ.get("GOOGLE_MAPS_API_KEY", "")
+
+# When no RateCard governs a pickup, may we quote the hardcoded fallback
+# fare? Yes in dev/CI so a fresh DB is usable; no in production, where a
+# missing card means a city was seeded wrong and quoting a made-up price
+# is worse than refusing. (Read from the env at import time — Django's
+# test runner forces settings.DEBUG=False, so DEBUG is not a usable
+# signal here.)
+PRICING_ALLOW_DEFAULT_FARE = os.environ.get(
+    'PRICING_ALLOW_DEFAULT_FARE', 'True' if DEBUG else 'False',
+) == 'True'
 
 # WSGI_APPLICATION = 'base.wsgi.application'
 ASGI_APPLICATION = 'base.asgi.application'
@@ -332,6 +382,15 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
+
+# A production boot with DB_HOST unset used to fall back to a local, empty
+# SQLite file and serve traffic against it — no trips, no drivers, no
+# obvious error. Fail at boot instead.
+if not DEBUG and not os.environ.get('DB_HOST'):
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured(
+        "DB_HOST must be set when DEBUG=False (refusing to run on SQLite)."
+    )
 
 if os.environ.get('DB_HOST'):
     db_options = {
@@ -450,8 +509,14 @@ if SENTRY_DSN:
             CeleryIntegration(),
             RedisIntegration(),
         ],
-        traces_sample_rate=1.0,
-        send_default_pii=True,
+        # Sampling every transaction is both expensive and unnecessary;
+        # 10% is plenty to spot latency regressions at Phase-0 volume.
+        traces_sample_rate=float(os.environ.get('SENTRY_TRACES_SAMPLE_RATE', '0.1')),
+        # send_default_pii=True attached rider phone numbers, IPs and
+        # request bodies to every event. Under the DPDP Act that makes
+        # Sentry a processor of personal data we never told users about,
+        # and it defeats the PII redaction filter above.
+        send_default_pii=False,
         environment=os.environ.get('ENVIRONMENT', 'production' if not DEBUG else 'development')
     )
 

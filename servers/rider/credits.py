@@ -81,6 +81,7 @@ def _issue_credit(
     with transaction.atomic():
         wallet, _ = Wallet.objects.select_for_update().get_or_create(
             user_id=user,
+            scope=Wallet.SCOPE_RIDER,
             defaults={'balance': Decimal('0.00')},
         )
         current = Decimal(str(wallet.balance))

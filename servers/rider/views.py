@@ -336,11 +336,13 @@ def get_wallet_balance(request):
     from .models import Wallet
     
     try:
-        wallet = Wallet.objects.get(user_id=request.user)
+        wallet = Wallet.objects.get(user_id=request.user, scope=Wallet.SCOPE_RIDER)
         return success_response({'balance': str(wallet.balance)}, status.HTTP_200_OK)
     except Wallet.DoesNotExist:
         # Create wallet if not exists
-        wallet = Wallet.objects.create(user_id=request.user, balance=0)
+        wallet = Wallet.objects.create(
+            user_id=request.user, scope=Wallet.SCOPE_RIDER, balance=0,
+        )
         return success_response({'balance': '0.00'}, status.HTTP_200_OK)
 
 
@@ -426,7 +428,9 @@ def wallet_payment(request):
     try:
         with transaction.atomic():
             # Lock wallet row for update
-            wallet = Wallet.objects.select_for_update().get(user_id=request.user)
+            wallet = Wallet.objects.select_for_update().get(
+                user_id=request.user, scope=Wallet.SCOPE_RIDER,
+            )
             
             # Check balance with lock
             if float(wallet.balance) < amount_val:

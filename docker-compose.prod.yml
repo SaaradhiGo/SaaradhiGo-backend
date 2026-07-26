@@ -2,27 +2,71 @@ services:
   django:
     env_file:
       - .env.prod
+    restart: unless-stopped
+    # Bind to loopback only: nginx on the host terminates TLS and proxies
+    # in. Publishing 0.0.0.0:8000 put the app server straight on the
+    # internet, bypassing whatever the reverse proxy enforces.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
+    # Migrations are NOT run here. Two app containers starting together
+    # race the migration lock, and a failed migration takes the web tier
+    # down with it. The deploy workflow runs them as a one-shot step:
+    #   docker compose run --rm django python manage.py migrate --noinput
     command: >
       sh -c "python manage.py collectstatic --noinput &&
-             python manage.py migrate --noinput &&
              daphne -b 0.0.0.0 -p 8000 base.asgi:application"
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   celery:
     env_file:
       - .env.prod
-    # `-B` embeds Celery beat for scheduled tasks (driver expiry sweeper,
-    # etc.). When we scale beyond one celery instance this needs its own
-    # service so beat doesn't double-fire.
-    command: ["celery", "-A", "base", "worker", "-B", "-l", "INFO"]
+    restart: unless-stopped
+    # `-B` embeds Celery beat for scheduled tasks (driver credential expiry,
+    # driver presence sweep, payment + withdrawal reconciliation). Beat must
+    # run in exactly ONE process — if this service is ever scaled past one
+    # replica, split beat out or every scheduled task double-fires.
+    command: ["celery", "-A", "base", "worker", "-B", "-l", "INFO", "--concurrency", "4"]
     depends_on:
-      - django
+      redis:
+        condition: service_healthy
+
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
+    # Loopback only. This instance holds the Celery broker, the Channels
+    # layer, the driver geo index, cached trip state and OTPs. It was
+    # published on 0.0.0.0:6379 with no password — anyone who could reach
+    # the host could read trip OTPs, drain the payout queue, or flush the
+    # driver geo index.
+    ports:
+      - "127.0.0.1:6379:6379"
     env_file:
       - .env.prod
-    ports:
-      - "6379:6379"
+    # AOF persistence: without it a restart drops every queued Celery task
+    # (payouts, receipts, pushes) and all in-flight trip cache state.
+    # noeviction so Redis never silently evicts a broker key under memory
+    # pressure — an OOM error is better than a lost payout job.
+    command: >
+      sh -c "redis-server
+             --requirepass \"$$REDIS_PASSWORD\"
+             --appendonly yes
+             --appendfsync everysec
+             --maxmemory-policy noeviction"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
+volumes:
+  redis-data:

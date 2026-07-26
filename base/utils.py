@@ -227,7 +227,11 @@ def wallet_payment(user, amount, purpose='Trip payment', reference_id=None, idem
     
     try:
         with transaction.atomic():
-            wallet = Wallet.objects.select_for_update().get(user_id=user)
+            # Rider credits only. A driver's settlement balance lives in a
+            # separate Wallet row and must never be spendable on rides.
+            wallet = Wallet.objects.select_for_update().get(
+                user_id=user, scope=Wallet.SCOPE_RIDER,
+            )
             
             if float(wallet.balance) < amount_val:
                 return {'success': False, 'error': 'Insufficient wallet balance'}

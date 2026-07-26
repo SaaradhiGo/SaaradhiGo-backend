@@ -193,7 +193,9 @@ def reconcile_stuck_payments():
                     continue
                 t.status = 'completed'
                 t.save(update_fields=['status'])
-                wallet, _ = Wallet.objects.select_for_update().get_or_create(user_id=t.user_id)
+                wallet, _ = Wallet.objects.select_for_update().get_or_create(
+                    user_id=t.user_id, scope=Wallet.SCOPE_RIDER,
+                )
                 wallet.balance = wallet.balance + gateway_amount
                 wallet.save(update_fields=['balance'])
             wallets_settled += 1

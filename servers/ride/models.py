@@ -43,13 +43,44 @@ class Trip(models.Model):
     payment_method=models.CharField(max_length=50,blank=True,null=True)
     payment_status=models.CharField(max_length=50,blank=True,null=True)
     otp=models.CharField(max_length=6,blank=True,null=True)
+
+    # Who ended the trip, and why. `status_id` stays a single 'cancelled'
+    # code so the four clients keep working, but ops, refunds, the driver
+    # penalty ledger and the MVA-2020 cancellation policy all need to tell
+    # a rider-cancel from a driver-cancel from a dispatch timeout.
+    CANCELLED_BY_CHOICES = [
+        ('rider', 'Rider'),
+        ('driver', 'Driver'),
+        ('system', 'System / auto'),
+        ('admin', 'Admin'),
+    ]
+    cancelled_by=models.CharField(
+        max_length=16, choices=CANCELLED_BY_CHOICES, blank=True, default='',
+        db_index=True,
+    )
+    cancellation_reason=models.CharField(max_length=255, blank=True, default='')
+    cancellation_fee=models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text='Charged to the cancelling party, per the published cancellation policy.',
+    )
+
+    # Zone the pickup fell in, resolved at booking time. Stamped on the row
+    # so fare/commission/GST attribution and per-city reporting do not have
+    # to re-run a point-in-polygon lookup against today's zone table.
+    zone=models.ForeignKey(
+        'pricing.ServiceZone', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='trips',
+    )
+
     def __str__(self):
         return f'Trip {self.id} - {self.user_id}'
-    
+
     class Meta:
         indexes = [
             models.Index(fields=['user_id', '-requested_at']),
             models.Index(fields=['driver_id', '-requested_at']),
+            models.Index(fields=['status_id', '-requested_at'], name='trip_status_recent_idx'),
+            models.Index(fields=['zone', '-requested_at'], name='trip_zone_recent_idx'),
         ]
 class FarePricing(models.Model):
     trip_id=models.ForeignKey(Trip,on_delete=models.CASCADE,related_name='fare_pricing')

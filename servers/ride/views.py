@@ -394,46 +394,15 @@ def trip_detail(request, trip_id):
     """
     Get detailed info for a single trip, including fare breakdown and ratings.
     Only the rider or assigned driver can view.
-    Checks Redis cache first for active trips before querying PostgreSQL.
+
+    Served from Postgres, always. There used to be a Redis fast path here
+    that (a) authorised the caller against *cached* rider/driver ids, so a
+    stale hash granted access to a reassigned trip, (b) returned a
+    different field set from the DB path — clients saw a trip with no OTP
+    and no fare breakdown depending purely on cache state, and (c) dropped
+    the rider's OTP entirely, which is the one field the rider needs at
+    pickup. One indexed primary-key read is not worth those failure modes.
     """
-    from servers.redis_client import get_cached_trip
-
-    # --- Cache-ahead read for active trips ---
-    cached = get_cached_trip(trip_id)
-    if cached:
-        # Verify the requesting user is the rider or driver from cache
-        cached_rider_id = cached.get('rider_id')
-        cached_driver_id = cached.get('driver_id')
-        is_rider = str(request.user.id) == str(cached_rider_id)
-        is_driver = (
-            cached_driver_id and
-            hasattr(request.user, 'driver') and
-            str(request.user.driver.id) == str(cached_driver_id)
-        )
-        if not is_rider and not is_driver:
-            return error_response(
-                code='FORBIDDEN',
-                message='You do not have access to this trip',
-                field='trip_id',
-                issue='Only the rider or assigned driver can view this trip',
-                status=status.HTTP_403_FORBIDDEN
-            )
-        # Return lightweight cached response
-        return success_response({
-            'trip_id': trip_id,
-            'status': cached.get('status'),
-            'rider_id': cached.get('rider_id'),
-            'driver_id': cached.get('driver_id'),
-            'pickup_lat': cached.get('pickup_lat'),
-            'pickup_lng': cached.get('pickup_lng'),
-            'destination_lat': cached.get('destination_lat'),
-            'destination_lng': cached.get('destination_lng'),
-            'estimated_fare': cached.get('estimated_fare'),
-            'payment_method': cached.get('payment_method'),
-            'source': 'cache',
-        }, status.HTTP_200_OK)
-
-    # --- Cache miss: fall back to full DB query ---
     try:
         trip = Trip.objects.select_related(
             'status_id', 'driver_id', 'driver_id__user_id',
@@ -472,11 +441,48 @@ def trip_detail(request, trip_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def trip_driver_details(request,trip_id):
+    """Driver + vehicle details for a trip.
+
+    Authorisation happens against the DB BEFORE anything is returned. This
+    endpoint previously served the Redis hash — driver name, phone number,
+    rating and number plate — to any authenticated caller who could guess a
+    trip id, on both the cache and the DB path. That undid the whole
+    "driver's phone number is never exposed" posture: you could enumerate
+    trip ids and harvest driver phone numbers.
+
+    NOTE: the rider's OTP is never returned here. It is only visible to the
+    rider via /ride/active/ or /ride/trip/<id>/.
+    """
     from servers.redis_client import get_cached_trip
-    
-    # Check cache first for rapid response. NOTE: this endpoint returns
-    # DRIVER details — the rider's OTP is never returned here. The OTP is
-    # only visible to the rider via /ride/active/ or /ride/trip/<id>/.
+
+    try:
+        auth_trip = Trip.objects.only(
+            'id', 'user_id', 'driver_id',
+        ).get(id=trip_id)
+    except Trip.DoesNotExist:
+        return error_response(
+            code='NOT_FOUND',
+            message='Trip not found',
+            field='trip_id',
+            issue=f'No trip with id {trip_id}',
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    is_rider = auth_trip.user_id_id == request.user.id
+    is_driver = (
+        auth_trip.driver_id_id
+        and getattr(request.user, 'driver', None) is not None
+        and auth_trip.driver_id_id == request.user.driver.id
+    )
+    if not (is_rider or is_driver or request.user.is_staff):
+        return error_response(
+            code='FORBIDDEN',
+            message='You do not have access to this trip',
+            field='trip_id',
+            issue='Only the rider or assigned driver can view this trip',
+            status=status.HTTP_403_FORBIDDEN
+        )
+
     cached = get_cached_trip(trip_id)
     if cached and 'driver_id' in cached:
         return success_response({
@@ -949,7 +955,11 @@ def driver_cancel_trip(request, trip_id):
             )
             trip.status_id = cancelled_status
             trip.cancelled_at = timezone.now()
-            trip.save(update_fields=['status_id', 'cancelled_at'])
+            trip.cancelled_by = 'driver'
+            trip.cancellation_reason = (f'{reason}: {note}'.strip(': ') if note else reason)[:255]
+            trip.save(update_fields=[
+                'status_id', 'cancelled_at', 'cancelled_by', 'cancellation_reason',
+            ])
 
             driver = trip.driver_id
             penalty = apply_cancellation_penalty(driver, trip, reason, note)
@@ -1074,7 +1084,14 @@ def rider_cancel_trip(request, trip_id):
             )
             trip.status_id = cancelled_status
             trip.cancelled_at = timezone.now()
-            trip.save(update_fields=['status_id', 'cancelled_at'])
+            # `reason` and `note` were collected, validated — and then
+            # discarded. Ops had no way to tell a no-show from a rider who
+            # cancelled because the driver was 20 minutes away.
+            trip.cancelled_by = 'rider'
+            trip.cancellation_reason = (f'{reason}: {note}'.strip(': ') if note else reason)[:255]
+            trip.save(update_fields=[
+                'status_id', 'cancelled_at', 'cancelled_by', 'cancellation_reason',
+            ])
 
             # 4. Process refund if applicable
             refund_result = process_refund_on_cancel(trip)
@@ -1221,7 +1238,10 @@ def get_active_trip(request):
     return success_response(serializer.data, status.HTTP_200_OK)
 
 from servers.redis_client import check_maps_rate_limit, get_cached_map_data, cache_map_data
-from servers.ride.maps_utils import google_places_autocomplete, google_directions
+from servers.ride.maps_utils import (
+    google_places_autocomplete, google_directions, google_place_details,
+    google_geocode,
+)
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -1268,6 +1288,112 @@ def proxy_geocode(request):
         )
 
     # Cache for 30 days
+    cache_map_data(cache_key, result, ttl_seconds=30*24*60*60)
+    return success_response(result, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def proxy_reverse_geocode(request):
+    """Proxy for reverse geocoding (coordinates -> address).
+
+    Expected: {"lat": float, "lng": float}
+
+    The app calls this when the user drags the pickup pin. It used to hit
+    Google's geocode endpoint directly with the bundled API key.
+    """
+    user_id = request.user.id
+    if not check_maps_rate_limit(user_id, limit=200, period=3600):
+        return error_response(
+            code='RATE_LIMIT_EXCEEDED',
+            message='You have exceeded your API rate limit',
+            field='api',
+            issue='Too many requests to maps proxy',
+            status=status.HTTP_429_TOO_MANY_REQUESTS
+        )
+
+    try:
+        lat = round(float(request.data.get('lat')), 5)
+        lng = round(float(request.data.get('lng')), 5)
+    except (TypeError, ValueError):
+        return error_response(
+            code='MISSING_FIELDS',
+            message='lat and lng are required and must be numbers',
+            field='lat,lng',
+            issue='Invalid or missing coordinates',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # ~1.1m precision at 5dp; plenty of cache reuse when a pin is nudged.
+    cache_key = f"maps:revgeo:{lat},{lng}"
+    cached_data = get_cached_map_data(cache_key)
+    if cached_data:
+        return success_response(cached_data, status.HTTP_200_OK)
+
+    result = google_geocode(latlng=f'{lat},{lng}')
+    if result is None:
+        return error_response(
+            code='API_ERROR',
+            message='Failed to fetch data from Maps API',
+            field='api',
+            issue='Upstream service error',
+            status=status.HTTP_502_BAD_GATEWAY
+        )
+
+    cache_map_data(cache_key, result, ttl_seconds=7*24*60*60)
+    return success_response(result, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def proxy_place_details(request):
+    """Proxy for Google Place Details.
+
+    Expected: {"place_id": str, "session_token": str (optional)}
+
+    Pairs with /maps/geocode so the mobile app can go from a search
+    suggestion to coordinates without ever holding the Maps API key. The
+    key previously shipped inside the app bundle, extractable by anyone
+    who downloaded the APK, and was billable to us until rotated.
+    """
+    user_id = request.user.id
+    if not check_maps_rate_limit(user_id, limit=100, period=3600):
+        return error_response(
+            code='RATE_LIMIT_EXCEEDED',
+            message='You have exceeded your API rate limit',
+            field='api',
+            issue='Too many requests to maps proxy',
+            status=status.HTTP_429_TOO_MANY_REQUESTS
+        )
+
+    place_id = request.data.get('place_id')
+    session_token = request.data.get('session_token')
+
+    if not place_id:
+        return error_response(
+            code='MISSING_FIELDS',
+            message='place_id is required',
+            field='place_id',
+            issue='place_id not provided',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    cache_key = f"maps:place_details:{place_id}"
+    cached_data = get_cached_map_data(cache_key)
+    if cached_data:
+        return success_response(cached_data, status.HTTP_200_OK)
+
+    result = google_place_details(place_id, session_token=session_token)
+    if result is None:
+        return error_response(
+            code='API_ERROR',
+            message='Failed to fetch data from Maps API',
+            field='api',
+            issue='Upstream service error',
+            status=status.HTTP_502_BAD_GATEWAY
+        )
+
+    # A place's coordinates don't move. Cache for 30 days like geocode.
     cache_map_data(cache_key, result, ttl_seconds=30*24*60*60)
     return success_response(result, status.HTTP_200_OK)
 

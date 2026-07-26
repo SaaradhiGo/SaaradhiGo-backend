@@ -1,20 +1,17 @@
+# Base stack. Environment-agnostic: no ports, no bind mounts, no
+# commands that only make sense in one environment. Local dev layers
+# docker-compose.override.yml on top automatically; production is started
+# explicitly with `-f docker-compose.yml -f docker-compose.prod.yml`.
 services:
   django:
     build:
       context: .
       dockerfile: dockerfile
-    volumes:
-      - .:/App
 
   celery:
     build:
       context: .
       dockerfile: dockerfile
-    # `-B` embeds Celery beat in the worker process so scheduled tasks fire.
-    # When we scale to multiple workers this needs to move to a standalone
-    # service (or use django-celery-beat) so beat only runs in one place.
     command: ["celery", "-A", "base", "worker", "-B", "-l", "INFO"]
-    volumes:
-      - .:/App
     depends_on:
       - django

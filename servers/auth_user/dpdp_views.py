@@ -165,7 +165,7 @@ def _serialize_driver(user):
 def _serialize_wallet(user):
     try:
         from servers.rider.models import Wallet
-        w = Wallet.objects.filter(user_id=user).first()
+        w = Wallet.objects.filter(user_id=user, scope=Wallet.SCOPE_RIDER).first()
         if not w:
             return None
         return {'balance': str(w.balance)}

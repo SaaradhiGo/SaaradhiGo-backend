@@ -118,17 +118,48 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST_KEY: ${{ secrets.EC2_HOST_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/key.pem
+          chmod 700 ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/key.pem
           chmod 600 ~/.ssh/key.pem
-          # Pin the host key rather than trusting whatever answers first.
-          # Populate EC2_HOST_KEY from `ssh-keyscan <host>`.
-          echo "${{ secrets.EC2_HOST_KEY }}" > ~/.ssh/known_hosts
+
+          # Prefer the pinned host key (EC2_HOST_KEY from `ssh-keyscan <host>`).
+          # If that secret is missing/empty, derive it at runtime from EC2_HOST
+          # so a deploy never dies on "Host key verification failed".
+          if [ -n "${EC2_HOST_KEY// /}" ]; then
+            printf '%s\n' "$EC2_HOST_KEY" > ~/.ssh/known_hosts
+          elif [ -n "$EC2_HOST" ]; then
+            echo "EC2_HOST_KEY secret not set — running ssh-keyscan against $EC2_HOST"
+            ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          else
+            echo "::error::Neither EC2_HOST_KEY nor EC2_HOST is set; cannot verify host identity."
+            exit 1
+          fi
+
+          # Fail loudly if known_hosts is still empty — an empty file is
+          # exactly what produces "Host key verification failed".
+          if [ ! -s ~/.ssh/known_hosts ]; then
+            echo "::error::known_hosts is empty. Populate the EC2_HOST_KEY secret or ensure EC2_HOST is reachable."
+            exit 1
+          fi
+          chmod 644 ~/.ssh/known_hosts
 
       - name: Deploy to EC2
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
-          ssh -i ~/.ssh/key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+          ssh -v -i ~/.ssh/key.pem \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "$EC2_USER@$EC2_HOST" << 'EOF'
             set -euo pipefail
             cd /home/ubuntu/SaaradhiGo-backend
 

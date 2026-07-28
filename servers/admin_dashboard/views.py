@@ -66,12 +66,12 @@ def login(request: HttpRequest) -> HttpResponse:
                 auth_login(request, user)
                 return redirect("fleet_monitor")
 
-    return render(request, "admin_pages/login.html", {"error": error})
+    return render(request, 'admin_pages/login.html', {"error": error})
 
 
 @admin_required
 def dashboard(request: HttpRequest) -> HttpResponse:
-    return render(request, "admin_pages/fleet_monitor.html")
+    return render(request, 'admin_pages/fleet_monitor.html')
 
 
 @admin_required

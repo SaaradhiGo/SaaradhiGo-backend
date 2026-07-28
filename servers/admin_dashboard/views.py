@@ -109,6 +109,6 @@ def predictive_heatmaps(request: HttpRequest) -> HttpResponse:
     return render(request, "admin_pages/predictive_heatmaps.html")
 
 
-def logout(request: HttpRequest) -> HttpResponse:
+def admin_logout(request: HttpRequest) -> HttpResponse:
     auth_logout(request)
     return redirect("login")

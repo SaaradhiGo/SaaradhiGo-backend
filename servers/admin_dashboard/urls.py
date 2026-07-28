@@ -10,5 +10,5 @@ urlpatterns=[
     path('driver_loyalty/',driver_loyalty,name='driver_loyalty'),
     path('fare_surge/',fare_surge,name='fare_surge'),
     path('predictive_heatmaps/',predictive_heatmaps,name='predictive_heatmaps'),
-    path('logout/',logout,name='logout')
+    path('logout/',admin_logout,name='logout')
 ]

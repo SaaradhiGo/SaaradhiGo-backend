@@ -1,5 +1,6 @@
 from django.urls import path
-from .views import *
+from .views import login, dashboard, driver_onboarding, dispute_support, payment_dashboard, executive_revenue, driver_loyalty, fare_surge, predictive_heatmaps, admin_logout
+
 urlpatterns=[
     path('login/',login,name='login'),
     path('',dashboard,name='fleet_monitor'),

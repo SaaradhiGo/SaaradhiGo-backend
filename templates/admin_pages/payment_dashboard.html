@@ -1,0 +1,160 @@
+{% extends 'admin_pages/base.html' %}
+{% block title %}SaaradhiGo | Payment Gateway Dashboard{% endblock %}
+
+{% block extra_css %}
+.bg-gold-gradient {
+background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
+}
+{% endblock %}
+
+{% block main_class %}overflow-y-auto{% endblock %}
+
+{% block content %}
+<div class="p-8 pb-12">
+    <div class="flex justify-between items-end mb-10">
+        <div>
+            <h2 class="font-headline font-extrabold text-4xl text-on-surface tracking-tighter mb-2">Aurelian Onyx <span
+                    class="text-primary">Revenue</span></h2>
+            <p class="text-on-surface-variant font-medium">Gateway monitoring and settlement orchestration.</p>
+        </div>
+        <div class="flex gap-4">
+            <button
+                class="bg-surface-container border border-outline-variant/15 text-on-surface px-6 py-2.5 rounded-lg font-medium text-sm flex items-center gap-2 hover:bg-surface-container-high transition-all">
+                <span class="material-symbols-outlined text-lg" data-icon="export">ios_share</span> Export Statement
+            </button>
+            <button
+                class="bg-gold-gradient text-on-primary px-6 py-2.5 rounded-lg font-bold text-sm flex items-center gap-2 shadow-lg shadow-primary/10 active:scale-95 transition-all">
+                <span class="material-symbols-outlined text-lg" data-icon="bulk">account_balance</span> Initiate Bulk
+                Payouts
+            </button>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-12 gap-6 mb-12">
+        <div
+            class="col-span-12 md:col-span-4 bg-surface-container p-8 rounded-xl relative overflow-hidden group border border-outline-variant/5">
+            <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                <span class="material-symbols-outlined text-7xl text-primary" data-icon="revenue">payments</span>
+            </div>
+            <p class="text-on-surface-variant text-xs font-bold uppercase tracking-widest mb-4">Total Gross Volume</p>
+            <h3 class="font-headline font-black text-4xl text-on-surface">₹{{ total_payments }}</h3>
+            <div class="mt-6 flex items-center gap-2 text-primary font-bold text-sm">
+                <span class="material-symbols-outlined text-sm" data-icon="up">trending_up</span>
+                <span>Active Platform Billings</span>
+            </div>
+        </div>
+        <div
+            class="col-span-12 md:col-span-4 bg-surface-container-low p-8 rounded-xl border-l-4 border-primary border border-outline-variant/5">
+            <p class="text-on-surface-variant text-xs font-bold uppercase tracking-widest mb-4">Completed Payments</p>
+            <div class="flex items-baseline gap-2">
+                <h3 class="font-headline font-black text-4xl text-on-surface">{{ completed_count }}</h3>
+                <span class="bg-primary/10 text-primary text-[10px] px-2 py-0.5 rounded-full font-bold">SETTLED</span>
+            </div>
+            <div class="mt-8 h-1.5 w-full bg-surface-container-highest rounded-full overflow-hidden">
+                <div class="h-full bg-gold-gradient w-[100%]"></div>
+            </div>
+            <div class="mt-3 flex justify-between text-[10px] text-on-surface-variant font-bold uppercase">
+                <span>Success Billing Cycle</span>
+            </div>
+        </div>
+        <div class="col-span-12 md:col-span-4 bg-surface-container-high p-8 rounded-xl border border-outline-variant/5">
+            <p class="text-on-surface-variant text-xs font-bold uppercase tracking-widest mb-4">Cancelled / Dispute
+                Volume</p>
+            <h3 class="font-headline font-black text-4xl text-on-surface">{{ cancelled_count }}</h3>
+            <div class="mt-6 flex items-center justify-between">
+                <span class="text-xs text-on-surface-variant">Requires manual audit</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-surface-container rounded-xl overflow-hidden border border-outline-variant/5">
+        <div class="px-8 py-6 border-b border-outline-variant/10 flex justify-between items-center">
+            <h4 class="font-headline font-bold text-lg text-on-surface">Recent Transactions</h4>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+                <thead class="bg-surface-container-low">
+                    <tr>
+                        <th class="px-8 py-4 text-[10px] font-black uppercase text-on-surface-variant tracking-widest">
+                            Transaction ID</th>
+                        <th class="px-8 py-4 text-[10px] font-black uppercase text-on-surface-variant tracking-widest">
+                            Entity / Customer</th>
+                        <th class="px-8 py-4 text-[10px] font-black uppercase text-on-surface-variant tracking-widest">
+                            Method</th>
+                        <th class="px-8 py-4 text-[10px] font-black uppercase text-on-surface-variant tracking-widest">
+                            Amount</th>
+                        <th class="px-8 py-4 text-[10px] font-black uppercase text-on-surface-variant tracking-widest">
+                            Status</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-outline-variant/10">
+                    {% for r in rides %}
+                    <tr class="hover:bg-surface-container-highest/50 transition-colors">
+                        <td class="px-8 py-5 font-mono text-xs text-primary">#TXN-{{ r.id }}982</td>
+                        <td class="px-8 py-5">
+                            <div class="flex items-center gap-3">
+                                <div
+                                    class="w-8 h-8 rounded-full bg-surface-container-highest flex items-center justify-center text-[10px] font-bold">
+                                    {{ r.rider_name|slice:":2"|upper }}
+                                </div>
+                                <div>
+                                    <p class="text-sm font-bold text-on-surface">{{ r.rider_name }}</p>
+                                    <p class="text-[10px] text-on-surface-variant">Class: {{ r.vehicle_class }}</p>
+                                </div>
+                            </div>
+                        </td>
+                        <td class="px-8 py-5">
+                            <span class="text-xs font-medium flex items-center gap-2 text-on-surface-variant">
+                                <span class="material-symbols-outlined text-sm">
+                                    {% if r.vehicle_class == 'Luxury Auto' %}qr_code_2{% else %}credit_card{% endif %}
+                                </span>
+                                {% if r.vehicle_class == 'Luxury Auto' %}UPI / GPay{% else %}Card Payment{% endif %}
+                            </span>
+                        </td>
+                        <td class="px-8 py-5 font-bold text-sm text-on-surface">₹{{ r.fare }}</td>
+                        <td class="px-8 py-5">
+                            <span class="text-[10px] px-2.5 py-1 rounded-full font-black uppercase flex items-center w-fit gap-1
+                            {% if r.status == 'COMPLETED' %}bg-emerald-400/10 text-emerald-400
+                            {% elif r.status == 'IN_PROGRESS' %}bg-primary/10 text-primary
+                            {% else %}bg-rose-400/10 text-rose-400{% endif %}">
+                                <span class="w-1 h-1 rounded-full 
+                                {% if r.status == 'COMPLETED' %}bg-emerald-400
+                                {% elif r.status == 'IN_PROGRESS' %}bg-primary
+                                {% else %}bg-rose-400{% endif %}"></span>
+                                {{ r.status }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="5" class="text-center py-8 text-on-surface-variant text-sm italic">
+                            No transactions found.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination Controls -->
+        {% if page_obj.has_other_pages %}
+        <div class="px-8 py-4 border-t border-outline-variant/10 flex items-center justify-between text-xs">
+            <div>
+                {% if page_obj.has_previous %}
+                <a href="?page={{ page_obj.previous_page_number }}"
+                    class="px-3 py-1.5 bg-surface-container hover:bg-surface-container-high rounded text-on-surface transition-colors">Previous</a>
+                {% endif %}
+            </div>
+            <span class="text-on-surface-variant">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages
+                }}</span>
+            <div>
+                {% if page_obj.has_next %}
+                <a href="?page={{ page_obj.next_page_number }}"
+                    class="px-3 py-1.5 bg-surface-container hover:bg-surface-container-high rounded text-on-surface transition-colors">Next</a>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

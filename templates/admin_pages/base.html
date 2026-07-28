@@ -1,134 +1,163 @@
 <!DOCTYPE html>
-<html class="dark" lang="en"><head>
-<meta charset="utf-8"/>
-<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<title>{% block title %}SaaradhiGo Admin{% endblock %}</title>
-<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;700;800&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
-<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
-<script id="tailwind-config">
-      tailwind.config = {
-        darkMode: "class",
-        theme: {
-          extend: {
-            colors: {
-              "surface-container-lowest": "#0e0e0e",
-              "primary-container": "#d4af37",
-              "on-secondary": "#3d2f00",
-              "background": "#131313",
-              "inverse-on-surface": "#313030",
-              "on-secondary-fixed-variant": "#584400",
-              "primary": "#f2ca50",
-              "tertiary-fixed": "#ffe084",
-              "secondary-fixed-dim": "#eac249",
-              "secondary-fixed": "#ffe08b",
-              "primary-fixed": "#ffe088",
-              "on-surface": "#e5e2e1",
-              "secondary": "#eac249",
-              "on-primary": "#3c2f00",
-              "surface-variant": "#353534",
-              "surface-container-low": "#1c1b1b",
-              "surface-bright": "#393939",
-              "primary-fixed-dim": "#e9c349",
-              "outline": "#99907c",
-              "on-primary-fixed": "#241a00",
-              "on-primary-container": "#554300",
-              "on-background": "#e5e2e1",
-              "surface-dim": "#131313",
-              "outline-variant": "#4d4635",
-              "surface-tint": "#e9c349",
-              "on-secondary-fixed": "#241a00",
-              "tertiary-fixed-dim": "#e2c468",
-              "surface-container-high": "#2a2a2a",
-              "surface-container": "#201f1f",
-              "error": "#ffb4ab",
-              "surface-container-highest": "#353534",
-              "error-container": "#93000a",
-              "on-primary-fixed-variant": "#574500",
-              "on-tertiary-fixed-variant": "#574500",
-              "secondary-container": "#b08c10",
-              "on-secondary-container": "#352800",
-              "inverse-surface": "#e5e2e1",
-              "on-tertiary": "#3c2f00",
-              "inverse-primary": "#735c00",
-              "surface": "#131313",
-              "on-tertiary-container": "#554300",
-              "tertiary": "#ebcc70",
-              "on-tertiary-fixed": "#231b00",
-              "on-error-container": "#ffdad6",
-              "on-error": "#690005",
-              "on-surface-variant": "#d0c5af",
-              "tertiary-container": "#cdb157"
+<html class="dark" lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>{% block title %}SaaradhiGo Admin{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;700;800&amp;family=Inter:wght@400;500;600&amp;display=swap"
+        rel="stylesheet" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap"
+        rel="stylesheet" />
+    <script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "surface-container-lowest": "#0e0e0e",
+                        "primary-container": "#d4af37",
+                        "on-secondary": "#3d2f00",
+                        "background": "#131313",
+                        "inverse-on-surface": "#313030",
+                        "on-secondary-fixed-variant": "#584400",
+                        "primary": "#f2ca50",
+                        "tertiary-fixed": "#ffe084",
+                        "secondary-fixed-dim": "#eac249",
+                        "secondary-fixed": "#ffe08b",
+                        "primary-fixed": "#ffe088",
+                        "on-surface": "#e5e2e1",
+                        "secondary": "#eac249",
+                        "on-primary": "#3c2f00",
+                        "surface-variant": "#353534",
+                        "surface-container-low": "#1c1b1b",
+                        "surface-bright": "#393939",
+                        "primary-fixed-dim": "#e9c349",
+                        "outline": "#99907c",
+                        "on-primary-fixed": "#241a00",
+                        "on-primary-container": "#554300",
+                        "on-background": "#e5e2e1",
+                        "surface-dim": "#131313",
+                        "outline-variant": "#4d4635",
+                        "surface-tint": "#e9c349",
+                        "on-secondary-fixed": "#241a00",
+                        "tertiary-fixed-dim": "#e2c468",
+                        "surface-container-high": "#2a2a2a",
+                        "surface-container": "#201f1f",
+                        "error": "#ffb4ab",
+                        "surface-container-highest": "#353534",
+                        "error-container": "#93000a",
+                        "on-primary-fixed-variant": "#574500",
+                        "on-tertiary-fixed-variant": "#574500",
+                        "secondary-container": "#b08c10",
+                        "on-secondary-container": "#352800",
+                        "inverse-surface": "#e5e2e1",
+                        "on-tertiary": "#3c2f00",
+                        "inverse-primary": "#735c00",
+                        "surface": "#131313",
+                        "on-tertiary-container": "#554300",
+                        "tertiary": "#ebcc70",
+                        "on-tertiary-fixed": "#231b00",
+                        "on-error-container": "#ffdad6",
+                        "on-error": "#690005",
+                        "on-surface-variant": "#d0c5af",
+                        "tertiary-container": "#cdb157"
+                    },
+                    fontFamily: {
+                        "headline": ["Manrope"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    },
+                    borderRadius: { "DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem" },
+                },
             },
-            fontFamily: {
-              "headline": ["Manrope"],
-              "body": ["Inter"],
-              "label": ["Inter"]
-            },
-            borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
-          },
-        },
-      }
-</script>
-<style>
-    .material-symbols-outlined {
-        font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
-    }
-    {% block extra_css %}{% endblock %}
-</style>
+        }
+    </script>
+    <style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+
+            {
+            % block extra_css %
+        }
+
+            {
+            % endblock %
+        }
+    </style>
+    {% block extra_head %}{% endblock %}
 </head>
-<body class="bg-surface font-body text-on-surface {% block body_class %}flex min-h-screen selection:bg-primary/30{% endblock %}">
+
+<body
+    class="bg-surface font-body text-on-surface {% block body_class %}flex min-h-screen selection:bg-primary/30{% endblock %}">
 
     {% block sidebar %}
-    <aside class="bg-[#131313] dark:bg-[#131313] h-screen w-64 border-r border-[#4d4635]/15 flex flex-col sticky top-0 overflow-y-auto z-50">
+    <aside
+        class="bg-[#131313] dark:bg-[#131313] h-screen w-64 border-r border-[#4d4635]/15 flex flex-col sticky top-0 overflow-y-auto z-50">
         <div class="p-8">
             <span class="text-2xl font-black tracking-tighter text-[#F2CA50]">Gilded Admin</span>
-            <p class="font-headline font-bold text-xs uppercase tracking-widest text-on-surface-variant/50 mt-1">Fleet Operations</p>
+            <p class="font-headline font-bold text-xs uppercase tracking-widest text-on-surface-variant/50 mt-1">Fleet
+                Operations</p>
         </div>
         <nav class="flex-1 px-4 space-y-2">
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'fleet_monitor' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}" href="{% url 'fleet_monitor' %}">
+            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'fleet_monitor' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+                href="{% url 'fleet_monitor' %}">
                 <span class="material-symbols-outlined w-6 text-center">monitoring</span>
                 <span class="font-label text-sm">God View</span>
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'driver_onboarding' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}" href="{% url 'driver_onboarding' %}">
+            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'driver_onboarding' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+                href="{% url 'driver_onboarding' %}">
                 <span class="material-symbols-outlined w-6 text-center">person_add</span>
                 <span class="font-label text-sm">KYC & Onboarding</span>
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'dispute_support' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}" href="{% url 'dispute_support' %}">
+            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'dispute_support' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+                href="{% url 'dispute_support' %}">
                 <span class="material-symbols-outlined w-6 text-center">headphones</span>
                 <span class="font-label text-sm">Support Center</span>
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'payment_dashboard' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}" href="{% url 'payment_dashboard' %}">
+            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'payment_dashboard' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+                href="{% url 'payment_dashboard' %}">
                 <span class="material-symbols-outlined w-6 text-center">account_balance_wallet</span>
                 <span class="font-label text-sm">Payments</span>
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'executive_revenue' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}" href="{% url 'executive_revenue' %}">
+            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'executive_revenue' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+                href="{% url 'executive_revenue' %}">
                 <span class="material-symbols-outlined w-6 text-center">trending_up</span>
                 <span class="font-label text-sm">Revenue Analytics</span>
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'driver_loyalty' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}" href="{% url 'driver_loyalty' %}">
+            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'driver_loyalty' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+                href="{% url 'driver_loyalty' %}">
                 <span class="material-symbols-outlined w-6 text-center">military_tech</span>
                 <span class="font-label text-sm">Driver Loyalty</span>
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'fare_surge' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}" href="{% url 'fare_surge' %}">
+            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'fare_surge' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+                href="{% url 'fare_surge' %}">
                 <span class="material-symbols-outlined w-6 text-center">speed</span>
                 <span class="font-label text-sm">Fare & Surge</span>
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'predictive_heatmaps' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}" href="{% url 'predictive_heatmaps' %}">
+            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'predictive_heatmaps' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+                href="{% url 'predictive_heatmaps' %}">
                 <span class="material-symbols-outlined w-6 text-center">map</span>
                 <span class="font-label text-sm">Predictive Heatmaps</span>
             </a>
         </nav>
         <div class="p-6 border-t border-[#4d4635]/15">
             <div class="flex items-center gap-3">
-                <img alt="Admin User Profile" class="w-10 h-10 rounded-full border border-primary/20" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB1T1r1pgabRYevvFMmQs8CFZDppoAo76tQwElWNjBPkBunIY6PuWvMuBs79xv-6qxKs-BnHjmE_IMIHAs2ZgTMjZX__f9IAjIZUxwiSNlTTUuEjH80cVjyBf6Ef-BJ6GqEW3ljTz2y2WpAMDpEOcU0xxzb_QmmHkktP5Zpk7-qL9B-EWTyuxgjys9OsEH9Qc_aCJDBztkO-BopetXYEWj_OXI0Cq76uyoqpDBSlEk1WNhKucF3JOTTwnH3OT4gJX35DPn0KlqtT2k"/>
+                <img alt="Admin User Profile" class="w-10 h-10 rounded-full border border-primary/20"
+                    src="https://lh3.googleusercontent.com/aida-public/AB6AXuB1T1r1pgabRYevvFMmQs8CFZDppoAo76tQwElWNjBPkBunIY6PuWvMuBs79xv-6qxKs-BnHjmE_IMIHAs2ZgTMjZX__f9IAjIZUxwiSNlTTUuEjH80cVjyBf6Ef-BJ6GqEW3ljTz2y2WpAMDpEOcU0xxzb_QmmHkktP5Zpk7-qL9B-EWTyuxgjys9OsEH9Qc_aCJDBztkO-BopetXYEWj_OXI0Cq76uyoqpDBSlEk1WNhKucF3JOTTwnH3OT4gJX35DPn0KlqtT2k" />
                 <div>
-                    <p class="text-sm font-bold text-on-surface">{% if request.user.is_authenticated %}{{ request.user.username }}{% else %}Guest{% endif %}</p>
-                    <p class="text-xs text-on-surface-variant">{% if request.user.is_staff %}Staff Administrator{% else %}System User{% endif %}</p>
+                    <p class="text-sm font-bold text-on-surface">{% if request.user.is_authenticated %}{{
+                        request.user.username }}{% else %}Guest{% endif %}</p>
+                    <p class="text-xs text-on-surface-variant">{% if request.user.is_staff %}Staff Administrator{% else
+                        %}System User{% endif %}</p>
                 </div>
             </div>
             <div class="mt-4">
-            <a href="{% url 'logout' %}" class="text-xs text-error font-medium hover:underline">Log Out</a>
+                <a href="{% url 'logout' %}" class="text-xs text-error font-medium hover:underline">Log Out</a>
             </div>
         </div>
     </aside>
@@ -136,14 +165,19 @@
 
     <main class="flex-1 flex flex-col min-w-0 {% block main_class %}{% endblock %}">
         {% block topnav %}
-        <header class="bg-[#131313]/60 backdrop-blur-md w-full h-16 border-b border-[#4d4635]/15 sticky top-0 z-50 flex items-center justify-between px-8 shadow-[0_40px_40px_rgba(212,175,55,0.08)]">
+        <header
+            class="bg-[#131313]/60 backdrop-blur-md w-full h-16 border-b border-[#4d4635]/15 sticky top-0 z-50 flex items-center justify-between px-8 shadow-[0_40px_40px_rgba(212,175,55,0.08)]">
             <div class="flex items-center flex-1 max-w-xl relative">
                 <div class="relative w-full group">
-                    <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#e5e2e1]/40 group-focus-within:text-[#F2CA50] transition-colors">search</span>
-                    <input id="global-search-input" autocomplete="off" class="w-full bg-surface-container-highest border-b border-outline-variant/30 focus:border-[#F2CA50] focus:ring-0 text-sm pl-10 pr-4 py-2 text-on-surface placeholder:text-on-surface-variant/40 transition-all rounded-t-sm" placeholder="Search drivers by ID, name or document..." type="text"/>
+                    <span
+                        class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#e5e2e1]/40 group-focus-within:text-[#F2CA50] transition-colors">search</span>
+                    <input id="global-search-input" autocomplete="off"
+                        class="w-full bg-surface-container-highest border-b border-outline-variant/30 focus:border-[#F2CA50] focus:ring-0 text-sm pl-10 pr-4 py-2 text-on-surface placeholder:text-on-surface-variant/40 transition-all rounded-t-sm"
+                        placeholder="Search drivers by ID, name or document..." type="text" />
                 </div>
                 <!-- Search Dropdown Overlay -->
-                <div id="global-search-dropdown" class="absolute top-full left-0 right-0 mt-2 bg-[#201f1f]/95 border border-[#4d4635] rounded-lg shadow-xl overflow-hidden hidden z-50 backdrop-blur-md">
+                <div id="global-search-dropdown"
+                    class="absolute top-full left-0 right-0 mt-2 bg-[#201f1f]/95 border border-[#4d4635] rounded-lg shadow-xl overflow-hidden hidden z-50 backdrop-blur-md">
                     <div id="search-results-list" class="max-h-80 overflow-y-auto divide-y divide-outline-variant/10">
                         <!-- Dynamic results will be inserted here -->
                     </div>
@@ -152,17 +186,23 @@
             <div class="flex items-center gap-6">
                 <div class="flex items-center gap-4">
                     <div class="relative">
-                        <button id="notification-bell" class="relative text-[#e5e2e1]/70 hover:text-[#F2CA50] transition-colors focus:outline-none flex items-center">
+                        <button id="notification-bell"
+                            class="relative text-[#e5e2e1]/70 hover:text-[#F2CA50] transition-colors focus:outline-none flex items-center">
                             <span class="material-symbols-outlined">notifications</span>
-                            <span id="notification-badge" class="absolute top-0 right-0 w-2 h-2 bg-primary rounded-full border-2 border-background hidden"></span>
+                            <span id="notification-badge"
+                                class="absolute top-0 right-0 w-2 h-2 bg-primary rounded-full border-2 border-background hidden"></span>
                         </button>
                         <!-- Notifications Dropdown -->
-                        <div id="notification-dropdown" class="absolute right-0 mt-3 w-80 bg-[#201f1f]/95 border border-[#4d4635] rounded-xl shadow-2xl overflow-hidden hidden z-50 backdrop-blur-md">
+                        <div id="notification-dropdown"
+                            class="absolute right-0 mt-3 w-80 bg-[#201f1f]/95 border border-[#4d4635] rounded-xl shadow-2xl overflow-hidden hidden z-50 backdrop-blur-md">
                             <div class="px-4 py-3 border-b border-outline-variant/10 flex justify-between items-center">
                                 <span class="font-headline font-bold text-sm text-on-surface">Notifications</span>
-                                <span id="notification-unread-count" class="text-[10px] bg-primary/20 text-primary font-bold px-2 py-0.5 rounded-full hidden">0 Unread</span>
+                                <span id="notification-unread-count"
+                                    class="text-[10px] bg-primary/20 text-primary font-bold px-2 py-0.5 rounded-full hidden">0
+                                    Unread</span>
                             </div>
-                            <div id="notification-list" class="max-h-96 overflow-y-auto divide-y divide-outline-variant/10 custom-scrollbar">
+                            <div id="notification-list"
+                                class="max-h-96 overflow-y-auto divide-y divide-outline-variant/10 custom-scrollbar">
                                 <!-- Dynamic notifications go here -->
                             </div>
                         </div>
@@ -172,7 +212,8 @@
                     </button>
                 </div>
                 <div class="h-4 w-px bg-outline-variant/30"></div>
-                <button class="text-sm font-semibold text-[#D4AF37] hover:text-[#F2CA50] transition-colors">Support</button>
+                <button
+                    class="text-sm font-semibold text-[#D4AF37] hover:text-[#F2CA50] transition-colors">Support</button>
                 <span class="font-headline font-extrabold text-[#F2CA50] tracking-tight ml-4">ADMIN PORTAL</span>
             </div>
         </header>
@@ -333,19 +374,19 @@
                         'X-Requested-With': 'XMLHttpRequest'
                     }
                 })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.status === 'ok') {
-                        // Remove notification element from UI
-                        const item = notifList.querySelector(`[data-id="${id}"]`);
-                        if (item) {
-                            item.remove();
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.status === 'ok') {
+                            // Remove notification element from UI
+                            const item = notifList.querySelector(`[data-id="${id}"]`);
+                            if (item) {
+                                item.remove();
+                            }
+                            // Refetch to update counts and UI state
+                            fetchNotifications();
                         }
-                        // Refetch to update counts and UI state
-                        fetchNotifications();
-                    }
-                })
-                .catch(err => console.error("Error marking read:", err));
+                    })
+                    .catch(err => console.error("Error marking read:", err));
             }
 
             if (bellBtn) {
@@ -376,4 +417,5 @@
         });
     </script>
 </body>
+
 </html>

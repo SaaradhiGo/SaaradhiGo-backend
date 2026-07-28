@@ -71,7 +71,21 @@ def login(request: HttpRequest) -> HttpResponse:
 
 @admin_required
 def dashboard(request: HttpRequest) -> HttpResponse:
-    return render(request, 'admin_pages/fleet_monitor.html')
+    # Pull the same KPI payload the /api/v1/ride/admin/dashboard/ endpoint
+    # returns so the server-rendered fleet monitor page can show the
+    # day's headline numbers without a second round-trip from the
+    # browser. The helper is request-agnostic, so it is safe to call
+    # from this non-DRF view.
+    from servers.ride.admin_views import build_admin_dashboard_kpis
+
+    try:
+        kpis = build_admin_dashboard_kpis()
+    except Exception:
+        # Never let a stats failure blank the whole map page — the live
+        # WebSocket driver feed is still useful on its own.
+        kpis = None
+
+    return render(request, 'admin_pages/fleet_monitor.html', {"kpis": kpis})
 
 
 @admin_required

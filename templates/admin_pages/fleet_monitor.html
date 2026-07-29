@@ -185,8 +185,8 @@ font-family: 'Manrope', sans-serif;
             <span
                 class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Withdrawals</span>
             <span class="text-xl font-headline font-black text-on-surface">{{ kpis.withdrawals.pending }}</span>
-            <span class="text-[9px] font-label text-on-surface-variant mt-0.5">₹{{
-                kpis.withdrawals.completed_today_amount }} today</span>
+            <span class="text-[9px] font-label text-on-surface-variant mt-0.5">₹
+                {{ kpis.withdrawals.completed_today_amount }} today</span>
         </div>
         <div
             class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[120px]">
@@ -211,15 +211,15 @@ font-family: 'Manrope', sans-serif;
             class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[140px]">
             <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Active
                 Rides</span>
-            <span id="ticker-active-rides" class="text-xl font-headline font-black text-primary">{% if kpis %}{{
-                kpis.trips.total }}{% else %}--{% endif %}</span>
+            <span id="ticker-active-rides" class="text-xl font-headline font-black text-primary">{% if kpis %}
+                {{ kpis.trips.total }}{% else %}--{% endif %}</span>
         </div>
         <div
             class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[140px]">
             <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Fleet
                 Revenue</span>
-            <span id="ticker-revenue" class="text-xl font-headline font-black text-on-surface">{% if kpis %}₹{{ kpis.gmv
-                }}{% else %}Calculated...{% endif %}</span>
+            <span id="ticker-revenue" class="text-xl font-headline font-black text-on-surface">{% if kpis %}₹
+                {{ kpis.gmv }}{% else %}Calculated...{% endif %}</span>
         </div>
         <div
             class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[140px]">
@@ -236,11 +236,14 @@ font-family: 'Manrope', sans-serif;
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-    // ---- Mumbai default view ----
-    const MUMBAI_CENTER = [17.387140, 78.491684];
+    // ---- Default view and browser geolocation ----
+    const DEFAULT_CENTER = [17.387140, 78.491684];
     const DEFAULT_ZOOM = 12;
 
     let map = null;
+    let userLocation = null;
+    let userLocationMarker = null;
+    let locationRequestInFlight = false;
     // Buffer of driver updates received before the map finished initialising.
     const pendingUpdates = [];
 
@@ -262,7 +265,7 @@ font-family: 'Manrope', sans-serif;
     function initMap() {
         if (map) return;
         map = L.map('fleet-map', {
-            center: MUMBAI_CENTER,
+            center: DEFAULT_CENTER,
             zoom: DEFAULT_ZOOM,
             zoomControl: false,
             attributionControl: true,
@@ -291,9 +294,11 @@ font-family: 'Manrope', sans-serif;
         // ---- Floating action buttons ----
         document.getElementById('map-zoom-in').addEventListener('click', () => map.zoomIn());
         document.getElementById('map-zoom-out').addEventListener('click', () => map.zoomOut());
-        document.getElementById('map-locate').addEventListener('click', () => {
-            map.flyTo(MUMBAI_CENTER, DEFAULT_ZOOM, { duration: 0.8 });
-        });
+        document.getElementById('map-locate').addEventListener('click', () => locateUser());
+
+        // Ask for permission as soon as the map is ready. The locate button
+        // can retry this later if permission was denied or unavailable.
+        requestUserLocation(true);
 
         // Keep the map sized correctly when the viewport / layout changes.
         const resizeObserver = new ResizeObserver(() => {
@@ -312,6 +317,67 @@ font-family: 'Manrope', sans-serif;
         }
     }
 
+    function requestUserLocation(shouldCenterMap) {
+        if (!navigator.geolocation || locationRequestInFlight) {
+            if (!navigator.geolocation) locateUserFallback(shouldCenterMap);
+            return;
+        }
+
+        locationRequestInFlight = true;
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                locationRequestInFlight = false;
+                const { latitude, longitude, accuracy } = position.coords;
+                userLocation = [latitude, longitude];
+
+                // Show the precise browser GPS position and its reported accuracy.
+                if (userLocationMarker) {
+                    userLocationMarker.setLatLng(userLocation);
+                    userLocationMarker.setRadius(Math.max(accuracy, 5));
+                } else {
+                    userLocationMarker = L.circle(userLocation, {
+                        radius: Math.max(accuracy, 5),
+                        color: '#f2ca50',
+                        fillColor: '#f2ca50',
+                        fillOpacity: 0.12,
+                        weight: 1,
+                    }).addTo(map);
+                    userLocationMarker.bindTooltip('Your location', { direction: 'top' });
+                }
+
+                if (shouldCenterMap) {
+                    map.flyTo(userLocation, Math.max(map.getZoom(), 15), { duration: 0.8 });
+                }
+            },
+            (error) => {
+                console.warn("Geolocation error:", error);
+                locationRequestInFlight = false;
+                locateUserFallback(shouldCenterMap);
+            },
+            {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0,
+            }
+        );
+    }
+
+    function locateUserFallback(shouldCenterMap) {
+        if (shouldCenterMap && map && !userLocation) {
+            map.flyTo(DEFAULT_CENTER, DEFAULT_ZOOM, { duration: 0.8 });
+        }
+    }
+
+    function locateUser() {
+        if (!map) return;
+        if (userLocation) {
+            map.flyTo(userLocation, Math.max(map.getZoom(), 15), { duration: 0.8 });
+            requestUserLocation(false); // Refresh the cached GPS position when possible.
+        } else {
+            requestUserLocation(true);
+        }
+    }
+
     // Start initialization once the DOM (and Tailwind) has settled.
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initMapWhenReady);
@@ -320,131 +386,131 @@ font-family: 'Manrope', sans-serif;
     }
 
     // ---- WebSocket live driver tracking ----
-    const socket = new WebSocket(
-        (window.location.protocol === 'https:' ? 'wss://' : 'ws://')
-        + window.location.host
-        + '/ws/admin/dashboard/'
-    );
+    // const socket = new WebSocket(
+    //     (window.location.protocol === 'https:' ? 'wss://' : 'ws://')
+    //     + window.location.host
+    //     + '/ws/admin/dashboard/'
+    // );
 
-    const driverFeed = document.getElementById('driver-feed');
-    const drivers = new Map();
+    // const driverFeed = document.getElementById('driver-feed');
+    // const drivers = new Map();
 
-    socket.onopen = function (e) {
-        document.getElementById('connection-status-text').innerText = 'Live Mode';
-        document.getElementById('connection-status-dot').classList.remove('bg-error');
-        document.getElementById('connection-status-dot').classList.add('bg-primary');
-        document.getElementById('connection-status-pulse').classList.remove('bg-error');
-        document.getElementById('connection-status-pulse').classList.add('bg-primary');
-        document.getElementById('ticker-status').innerText = 'NOMINAL';
-        document.getElementById('status-dot-indicator').classList.remove('bg-error');
-        document.getElementById('status-dot-indicator').classList.add('bg-emerald-500');
-        document.getElementById('status-dot-indicator').style.boxShadow = '0 0 8px rgba(16,185,129,0.6)';
-        console.log("WebSocket connected");
-    };
+    // socket.onopen = function (e) {
+    //     document.getElementById('connection-status-text').innerText = 'Live Mode';
+    //     document.getElementById('connection-status-dot').classList.remove('bg-error');
+    //     document.getElementById('connection-status-dot').classList.add('bg-primary');
+    //     document.getElementById('connection-status-pulse').classList.remove('bg-error');
+    //     document.getElementById('connection-status-pulse').classList.add('bg-primary');
+    //     document.getElementById('ticker-status').innerText = 'NOMINAL';
+    //     document.getElementById('status-dot-indicator').classList.remove('bg-error');
+    //     document.getElementById('status-dot-indicator').classList.add('bg-emerald-500');
+    //     document.getElementById('status-dot-indicator').style.boxShadow = '0 0 8px rgba(16,185,129,0.6)';
+    //     console.log("WebSocket connected");
+    // };
 
-    socket.onmessage = function (e) {
-        const data = JSON.parse(e.data);
+    // socket.onmessage = function (e) {
+    //     const data = JSON.parse(e.data);
 
-        if (data.type === 'driver_location_update') {
-            updateDriverMarker(data);
-        }
-    };
+    //     if (data.type === 'driver_location_update') {
+    //         updateDriverMarker(data);
+    //     }
+    // };
 
-    // Open the Active Fleet sidebar (if collapsed) and scroll the
-    // matching driver card into view, highlighting it briefly.
-    function focusDriverInFeed(driver_id) {
-        const sidebar = document.getElementById('driver-feed');
-        if (sidebar) {
-            // Ensure the sidebar is visible (it is always rendered, but
-            // this also clears any "hidden" state just in case).
-            const aside = sidebar.closest('aside');
-            if (aside) aside.classList.remove('hidden');
-        }
-        const card = document.getElementById('driver-card-' + driver_id);
-        if (card && sidebar) {
-            card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            // Brief highlight pulse so the user notices which card was selected.
-            card.classList.add('ring-2', 'ring-primary/60', 'border-primary/40');
-            setTimeout(() => {
-                card.classList.remove('ring-2', 'ring-primary/60', 'border-primary/40');
-            }, 1600);
-        }
-    }
+    // // Open the Active Fleet sidebar (if collapsed) and scroll the
+    // // matching driver card into view, highlighting it briefly.
+    // function focusDriverInFeed(driver_id) {
+    //     const sidebar = document.getElementById('driver-feed');
+    //     if (sidebar) {
+    //         // Ensure the sidebar is visible (it is always rendered, but
+    //         // this also clears any "hidden" state just in case).
+    //         const aside = sidebar.closest('aside');
+    //         if (aside) aside.classList.remove('hidden');
+    //     }
+    //     const card = document.getElementById('driver-card-' + driver_id);
+    //     if (card && sidebar) {
+    //         card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    //         // Brief highlight pulse so the user notices which card was selected.
+    //         card.classList.add('ring-2', 'ring-primary/60', 'border-primary/40');
+    //         setTimeout(() => {
+    //             card.classList.remove('ring-2', 'ring-primary/60', 'border-primary/40');
+    //         }, 1600);
+    //     }
+    // }
 
-    function updateDriverMarker(data) {
-        const { driver_id, lat, lng } = data;
-        let driver = drivers.get(driver_id);
+    // function updateDriverMarker(data) {
+    //     const { driver_id, lat, lng } = data;
+    //     let driver = drivers.get(driver_id);
 
-        // Buffer updates until the map is ready, then flush.
-        if (!map) {
-            pendingUpdates.push(data);
-            return;
-        }
+    //     // Buffer updates until the map is ready, then flush.
+    //     if (!map) {
+    //         pendingUpdates.push(data);
+    //         return;
+    //     }
 
-        if (!driver) {
-            // Create Leaflet marker with custom gold icon
-            const marker = L.marker([lat, lng], {
-                icon: window.makeDriverIcon(),
-                title: 'DRIVER_' + driver_id,
-            }).addTo(map);
+    //     if (!driver) {
+    //         // Create Leaflet marker with custom gold icon
+    //         const marker = L.marker([lat, lng], {
+    //             icon: window.makeDriverIcon(),
+    //             title: 'DRIVER_' + driver_id,
+    //         }).addTo(map);
 
-            marker.bindPopup(
-                `<div class="driver-marker-popup">`
-                + `<p class="text-[11px] font-headline font-extrabold text-primary tracking-tight">DRIVER_${driver_id}</p>`
-                + `<p class="text-[10px] font-label text-on-surface-variant mt-1">${lat.toFixed(4)}, ${lng.toFixed(4)}</p>`
-                + `</div>`
-            );
+    //         marker.bindPopup(
+    //             `<div class="driver-marker-popup">`
+    //             + `<p class="text-[11px] font-headline font-extrabold text-primary tracking-tight">DRIVER_${driver_id}</p>`
+    //             + `<p class="text-[10px] font-label text-on-surface-variant mt-1">${lat.toFixed(4)}, ${lng.toFixed(4)}</p>`
+    //             + `</div>`
+    //         );
 
-            // Clicking a marker on the map opens the Active Fleet sidebar
-            // and scrolls the matching driver card into view.
-            marker.on('click', () => focusDriverInFeed(driver_id));
+    //         // Clicking a marker on the map opens the Active Fleet sidebar
+    //         // and scrolls the matching driver card into view.
+    //         marker.on('click', () => focusDriverInFeed(driver_id));
 
-            // Create New Feed Card
-            const card = document.createElement('div');
-            card.id = 'driver-card-' + driver_id;
-            card.className = 'group p-4 bg-surface-container-low hover:bg-surface-container rounded-lg transition-all border border-transparent hover:border-primary/10 cursor-pointer';
-            card.innerHTML = `
-                <div class="flex items-start justify-between">
-                    <div class="flex items-center space-x-3">
-                        <div class="w-10 h-10 rounded-full bg-surface-container-highest flex items-center justify-center text-primary border border-outline-variant/20 overflow-hidden">
-                            <span class="material-symbols-outlined text-sm">person</span>
-                        </div>
-                        <div>
-                            <p class="text-xs font-headline font-bold text-on-surface group-hover:text-primary transition-colors">Driver ${driver_id}</p>
-                            <p class="text-[10px] font-label text-on-surface-variant flex items-center">
-                                <span class="material-symbols-outlined text-[10px] mr-1">pin_drop</span> Live Tracking
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            `;
-            // Clicking a feed card flies the map to that driver.
-            card.addEventListener('click', () => {
-                const ll = driver.marker.getLatLng();
-                map.flyTo([ll.lat, ll.lng], Math.max(map.getZoom(), 14), { duration: 0.8 });
-                driver.marker.openPopup();
-            });
-            driverFeed.appendChild(card);
+    //         // Create New Feed Card
+    //         const card = document.createElement('div');
+    //         card.id = 'driver-card-' + driver_id;
+    //         card.className = 'group p-4 bg-surface-container-low hover:bg-surface-container rounded-lg transition-all border border-transparent hover:border-primary/10 cursor-pointer';
+    //         card.innerHTML = `
+    //             <div class="flex items-start justify-between">
+    //                 <div class="flex items-center space-x-3">
+    //                     <div class="w-10 h-10 rounded-full bg-surface-container-highest flex items-center justify-center text-primary border border-outline-variant/20 overflow-hidden">
+    //                         <span class="material-symbols-outlined text-sm">person</span>
+    //                     </div>
+    //                     <div>
+    //                         <p class="text-xs font-headline font-bold text-on-surface group-hover:text-primary transition-colors">Driver ${driver_id}</p>
+    //                         <p class="text-[10px] font-label text-on-surface-variant flex items-center">
+    //                             <span class="material-symbols-outlined text-[10px] mr-1">pin_drop</span> Live Tracking
+    //                         </p>
+    //                     </div>
+    //                 </div>
+    //             </div>
+    //         `;
+    //         // Clicking a feed card flies the map to that driver.
+    //         card.addEventListener('click', () => {
+    //             const ll = driver.marker.getLatLng();
+    //             map.flyTo([ll.lat, ll.lng], Math.max(map.getZoom(), 14), { duration: 0.8 });
+    //             driver.marker.openPopup();
+    //         });
+    //         driverFeed.appendChild(card);
 
-            driver = { marker, card };
-            drivers.set(driver_id, driver);
-        } else {
-            // Smoothly move existing marker to the new lat/lng
-            driver.marker.setLatLng([lat, lng]);
-            driver.marker.setPopupContent(
-                `<div class="driver-marker-popup">`
-                + `<p class="text-[11px] font-headline font-extrabold text-primary tracking-tight">DRIVER_${driver_id}</p>`
-                + `<p class="text-[10px] font-label text-on-surface-variant mt-1">${lat.toFixed(4)}, ${lng.toFixed(4)}</p>`
-                + `</div>`
-            );
-        }
+    //         driver = { marker, card };
+    //         drivers.set(driver_id, driver);
+    //     } else {
+    //         // Smoothly move existing marker to the new lat/lng
+    //         driver.marker.setLatLng([lat, lng]);
+    //         driver.marker.setPopupContent(
+    //             `<div class="driver-marker-popup">`
+    //             + `<p class="text-[11px] font-headline font-extrabold text-primary tracking-tight">DRIVER_${driver_id}</p>`
+    //             + `<p class="text-[10px] font-label text-on-surface-variant mt-1">${lat.toFixed(4)}, ${lng.toFixed(4)}</p>`
+    //             + `</div>`
+    //         );
+    //     }
 
-        document.getElementById('active-driver-count').innerText = drivers.size + ' Online';
-    }
+    //     document.getElementById('active-driver-count').innerText = drivers.size + ' Online';
+    // }
 
-    socket.onclose = function (e) {
-        console.error('WebSocket closed unexpectedly');
-    };
+    // socket.onclose = function (e) {
+    //     console.error('WebSocket closed unexpectedly');
+    // };
 
 </script>
 {% endblock %}

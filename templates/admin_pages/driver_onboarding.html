@@ -62,30 +62,27 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                         class="p-4 rounded-xl transition-all hover:bg-surface-container-high {% if selected_driver and selected_driver.id == d.id %}bg-surface-container-high border-l-4 border-primary shadow-lg ring-1 ring-primary/10{% else %}bg-surface-container{% endif %}">
                         <div class="flex justify-between items-start mb-2">
                             <div>
-                                <p class="font-bold text-on-surface">{{ d.name }}</p>
-                                <p class="text-xs text-on-surface-variant">ID: #DRV-{{ d.id }}</p>
+                                <p class="font-bold text-on-surface">{{ d.user_id.full_name }}</p>
+                                <p class="text-xs text-on-surface-variant">ID: {{ d.id }}</p>
                             </div>
                             <span class="px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1
-                                {% if d.onboarding_status == 'KYC_SUBMITTED' %}bg-primary/10 text-primary
-                                {% elif d.onboarding_status == 'PENDING_KYC' %}bg-amber-400/10 text-amber-400
-                                {% elif d.onboarding_status == 'APPROVED' %}bg-emerald-400/10 text-emerald-400
+                                {% if d.doc_status == 'pending' %}bg-primary/10 text-primary
+                                {% elif d.doc_status == 'approved' %}bg-emerald-400/10 text-emerald-400
                                 {% else %}bg-rose-400/10 text-rose-400{% endif %}">
                                 <span class="w-1.5 h-1.5 rounded-full 
-                                    {% if d.onboarding_status == 'KYC_SUBMITTED' %}bg-primary
-                                    {% elif d.onboarding_status == 'PENDING_KYC' %}bg-amber-400
-                                    {% elif d.onboarding_status == 'APPROVED' %}bg-emerald-400
+                                    {% if d.doc_status == 'pending' %}bg-primary
+                                    {% elif d.doc_status == 'approved' %}bg-emerald-400
                                     {% else %}bg-rose-400{% endif %}"></span>
-                                {{ d.get_onboarding_status_display }}
+                                {{ d.doc_status }}
                             </span>
                         </div>
                         <div class="flex flex-wrap gap-1.5 text-[9px] text-on-surface-variant font-medium">
-                            {% for doc in d.documents.all %}
+                            {% if d.license_doc %}
                             <span
-                                class="bg-surface-container-low px-1.5 py-0.5 rounded {% if doc.status == 'APPROVED' %}text-emerald-400{% elif doc.status == 'REJECTED' %}text-rose-400{% endif %}">{{
-                                doc.doc_type }}</span>
-                            {% empty %}
+                                class="bg-surface-container-low px-1.5 py-0.5 rounded {% if d.license_doc %}text-emerald-400{% else %}text-rose-400{% endif %}">License</span>
+                            {% else %}
                             <span class="italic text-on-surface-variant/50">No documents</span>
-                            {% endfor %}
+                            {% endif %}
                         </div>
                     </div>
                 </a>
@@ -105,8 +102,7 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                         class="px-3 py-1.5 bg-surface-container hover:bg-surface-container-high rounded text-on-surface transition-colors">Previous</a>
                     {% endif %}
                 </div>
-                <span class="text-on-surface-variant">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages
-                    }}</span>
+                <span class="text-on-surface-variant">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
                 <div>
                     {% if page_obj.has_next %}
                     <a href="?status={{ status_filter }}&selected_driver={{ selected_driver.id }}&page={{ page_obj.next_page_number }}"
@@ -129,7 +125,7 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                                 class="w-20 h-20 rounded-xl border-2 border-primary/20 flex items-center justify-center bg-surface-container">
                                 <span class="material-symbols-outlined text-4xl text-on-surface-variant">person</span>
                             </div>
-                            {% if selected_driver.onboarding_status == 'APPROVED' %}
+                            {% if selected_driver.doc_status == 'APPROVED' %}
                             <span class="absolute -bottom-2 -right-2 bg-emerald-500 p-1.5 rounded-full text-white">
                                 <span class="material-symbols-outlined text-sm leading-none"
                                     style="font-variation-settings: 'FILL' 1;">verified</span>
@@ -142,36 +138,38 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                             <div class="flex items-center gap-4 mt-1 text-sm text-on-surface-variant">
                                 <span class="flex items-center gap-1">
                                     <span class="material-symbols-outlined text-xs">info</span>
-                                    Onboarding: {{ selected_driver.get_onboarding_status_display }}
+                                    Onboarding: {{ selected_driver.doc_status }}
                                 </span>
                                 <span class="flex items-center gap-1">
                                     <span class="material-symbols-outlined text-xs">star</span>
-                                    Rating: {{ selected_driver.rating }}
+                                    Rating: {{ selected_driver.ratings }}
                                 </span>
                             </div>
                         </div>
                     </div>
-                    {% if selected_driver.onboarding_status != 'APPROVED' and selected_driver.onboarding_status != 'REJECTED' %}
+
+
+                    {% if selected_driver.doc_status != 'approved' and selected_driver.doc_status != 'rejected' %}
                     <div class="flex gap-3">
-                        <form method="POST"
-                            action="{% url 'reject_driver' selected_driver.id %}?status={{ status_filter }}&page={{ page_obj.number }}">
+                        <form method="POST">
                             {% csrf_token %}
+                            <input type="hidden" name="action" value="reject">
                             <button type="submit"
                                 class="px-6 py-2.5 rounded text-sm font-bold border border-outline-variant/30 text-on-surface hover:bg-surface-container transition-all">Reject</button>
                         </form>
-                        <form method="POST"
-                            action="{% url 'approve_driver' selected_driver.id %}?status={{ status_filter }}&page={{ page_obj.number }}">
+                        <form method="POST">
                             {% csrf_token %}
+                            <input type="hidden" name="action" value="approve">
                             <button type="submit"
-                                class="gold-gradient px-8 py-2.5 rounded text-sm font-bold text-on-primary hover:opacity-90 transition-all shadow-lg shadow-primary/10">Approve
+                                class="gold-gradient px-8 py-2.5 rounded text-sm font-bold  border border-outline-variant/30 hover:opacity-90 transition-all shadow-lg shadow-primary/10">Approve
                                 Driver</button>
                         </form>
                     </div>
                     {% else %}
                     <div
                         class="text-sm font-semibold uppercase tracking-wider px-3 py-1.5 rounded-full border
-                        {% if selected_driver.onboarding_status == 'APPROVED' %}text-emerald-400 border-emerald-400/20 bg-emerald-400/5{% else %}text-rose-400 border-rose-400/20 bg-rose-400/5{% endif %}">
-                        {{ selected_driver.get_onboarding_status_display }}
+                        {% if selected_driver.doc_status == 'approved' %}text-emerald-400 border-emerald-400/20 bg-emerald-400/5{% else %}text-rose-400 border-rose-400/20 bg-rose-400/5{% endif %}">
+                        {{ selected_driver.doc_status }}
                     </div>
                     {% endif %}
                 </div>
@@ -180,18 +178,15 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                 <div class="p-8 space-y-8">
                     <h4 class="font-label text-xs font-bold uppercase tracking-widest text-on-surface-variant">Uploaded
                         Documents</h4>
+                    {% if selected_driver.license_doc %}
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {% for doc in documents %}
                         <div class="bg-surface-container rounded-xl p-4 space-y-4 border border-outline-variant/5">
                             <div class="flex justify-between items-center">
                                 <div class="flex items-center gap-3">
                                     <span class="material-symbols-outlined text-primary">
-                                        {% if doc.doc_type == 'DL' %}badge
-                                        {% elif doc.doc_type == 'RC' %}directions_car
-                                        {% elif doc.doc_type == 'INSURANCE' %}shield
-                                        {% else %}description{% endif %}
+                                        badge
                                     </span>
-                                    <span class="font-bold text-sm">{{ doc.get_doc_type_display }}</span>
+                                    <span class="font-bold text-sm">{{ selected_driver.license_doc }}</span>
                                 </div>
                                 <span class="text-xs px-2.5 py-0.5 rounded-full font-semibold border
                                     {% if doc.status == 'APPROVED' %}border-emerald-500/20 bg-emerald-500/10 text-emerald-400
@@ -205,10 +200,7 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                             <div
                                 class="aspect-[16/10] bg-surface-container-highest rounded-lg flex flex-col items-center justify-center overflow-hidden border border-outline-variant/20 relative group p-4">
                                 <span class="material-symbols-outlined text-4xl text-on-surface-variant/40 mb-2">
-                                    {% if doc.doc_type == 'DL' %}badge
-                                    {% elif doc.doc_type == 'RC' %}directions_car
-                                    {% elif doc.doc_type == 'INSURANCE' %}shield
-                                    {% else %}description{% endif %}
+                                    badge
                                 </span>
                                 <span class="text-xs text-on-surface-variant/70">Document Image File</span>
                             </div>
@@ -216,21 +208,21 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                             <div class="grid grid-cols-2 gap-4 text-[11px] border-t border-outline-variant/5 pt-3">
                                 <div>
                                     <p class="text-on-surface-variant">Uploaded At</p>
-                                    <p class="font-semibold text-on-surface">{{ doc.uploaded_at|date:"d M Y H:i" }}</p>
+                                    <p class="font-semibold text-on-surface">{{ selected_driver.uploaded_timestamp|date:"d M Y H:i" }}</p>
                                 </div>
-                                <div>
+                                <!-- <div>
                                     <p class="text-on-surface-variant">Notes</p>
                                     <p class="font-semibold text-on-surface">{% if doc.notes %}{{ doc.notes }}{% else
                                         %}<span class="text-on-surface-variant/40 italic">None</span>{% endif %}</p>
-                                </div>
+                                </div> -->
                             </div>
                         </div>
-                        {% empty %}
+                        {% else %}
                         <div
                             class="col-span-2 text-center p-12 bg-surface-container rounded-xl text-on-surface-variant text-sm italic">
                             No documents uploaded for this driver.
                         </div>
-                        {% endfor %}
+                        {% endif %}
                     </div>
                 </div>
             </div>

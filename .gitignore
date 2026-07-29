@@ -21,4 +21,4 @@ global-bundle.pem
 .venv-qa/
 .venv/
 db.sqlite3
-
+migrations/

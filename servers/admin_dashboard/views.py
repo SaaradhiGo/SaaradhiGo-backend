@@ -1,9 +1,10 @@
 from functools import wraps
-
+from django.utils import timezone
 from django.contrib.auth import authenticate, login as auth_login, logout as auth_logout
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
-
+# from servers.driver.admin_utils import list_drivers_admin
+from servers.driver.models import Driver
 
 def admin_required(view_func):
     """
@@ -90,7 +91,32 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 
 @admin_required
 def driver_onboarding(request: HttpRequest) -> HttpResponse:
-    return render(request, "admin_pages/driver_onboarding.html")
+    page_number=request.GET.get("page",1)
+    status=request.GET.get('status',None)
+    selected_driver_id=request.GET.get('selected_driver',None)
+    selected_driver=None
+    if selected_driver_id:
+        selected_driver=Driver.objects.get(id=selected_driver_id)
+    approved=Driver.objects.filter(doc_status='approved')
+    pending=Driver.objects.filter(doc_status='pending')
+    if status=="APPROVED":
+        pass
+    elif status=="REJECTED":
+        pass
+    elif status=="PENDING":
+        pass
+    else:
+        drivers=Driver.objects.all()
+    if request.method=="POST":
+        action=request.POST.get('action',None)
+        if action=="approve":
+            selected_driver.doc_status='approved'
+            selected_driver.save()
+        elif action=="reject":
+            selected_driver.doc_status='rejected'
+            selected_driver.save()
+        selected_driver.doc_status_updated_at=timezone.now()
+    return render(request, "admin_pages/driver_onboarding.html",{"pending_reviews_count":pending.count(),"approved_count":approved.count(),"drivers":drivers,"selected_driver":selected_driver,"status_filter":status,"page_number":page_number})
 
 
 @admin_required

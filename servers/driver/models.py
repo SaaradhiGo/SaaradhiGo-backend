@@ -5,6 +5,7 @@ from base.storage_backends import private_document_storage, public_media_storage
 # Create your models here.
 User=get_user_model()
 class Driver(models.Model):
+
     user_id=models.OneToOneField(User,on_delete=models.CASCADE,related_name='driver')
     license_doc=models.FileField(
         blank=True,
@@ -20,11 +21,16 @@ class Driver(models.Model):
         ('on ride','On Ride'),('off ride','Off Ride'),('blocked','Blocked')
     ],default='off')
     total_trips=models.IntegerField(default=0)
+    doc_status=models.CharField(max_length=20,choices=[
+        ('pending','Pending'),('approved','Approved'),('rejected','Rejected')
+    ],default='pending')
     ratings=models.DecimalField(max_digits=3,decimal_places=2,default=0.00)
     approved=models.BooleanField(default=False)
     active_vehicle=models.ForeignKey('Vehicle',on_delete=models.SET_NULL,null=True,blank=True)
     last_withdrawal_at=models.DateTimeField(null=True,blank=True)
     upi_id=models.CharField(max_length=256,blank=True,null=True,help_text='UPI ID for UPI payouts')
+    uploaded_timestamp=models.DateTimeField(null=True,blank=True)
+    doc_status_updated_at=models.DateTimeField(null=True,blank=True)
     # If set in the future, the driver is locked out of going online
     # (and out of accepting new trips) until this timestamp. Used by:
     #   - MVA 2020 12h/24h fatigue cap (servers.driver.services)

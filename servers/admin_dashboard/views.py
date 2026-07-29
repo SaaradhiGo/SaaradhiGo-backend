@@ -95,16 +95,17 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
     status=request.GET.get('status',None)
     selected_driver_id=request.GET.get('selected_driver',None)
     selected_driver=None
+    
     if selected_driver_id:
         selected_driver=Driver.objects.get(id=selected_driver_id)
     approved=Driver.objects.filter(doc_status='approved')
     pending=Driver.objects.filter(doc_status='pending')
     if status=="APPROVED":
-        pass
+        drivers=approved
     elif status=="REJECTED":
-        pass
+        drivers=Driver.objects.filter(doc_status='rejected')
     elif status=="PENDING":
-        pass
+        drivers=pending
     else:
         drivers=Driver.objects.all()
     if request.method=="POST":
@@ -116,7 +117,7 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
             selected_driver.doc_status='rejected'
             selected_driver.save()
         selected_driver.doc_status_updated_at=timezone.now()
-    return render(request, "admin_pages/driver_onboarding.html",{"pending_reviews_count":pending.count(),"approved_count":approved.count(),"drivers":drivers,"selected_driver":selected_driver,"status_filter":status,"page_number":page_number})
+    return render(request, "admin_pages/driver_onboarding.html",{"pending_reviews_count":pending.count(),"approved_count":approved.count(),"drivers":drivers,"selected_driver":selected_driver,"page_number":page_number})
 
 
 @admin_required

@@ -122,8 +122,12 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                     <div class="flex items-center gap-6">
                         <div class="relative">
                             <div
-                                class="w-20 h-20 rounded-xl border-2 border-primary/20 flex items-center justify-center bg-surface-container">
+                                class="w-20 h-20 rounded-xl border-2 border-primary/20 flex items-center justify-center bg-surface-container overflow-hidden">
+                                {% if selected_driver.user_id.avatar %}
+                                <img src="{{ selected_driver.user_id.avatar.url }}" alt="{{ selected_driver.user_id.full_name }}" class="w-full h-full object-cover">
+                                {% else %}
                                 <span class="material-symbols-outlined text-4xl text-on-surface-variant">person</span>
+                                {% endif %}
                             </div>
                             {% if selected_driver.doc_status == 'APPROVED' %}
                             <span class="absolute -bottom-2 -right-2 bg-emerald-500 p-1.5 rounded-full text-white">
@@ -149,7 +153,7 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                     </div>
 
 
-                    {% if selected_driver.doc_status != 'approved' and selected_driver.doc_status != 'rejected' %}
+                    {% if selected_driver.doc_status != 'approved' %}
                     <div class="flex gap-3">
                         <form method="POST">
                             {% csrf_token %}
@@ -183,26 +187,33 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                         <div class="bg-surface-container rounded-xl p-4 space-y-4 border border-outline-variant/5">
                             <div class="flex justify-between items-center">
                                 <div class="flex items-center gap-3">
-                                    <span class="material-symbols-outlined text-primary">
-                                        badge
+                                        <span class="material-symbols-outlined text-primary">
+                                            badge
+                                        </span>
+                                        <span class="font-bold text-sm">{{ selected_driver.license_doc }}</span>
+                                    </div>
+                                    <span class="text-xs px-2.5 py-0.5 rounded-full font-semibold border
+                                        {% if selected_driver.doc_status == 'approved' %}border-emerald-500/20 bg-emerald-500/10 text-emerald-400
+                                        {% elif selected_driver.doc_status == 'rejected' %}border-rose-500/20 bg-rose-500/10 text-rose-400
+                                        {% else %}border-primary/20 bg-primary/10 text-primary{% endif %}">
+                                        {{ selected_driver.doc_status }}
                                     </span>
-                                    <span class="font-bold text-sm">{{ selected_driver.license_doc }}</span>
-                                </div>
-                                <span class="text-xs px-2.5 py-0.5 rounded-full font-semibold border
-                                    {% if doc.status == 'APPROVED' %}border-emerald-500/20 bg-emerald-500/10 text-emerald-400
-                                    {% elif doc.status == 'REJECTED' %}border-rose-500/20 bg-rose-500/10 text-rose-400
-                                    {% else %}border-primary/20 bg-primary/10 text-primary{% endif %}">
-                                    {{ doc.get_status_display }}
-                                </span>
                             </div>
 
                             <!-- Premium document visual representation -->
                             <div
                                 class="aspect-[16/10] bg-surface-container-highest rounded-lg flex flex-col items-center justify-center overflow-hidden border border-outline-variant/20 relative group p-4">
-                                <span class="material-symbols-outlined text-4xl text-on-surface-variant/40 mb-2">
-                                    badge
-                                </span>
-                                <span class="text-xs text-on-surface-variant/70">Document Image File</span>
+                                {% if selected_driver.license_doc %}
+                                    <div class="flex flex-col items-center justify-center p-6">
+                                        <span class="material-symbols-outlined text-4xl text-on-surface-variant/40 mb-2">badge</span>
+                                        <a href="{{ selected_driver.license_doc.url }}" class="text-sm text-primary underline" target="_blank" rel="noopener">Open / Download document</a>
+                                    </div>
+                                {% else %}
+                                    <span class="material-symbols-outlined text-4xl text-on-surface-variant/40 mb-2">
+                                        badge
+                                    </span>
+                                    <span class="text-xs text-on-surface-variant/70">Document Image File</span>
+                                {% endif %}
                             </div>
 
                             <div class="grid grid-cols-2 gap-4 text-[11px] border-t border-outline-variant/5 pt-3">

@@ -4,7 +4,10 @@ from django.contrib.auth import authenticate, login as auth_login, logout as aut
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
 # from servers.driver.admin_utils import list_drivers_admin
-from servers.driver.models import Driver
+from servers.driver.models import Driver,WithdrawalRequest
+from django.core.paginator import Paginator
+from servers.ride.models import FarePricing
+from django.db import models
 
 def admin_required(view_func):
     """
@@ -79,6 +82,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     # from this non-DRF view.
     from servers.ride.admin_views import build_admin_dashboard_kpis
 
+
     try:
         kpis = build_admin_dashboard_kpis()
     except Exception:
@@ -92,7 +96,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 @admin_required
 def driver_onboarding(request: HttpRequest) -> HttpResponse:
     page_number=request.GET.get("page",1)
-    status=request.GET.get('status',None)
+    status=request.GET.get('status',"ALL")
     selected_driver_id=request.GET.get('selected_driver',None)
     selected_driver=None
     
@@ -117,7 +121,7 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
             selected_driver.doc_status='rejected'
             selected_driver.save()
         selected_driver.doc_status_updated_at=timezone.now()
-    return render(request, "admin_pages/driver_onboarding.html",{"pending_reviews_count":pending.count(),"approved_count":approved.count(),"drivers":drivers,"selected_driver":selected_driver,"page_number":page_number})
+    return render(request, "admin_pages/driver_onboarding.html",{"pending_reviews_count":pending.count(),"approved_count":approved.count(),"drivers":drivers,"selected_driver":selected_driver,"page_number":page_number,"status_filter":status})
 
 
 @admin_required
@@ -127,7 +131,15 @@ def dispute_support(request: HttpRequest) -> HttpResponse:
 
 @admin_required
 def payment_dashboard(request: HttpRequest) -> HttpResponse:
-    return render(request, "admin_pages/payment_dashboard.html")
+    total_gross_revenue = FarePricing.objects.aggregate(total_revenue=models.Sum('total_fare'))['total_revenue'] or 0
+    completed_count = WithdrawalRequest.objects.filter(status='completed').count()
+    cancelled_count = WithdrawalRequest.objects.filter(status='failed').count()
+    recent_transactions = WithdrawalRequest.objects.select_related('driver','driver__user_id','driver__active_vehicle','driver__active_vehicle__vehicle_type_id').order_by('-requested_at')
+    paginator = Paginator(recent_transactions, 20)
+    page_number = request.GET.get('page', 1)
+    page_obj = paginator.get_page(page_number)
+    print(page_obj)
+    return render(request, "admin_pages/payment_dashboard.html",{"total_payments": total_gross_revenue, "completed_count": completed_count, "cancelled_count": cancelled_count, "page_obj": page_obj})
 
 
 @admin_required

@@ -88,40 +88,46 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-outline-variant/10">
-                    {% for r in rides %}
+                    {% for t in page_obj %}
                     <tr class="hover:bg-surface-container-highest/50 transition-colors">
-                        <td class="px-8 py-5 font-mono text-xs text-primary">#TXN-{{ r.id }}982</td>
+                        <td class="px-8 py-5 font-mono text-xs text-primary">#TXN-{{ t.id }}</td>
                         <td class="px-8 py-5">
                             <div class="flex items-center gap-3">
                                 <div
                                     class="w-8 h-8 rounded-full bg-surface-container-highest flex items-center justify-center text-[10px] font-bold">
-                                    {{ r.rider_name|slice:":2"|upper }}
+                                    {{ t.driver.user_id.full_name|slice:":2"|upper }}
                                 </div>
                                 <div>
-                                    <p class="text-sm font-bold text-on-surface">{{ r.rider_name }}</p>
-                                    <p class="text-[10px] text-on-surface-variant">Class: {{ r.vehicle_class }}</p>
+                                    <p class="text-sm font-bold text-on-surface">{{ t.driver.user_id.full_name }}</p>
+                                    <p class="text-[10px] text-on-surface-variant">Class: {{ t.driver.active_vehicle.vehicle_type_id.type|default:"N/A" }} </p>
                                 </div>
                             </div>
                         </td>
                         <td class="px-8 py-5">
                             <span class="text-xs font-medium flex items-center gap-2 text-on-surface-variant">
-                                <span class="material-symbols-outlined text-sm">
-                                    {% if r.vehicle_class == 'Luxury Auto' %}qr_code_2{% else %}credit_card{% endif %}
-                                </span>
-                                {% if r.vehicle_class == 'Luxury Auto' %}UPI / GPay{% else %}Card Payment{% endif %}
+                                <span class="material-symbols-outlined text-sm">qr_code_2</span>
+                                UPI
                             </span>
                         </td>
-                        <td class="px-8 py-5 font-bold text-sm text-on-surface">₹{{ r.fare }}</td>
+                        <td class="px-8 py-5 font-bold text-sm text-on-surface">₹{{ t.amount }}</td>
                         <td class="px-8 py-5">
                             <span class="text-[10px] px-2.5 py-1 rounded-full font-black uppercase flex items-center w-fit gap-1
-                            {% if r.status == 'COMPLETED' %}bg-emerald-400/10 text-emerald-400
-                            {% elif r.status == 'IN_PROGRESS' %}bg-primary/10 text-primary
+                            {% if t.status == 'completed' %}bg-emerald-400/10 text-emerald-400
+                            {% elif t.status == 'pending' %}bg-primary/10 text-primary
+                            {% elif t.status == 'approved' %}bg-green-400/10 text-green-400
+                            {% elif t.status == 'failed' %}bg-rose-400/10 text-rose-400
+                            {% elif t.status == 'rejected' %}bg-rose-400/10 text-rose-400
+                            {% elif t.status == 'processed' %}bg-blue-400/10 text-blue-400
                             {% else %}bg-rose-400/10 text-rose-400{% endif %}">
                                 <span class="w-1 h-1 rounded-full 
-                                {% if r.status == 'COMPLETED' %}bg-emerald-400
-                                {% elif r.status == 'IN_PROGRESS' %}bg-primary
+                                {% if t.status == 'completed' %}bg-emerald-400
+                                {% elif t.status == 'pending' %}bg-primary
+                                {% elif t.status == 'approved' %}bg-green-400
+                                {% elif t.status == 'failed' %}bg-rose-400
+                                {% elif t.status == 'rejected' %}bg-rose-400
+                                {% elif t.status == 'processed' %}bg-blue-400
                                 {% else %}bg-rose-400{% endif %}"></span>
-                                {{ r.status }}
+                                {{ t.status }}
                             </span>
                         </td>
                     </tr>

@@ -150,10 +150,8 @@
                 <img alt="Admin User Profile" class="w-10 h-10 rounded-full border border-primary/20"
                     src="https://lh3.googleusercontent.com/aida-public/AB6AXuB1T1r1pgabRYevvFMmQs8CFZDppoAo76tQwElWNjBPkBunIY6PuWvMuBs79xv-6qxKs-BnHjmE_IMIHAs2ZgTMjZX__f9IAjIZUxwiSNlTTUuEjH80cVjyBf6Ef-BJ6GqEW3ljTz2y2WpAMDpEOcU0xxzb_QmmHkktP5Zpk7-qL9B-EWTyuxgjys9OsEH9Qc_aCJDBztkO-BopetXYEWj_OXI0Cq76uyoqpDBSlEk1WNhKucF3JOTTwnH3OT4gJX35DPn0KlqtT2k" />
                 <div>
-                    <p class="text-sm font-bold text-on-surface">{% if request.user.is_authenticated %}{{
-                        request.user.username }}{% else %}Guest{% endif %}</p>
-                    <p class="text-xs text-on-surface-variant">{% if request.user.is_staff %}Staff Administrator{% else
-                        %}System User{% endif %}</p>
+                    <p class="text-sm font-bold text-on-surface">{% if request.user.is_authenticated %}{{ request.user.username }}{% else %}Guest{% endif %}</p>
+                    <p class="text-xs text-on-surface-variant">{% if request.user.is_staff %}Staff Administrator{% else %}System User{% endif %}</p>
                 </div>
             </div>
             <div class="mt-4">

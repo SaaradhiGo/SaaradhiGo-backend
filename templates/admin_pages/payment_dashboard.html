@@ -85,6 +85,8 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                             Amount</th>
                         <th class="px-8 py-4 text-[10px] font-black uppercase text-on-surface-variant tracking-widest">
                             Status</th>
+                        <th class="px-8 py-4 text-[10px] font-black uppercase text-on-surface-variant tracking-widest">
+                            Payout Action</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-outline-variant/10">
@@ -130,10 +132,28 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                                 {{ t.status }}
                             </span>
                         </td>
+                        <td class="px-8 py-5">
+                            {% if t.status == 'pending' or t.status == 'processed' %}
+                            <div class="flex items-center gap-2">
+                                <button type="button"
+                                    class="inline-flex items-center gap-1 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-semibold text-emerald-600 transition-all hover:bg-emerald-500/20 hover:shadow-sm">
+                                    <span class="material-symbols-outlined text-sm" data-icon="approve">check_circle</span>
+                                    Approve
+                                </button>
+                                <button type="button"
+                                    class="inline-flex items-center gap-1 rounded-full border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-[11px] font-semibold text-rose-600 transition-all hover:bg-rose-500/20 hover:shadow-sm">
+                                    <span class="material-symbols-outlined text-sm" data-icon="reject">cancel</span>
+                                    Reject
+                                </button>
+                            </div>
+                            {% else %}
+                            <span class="text-[11px] text-on-surface-variant">Not required</span>
+                            {% endif %}
+                        </td>
                     </tr>
                     {% empty %}
                     <tr>
-                        <td colspan="5" class="text-center py-8 text-on-surface-variant text-sm italic">
+                        <td colspan="6" class="text-center py-8 text-on-surface-variant text-sm italic">
                             No transactions found.
                         </td>
                     </tr>

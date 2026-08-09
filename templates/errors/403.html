@@ -1,0 +1,9 @@
+{% extends 'errors/base_error.html' %}
+
+{% block title %}Access denied | SaaradhiGo{% endblock %}
+{% block heading %}Access denied{% endblock %}
+{% block message %}You are not authorized to view this area of the platform. Please sign in with the appropriate admin account or return to the main operations console.{% endblock %}
+{% block details %}This page is protected for fleet operations and payment controls. If you believe this is a mistake, contact your administrator.{% endblock %}
+{% block icon %}🔒{% endblock %}
+{% block code %}403{% endblock %}
+{% block code_label %}Not authorized{% endblock %}

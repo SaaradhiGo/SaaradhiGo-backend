@@ -42,12 +42,12 @@ services:
     env_file:
       - .env.local
     environment:
-      POSTGRES_DB: ${DB_NAME:-postgres}
-      POSTGRES_USER: ${DB_USER:-postgres}
+      DB_NAME: ${DB_NAME:-postgres}
+      DB_USER: ${DB_USER:-postgres}
       # Read from .env.local — never hardcode. The literal that used to sit
       # here is also the production database password; it is in this repo's
       # git history, so it must be rotated on RDS and the history scrubbed
       # before launch (see the launch-readiness runbook).
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
     ports:
       - "127.0.0.1:5432:5432"

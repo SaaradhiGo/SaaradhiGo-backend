@@ -79,14 +79,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-django pytest-asyncio
+          pip install pytest==8.1.1 pytest-django==4.8.0 pytest-asyncio==0.21.1
 
       - name: Check for missing migrations
         # A model change merged without its migration breaks the next
         # deploy, at which point the fix gets written under pressure.
         env:
           DJANGO_SECRET_KEY: ci-test-secret-not-for-prod
-          ALLOWED_HOSTS: localhost,127.0.0.1
+          ALLOWED_HOSTS: localhost,127.0.0.1,testserver
           DEBUG_ENV: 'True'
           REDIS_URL: redis://localhost:6379
           DJANGO_SETTINGS_MODULE: base.settings
@@ -99,7 +99,7 @@ jobs:
           # boot-time guards (ALLOWED_HOSTS, DB_HOST) permissive for the
           # suite and enables the fallback fare the pricing tests assert.
           DJANGO_SECRET_KEY: ci-test-secret-not-for-prod
-          ALLOWED_HOSTS: localhost,127.0.0.1
+          ALLOWED_HOSTS: localhost,127.0.0.1,testserver
           DEBUG_ENV: 'True'
           CASHFREE_WEBHOOK_SECRET: ci-test-secret
           REDIS_URL: redis://localhost:6379

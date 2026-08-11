@@ -31,13 +31,15 @@ class ExceptionHandlingMiddleware:
     def __call__(self, request):
         response = self.get_response(request)
 
-        if response.status_code == 404 and request.accepts('text/html'):
+        is_json_response = response.get('Content-Type', '').startswith('application/json')
+
+        if response.status_code == 404 and not is_json_response and request.accepts('text/html'):
             return render(request, 'errors/404.html', status=404)
 
-        if response.status_code == 403 and request.accepts('text/html'):
+        if response.status_code == 403 and not is_json_response and request.accepts('text/html'):
             return render(request, 'errors/403.html', status=403)
 
-        if response.status_code == 400 and request.accepts('text/html'):
+        if response.status_code == 400 and not is_json_response and request.accepts('text/html'):
             return render(request, 'errors/400.html', status=400)
 
         return response

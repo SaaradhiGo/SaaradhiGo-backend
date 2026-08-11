@@ -922,7 +922,7 @@ def driver_cancel_trip(request, trip_id):
 
     try:
         with transaction.atomic():
-            trip = Trip.objects.select_for_update().select_related(
+            trip = Trip.objects.select_for_update(of=('self',)).select_related(
                 'status_id', 'driver_id', 'driver_id__user_id', 'user_id',
             ).get(id=trip_id)
 
@@ -1042,7 +1042,7 @@ def rider_cancel_trip(request, trip_id):
 
     try:
         with transaction.atomic():
-            trip = Trip.objects.select_for_update().select_related(
+            trip = Trip.objects.select_for_update(of=('self',)).select_related(
                 'status_id', 'driver_id', 'driver_id__user_id', 'user_id',
             ).get(id=trip_id)
 

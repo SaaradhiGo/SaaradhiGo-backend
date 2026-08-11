@@ -26,7 +26,7 @@ ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_raw.split(',') if h.strip()]
 if not DEBUG and not ALLOWED_HOSTS:
     from django.core.exceptions import ImproperlyConfigured
     raise ImproperlyConfigured(
-        "ALLOWED_HOSTS must be set (comma-separated) when DEBUG=True."
+        "ALLOWED_HOSTS must be set (comma-separated) when DEBUG=False."
     )
 
 # CSRF trusted origins for any browser session (admin web).

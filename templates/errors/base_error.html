@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}SaaradhiGo{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+    <style>
+        :root {
+            color-scheme: dark;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: radial-gradient(circle at top left, rgba(242, 202, 80, 0.16), transparent 28%), #0f0f0f;
+        }
+        .headline {
+            font-family: 'Manrope', sans-serif;
+        }
+    </style>
+</head>
+<body class="min-h-screen text-[#f7f4eb]">
+    <div class="min-h-screen flex items-center justify-center px-6 py-16">
+        <div class="w-full max-w-5xl rounded-3xl border border-[#4d4635]/30 bg-[#161616]/95 shadow-[0_30px_80px_rgba(0,0,0,0.35)] overflow-hidden backdrop-blur">
+            <div class="grid lg:grid-cols-[1.1fr_0.9fr] min-h-[560px]">
+                <div class="p-10 lg:p-14 flex flex-col justify-center">
+                    <div class="inline-flex w-fit items-center gap-2 rounded-full border border-[#f2ca50]/25 bg-[#f2ca50]/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-[#f2ca50]">
+                        <span>⚡</span>
+                        SaaradhiGo Operations
+                    </div>
+                    <h1 class="headline mt-6 text-4xl sm:text-5xl font-black tracking-tight">{% block heading %}Something went off track{% endblock %}</h1>
+                    <p class="mt-4 max-w-xl text-base sm:text-lg text-[#d0c5af]">{% block message %}The route you requested could not be served right now.{% endblock %}</p>
+                    <div class="mt-8 flex flex-wrap gap-3">
+                        <a href="/" class="rounded-full bg-[#f2ca50] px-5 py-3 text-sm font-semibold text-[#2f2400] transition hover:brightness-110">Return home</a>
+                        <a href="/admin/" class="rounded-full border border-[#4d4635] bg-[#201f1f] px-5 py-3 text-sm font-semibold text-[#f7f4eb] transition hover:border-[#f2ca50] hover:text-[#f2ca50]">Open admin console</a>
+                    </div>
+                    <div class="mt-8 rounded-2xl border border-[#4d4635]/30 bg-[#201f1f]/70 p-4 text-sm text-[#d0c5af]">
+                        {% block details %}If this issue persists, contact the operations team.{% endblock %}
+                    </div>
+                </div>
+                <div class="relative hidden lg:flex items-center justify-center bg-[radial-gradient(circle_at_center,_rgba(242,202,80,0.18),_transparent_55%)] p-10">
+                    <div class="text-center">
+                        <div class="mx-auto flex h-24 w-24 items-center justify-center rounded-full border border-[#f2ca50]/30 bg-[#f2ca50]/10 text-4xl shadow-[0_0_40px_rgba(242,202,80,0.15)]">{% block icon %}🧭{% endblock %}</div>
+                        <div class="mt-6 text-6xl font-black tracking-[0.25em] text-[#f2ca50]">{% block code %}404{% endblock %}</div>
+                        <p class="mt-3 text-sm uppercase tracking-[0.3em] text-[#d0c5af]">{% block code_label %}Route unavailable{% endblock %}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

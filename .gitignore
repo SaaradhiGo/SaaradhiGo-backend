@@ -16,8 +16,8 @@ global-bundle.pem
 .env.local
 .env.prod
 .pytest_cache
-.tests/
 .planning/
 .venv-qa/
 .venv/
 db.sqlite3
+celerybeat-schedule

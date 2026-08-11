@@ -1,0 +1,291 @@
+{% extends 'admin_pages/base.html' %}
+{% block title %}Fare &amp; Surge Management | SaaradhiGo{% endblock %}
+
+{% block extra_css %}
+.glass-header {
+background: rgba(19, 19, 19, 0.6);
+backdrop-filter: blur(20px);
+}
+.gold-gradient-bg {
+background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
+}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #131313; }
+::-webkit-scrollbar-thumb { background: #353534; border-radius: 10px; }
+{% endblock %}
+
+{% block main_class %}overflow-y-auto{% endblock %}
+
+{% block content %}
+<div class="p-8 pb-12 space-y-8">
+    <div class="grid grid-cols-12 gap-6">
+        <div class="col-span-12 lg:col-span-4 bg-surface-container-low rounded-xl p-6 border border-outline-variant/5">
+            <div class="flex justify-between items-start mb-6">
+                <div>
+                    <p class="text-[10px] text-on-surface-variant uppercase tracking-[0.2em] font-bold">System Status
+                    </p>
+                    <h3 class="font-headline text-2xl font-bold text-primary mt-1">Live Surge Pulse</h3>
+                </div>
+                <div class="flex items-center gap-2 bg-primary/10 px-3 py-1 rounded-full">
+                    <span class="w-2 h-2 bg-primary rounded-full animate-pulse"></span>
+                    <span class="text-[10px] font-bold text-primary uppercase">Active</span>
+                </div>
+            </div>
+            <div class="space-y-6">
+                <div class="flex items-end justify-between">
+                    <span class="text-4xl font-headline font-black text-on-surface">
+                        {% if peak_zone %}{{ peak_zone.multiplier }}{% else %}1.0{% endif %}<span
+                            class="text-lg text-primary">x</span>
+                    </span>
+                    <div class="text-right">
+                        <p class="text-[10px] text-on-surface-variant uppercase">Peak Multiplier</p>
+                        <p class="text-sm font-bold text-on-surface">{% if peak_zone %}{{ peak_zone.zone_name }}{% else
+                            %}No Active Zones{% endif %}</p>
+                    </div>
+                </div>
+                <div class="h-24 flex items-end gap-1 px-1">
+                    <div class="flex-1 bg-outline-variant/20 rounded-t-sm h-[30%]"></div>
+                    <div class="flex-1 bg-outline-variant/20 rounded-t-sm h-[45%]"></div>
+                    <div class="flex-1 bg-primary/40 rounded-t-sm h-[60%]"></div>
+                    <div class="flex-1 bg-primary rounded-t-sm h-[85%]"></div>
+                    <div class="flex-1 bg-primary/60 rounded-t-sm h-[70%]"></div>
+                    <div class="flex-1 bg-outline-variant/20 rounded-t-sm h-[40%]"></div>
+                    <div class="flex-1 bg-outline-variant/20 rounded-t-sm h-[55%]"></div>
+                    <div class="flex-1 bg-primary/80 rounded-t-sm h-[95%]"></div>
+                    <div class="flex-1 bg-primary/30 rounded-t-sm h-[50%]"></div>
+                    <div class="flex-1 bg-outline-variant/20 rounded-t-sm h-[35%]"></div>
+                </div>
+                <div class="grid grid-cols-2 gap-4 pt-4 border-t border-outline-variant/10">
+                    <div>
+                        <p class="text-[10px] text-on-surface-variant uppercase">Avg Multiplier</p>
+                        <p class="text-lg font-bold text-on-surface">{{ avg_multiplier }}x</p>
+                    </div>
+                    <div>
+                        <p class="text-[10px] text-on-surface-variant uppercase">Active Zones</p>
+                        <p class="text-lg font-bold text-on-surface">{{ active_zones_count }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div
+            class="col-span-12 lg:col-span-8 bg-surface-container rounded-xl overflow-hidden relative border border-outline-variant/5 h-[400px]">
+            <div class="absolute inset-0 bg-gradient-to-t from-surface via-transparent to-transparent"></div>
+            <div class="absolute top-6 left-6 z-10">
+                <h3 class="font-headline text-xl font-bold text-on-surface">Demand Heatmap</h3>
+                <p class="text-xs text-on-surface-variant">Real-time requests density per sector</p>
+            </div>
+            <div class="absolute bottom-6 left-6 right-6 z-10 flex items-center justify-between">
+                <div class="flex gap-2">
+                    <button
+                        class="bg-surface-container-highest/80 backdrop-blur px-4 py-2 rounded-lg text-xs font-bold text-on-surface border border-outline-variant/20">All
+                        Zones</button>
+                    <button class="bg-primary text-on-primary px-4 py-2 rounded-lg text-xs font-bold">High
+                        Demand</button>
+                </div>
+            </div>
+            <div class="absolute top-1/4 left-1/3 w-16 h-16 bg-primary/20 rounded-full blur-xl"></div>
+            <div
+                class="absolute top-1/4 left-1/3 w-4 h-4 bg-primary rounded-full border-2 border-on-primary flex items-center justify-center">
+                <div class="absolute w-8 h-8 bg-primary/40 rounded-full animate-ping"></div>
+            </div>
+            <div class="absolute bottom-1/3 right-1/4 w-24 h-24 bg-primary/10 rounded-full blur-2xl"></div>
+            <div
+                class="absolute bottom-1/3 right-1/4 w-6 h-6 bg-primary rounded-full border-2 border-on-primary flex items-center justify-center">
+                <span class="text-[8px] font-black text-on-primary">2.1x</span>
+            </div>
+        </div>
+
+        <div class="col-span-12 lg:col-span-5 space-y-6">
+            <div class="bg-surface-container-low rounded-xl p-6 border border-outline-variant/5">
+                <h3 class="font-headline text-lg font-bold text-primary mb-6">Global Fare Configuration</h3>
+                <!-- Status message area -->
+                <div id="config-status" class="mb-4 hidden"></div>
+                <form id="global-config-form" class="space-y-6">
+                    {% csrf_token %}
+                    <div>
+                        <label class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">Base Fare
+                            (₹)</label>
+                        <div class="relative">
+                            <input id="cfg-base-fare" name="base_fare"
+                                class="w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary transition-colors py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg"
+                                type="text" value="{{ config.base_fare }}" />
+                            <span
+                                class="absolute right-4 top-1/2 -translate-y-1/2 material-symbols-outlined text-on-surface-variant/40">edit</span>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">Surge
+                                Multiplier</label>
+                            <input id="cfg-surge-multiplier" name="surge_multiplier"
+                                class="w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg"
+                                type="text" value="{{ config.surge_multiplier }}" />
+                        </div>
+                        <div>
+                            <label class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">Surge
+                                Cap</label>
+                            <input id="cfg-surge-cap" name="surge_cap"
+                                class="w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg"
+                                type="text" value="{{ config.surge_cap }}" />
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">Per KM
+                                Rate (₹)</label>
+                            <input id="cfg-per-km" name="per_km_rate"
+                                class="w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg"
+                                type="text" value="{{ config.per_km_rate }}" />
+                        </div>
+                        <div>
+                            <label class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">Per Min
+                                Rate (₹)</label>
+                            <input id="cfg-per-min" name="per_min_rate"
+                                class="w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg"
+                                type="text" value="{{ config.per_min_rate }}" />
+                        </div>
+                    </div>
+                    <div class="pt-4">
+                        <button type="submit" id="update-config-btn"
+                            class="w-full gold-gradient-bg text-on-primary font-headline font-bold py-4 rounded-lg text-sm active:scale-95 duration-200 shadow-lg shadow-primary/20">
+                            <span id="update-config-btn-text">Update Global Config</span>
+                            <span id="update-config-btn-spinner"
+                                class="hidden material-symbols-outlined animate-spin text-sm ml-2">progress_activity</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div
+            class="col-span-12 lg:col-span-7 bg-surface-container-low rounded-xl border border-outline-variant/5 overflow-hidden">
+            <div class="p-6 border-b border-outline-variant/10 flex justify-between items-center">
+                <div>
+                    <h3 class="font-headline text-lg font-bold text-on-surface">Active Surge Zones</h3>
+                    <p class="text-xs text-on-surface-variant">Currently active dynamic pricing areas</p>
+                </div>
+                <button class="text-primary text-xs font-bold flex items-center gap-1 hover:underline">
+                    <span class="material-symbols-outlined text-sm">filter_list</span> Filter
+                </button>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead>
+                        <tr
+                            class="text-[10px] text-on-surface-variant uppercase tracking-widest bg-surface-container-lowest/50">
+                            <th class="px-6 py-4 font-bold">Zone Name</th>
+                            <th class="px-6 py-4 font-bold">Multiplier</th>
+                            <th class="px-6 py-4 font-bold">Requests/hr</th>
+                            <th class="px-6 py-4 font-bold">Drivers</th>
+                            <th class="px-6 py-4 font-bold text-right">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-outline-variant/5">
+                        {% for zone in surge_zones %}
+                        <tr class="hover:bg-surface-container-high/50 transition-colors group">
+                            <td class="px-6 py-4">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-2 h-2 rounded-full bg-primary shadow-[0_0_8px_rgba(212,175,55,0.6)]">
+                                    </div>
+                                    <span class="text-sm font-bold text-on-surface">{{ zone.zone_name }}</span>
+                                </div>
+                            </td>
+                            <td class="px-6 py-4">
+                                <span
+                                    class="px-2 py-1 bg-primary/10 text-primary text-xs font-bold rounded border border-primary/20">{{
+                                    zone.multiplier }}x</span>
+                            </td>
+                            <td class="px-6 py-4 text-sm text-on-surface-variant">{{ zone.requests_per_hour }}</td>
+                            <td class="px-6 py-4 text-sm text-on-surface-variant">{{ zone.active_drivers }}</td>
+                            <td class="px-6 py-4 text-right">
+                                <button class="text-on-surface-variant hover:text-primary transition-colors">
+                                    <span class="material-symbols-outlined text-lg">more_vert</span>
+                                </button>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="5" class="px-6 py-8 text-center text-on-surface-variant text-sm">No active
+                                surge zones.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let i = 0; i < cookies.length; i++) {
+                const cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+
+    function showConfigStatus(message, isError) {
+        const statusDiv = document.getElementById('config-status');
+        statusDiv.textContent = message;
+        statusDiv.className = 'mb-4 px-4 py-3 rounded-lg text-sm font-bold ' +
+            (isError ? 'bg-error/10 text-error border border-error/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20');
+        statusDiv.classList.remove('hidden');
+        setTimeout(function () { statusDiv.classList.add('hidden'); }, 5000);
+    }
+
+    document.getElementById('global-config-form').addEventListener('submit', async function (e) {
+        e.preventDefault();
+
+        var btn = document.getElementById('update-config-btn');
+        var btnText = document.getElementById('update-config-btn-text');
+        var btnSpinner = document.getElementById('update-config-btn-spinner');
+
+        btn.disabled = true;
+        btnText.textContent = 'Saving...';
+        btnSpinner.classList.remove('hidden');
+
+        var formData = new URLSearchParams();
+        formData.append('base_fare', document.getElementById('cfg-base-fare').value);
+        formData.append('surge_multiplier', document.getElementById('cfg-surge-multiplier').value);
+        formData.append('surge_cap', document.getElementById('cfg-surge-cap').value);
+        formData.append('per_km_rate', document.getElementById('cfg-per-km').value);
+        formData.append('per_min_rate', document.getElementById('cfg-per-min').value);
+
+        try {
+            var response = await fetch('/api/global-config/', {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCookie('csrftoken'),
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                body: formData
+            });
+
+            var data = await response.json();
+
+            if (data.status === 'ok') {
+                showConfigStatus('✓ ' + data.message, false);
+            } else {
+                var errors = data.errors ? JSON.stringify(data.errors) : (data.message || 'Unknown error');
+                showConfigStatus('✗ ' + errors, true);
+            }
+        } catch (error) {
+            console.error('Config update error:', error);
+            showConfigStatus('✗ Network error. Please try again.', true);
+        } finally {
+            btn.disabled = false;
+            btnText.textContent = 'Update Global Config';
+            btnSpinner.classList.add('hidden');
+        }
+    });
+</script>
+{% endblock %}

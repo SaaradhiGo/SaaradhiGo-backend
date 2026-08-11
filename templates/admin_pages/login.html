@@ -1,0 +1,140 @@
+{% extends 'admin_pages/base.html' %}
+{% block title %}SaaradhiGo Admin Login{% endblock %}
+
+{% block body_class %}bg-surface font-body text-on-surface antialiased overflow-hidden{% endblock %}
+
+{% block sidebar %}{% endblock %}
+{% block topnav %}{% endblock %}
+
+{% block extra_css %}
+.gold-particle-bg {
+background-image:
+radial-gradient(circle at 20% 30%, rgba(242, 202, 80, 0.03) 0%, transparent 50%),
+radial-gradient(circle at 80% 70%, rgba(212, 175, 55, 0.03) 0%, transparent 50%);
+}
+.metallic-gradient {
+background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
+}
+{% endblock %}
+
+{% block content %}
+<div class="relative min-h-screen flex items-center justify-center p-6 gold-particle-bg w-full h-full">
+    <!-- Background Accents -->
+    <div class="absolute top-0 left-0 w-full h-full pointer-events-none opacity-20">
+        <div class="absolute top-[-10%] left-[-5%] w-[40%] h-[40%] bg-primary-container/10 blur-[120px] rounded-full">
+        </div>
+        <div class="absolute bottom-[-10%] right-[-5%] w-[40%] h-[40%] bg-primary/10 blur-[120px] rounded-full"></div>
+    </div>
+
+    <div
+        class="relative w-full max-w-[1200px] grid grid-cols-1 lg:grid-cols-12 gap-0 overflow-hidden rounded-xl bg-surface-container shadow-[0_40px_80px_rgba(0,0,0,0.5)]">
+        <!-- Branding/Art Section (Left) -->
+        <div class="hidden lg:flex lg:col-span-7 relative flex-col justify-between p-12 bg-surface-container-low">
+            <div class="absolute inset-0 opacity-40 mix-blend-overlay">
+                <img class="w-full h-full object-cover" data-alt="Luxury dark interior with gold lighting accents"
+                    src="https://lh3.googleusercontent.com/aida-public/AB6AXuBB4ln48wXO_BYQU3gOu7l0ALcFHKo9xp63Ldjd2sjKtT3cENDXvr_Ty-SynQgSAJfLWIvQSgbpLObbghsEjKgjx-_c8-yL-Q4h6PwEew9F6qy73ZGSs0yHpCSTJhWUeOsTI5SvppC_XSLPdfg19L9wBqD4x1VkRShjCFmG56zIaSjVWVqqPXs5gC_NhT92eYxEBDeLSAbwJgihCdNyfanJ1ywMQXhoVeDnTKKRsaa5K67vOaJqqGnk2zKBrfpsuteGSwIK-2-Qrzk" />
+            </div>
+            <div class="relative z-10">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 metallic-gradient rounded-lg flex items-center justify-center">
+                        <span class="material-symbols-outlined text-on-primary font-bold">directions_car</span>
+                    </div>
+                    <span class="font-headline font-extrabold text-2xl tracking-tighter text-primary">SaaradhiGo</span>
+                </div>
+            </div>
+            <div class="relative z-10 max-w-md">
+                <h2 class="font-headline text-5xl font-extrabold text-on-surface leading-tight mb-6">
+                    The Digital Vault <br />
+                    <span class="text-primary-container">Fleet Control</span>
+                </h2>
+                <p class="text-on-surface-variant text-lg leading-relaxed font-light">
+                    Experience the ultimate in administrative precision. Curated insights for the modern transport
+                    ecosystem.
+                </p>
+            </div>
+            <div
+                class="relative z-10 flex items-center gap-8 text-xs font-label uppercase tracking-widest text-on-surface-variant/50">
+                <span>Precision</span>
+                <span>•</span>
+                <span>Security</span>
+                <span>•</span>
+                <span>Excellence</span>
+            </div>
+        </div>
+
+        <!-- Auth Section (Right) -->
+        <div
+            class="lg:col-span-5 p-12 lg:p-16 flex flex-col justify-center bg-surface-container-high border-l border-outline-variant/15">
+            <div class="mb-10 text-center lg:text-left">
+                <h1 class="font-headline text-3xl font-bold text-on-surface mb-2">Admin Portal</h1>
+                <p class="text-on-surface-variant font-label text-sm">Secure access for fleet operations</p>
+            </div>
+
+            {% if error %}
+            <div class="mb-6 flex items-center gap-3 bg-error/10 border border-error/30 rounded-lg px-4 py-3">
+                <span class="material-symbols-outlined text-error text-sm">error</span>
+                <p class="text-error text-sm font-semibold">{{ error }}</p>
+            </div>
+            {% endif %}
+
+            <form class="space-y-6" action="{% url 'login' %}" method="post">
+                {% csrf_token %}
+                <!-- Username -->
+                <div class="space-y-2">
+                    <label
+                        class="text-xs font-label uppercase tracking-widest text-on-surface-variant ml-1">Username</label>
+                    <div class="relative group h-14">
+                        <span
+                            class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-outline text-sm">person</span>
+                        <input id="id_username" name="username"
+                            class="w-full h-full bg-surface-container-highest border-b border-outline-variant/30 focus:border-primary pl-10 pr-4 text-on-surface transition-all placeholder:text-outline/50 outline-none"
+                            placeholder="admin" type="text" required autocomplete="username" />
+                        <div
+                            class="absolute bottom-0 left-0 h-[1px] w-0 bg-primary transition-all duration-300 group-focus-within:w-full">
+                        </div>
+                    </div>
+                </div>
+                <!-- Password -->
+                <div class="space-y-2">
+                    <label
+                        class="text-xs font-label uppercase tracking-widest text-on-surface-variant ml-1">Password</label>
+                    <div class="relative group h-14">
+                        <span
+                            class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-outline text-sm">lock</span>
+                        <input id="id_password" name="password"
+                            class="w-full h-full bg-surface-container-highest border-b border-outline-variant/30 focus:border-primary pl-10 pr-4 text-on-surface transition-all placeholder:text-outline/50 outline-none"
+                            placeholder="••••••••" type="password" required autocomplete="current-password" />
+                        <div
+                            class="absolute bottom-0 left-0 h-[1px] w-0 bg-primary transition-all duration-300 group-focus-within:w-full">
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit"
+                    class="w-full h-14 metallic-gradient text-on-primary font-bold rounded-lg shadow-lg hover:brightness-110 active:scale-[0.98] transition-all flex items-center justify-center gap-2 group">
+                    <span class="font-headline tracking-wide uppercase text-sm">Sign In</span>
+                    <span
+                        class="material-symbols-outlined transition-transform group-hover:translate-x-1">arrow_forward</span>
+                </button>
+            </form>
+            <div class="mt-12 flex flex-col items-center gap-6">
+                <div class="flex gap-6 text-xs font-label text-on-surface-variant/60">
+                    <a class="hover:text-primary transition-colors" href="#">Support Center</a>
+                    <a class="hover:text-primary transition-colors" href="#">Privacy Policy</a>
+                    <a class="hover:text-primary transition-colors" href="#">API Docs</a>
+                </div>
+                <p class="text-[10px] text-outline/30 font-label tracking-widest uppercase">
+                    © 2026 SaaradhiGo Enterprises
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <div class="fixed bottom-8 right-8">
+        <button
+            class="w-12 h-12 bg-surface-container-highest rounded-full flex items-center justify-center border border-outline-variant/20 hover:border-primary/50 transition-all text-on-surface-variant group">
+            <span class="material-symbols-outlined text-xl group-hover:text-primary">help_outline</span>
+        </button>
+    </div>
+</div>
+{% endblock %}

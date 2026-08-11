@@ -1,0 +1,516 @@
+{% extends 'admin_pages/base.html' %}
+{% block title %}SaaradhiGo | God View{% endblock %}
+
+{% block main_class %}overflow-hidden h-screen{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+{% endblock %}
+
+{% block extra_css %}
+.map-mesh {
+background-image: radial-gradient(circle at 2px 2px, rgba(212,175,55,0.05) 1px, transparent 0);
+background-size: 24px 24px;
+}
+.gold-glow {
+box-shadow: 0 0 20px rgba(212, 175, 55, 0.15);
+}
+
+/* Leaflet dark/gold theme overrides */
+#fleet-map {
+background: #0e0e0e;
+}
+.leaflet-container {
+background: #0e0e0e;
+font-family: 'Inter', sans-serif;
+}
+.leaflet-control-zoom a {
+background: #201f1f !important;
+color: #f2ca50 !important;
+border-color: #4d4635 !important;
+}
+.leaflet-control-zoom a:hover {
+background: #2a2a2a !important;
+}
+.leaflet-control-attribution {
+background: rgba(19,19,19,0.8) !important;
+color: #99907c !important;
+}
+.leaflet-control-attribution a {
+color: #f2ca50 !important;
+}
+.leaflet-bar {
+border-color: #4d4635 !important;
+}
+/* Custom gold driver marker */
+.driver-marker-icon {
+background: rgba(242,202,80,0.10);
+border: 1px solid rgba(242,202,80,0.45);
+border-radius: 9999px;
+display: flex;
+align-items: center;
+justify-content: center;
+box-shadow: 0 0 18px rgba(212,175,55,0.25);
+transition: transform 0.8s linear;
+}
+.driver-marker-icon .material-symbols-outlined {
+color: #f2ca50;
+font-size: 16px;
+font-variation-settings: 'FILL' 1;
+}
+.driver-marker-popup .leaflet-popup-content-wrapper {
+background: #201f1f;
+color: #e5e2e1;
+border: 1px solid #4d4635;
+border-radius: 8px;
+box-shadow: 0 0 30px rgba(0,0,0,0.6);
+}
+.driver-marker-popup .leaflet-popup-tip {
+background: #201f1f;
+border: 1px solid #4d4635;
+}
+.driver-marker-popup .leaflet-popup-content {
+margin: 10px 14px;
+font-family: 'Manrope', sans-serif;
+}
+{% endblock %}
+
+{% block content %}
+<!-- God View Map Canvas -->
+<section class="flex-1 relative bg-surface-container-lowest overflow-hidden h-full">
+    <!-- Map mesh overlay (decorative, sits above tiles) -->
+    <div class="absolute inset-0 z-[400] map-mesh opacity-40 pointer-events-none"></div>
+
+    <!-- Interactive Leaflet Map -->
+    <div id="fleet-map" class="absolute inset-0 z-0"></div>
+
+    <!-- Real-time Ghost Cars (Markers) Container (kept for compatibility) -->
+    <div id="driver-markers-container" class="absolute inset-0 z-10 pointer-events-none hidden"></div>
+
+    <!-- Floating Mode Indicator -->
+    <div
+        class="absolute top-6 left-6 z-20 flex items-center space-x-3 bg-surface-container-lowest/80 backdrop-blur-lg px-4 py-2 rounded-full border border-primary/20 gold-glow">
+        <span class="relative flex h-3 w-3">
+            <span id="connection-status-pulse"
+                class="animate-ping absolute inline-flex h-full w-full rounded-full bg-error opacity-75"></span>
+            <span id="connection-status-dot" class="relative inline-flex rounded-full h-3 w-3 bg-error"></span>
+        </span>
+        <span id="connection-status-text"
+            class="text-[11px] font-headline font-extrabold tracking-[0.2em] text-primary uppercase">Connecting...</span>
+        <span class="h-3 w-px bg-outline-variant/30"></span>
+        <span id="latency-indicator" class="text-[10px] font-label text-on-surface-variant">Sync: ---</span>
+    </div>
+
+    <!-- Floating Action Buttons -->
+    <div class="absolute bottom-8 right-8 z-[1000] flex flex-col space-y-3">
+        <button id="map-zoom-in"
+            class="w-12 h-12 bg-surface-container-high/90 backdrop-blur-md border border-outline-variant/30 text-on-surface hover:text-primary hover:border-primary/50 transition-all flex items-center justify-center rounded-lg shadow-2xl">
+            <span class="material-symbols-outlined">add</span>
+        </button>
+        <button id="map-zoom-out"
+            class="w-12 h-12 bg-surface-container-high/90 backdrop-blur-md border border-outline-variant/30 text-on-surface hover:text-primary hover:border-primary/50 transition-all flex items-center justify-center rounded-lg shadow-2xl">
+            <span class="material-symbols-outlined">remove</span>
+        </button>
+        <button id="map-locate"
+            class="w-12 h-12 bg-primary-container text-on-primary hover:bg-primary transition-all flex items-center justify-center rounded-lg shadow-2xl gold-glow mt-4">
+            <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">my_location</span>
+        </button>
+    </div>
+
+    <!-- Right Sidebar: Active Driver Feed -->
+    <aside
+        class="absolute top-6 bottom-6 right-8 w-80 z-[500] bg-[#131313]/90 backdrop-blur-xl rounded-xl border border-[#4d4635]/20 flex flex-col overflow-hidden shadow-[0_0_80px_rgba(0,0,0,0.5)]">
+        <div class="p-5 border-b border-outline-variant/10">
+            <div class="flex items-center justify-between mb-2">
+                <h2 class="font-headline text-lg font-extrabold text-on-surface tracking-tight">Active Fleet</h2>
+                <span id="active-driver-count"
+                    class="bg-primary/10 text-primary text-[10px] font-bold px-2 py-0.5 rounded-full border border-primary/20">0
+                    Online</span>
+            </div>
+            <!-- <p class="text-xs font-label text-on-surface-variant leading-relaxed">Monitoring live driver telemetry
+                across Hyderabad zone.</p> -->
+        </div>
+        <div id="driver-feed" class="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-2">
+            <!-- Dynamic Driver Cards will be injected here -->
+        </div>
+        <div class="p-4 bg-surface-container-highest/30">
+            <button
+                class="w-full py-2.5 rounded-lg bg-gradient-to-r from-primary-container to-primary text-on-primary font-headline font-bold text-xs uppercase tracking-widest hover:brightness-110 transition-all flex items-center justify-center space-x-2">
+                <span class="material-symbols-outlined text-sm">analytics</span>
+                <span>Dispatch Dashboard</span>
+            </button>
+        </div>
+    </aside>
+
+    <!-- KPI Summary Panel (server-rendered from admin_dashboard payload) -->
+    <div class="absolute top-6 left-1/2 -translate-x-1/2 z-20 hidden lg:flex items-stretch space-x-3">
+        {% if kpis %}
+        <div
+            class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[120px]">
+            <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Trips
+                Today</span>
+            <span class="text-xl font-headline font-black text-primary">{{ kpis.trips.total }}</span>
+            <span class="text-[9px] font-label text-on-surface-variant mt-0.5">
+                {{ kpis.trips.completed }} done · {{ kpis.trips.cancelled }} cxl
+            </span>
+        </div>
+        <div
+            class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[120px]">
+            <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">GMV (₹)</span>
+            <span class="text-xl font-headline font-black text-on-surface">{{ kpis.gmv }}</span>
+            <span class="text-[9px] font-label text-on-surface-variant mt-0.5">completed fare</span>
+        </div>
+        <div
+            class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[120px]">
+            <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Drivers
+                Online</span>
+            <span class="text-xl font-headline font-black text-primary">{{ kpis.drivers.online_now }}</span>
+            <span class="text-[9px] font-label text-on-surface-variant mt-0.5">24h: {{ kpis.drivers.online_24h }}</span>
+        </div>
+        <div
+            class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[120px]">
+            <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Riders 24h</span>
+            <span class="text-xl font-headline font-black text-on-surface">{{ kpis.riders.active_24h }}</span>
+            <span class="text-[9px] font-label text-on-surface-variant mt-0.5">active</span>
+        </div>
+        <div
+            class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[120px]">
+            <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Driver Cxls
+                24h</span>
+            <span class="text-xl font-headline font-black text-error">{{ kpis.cancellations.driver_24h }}</span>
+            <span class="text-[9px] font-label text-on-surface-variant mt-0.5">penalty counter</span>
+        </div>
+        <div
+            class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[120px]">
+            <span
+                class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Withdrawals</span>
+            <span class="text-xl font-headline font-black text-on-surface">{{ kpis.withdrawals.pending }}</span>
+            <span class="text-[9px] font-label text-on-surface-variant mt-0.5">₹
+                {{ kpis.withdrawals.completed_today_amount }} today</span>
+        </div>
+        <div
+            class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[120px]">
+            <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Receipts
+                Today</span>
+            <span class="text-xl font-headline font-black text-primary">{{ kpis.receipts.issued_today }}</span>
+            <span class="text-[9px] font-label text-on-surface-variant mt-0.5">{{ kpis.receipts.send_failures_today }}
+                failed</span>
+        </div>
+        {% else %}
+        <div
+            class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[120px]">
+            <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Dashboard</span>
+            <span class="text-sm font-headline font-bold text-on-surface-variant">KPIs unavailable</span>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Bottom Data Ticker -->
+    <div class="absolute bottom-6 left-6 z-20 flex items-center space-x-6">
+        <div
+            class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[140px]">
+            <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Active
+                Rides</span>
+            <span id="ticker-active-rides" class="text-xl font-headline font-black text-primary">{% if kpis %}
+                {{ kpis.trips.total }}{% else %}--{% endif %}</span>
+        </div>
+        <div
+            class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[140px]">
+            <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Fleet
+                Revenue</span>
+            <span id="ticker-revenue" class="text-xl font-headline font-black text-on-surface">{% if kpis %}₹
+                {{ kpis.gmv }}{% else %}Calculated...{% endif %}</span>
+        </div>
+        <div
+            class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[140px]">
+            <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">System
+                Status</span>
+            <div class="flex items-center space-x-2">
+                <span id="ticker-status" class="text-xl font-headline font-black text-on-surface">ONLINE</span>
+                <span id="status-dot-indicator"
+                    class="w-2 h-2 bg-error rounded-full animate-pulse shadow-[0_0_8px_rgba(255,0,0,0.6)]"></span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    // ---- Default view and browser geolocation ----
+    const DEFAULT_CENTER = [17.387140, 78.491684];
+    const DEFAULT_ZOOM = 12;
+
+    let map = null;
+    let userLocation = null;
+    let userLocationMarker = null;
+    let locationRequestInFlight = false;
+    // Buffer of driver updates received before the map finished initialising.
+    const pendingUpdates = [];
+
+    // Defer map creation until the container has real dimensions, otherwise
+    // Leaflet only fetches tiles for a 0x0 / partial viewport.
+    function initMapWhenReady() {
+        const el = document.getElementById('fleet-map');
+        if (!el) return;
+        const w = el.clientWidth;
+        const h = el.clientHeight;
+        if (w > 0 && h > 0) {
+            initMap();
+        } else {
+            // Container not laid out yet — retry on next frame.
+            requestAnimationFrame(initMapWhenReady);
+        }
+    }
+
+    function initMap() {
+        if (map) return;
+        map = L.map('fleet-map', {
+            center: DEFAULT_CENTER,
+            zoom: DEFAULT_ZOOM,
+            zoomControl: false,
+            attributionControl: true,
+            preferCanvas: true,
+        });
+
+        // Dark/gold themed tile layer (CartoDB dark matter) keeps the existing palette.
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap &copy; CARTO',
+            subdomains: 'abcd',
+            maxZoom: 19,
+        }).addTo(map);
+
+        // ---- Custom gold driver marker icon ----
+        window.makeDriverIcon = function () {
+            return L.divIcon({
+                className: '',
+                html: '<div class="driver-marker-icon" style="width:32px;height:32px;">'
+                    + '<span class="material-symbols-outlined">navigation</span>'
+                    + '</div>',
+                iconSize: [32, 32],
+                iconAnchor: [16, 16],
+            });
+        };
+
+        // ---- Floating action buttons ----
+        document.getElementById('map-zoom-in').addEventListener('click', () => map.zoomIn());
+        document.getElementById('map-zoom-out').addEventListener('click', () => map.zoomOut());
+        document.getElementById('map-locate').addEventListener('click', () => locateUser());
+
+        // Ask for permission as soon as the map is ready. The locate button
+        // can retry this later if permission was denied or unavailable.
+        requestUserLocation(true);
+
+        // Keep the map sized correctly when the viewport / layout changes.
+        const resizeObserver = new ResizeObserver(() => {
+            if (map) map.invalidateSize();
+        });
+        resizeObserver.observe(document.getElementById('fleet-map'));
+        window.addEventListener('resize', () => map && map.invalidateSize());
+
+        // Final safety: invalidate after the first paint of tiles.
+        setTimeout(() => map && map.invalidateSize(), 200);
+        setTimeout(() => map && map.invalidateSize(), 600);
+
+        // Flush any driver updates that arrived while the map was initialising.
+        while (pendingUpdates.length) {
+            updateDriverMarker(pendingUpdates.shift());
+        }
+    }
+
+    function requestUserLocation(shouldCenterMap) {
+        if (!navigator.geolocation || locationRequestInFlight) {
+            if (!navigator.geolocation) locateUserFallback(shouldCenterMap);
+            return;
+        }
+
+        locationRequestInFlight = true;
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                locationRequestInFlight = false;
+                const { latitude, longitude, accuracy } = position.coords;
+                userLocation = [latitude, longitude];
+
+                // Show the precise browser GPS position and its reported accuracy.
+                if (userLocationMarker) {
+                    userLocationMarker.setLatLng(userLocation);
+                    userLocationMarker.setRadius(Math.max(accuracy, 5));
+                } else {
+                    userLocationMarker = L.circle(userLocation, {
+                        radius: Math.max(accuracy, 5),
+                        color: '#f2ca50',
+                        fillColor: '#f2ca50',
+                        fillOpacity: 0.12,
+                        weight: 1,
+                    }).addTo(map);
+                    userLocationMarker.bindTooltip('Your location', { direction: 'top' });
+                }
+
+                if (shouldCenterMap) {
+                    map.flyTo(userLocation, Math.max(map.getZoom(), 15), { duration: 0.8 });
+                }
+            },
+            (error) => {
+                console.warn("Geolocation error:", error);
+                locationRequestInFlight = false;
+                locateUserFallback(shouldCenterMap);
+            },
+            {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0,
+            }
+        );
+    }
+
+    function locateUserFallback(shouldCenterMap) {
+        if (shouldCenterMap && map && !userLocation) {
+            map.flyTo(DEFAULT_CENTER, DEFAULT_ZOOM, { duration: 0.8 });
+        }
+    }
+
+    function locateUser() {
+        if (!map) return;
+        if (userLocation) {
+            map.flyTo(userLocation, Math.max(map.getZoom(), 15), { duration: 0.8 });
+            requestUserLocation(false); // Refresh the cached GPS position when possible.
+        } else {
+            requestUserLocation(true);
+        }
+    }
+
+    // Start initialization once the DOM (and Tailwind) has settled.
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initMapWhenReady);
+    } else {
+        initMapWhenReady();
+    }
+
+    // ---- WebSocket live driver tracking ----
+    // const socket = new WebSocket(
+    //     (window.location.protocol === 'https:' ? 'wss://' : 'ws://')
+    //     + window.location.host
+    //     + '/ws/admin/dashboard/'
+    // );
+
+    // const driverFeed = document.getElementById('driver-feed');
+    // const drivers = new Map();
+
+    // socket.onopen = function (e) {
+    //     document.getElementById('connection-status-text').innerText = 'Live Mode';
+    //     document.getElementById('connection-status-dot').classList.remove('bg-error');
+    //     document.getElementById('connection-status-dot').classList.add('bg-primary');
+    //     document.getElementById('connection-status-pulse').classList.remove('bg-error');
+    //     document.getElementById('connection-status-pulse').classList.add('bg-primary');
+    //     document.getElementById('ticker-status').innerText = 'NOMINAL';
+    //     document.getElementById('status-dot-indicator').classList.remove('bg-error');
+    //     document.getElementById('status-dot-indicator').classList.add('bg-emerald-500');
+    //     document.getElementById('status-dot-indicator').style.boxShadow = '0 0 8px rgba(16,185,129,0.6)';
+    //     console.log("WebSocket connected");
+    // };
+
+    // socket.onmessage = function (e) {
+    //     const data = JSON.parse(e.data);
+
+    //     if (data.type === 'driver_location_update') {
+    //         updateDriverMarker(data);
+    //     }
+    // };
+
+    // // Open the Active Fleet sidebar (if collapsed) and scroll the
+    // // matching driver card into view, highlighting it briefly.
+    // function focusDriverInFeed(driver_id) {
+    //     const sidebar = document.getElementById('driver-feed');
+    //     if (sidebar) {
+    //         // Ensure the sidebar is visible (it is always rendered, but
+    //         // this also clears any "hidden" state just in case).
+    //         const aside = sidebar.closest('aside');
+    //         if (aside) aside.classList.remove('hidden');
+    //     }
+    //     const card = document.getElementById('driver-card-' + driver_id);
+    //     if (card && sidebar) {
+    //         card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    //         // Brief highlight pulse so the user notices which card was selected.
+    //         card.classList.add('ring-2', 'ring-primary/60', 'border-primary/40');
+    //         setTimeout(() => {
+    //             card.classList.remove('ring-2', 'ring-primary/60', 'border-primary/40');
+    //         }, 1600);
+    //     }
+    // }
+
+    // function updateDriverMarker(data) {
+    //     const { driver_id, lat, lng } = data;
+    //     let driver = drivers.get(driver_id);
+
+    //     // Buffer updates until the map is ready, then flush.
+    //     if (!map) {
+    //         pendingUpdates.push(data);
+    //         return;
+    //     }
+
+    //     if (!driver) {
+    //         // Create Leaflet marker with custom gold icon
+    //         const marker = L.marker([lat, lng], {
+    //             icon: window.makeDriverIcon(),
+    //             title: 'DRIVER_' + driver_id,
+    //         }).addTo(map);
+
+    //         marker.bindPopup(
+    //             `<div class="driver-marker-popup">`
+    //             + `<p class="text-[11px] font-headline font-extrabold text-primary tracking-tight">DRIVER_${driver_id}</p>`
+    //             + `<p class="text-[10px] font-label text-on-surface-variant mt-1">${lat.toFixed(4)}, ${lng.toFixed(4)}</p>`
+    //             + `</div>`
+    //         );
+
+    //         // Clicking a marker on the map opens the Active Fleet sidebar
+    //         // and scrolls the matching driver card into view.
+    //         marker.on('click', () => focusDriverInFeed(driver_id));
+
+    //         // Create New Feed Card
+    //         const card = document.createElement('div');
+    //         card.id = 'driver-card-' + driver_id;
+    //         card.className = 'group p-4 bg-surface-container-low hover:bg-surface-container rounded-lg transition-all border border-transparent hover:border-primary/10 cursor-pointer';
+    //         card.innerHTML = `
+    //             <div class="flex items-start justify-between">
+    //                 <div class="flex items-center space-x-3">
+    //                     <div class="w-10 h-10 rounded-full bg-surface-container-highest flex items-center justify-center text-primary border border-outline-variant/20 overflow-hidden">
+    //                         <span class="material-symbols-outlined text-sm">person</span>
+    //                     </div>
+    //                     <div>
+    //                         <p class="text-xs font-headline font-bold text-on-surface group-hover:text-primary transition-colors">Driver ${driver_id}</p>
+    //                         <p class="text-[10px] font-label text-on-surface-variant flex items-center">
+    //                             <span class="material-symbols-outlined text-[10px] mr-1">pin_drop</span> Live Tracking
+    //                         </p>
+    //                     </div>
+    //                 </div>
+    //             </div>
+    //         `;
+    //         // Clicking a feed card flies the map to that driver.
+    //         card.addEventListener('click', () => {
+    //             const ll = driver.marker.getLatLng();
+    //             map.flyTo([ll.lat, ll.lng], Math.max(map.getZoom(), 14), { duration: 0.8 });
+    //             driver.marker.openPopup();
+    //         });
+    //         driverFeed.appendChild(card);
+
+    //         driver = { marker, card };
+    //         drivers.set(driver_id, driver);
+    //     } else {
+    //         // Smoothly move existing marker to the new lat/lng
+    //         driver.marker.setLatLng([lat, lng]);
+    //         driver.marker.setPopupContent(
+    //             `<div class="driver-marker-popup">`
+    //             + `<p class="text-[11px] font-headline font-extrabold text-primary tracking-tight">DRIVER_${driver_id}</p>`
+    //             + `<p class="text-[10px] font-label text-on-surface-variant mt-1">${lat.toFixed(4)}, ${lng.toFixed(4)}</p>`
+    //             + `</div>`
+    //         );
+    //     }
+
+    //     document.getElementById('active-driver-count').innerText = drivers.size + ' Online';
+    // }
+
+    // socket.onclose = function (e) {
+    //     console.error('WebSocket closed unexpectedly');
+    // };
+
+</script>
+{% endblock %}

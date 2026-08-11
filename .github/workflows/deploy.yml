@@ -1,0 +1,199 @@
+name: Test and deploy
+
+# Push to dev runs lint + SAST + dependency audit + the test suite; only
+# if all of them pass does the deploy step touch EC2. The QA pass that
+# preceded this gate caught two regressions that had already shipped to
+# production (PR #27, PR #28). The whole point of `needs:` is to make sure
+# that can't happen again.
+
+on:
+  push:
+    branches:
+      - dev
+  pull_request:
+    branches:
+      - dev
+
+# Don't run more than one deploy at a time on the same branch; queue them
+# so the second push waits for the first to settle on EC2.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install tooling
+        run: pip install ruff bandit pip-audit
+
+      - name: Ruff (lint)
+        run: ruff check .
+
+      - name: Bandit (SAST)
+        # Reports medium severity and above. Migrations and tests are
+        # excluded: generated code and asserts are not findings.
+        run: bandit -r base servers -ll --exclude "*/migrations/*"
+
+      - name: pip-audit (known CVEs in dependencies)
+        # Non-blocking for now: cashfree-pg pins pydantic <2, which drags in
+        # transitive advisories we cannot resolve without dropping the SDK.
+        # Tracked separately — the report still surfaces on every PR so a
+        # NEW advisory is visible immediately.
+        continue-on-error: true
+        run: pip-audit -r requirements.txt
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-django pytest-asyncio
+
+      - name: Check for missing migrations
+        # A model change merged without its migration breaks the next
+        # deploy, at which point the fix gets written under pressure.
+        env:
+          DJANGO_SECRET_KEY: ci-test-secret-not-for-prod
+          ALLOWED_HOSTS: localhost,127.0.0.1
+          DEBUG_ENV: 'True'
+          REDIS_URL: redis://localhost:6379
+          DJANGO_SETTINGS_MODULE: base.settings
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Run pytest
+        env:
+          # Test-only values — never reach production. SECRET_KEY just has
+          # to satisfy Django's startup checks; DEBUG_ENV=True keeps the
+          # boot-time guards (ALLOWED_HOSTS, DB_HOST) permissive for the
+          # suite and enables the fallback fare the pricing tests assert.
+          DJANGO_SECRET_KEY: ci-test-secret-not-for-prod
+          ALLOWED_HOSTS: localhost,127.0.0.1
+          DEBUG_ENV: 'True'
+          CASHFREE_WEBHOOK_SECRET: ci-test-secret
+          REDIS_URL: redis://localhost:6379
+          DJANGO_SETTINGS_MODULE: base.settings
+        run: pytest tests/ -q
+
+  deploy:
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    # Only deploy from a real push to dev. Prevents accidental deploys from
+    # forks, pull_request runs, or workflow_dispatch trial-runs.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST_KEY: ${{ secrets.EC2_HOST_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/key.pem
+          chmod 600 ~/.ssh/key.pem
+
+          # Prefer the pinned host key (EC2_HOST_KEY from `ssh-keyscan <host>`).
+          # If that secret is missing/empty, derive it at runtime from EC2_HOST
+          # so a deploy never dies on "Host key verification failed".
+          if [ -n "${EC2_HOST_KEY// /}" ]; then
+            printf '%s\n' "$EC2_HOST_KEY" > ~/.ssh/known_hosts
+          elif [ -n "$EC2_HOST" ]; then
+            echo "EC2_HOST_KEY secret not set — running ssh-keyscan against $EC2_HOST"
+            ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          else
+            echo "::error::Neither EC2_HOST_KEY nor EC2_HOST is set; cannot verify host identity."
+            exit 1
+          fi
+
+          # Fail loudly if known_hosts is still empty — an empty file is
+          # exactly what produces "Host key verification failed".
+          if [ ! -s ~/.ssh/known_hosts ]; then
+            echo "::error::known_hosts is empty. Populate the EC2_HOST_KEY secret or ensure EC2_HOST is reachable."
+            exit 1
+          fi
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy to EC2
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          ssh -v -i ~/.ssh/key.pem \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "$EC2_USER@$EC2_HOST" << 'EOF'
+            set -euo pipefail
+            cd /home/ubuntu/SaaradhiGo-backend
+
+            # Record what we would roll back TO before changing anything.
+            PREV_SHA=$(git rev-parse HEAD)
+            echo "$PREV_SHA" > .last_good_sha
+
+            git fetch origin dev
+            git reset --hard origin/dev
+
+            COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+
+            $COMPOSE build
+
+            # Migrations as a discrete, one-shot step. Running them from the
+            # container command meant every replica raced the same lock, and
+            # a failed migration took the web tier down with it.
+            $COMPOSE run --rm django python manage.py migrate --noinput
+
+            $COMPOSE up -d --remove-orphans
+
+            # Health gate: roll back automatically if the new build does not
+            # come up. A deploy that silently leaves a dead container is how
+            # a bad push turns into a 40-minute outage nobody noticed.
+            for i in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:8000/healthz > /dev/null; then
+                echo "healthy after $((i * 10))s"
+                exit 0
+              fi
+              sleep 10
+            done
+
+            echo "health check FAILED — rolling back to $PREV_SHA"
+            git reset --hard "$PREV_SHA"
+            $COMPOSE up -d --build
+            exit 1
+          EOF

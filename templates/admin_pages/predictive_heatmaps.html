@@ -1,0 +1,309 @@
+{% extends 'admin_pages/base.html' %}
+{% block title %}Predictive Pulse | GoldRide Elite{% endblock %}
+
+{% block extra_css %}
+.heat-map-overlay {
+background: radial-gradient(circle, rgba(242, 202, 80, 0.15) 0%, rgba(212, 175, 55, 0.05) 50%, transparent 70%);
+}
+.glass-panel {
+backdrop-filter: blur(12px);
+background: rgba(32, 31, 31, 0.8);
+}
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #131313; }
+::-webkit-scrollbar-thumb { background: #4d4635; border-radius: 10px; }
+{% endblock %}
+
+{% block main_class %}overflow-hidden{% endblock %}
+
+{% block content %}
+<div class="flex-1 flex flex-col overflow-hidden relative">
+    <header class="p-8 pt-4 flex justify-between items-end relative z-10 pointer-events-none">
+        <div class="pointer-events-auto">
+            <div class="flex items-center gap-3 mb-1">
+                <span class="h-[1px] w-8 bg-primary"></span>
+                <span class="text-primary font-bold text-[10px] tracking-[0.3em] uppercase">Intelligence Engine</span>
+            </div>
+            <h1 class="font-headline text-4xl font-extrabold tracking-tight text-on-background">Predictive Pulse</h1>
+            <p class="text-on-surface-variant font-medium mt-1">Real-time Demand Forecasting &amp; Network Dynamics</p>
+        </div>
+        <div class="pointer-events-auto flex gap-4">
+            <div class="glass-panel px-6 py-3 rounded-xl border border-outline-variant/15 flex items-center gap-4">
+                <div class="flex flex-col">
+                    <span class="text-[10px] uppercase tracking-tighter text-on-surface-variant opacity-60">Network
+                        Status</span>
+                    <span class="text-sm font-bold text-primary flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+                        {{ network_status }}
+                    </span>
+                </div>
+            </div>
+        </div>
+    </header>
+    <div class="flex-grow flex p-6 gap-6 overflow-hidden">
+        <div
+            class="flex-grow relative bg-surface-container-lowest rounded-2xl border border-outline-variant/10 overflow-hidden group shadow-2xl">
+            <div class="absolute inset-0 grayscale contrast-125 opacity-40 bg-surface-dim">
+                <!-- Simulated Map -->
+            </div>
+            <div class="absolute inset-0 pointer-events-none">
+                <div class="heat-map-overlay absolute top-1/4 left-1/3 w-96 h-96 rounded-full blur-3xl"></div>
+                <div class="heat-map-overlay absolute bottom-1/3 right-1/4 w-80 h-80 rounded-full blur-3xl opacity-60">
+                </div>
+                <div class="heat-map-overlay absolute top-1/2 right-1/3 w-64 h-64 rounded-full blur-3xl opacity-40">
+                </div>
+            </div>
+            <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center">
+                <div class="relative flex items-center justify-center">
+                    <div class="absolute w-12 h-12 bg-primary/20 rounded-full animate-ping"></div>
+                    <div
+                        class="relative w-4 h-4 bg-primary rounded-full border-2 border-background shadow-[0_0_15px_rgba(242,202,80,0.8)]">
+                    </div>
+                </div>
+                <div class="mt-2 glass-panel px-3 py-1.5 rounded-lg border border-primary/20 scale-90">
+                    <span class="text-[10px] font-bold text-primary">Bandra West: 2.4x Surge</span>
+                </div>
+            </div>
+            <div
+                class="absolute bottom-6 left-6 glass-panel p-4 rounded-xl border border-outline-variant/20 flex flex-col gap-3 min-w-[180px]">
+                <p class="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Density Legend</p>
+                <div class="space-y-2">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs opacity-60">High Surge</span>
+                        <div class="h-1.5 w-16 bg-gradient-to-r from-primary to-primary-container rounded-full"></div>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs opacity-60">Moderate</span>
+                        <div class="h-1.5 w-16 bg-primary/30 rounded-full"></div>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs opacity-60">Low Demand</span>
+                        <div class="h-1.5 w-16 bg-surface-container-highest rounded-full"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="w-96 flex flex-col gap-6 overflow-y-auto pr-2">
+            <section class="bg-surface-container rounded-2xl p-6 border border-outline-variant/10">
+                <div class="flex items-center justify-between mb-6">
+                    <h3 class="font-headline font-bold text-lg text-on-background">Predicted Surge</h3>
+                    <span
+                        class="text-[10px] px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 font-bold uppercase tracking-tighter">Next
+                        45m</span>
+                </div>
+                <div class="space-y-4">
+                    {% for zone in demand_zones %}
+                    <div onclick="dispatchAlert('{{ zone.id }}', '{{ zone.zone_name }}')"
+                        class="p-4 bg-surface-container-low rounded-xl border border-outline-variant/5 hover:border-primary/30 transition-all cursor-pointer group">
+                        <div class="flex justify-between items-start">
+                            <div>
+                                <p
+                                    class="text-sm font-bold text-on-background group-hover:text-primary transition-colors">
+                                    {{ zone.zone_name }}</p>
+                                <p class="text-xs text-on-surface-variant mt-1">{{ zone.reason }} at {{
+                                    zone.predicted_at_time }}</p>
+                            </div>
+                            <span class="text-2xl font-black text-primary">{{ zone.predicted_surge }}x</span>
+                        </div>
+                    </div>
+                    {% empty %}
+                    <p class="text-on-surface-variant text-sm text-center py-4">No predicted surge zones.</p>
+                    {% endfor %}
+                </div>
+            </section>
+
+            <section
+                class="bg-surface-container-high rounded-2xl p-6 border border-outline-variant/15 flex flex-col gap-6">
+                <div>
+                    <div class="flex items-center gap-2 mb-4">
+                        <span class="material-symbols-outlined text-primary text-sm">balance</span>
+                        <h3 class="font-headline font-bold text-sm uppercase tracking-widest text-on-surface-variant">
+                            Network Balance</h3>
+                    </div>
+                    <div class="space-y-5">
+                        <div>
+                            <div class="flex justify-between text-xs mb-2">
+                                <span class="opacity-60">Supply / Demand Ratio</span>
+                                {% if deficit_pct > 20 %}
+                                <span class="font-bold text-error">Critical Deficit (-{{ deficit_pct }}%)</span>
+                                {% else %}
+                                <span class="font-bold text-primary">Healthy (+{{ supply_ratio }}%)</span>
+                                {% endif %}
+                            </div>
+                            <div class="h-2 w-full bg-surface-container-highest rounded-full overflow-hidden flex">
+                                <div class="h-full bg-primary" style="width:{{ supply_ratio }}%"></div>
+                                <div class="h-full bg-error/40" style="width:{{ deficit_pct }}%"></div>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div class="p-3 bg-surface-container-lowest rounded-lg border border-outline-variant/10">
+                                <span class="text-[10px] text-on-surface-variant block mb-1">Active Drivers</span>
+                                <span class="text-xl font-headline font-extrabold text-on-background">{{ active_drivers
+                                    }}</span>
+                            </div>
+                            <div class="p-3 bg-surface-container-lowest rounded-lg border border-outline-variant/10">
+                                <span class="text-[10px] text-on-surface-variant block mb-1">Unmet Requests</span>
+                                <span
+                                    class="text-xl font-headline font-extrabold {% if pending_rides > 100 %}text-error{% else %}text-primary{% endif %}">{{
+                                    pending_rides }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <button onclick="dispatchAlert('{{ demand_zones.0.id }}', '{{ demand_zones.0.zone_name }}')"
+                    class="w-full py-4 bg-transparent border border-primary/20 hover:border-primary/50 text-primary text-xs font-bold uppercase tracking-widest rounded-xl transition-all">
+                    Dispatch Supply Alerts
+                </button>
+            </section>
+
+            <section class="bg-surface-container rounded-2xl p-6 border border-outline-variant/10">
+                <h3 class="font-headline font-bold text-sm uppercase tracking-widest text-on-surface-variant mb-4">
+                    Recent Dispatch Logs</h3>
+                <div class="space-y-3">
+                    {% for log in dispatch_logs %}
+                    <div class="text-[10px] p-3 rounded bg-surface-container-lowest border border-outline-variant/5">
+                        <div class="flex justify-between mb-1">
+                            <span class="font-bold text-primary">{{ log.zone_name }}</span>
+                            <span class="opacity-40">{{ log.created_at|date:"H:i" }}</span>
+                        </div>
+                        <p class="text-on-surface-variant line-clamp-1">{{ log.details }}</p>
+                    </div>
+                    {% empty %}
+                    <p class="text-xs text-on-surface-variant text-center opacity-40 py-2 italic font-label">No recent
+                        logs</p>
+                    {% endfor %}
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script>
+        function getCookie(name) {
+            var cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                var cookies = document.cookie.split(';');
+                for (var i = 0; i < cookies.length; i++) {
+                    var cookie = cookies[i].trim();
+                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+
+        function showToast(message, isError) {
+            // Remove any existing toast
+            var existing = document.getElementById('dispatch-toast');
+            if (existing) existing.remove();
+
+            var toast = document.createElement('div');
+            toast.id = 'dispatch-toast';
+            toast.className = 'fixed top-6 right-6 z-50 px-5 py-3 rounded-xl border text-sm font-bold shadow-2xl transition-all duration-300 ' +
+                (isError ? 'bg-error/10 text-error border-error/20' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20');
+            toast.style.backdropFilter = 'blur(12px)';
+            toast.textContent = (isError ? '✗ ' : '✓ ') + message;
+            document.body.appendChild(toast);
+            setTimeout(function () { toast.remove(); }, 4000);
+        }
+
+        function prependDispatchLog(zoneName, details) {
+            var container = document.querySelector('.space-y-3');
+            if (!container) return;
+
+            var now = new Date();
+            var timeStr = ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2);
+
+            var div = document.createElement('div');
+            div.className = 'text-[10px] p-3 rounded bg-surface-container-lowest border border-outline-variant/5';
+            div.innerHTML = '<div class="flex justify-between mb-1">' +
+                '<span class="font-bold text-primary">' + zoneName + '</span>' +
+                '<span class="opacity-40">' + timeStr + '</span>' +
+                '</div>' +
+                '<p class="text-on-surface-variant line-clamp-1">' + details + '</p>';
+
+            // Remove "No recent logs" placeholder if present
+            var placeholder = container.querySelector('.italic');
+            if (placeholder) placeholder.remove();
+
+            container.insertBefore(div, container.firstChild);
+
+            // Keep only last 10 logs
+            while (container.children.length > 10) {
+                container.lastChild.remove();
+            }
+        }
+
+        var trackedDriverIds = {};
+
+        async function dispatchAlert(zoneId, zoneName) {
+            if (!zoneId) {
+                showToast('Zone identifier missing.', true);
+                return;
+            }
+
+            try {
+                var response = await fetch('/dispatch-alert/', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': getCookie('csrftoken'),
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: 'zone_id=' + zoneId
+                });
+
+                var data = await response.json();
+                if (data.status === 'ok') {
+                    showToast(data.message, false);
+                    prependDispatchLog(zoneName, 'Manual dispatch alert triggered for ' + zoneName + '.');
+                } else {
+                    showToast(data.message || 'Failed to dispatch alert', true);
+                }
+            } catch (error) {
+                console.error('Dispatch error:', error);
+                showToast('Network error while dispatching alert.', true);
+            }
+        }
+
+        var socket = new WebSocket(
+            (window.location.protocol === 'https:' ? 'wss://' : 'ws://')
+            + window.location.host
+            + '/ws/admin/dashboard/'
+        );
+
+        socket.onopen = function (e) {
+            console.log('Heatmap WebSocket connected');
+        };
+
+        socket.onmessage = function (e) {
+            var data = JSON.parse(e.data);
+            if (data.type === 'driver_location_update') {
+                var driverId = data.driver_id;
+                if (!trackedDriverIds[driverId]) {
+                    trackedDriverIds[driverId] = true;
+                    updateActiveDriverCount(Object.keys(trackedDriverIds).length);
+                }
+            }
+        };
+
+        function updateActiveDriverCount(count) {
+            // Find the "Active Drivers" count element and update it
+            var driverElems = document.querySelectorAll('.font-headline.font-extrabold.text-on-background');
+            driverElems.forEach(function (el) {
+                var text = el.innerText.trim();
+                if (text && !isNaN(parseInt(text)) && el.closest('.p-3')) {
+                    var label = el.previousElementSibling;
+                    if (label && label.innerText.trim() === 'Active Drivers') {
+                        el.innerText = count;
+                    }
+                }
+            });
+        }
+
+        socket.onclose = function (e) {
+            console.error('Heatmap WebSocket closed unexpectedly');
+        };
+    </script>
+    {% endblock %}

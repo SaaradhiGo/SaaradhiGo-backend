@@ -1,0 +1,203 @@
+{% extends 'admin_pages/base.html' %}
+{% block title %}SaaradhiGo Executive Revenue Analytics{% endblock %}
+
+{% block extra_css %}
+.bg-gold-gradient {
+background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
+}
+.smoked-glass {
+background: rgba(57, 57, 57, 0.6);
+backdrop-filter: blur(20px);
+}
+::-webkit-scrollbar {
+width: 4px;
+}
+::-webkit-scrollbar-track {
+background: #131313;
+}
+::-webkit-scrollbar-thumb {
+background: #4d4635;
+}
+{% endblock %}
+
+{% block main_class %}min-h-screen overflow-y-auto{% endblock %}
+
+{% block content %}
+<div class="p-8 pb-12">
+    <header class="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div class="max-w-2xl">
+            <h1 class="text-4xl md:text-5xl font-headline font-extrabold text-on-surface tracking-tight mb-2">Aurelian
+                Onyx</h1>
+            <p class="text-primary font-label text-sm uppercase tracking-[0.3em] font-semibold mb-4">Executive Insights
+            </p>
+            <p class="text-on-surface-variant leading-relaxed max-w-xl">
+                Our current trajectory indicates a significant appreciation in high-tier bookings across urban centers.
+            </p>
+        </div>
+        <form method="GET"
+            class="flex flex-wrap items-center gap-4 bg-surface-container p-4 rounded-xl border border-outline-variant/10">
+            <div class="flex flex-col">
+                <label class="text-[10px] text-on-surface-variant uppercase font-bold mb-1 ml-1">Start Date</label>
+                <input type="date" name="start_date" value="{{ start_date }}"
+                    class="bg-surface-container-highest text-on-surface text-sm rounded-lg px-3 py-2 border border-outline-variant/20 focus:outline-none focus:border-primary">
+            </div>
+            <div class="flex flex-col">
+                <label class="text-[10px] text-on-surface-variant uppercase font-bold mb-1 ml-1">End Date</label>
+                <input type="date" name="end_date" value="{{ end_date }}"
+                    class="bg-surface-container-highest text-on-surface text-sm rounded-lg px-3 py-2 border border-outline-variant/20 focus:outline-none focus:border-primary">
+            </div>
+            <div class="flex items-end self-stretch pt-5">
+                <button type="submit"
+                    class="h-full px-6 bg-gold-gradient text-on-primary font-label text-xs rounded-lg font-bold shadow-lg shadow-primary/10 hover:scale-[1.02] active:scale-[0.98] transition-transform">
+                    Apply Filter
+                </button>
+            </div>
+            {% if start_date or end_date %}
+            <div class="flex items-end self-stretch pt-5">
+                <a href="{% url 'executive_revenue' %}"
+                    class="h-full px-6 bg-surface-container-highest text-on-surface-variant font-label text-xs rounded-lg flex items-center hover:bg-surface-bright transition-colors">
+                    Clear
+                </a>
+            </div>
+            {% endif %}
+        </form>
+    </header>
+    <section class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+        <div class="md:col-span-2 bg-surface-container p-8 rounded-2xl relative overflow-hidden group">
+            <div
+                class="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-full -mr-16 -mt-16 blur-3xl transition-all group-hover:bg-primary/10">
+            </div>
+            <div class="relative z-10 flex justify-between items-start mb-6">
+                <div>
+                    <p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">Gross Booking
+                        Value</p>
+                    <h3 class="text-4xl font-headline font-black text-on-surface">₹{{ gbv|floatformat:0 }}</h3>
+                </div>
+                <div class="bg-primary/10 px-3 py-1 rounded-full flex items-center gap-1 border border-primary/20">
+                    <span class="material-symbols-outlined text-sm text-primary"
+                        style="font-variation-settings: 'FILL' 1;">trending_up</span>
+                    <span class="text-primary font-bold text-xs">+18.4%</span>
+                </div>
+            </div>
+            <div class="h-24 flex items-end gap-1">
+                <div
+                    class="flex-1 bg-outline-variant/20 h-[30%] rounded-t-sm group-hover:bg-primary/20 transition-all duration-500">
+                </div>
+                <div
+                    class="flex-1 bg-outline-variant/20 h-[45%] rounded-t-sm group-hover:bg-primary/20 transition-all duration-500">
+                </div>
+                <div
+                    class="flex-1 bg-outline-variant/20 h-[60%] rounded-t-sm group-hover:bg-primary/20 transition-all duration-500">
+                </div>
+                <div
+                    class="flex-1 bg-outline-variant/20 h-[50%] rounded-t-sm group-hover:bg-primary/20 transition-all duration-500">
+                </div>
+                <div class="flex-1 bg-primary/40 h-[75%] rounded-t-sm"></div>
+                <div class="flex-1 bg-primary/60 h-[85%] rounded-t-sm"></div>
+                <div class="flex-1 bg-gold-gradient h-[100%] rounded-t-sm shadow-[0_0_15px_rgba(242,202,80,0.3)]"></div>
+            </div>
+        </div>
+        <div class="bg-surface-container p-8 rounded-2xl border border-outline-variant/5">
+            <p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">Platform Revenue</p>
+            <h3 class="text-3xl font-headline font-bold text-on-surface mb-4">₹{{ platform_revenue|floatformat:2 }}</h3>
+            <div class="space-y-4">
+                <div class="flex justify-between items-center text-sm">
+                    <span class="text-on-surface-variant">Take Rate</span>
+                    <span class="text-primary font-bold">{{ take_rate }}%</span>
+                </div>
+                <div class="w-full bg-surface-container-highest h-1 rounded-full overflow-hidden">
+                    <div class="bg-gold-gradient h-full w-[20%]"></div>
+                </div>
+            </div>
+        </div>
+        <div class="bg-surface-container p-8 rounded-2xl border border-outline-variant/5">
+            <p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">Fleet Performance</p>
+            <h3 class="text-3xl font-headline font-bold text-on-surface mb-2">{{ fleet_utilization }}%</h3>
+            <p class="text-xs text-on-surface-variant mb-6">Average Vehicle Utilization • {{ total_rides }} Rides</p>
+            <div class="flex -space-x-3 overflow-hidden">
+                <div
+                    class="h-8 w-8 rounded-full bg-surface-container-highest border-2 border-surface-container flex items-center justify-center text-[10px] font-bold text-primary">
+                    +120</div>
+            </div>
+        </div>
+    </section>
+    <section class="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+        <div class="lg:col-span-2 bg-surface-container p-8 rounded-2xl">
+            <div class="flex justify-between items-center mb-10">
+                <h2 class="font-headline text-xl font-bold">Revenue Split by Class</h2>
+                <span class="material-symbols-outlined text-on-surface-variant">more_vert</span>
+            </div>
+            <div class="flex flex-col md:flex-row gap-12 items-center">
+                <div class="relative w-48 h-48 flex items-center justify-center">
+                    <svg class="w-full h-full transform -rotate-90">
+                        <circle class="text-surface-container-highest" cx="96" cy="96" fill="transparent" r="80"
+                            stroke="currentColor" stroke-width="20"></circle>
+                        <circle class="text-primary-container" cx="96" cy="96" fill="transparent" r="80"
+                            stroke="currentColor" stroke-dasharray="502" stroke-dashoffset="150" stroke-width="20">
+                        </circle>
+                        <circle class="text-primary" cx="96" cy="96" fill="transparent" r="80" stroke="currentColor"
+                            stroke-dasharray="502" stroke-dashoffset="350" stroke-width="20"></circle>
+                        <circle class="text-on-surface-variant" cx="96" cy="96" fill="transparent" r="80"
+                            stroke="currentColor" stroke-dasharray="502" stroke-dashoffset="450" stroke-width="20">
+                        </circle>
+                    </svg>
+                    <div class="absolute text-center">
+                        <span class="block text-2xl font-black font-headline">₹{{ platform_revenue|floatformat:0
+                            }}</span>
+                        <span class="text-[10px] text-on-surface-variant uppercase tracking-tighter">Total Net</span>
+                    </div>
+                </div>
+                <div class="flex-1 w-full space-y-6">
+                    {% for item in class_breakdown %}
+                    <div class="group">
+                        <div class="flex justify-between items-end mb-2">
+                            <div class="flex items-center gap-3">
+                                <div class="w-3 h-3 rounded-full bg-primary shadow-[0_0_8px_rgba(242,202,80,0.5)]">
+                                </div>
+                                <span class="font-headline font-bold">{{ item.name }}</span>
+                            </div>
+                            <span class="text-sm font-label font-bold">₹{{ item.revenue|floatformat:2 }} ({{ item.pct
+                                }}%)</span>
+                        </div>
+                        <div class="w-full h-1 bg-surface-container-highest rounded-full overflow-hidden">
+                            <div class="h-full bg-primary group-hover:brightness-110 transition-all"
+                                style="width:{{ item.pct }}%"></div>
+                        </div>
+                    </div>
+                    {% empty %}
+                    <p class="text-on-surface-variant text-sm">No completed rides yet.</p>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        <div class="bg-surface-container-low p-8 rounded-2xl">
+            <h2 class="font-headline text-xl font-bold mb-8">Growth Trajectory</h2>
+            <div class="space-y-8">
+                <div class="relative pl-8 border-l border-outline-variant/30">
+                    <div class="absolute -left-[5px] top-0 w-[9px] h-[9px] rounded-full bg-primary"></div>
+                    <p class="text-[10px] text-on-surface-variant uppercase tracking-widest font-bold mb-1">June 2026
+                    </p>
+                    <h4 class="font-headline font-bold text-on-surface">+22% MoM Revenue</h4>
+                    <p class="text-xs text-on-surface-variant mt-1 leading-relaxed">Scaling efforts in Tier-1 cities led
+                        to unprecedented demand in the SUV segment.</p>
+                </div>
+                <div class="relative pl-8 border-l border-outline-variant/30">
+                    <div class="absolute -left-[5px] top-0 w-[9px] h-[9px] rounded-full bg-primary-container"></div>
+                    <p class="text-[10px] text-on-surface-variant uppercase tracking-widest font-bold mb-1">May 2026</p>
+                    <h4 class="font-headline font-bold text-on-surface">+14% MoM Revenue</h4>
+                    <p class="text-xs text-on-surface-variant mt-1 leading-relaxed">Market stabilization following
+                        festive season surge; retention rates improved by 5%.</p>
+                </div>
+                <div class="relative pl-8 border-l border-outline-variant/30">
+                    <div class="absolute -left-[5px] top-0 w-[9px] h-[9px] rounded-full bg-outline"></div>
+                    <p class="text-[10px] text-on-surface-variant uppercase tracking-widest font-bold mb-1">April 2026
+                    </p>
+                    <h4 class="font-headline font-bold text-on-surface">+9% MoM Revenue</h4>
+                    <p class="text-xs text-on-surface-variant mt-1 leading-relaxed">Introduction of the 'Elite
+                        Concierge' feature for corporate accounts launched successfully.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+{% endblock %}

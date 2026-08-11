@@ -1,0 +1,252 @@
+{% extends 'admin_pages/base.html' %}
+{% block title %}Driver Onboarding & KYC - Gilded Admin{% endblock %}
+
+{% block extra_css %}
+.glass-panel {
+background: rgba(19, 19, 19, 0.6);
+backdrop-filter: blur(20px);
+}
+.gold-gradient {
+background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
+}
+{% endblock %}
+
+{% block main_class %}overflow-y-auto{% endblock %}
+
+{% block content %}
+<div class="p-8 space-y-8 max-w-7xl mx-auto w-full">
+    <!-- Header & Stats Section -->
+    <div class="flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div>
+            <p class="font-label text-sm text-on-surface-variant mb-1">Driver Lifecycle Management</p>
+            <h1 class="font-headline text-4xl font-extrabold tracking-tight text-on-surface">KYC &amp; Onboarding</h1>
+        </div>
+        <div class="flex gap-4">
+            <div class="bg-surface-container-low p-4 rounded-lg flex flex-col items-start min-w-[140px]">
+                <span class="text-xs font-label text-on-surface-variant uppercase">Pending Reviews</span>
+                <span class="text-2xl font-headline font-bold text-primary">{{ pending_reviews_count }}</span>
+            </div>
+            <div class="bg-surface-container-low p-4 rounded-lg flex flex-col items-start min-w-[140px]">
+                <span class="text-xs font-label text-on-surface-variant uppercase">Approved Total</span>
+                <span class="text-2xl font-headline font-bold text-on-surface">{{ approved_count }}</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <!-- Driver Task List -->
+        <div class="lg:col-span-4 space-y-4">
+            <h3 class="font-headline text-lg font-bold flex items-center gap-2">
+                <span class="material-symbols-outlined text-primary">list_alt</span>
+                Review Queue
+            </h3>
+
+            <!-- Filter Tabs -->
+            <div class="flex flex-wrap gap-2 border-b border-outline-variant/10 pb-2 text-xs">
+                <a href="?status=ALL"
+                    class="px-2.5 py-1 rounded-full {% if status_filter == 'ALL' %}bg-primary text-on-primary font-bold{% else %}bg-surface-container text-on-surface-variant hover:text-on-surface{% endif %}">All</a>
+                <a href="?status=PENDING"
+                    class="px-2.5 py-1 rounded-full {% if status_filter == 'PENDING' %}bg-primary text-on-primary font-bold{% else %}bg-surface-container text-on-surface-variant hover:text-on-surface{% endif %}">Pending</a>
+                <a href="?status=APPROVED"
+                    class="px-2.5 py-1 rounded-full {% if status_filter == 'APPROVED' %}bg-primary text-on-primary font-bold{% else %}bg-surface-container text-on-surface-variant hover:text-on-surface{% endif %}">Approved</a>
+                <a href="?status=REJECTED"
+                    class="px-2.5 py-1 rounded-full {% if status_filter == 'REJECTED' %}bg-primary text-on-primary font-bold{% else %}bg-surface-container text-on-surface-variant hover:text-on-surface{% endif %}">Rejected</a>
+            </div>
+
+            <div class="space-y-3">
+                {% for d in drivers %}
+                <a href="?selected_driver={{ d.id }}&status={{ status_filter }}&page={{ page_obj.number }}"
+                    class="block">
+                    <div
+                        class="p-4 rounded-xl transition-all hover:bg-surface-container-high {% if selected_driver and selected_driver.id == d.id %}bg-surface-container-high border-l-4 border-primary shadow-lg ring-1 ring-primary/10{% else %}bg-surface-container{% endif %}">
+                        <div class="flex justify-between items-start mb-2">
+                            <div>
+                                <p class="font-bold text-on-surface">{{ d.user_id.full_name }}</p>
+                                <p class="text-xs text-on-surface-variant">ID: {{ d.id }}</p>
+                            </div>
+                            <span class="px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1
+                                {% if d.doc_status == 'pending' %}bg-primary/10 text-primary
+                                {% elif d.doc_status == 'approved' %}bg-emerald-400/10 text-emerald-400
+                                {% else %}bg-rose-400/10 text-rose-400{% endif %}">
+                                <span class="w-1.5 h-1.5 rounded-full 
+                                    {% if d.doc_status == 'pending' %}bg-primary
+                                    {% elif d.doc_status == 'approved' %}bg-emerald-400
+                                    {% else %}bg-rose-400{% endif %}"></span>
+                                {{ d.doc_status }}
+                            </span>
+                        </div>
+                        <div class="flex flex-wrap gap-1.5 text-[9px] text-on-surface-variant font-medium">
+                            {% if d.license_doc %}
+                            <span
+                                class="bg-surface-container-low px-1.5 py-0.5 rounded {% if d.license_doc %}text-emerald-400{% else %}text-rose-400{% endif %}">License</span>
+                            {% else %}
+                            <span class="italic text-on-surface-variant/50">No documents</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </a>
+                {% empty %}
+                <div class="text-center p-8 bg-surface-container rounded-xl text-on-surface-variant text-sm">
+                    No drivers in this queue.
+                </div>
+                {% endfor %}
+            </div>
+
+            <!-- Pagination Controls -->
+            {% if page_obj.has_other_pages %}
+            <div class="flex items-center justify-between pt-4 border-t border-outline-variant/10 text-xs">
+                <div>
+                    {% if page_obj.has_previous %}
+                    <a href="?status={{ status_filter }}&selected_driver={{ selected_driver.id }}&page={{ page_obj.previous_page_number }}"
+                        class="px-3 py-1.5 bg-surface-container hover:bg-surface-container-high rounded text-on-surface transition-colors">Previous</a>
+                    {% endif %}
+                </div>
+                <span class="text-on-surface-variant">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+                <div>
+                    {% if page_obj.has_next %}
+                    <a href="?status={{ status_filter }}&selected_driver={{ selected_driver.id }}&page={{ page_obj.next_page_number }}"
+                        class="px-3 py-1.5 bg-surface-container hover:bg-surface-container-high rounded text-on-surface transition-colors">Next</a>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Detailed View (Right/Detail Column) -->
+        <div class="lg:col-span-8 space-y-6">
+            {% if selected_driver %}
+            <div class="bg-surface-container-low rounded-2xl overflow-hidden border border-outline-variant/5">
+                <!-- Detail Header -->
+                <div class="p-8 border-b border-outline-variant/10 flex flex-wrap items-start justify-between gap-6">
+                    <div class="flex items-center gap-6">
+                        <div class="relative">
+                            <div
+                                class="w-20 h-20 rounded-xl border-2 border-primary/20 flex items-center justify-center bg-surface-container overflow-hidden">
+                                {% if selected_driver.user_id.avatar %}
+                                <img src="{{ selected_driver.user_id.avatar.url }}" alt="{{ selected_driver.user_id.full_name }}" class="w-full h-full object-cover">
+                                {% else %}
+                                <span class="material-symbols-outlined text-4xl text-on-surface-variant">person</span>
+                                {% endif %}
+                            </div>
+                            {% if selected_driver.doc_status == 'approved' %}
+                            <span class="absolute -bottom-2 -right-2 bg-emerald-500 p-1.5 rounded-full text-white">
+                                <span class="material-symbols-outlined text-sm leading-none"
+                                    style="font-variation-settings: 'FILL' 1;">verified</span>
+                            </span>
+                            {% endif %}
+                        </div>
+                        <div>
+                            <h2 class="font-headline text-2xl font-extrabold text-on-surface">{{ selected_driver.name }}
+                            </h2>
+                            <div class="flex items-center gap-4 mt-1 text-sm text-on-surface-variant">
+                                <span class="flex items-center gap-1">
+                                    <span class="material-symbols-outlined text-xs">info</span>
+                                    Onboarding: {{ selected_driver.doc_status }}
+                                </span>
+                                <span class="flex items-center gap-1">
+                                    <span class="material-symbols-outlined text-xs">star</span>
+                                    Rating: {{ selected_driver.ratings }}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+
+                    {% if selected_driver.doc_status != 'approved' %}
+                    <div class="flex gap-3">
+                        <form method="POST">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="reject">
+                            <button type="submit"
+                                class="px-6 py-2.5 rounded text-sm font-bold border border-outline-variant/30 text-on-surface hover:bg-surface-container transition-all">Reject</button>
+                        </form>
+                        <form method="POST">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="approve">
+                            <button type="submit"
+                                class="gold-gradient px-8 py-2.5 rounded text-sm font-bold  border border-outline-variant/30 hover:opacity-90 transition-all shadow-lg shadow-primary/10">Approve
+                                Driver</button>
+                        </form>
+                    </div>
+                    {% else %}
+                    <div
+                        class="text-sm font-semibold uppercase tracking-wider px-3 py-1.5 rounded-full border
+                        {% if selected_driver.doc_status == 'approved' %}text-emerald-400 border-emerald-400/20 bg-emerald-400/5{% else %}text-rose-400 border-rose-400/20 bg-rose-400/5{% endif %}">
+                        {{ selected_driver.doc_status }}
+                    </div>
+                    {% endif %}
+                </div>
+
+                <!-- Document Grid -->
+                <div class="p-8 space-y-8">
+                    <h4 class="font-label text-xs font-bold uppercase tracking-widest text-on-surface-variant">Uploaded
+                        Documents</h4>
+                    {% if selected_driver.license_doc %}
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="bg-surface-container rounded-xl p-4 space-y-4 border border-outline-variant/5">
+                            <div class="flex justify-between items-center">
+                                <div class="flex items-center gap-3">
+                                        <span class="material-symbols-outlined text-primary">
+                                            badge
+                                        </span>
+                                        <span class="font-bold text-sm">{{ selected_driver.license_doc }}</span>
+                                    </div>
+                                    <span class="text-xs px-2.5 py-0.5 rounded-full font-semibold border
+                                        {% if selected_driver.doc_status == 'approved' %}border-emerald-500/20 bg-emerald-500/10 text-emerald-400
+                                        {% elif selected_driver.doc_status == 'rejected' %}border-rose-500/20 bg-rose-500/10 text-rose-400
+                                        {% else %}border-primary/20 bg-primary/10 text-primary{% endif %}">
+                                        {{ selected_driver.doc_status }}
+                                    </span>
+                            </div>
+
+                            <!-- Premium document visual representation -->
+                            <div
+                                class="aspect-[16/10] bg-surface-container-highest rounded-lg flex flex-col items-center justify-center overflow-hidden border border-outline-variant/20 relative group p-4">
+                                {% if selected_driver.license_doc %}
+                                    <div class="flex flex-col items-center justify-center p-6">
+                                        <span class="material-symbols-outlined text-4xl text-on-surface-variant/40 mb-2">badge</span>
+                                        <a href="{{ selected_driver.license_doc.url }}" class="text-sm text-primary underline" target="_blank" rel="noopener">Open / Download document</a>
+                                    </div>
+                                {% else %}
+                                    <span class="material-symbols-outlined text-4xl text-on-surface-variant/40 mb-2">
+                                        badge
+                                    </span>
+                                    <span class="text-xs text-on-surface-variant/70">Document Image File</span>
+                                {% endif %}
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-4 text-[11px] border-t border-outline-variant/5 pt-3">
+                                <div>
+                                    <p class="text-on-surface-variant">Uploaded At</p>
+                                    <p class="font-semibold text-on-surface">{{ selected_driver.uploaded_timestamp|date:"d M Y H:i" }}</p>
+                                </div>
+                                <!-- <div>
+                                    <p class="text-on-surface-variant">Notes</p>
+                                    <p class="font-semibold text-on-surface">{% if doc.notes %}{{ doc.notes }}{% else
+                                        %}<span class="text-on-surface-variant/40 italic">None</span>{% endif %}</p>
+                                </div> -->
+                            </div>
+                        </div>
+                        {% else %}
+                        <div
+                            class="col-span-2 text-center p-12 bg-surface-container rounded-xl text-on-surface-variant text-sm italic">
+                            No documents uploaded for this driver.
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <div
+                class="bg-surface-container-low rounded-2xl p-16 text-center text-on-surface-variant border border-outline-variant/5">
+                <span class="material-symbols-outlined text-6xl text-primary/30 mb-4">person</span>
+                <p class="text-lg font-bold">Select a driver from the review queue to inspect documents.</p>
+            </div>
+            {% endif %}
+
+
+        </div>
+    </div>
+</div>
+{% endblock %}

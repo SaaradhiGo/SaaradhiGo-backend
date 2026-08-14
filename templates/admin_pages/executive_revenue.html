@@ -24,6 +24,7 @@ background: #4d4635;
 
 {% block content %}
 <div class="p-8 pb-12">
+    {% with take_rate=take_rate|default:"15" %}
     <header class="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-6">
         <div class="max-w-2xl">
             <h1 class="text-4xl md:text-5xl font-headline font-extrabold text-on-surface tracking-tight mb-2">Aurelian
@@ -71,53 +72,51 @@ background: #4d4635;
                 <div>
                     <p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">Gross Booking
                         Value</p>
-                    <h3 class="text-4xl font-headline font-black text-on-surface">₹{{ gbv|floatformat:0 }}</h3>
+                    <h3 class="text-4xl font-headline font-black text-on-surface">₹{{ gbv|default:0|floatformat:0 }}</h3>
                 </div>
                 <div class="bg-primary/10 px-3 py-1 rounded-full flex items-center gap-1 border border-primary/20">
                     <span class="material-symbols-outlined text-sm text-primary"
                         style="font-variation-settings: 'FILL' 1;">trending_up</span>
-                    <span class="text-primary font-bold text-xs">+18.4%</span>
+                    <span class="text-primary font-bold text-xs">
+                        {% if revenue_growth >= 0 %}+{% endif %}{{ revenue_growth }}%
+                    </span>
+                    
                 </div>
             </div>
             <div class="h-24 flex items-end gap-1">
+                {% for item in monthly_revenue %}
                 <div
-                    class="flex-1 bg-outline-variant/20 h-[30%] rounded-t-sm group-hover:bg-primary/20 transition-all duration-500">
+                    class="flex-1 bg-primary/60 rounded-t-sm hover:bg-primary transition-all duration-500"
+                    style="height: {{ item.height }}%;">
                 </div>
-                <div
-                    class="flex-1 bg-outline-variant/20 h-[45%] rounded-t-sm group-hover:bg-primary/20 transition-all duration-500">
+                {% empty %}
+                <div class="w-full text-center text-xs text-on-surface-variant">
+                    No revenue data
                 </div>
-                <div
-                    class="flex-1 bg-outline-variant/20 h-[60%] rounded-t-sm group-hover:bg-primary/20 transition-all duration-500">
-                </div>
-                <div
-                    class="flex-1 bg-outline-variant/20 h-[50%] rounded-t-sm group-hover:bg-primary/20 transition-all duration-500">
-                </div>
-                <div class="flex-1 bg-primary/40 h-[75%] rounded-t-sm"></div>
-                <div class="flex-1 bg-primary/60 h-[85%] rounded-t-sm"></div>
-                <div class="flex-1 bg-gold-gradient h-[100%] rounded-t-sm shadow-[0_0_15px_rgba(242,202,80,0.3)]"></div>
+                {% endfor %}
             </div>
         </div>
         <div class="bg-surface-container p-8 rounded-2xl border border-outline-variant/5">
             <p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">Platform Revenue</p>
-            <h3 class="text-3xl font-headline font-bold text-on-surface mb-4">₹{{ platform_revenue|floatformat:2 }}</h3>
+            <h3 class="text-3xl font-headline font-bold text-on-surface mb-4">₹{{ platform_revenue|default:0|floatformat:2 }}</h3>
             <div class="space-y-4">
                 <div class="flex justify-between items-center text-sm">
                     <span class="text-on-surface-variant">Take Rate</span>
                     <span class="text-primary font-bold">{{ take_rate }}%</span>
                 </div>
                 <div class="w-full bg-surface-container-highest h-1 rounded-full overflow-hidden">
-                    <div class="bg-gold-gradient h-full w-[20%]"></div>
+                    <div class="bg-gold-gradient h-full" style="width:{{ take_rate }}%"></div>
                 </div>
             </div>
         </div>
         <div class="bg-surface-container p-8 rounded-2xl border border-outline-variant/5">
             <p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">Fleet Performance</p>
-            <h3 class="text-3xl font-headline font-bold text-on-surface mb-2">{{ fleet_utilization }}%</h3>
-            <p class="text-xs text-on-surface-variant mb-6">Average Vehicle Utilization • {{ total_rides }} Rides</p>
+            <h3 class="text-3xl font-headline font-bold text-on-surface mb-2">{{ fleet_utilization|default:0 }}%</h3>
+            <p class="text-xs text-on-surface-variant mb-6">Average Vehicle Utilization • {{ total_rides|default:0 }} Rides</p>
             <div class="flex -space-x-3 overflow-hidden">
                 <div
                     class="h-8 w-8 rounded-full bg-surface-container-highest border-2 border-surface-container flex items-center justify-center text-[10px] font-bold text-primary">
-                    +120</div>
+                    {{ total_drivers }}</div>
             </div>
         </div>
     </section>
@@ -142,8 +141,7 @@ background: #4d4635;
                         </circle>
                     </svg>
                     <div class="absolute text-center">
-                        <span class="block text-2xl font-black font-headline">₹{{ platform_revenue|floatformat:0
-                            }}</span>
+                        <span class="block text-2xl font-black font-headline">₹{{ platform_revenue|default:0|floatformat:0 }}</span>
                         <span class="text-[10px] text-on-surface-variant uppercase tracking-tighter">Total Net</span>
                     </div>
                 </div>
@@ -156,8 +154,7 @@ background: #4d4635;
                                 </div>
                                 <span class="font-headline font-bold">{{ item.name }}</span>
                             </div>
-                            <span class="text-sm font-label font-bold">₹{{ item.revenue|floatformat:2 }} ({{ item.pct
-                                }}%)</span>
+                            <span class="text-sm font-label font-bold">₹{{ item.revenue|default:0|floatformat:2 }} ({{ item.pct|default:0 }}%)</span>
                         </div>
                         <div class="w-full h-1 bg-surface-container-highest rounded-full overflow-hidden">
                             <div class="h-full bg-primary group-hover:brightness-110 transition-all"
@@ -173,31 +170,32 @@ background: #4d4635;
         <div class="bg-surface-container-low p-8 rounded-2xl">
             <h2 class="font-headline text-xl font-bold mb-8">Growth Trajectory</h2>
             <div class="space-y-8">
+                {% for item in growth_trajectory %}
                 <div class="relative pl-8 border-l border-outline-variant/30">
                     <div class="absolute -left-[5px] top-0 w-[9px] h-[9px] rounded-full bg-primary"></div>
-                    <p class="text-[10px] text-on-surface-variant uppercase tracking-widest font-bold mb-1">June 2026
+                    <p class="text-[10px] text-on-surface-variant uppercase tracking-widest font-bold mb-1">
+                        {{ item.month }}
                     </p>
-                    <h4 class="font-headline font-bold text-on-surface">+22% MoM Revenue</h4>
-                    <p class="text-xs text-on-surface-variant mt-1 leading-relaxed">Scaling efforts in Tier-1 cities led
-                        to unprecedented demand in the SUV segment.</p>
-                </div>
-                <div class="relative pl-8 border-l border-outline-variant/30">
-                    <div class="absolute -left-[5px] top-0 w-[9px] h-[9px] rounded-full bg-primary-container"></div>
-                    <p class="text-[10px] text-on-surface-variant uppercase tracking-widest font-bold mb-1">May 2026</p>
-                    <h4 class="font-headline font-bold text-on-surface">+14% MoM Revenue</h4>
-                    <p class="text-xs text-on-surface-variant mt-1 leading-relaxed">Market stabilization following
-                        festive season surge; retention rates improved by 5%.</p>
-                </div>
-                <div class="relative pl-8 border-l border-outline-variant/30">
-                    <div class="absolute -left-[5px] top-0 w-[9px] h-[9px] rounded-full bg-outline"></div>
-                    <p class="text-[10px] text-on-surface-variant uppercase tracking-widest font-bold mb-1">April 2026
+                    <h4 class="font-headline font-bold text-on-surface">
+                        {% if item.growth >= 0 %}
+                            +{{ item.growth }}% MoM Revenue
+                        {% else %}
+                            {{ item.growth }}% MoM Revenue
+                        {% endif %}
+                    </h4>
+                    <p class="text-xs text-on-surface-variant mt-1 leading-relaxed">
+                        Revenue: ₹{{ item.revenue|floatformat:2 }}
+                        &nbsp; • &nbsp;
+                        Rides: {{ item.rides }}
                     </p>
-                    <h4 class="font-headline font-bold text-on-surface">+9% MoM Revenue</h4>
-                    <p class="text-xs text-on-surface-variant mt-1 leading-relaxed">Introduction of the 'Elite
-                        Concierge' feature for corporate accounts launched successfully.</p>
                 </div>
+                {% empty %}
+                <p class="text-sm text-on-surface-variant">No monthly revenue data available.</p>
+                {% endfor %}
             </div>
         </div>
     </section>
 </div>
+{% endwith %}
 {% endblock %}
+

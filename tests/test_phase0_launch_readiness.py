@@ -392,6 +392,44 @@ def test_create_notification_respects_marketing_optout(auth_client_rider):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.django_db
+def test_executive_revenue_view_uses_completed_trip_data(client):
+    from decimal import Decimal
+    from django.contrib.auth import get_user_model
+    from servers.driver.models import VehicleType
+    from servers.ride.models import Trip, TripStatus
+
+    User = get_user_model()
+    admin_user = User.objects.create_user(
+        phone_number='+917000000001',
+        role='admin',
+        is_staff=True,
+        is_superuser=True,
+    )
+    client.force_login(admin_user)
+
+    status, _ = TripStatus.objects.get_or_create(status_code='completed')
+    vehicle_type = VehicleType.objects.create(type='sedan')
+    Trip.objects.create(
+        user_id=User.objects.create_user(phone_number='+917000000002', role='rider'),
+        driver_id=None,
+        requested_vehicle_type=vehicle_type,
+        status_id=status,
+        pickup_lat=Decimal('17.4'),
+        pickup_long=Decimal('78.4'),
+        destination_lat=Decimal('17.45'),
+        destination_long=Decimal('78.36'),
+        estimated_fare=Decimal('500.00'),
+        final_fare=Decimal('420.00'),
+        completed_at=timezone.now(),
+    )
+
+    resp = client.get('/executive_revenue/')
+    assert resp.status_code == 200, resp.content
+    assert resp.context['gbv'] == Decimal('420.00')
+    assert any(item['name'] == 'sedan' for item in resp.context['class_breakdown'])
+
+
+@pytest.mark.django_db
 def test_admin_dashboard_returns_expected_shape(auth_client_admin):
     client, _ = auth_client_admin
     resp = client.get('/api/v1/ride/admin/dashboard/')

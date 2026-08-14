@@ -1,3 +1,5 @@
+from datetime import datetime, time, timedelta
+from decimal import Decimal
 from functools import wraps
 from django.utils import timezone
 from django.contrib.auth import authenticate, login as auth_login, logout as auth_logout
@@ -7,7 +9,7 @@ from django.shortcuts import redirect, render
 from servers.driver.models import Driver,WithdrawalRequest
 from servers.support.models import SupportTicket
 from django.core.paginator import Paginator
-from servers.ride.models import FarePricing
+from servers.ride.models import FarePricing, Trip
 from django.db import models
 
 def admin_required(view_func):
@@ -194,9 +196,232 @@ def payment_dashboard(request: HttpRequest) -> HttpResponse:
 
 @admin_required
 def executive_revenue(request: HttpRequest) -> HttpResponse:
-    return render(request, "admin_pages/executive_revenue.html")
+    tz = timezone.get_current_timezone()
+    start_date = (request.GET.get("start_date") or "").strip()
+    end_date = (request.GET.get("end_date") or "").strip()
 
+    def parse_date(value: str):
+        if not value:
+            return None
+        try:
+            return datetime.strptime(value, "%Y-%m-%d").date()
+        except ValueError:
+            return None
 
+    start_day = parse_date(start_date)
+    end_day = parse_date(end_date)
+    # ---------------------------------------------------------
+    # 1. BASE QUERY - COMPLETED TRIPS
+    # ---------------------------------------------------------
+
+    trip_qs = Trip.objects.filter(status_id__status_code="completed")
+    if start_day:
+        start_dt = timezone.make_aware(datetime.combine(start_day, time.min), tz)
+        trip_qs = trip_qs.filter(completed_at__gte=start_dt)
+    if end_day:
+        end_dt = timezone.make_aware(datetime.combine(end_day + timedelta(days=1), time.min), tz)
+        trip_qs = trip_qs.filter(completed_at__lt=end_dt)
+
+    completed_trips = trip_qs.select_related("requested_vehicle_type", "vehicle_id__vehicle_type_id")
+    # ---------------------------------------------------------
+    # 2. TOTAL RIDES
+    # ---------------------------------------------------------
+
+    total_rides = completed_trips.count()
+    # ---------------------------------------------------------
+    # 3. GROSS BOOKING VALUE
+    # ---------------------------------------------------------
+
+    gbv = completed_trips.aggregate(total=models.Sum("final_fare"))["total"] or Decimal("0.00")
+    gbv = Decimal(str(gbv)) if not isinstance(gbv, Decimal) else gbv
+    # ---------------------------------------------------------
+    # 4. PLATFORM REVENUE
+    # ---------------------------------------------------------
+    platform_revenue = gbv * Decimal("0.15")
+    take_rate = 15.0
+    # ---------------------------------------------------------
+    # 5. TOTAL / UTILIZED DRIVERS
+    # ---------------------------------------------------------
+
+    total_drivers = Driver.objects.count()
+    utilized_drivers = (
+        completed_trips.exclude(driver_id__isnull=True)
+        .values_list("driver_id", flat=True)
+        .distinct()
+        .count() if total_rides else 0
+    )
+    fleet_utilization = round((utilized_drivers / total_drivers * 100) if total_drivers else 0, 1)
+    # ---------------------------------------------------------
+    # 6. REVENUE BY VEHICLE CLASS
+    # ----------------------
+    bucketed = {}
+    for trip in completed_trips:
+        vehicle_type = None
+        if trip.vehicle_id and trip.vehicle_id.vehicle_type_id:
+            vehicle_type = trip.vehicle_id.vehicle_type_id
+        elif trip.requested_vehicle_type:
+            vehicle_type = trip.requested_vehicle_type
+
+        if not vehicle_type:
+            continue
+
+        name = getattr(vehicle_type, "type", None) or "Unknown"
+        revenue = Decimal(str(trip.final_fare or Decimal("0.00")))
+        bucketed[name] = bucketed.get(name, Decimal("0.00")) + revenue
+
+    aggregated_breakdown = []
+    for name, revenue in sorted(bucketed.items(), key=lambda item: item[1], reverse=True):
+        pct = round((revenue / gbv * 100) if gbv else 0, 1)
+        aggregated_breakdown.append({
+            "name": name,
+            "revenue": revenue,
+            "pct": pct,
+        })
+
+      # ---------------------------------------------------------
+    # 7. MONTHLY REVENUE
+    # ---------------------------------------------------------
+
+    monthly_data = {}
+
+    for trip in completed_trips:
+
+        if not trip.completed_at:
+            continue
+
+        month_key = trip.completed_at.strftime("%Y-%m")
+        month_name = trip.completed_at.strftime("%b %Y")
+
+        fare = Decimal(
+            str(
+                trip.final_fare
+                or Decimal("0.00")
+            )
+        )
+
+        if month_key not in monthly_data:
+            monthly_data[month_key] = {
+                "month": month_name,
+                "revenue": Decimal("0.00"),
+                "rides": 0,
+            }
+
+        monthly_data[month_key]["revenue"] += fare
+        monthly_data[month_key]["rides"] += 1
+
+    monthly_revenue = sorted(
+        monthly_data.values(),
+        key=lambda x: x["month"]
+    )
+
+    # ---------------------------------------------------------
+    # 8. MONTH-OVER-MONTH GROWTH
+    # ---------------------------------------------------------
+
+    growth_trajectory = []
+
+    previous_revenue = None
+
+    for item in monthly_revenue:
+
+        current_revenue = item["revenue"]
+
+        if previous_revenue and previous_revenue > 0:
+
+            growth = (
+                (current_revenue - previous_revenue)
+                / previous_revenue
+            ) * 100
+
+            growth = round(growth, 1)
+
+        else:
+            growth = 0
+
+        growth_trajectory.append({
+            "month": item["month"],
+            "revenue": current_revenue,
+            "rides": item["rides"],
+            "growth": growth,
+        })
+
+        previous_revenue = current_revenue
+
+    # ---------------------------------------------------------
+    # 9. CURRENT MONTH GROWTH
+    # ---------------------------------------------------------
+
+    revenue_growth = 0
+
+    if len(monthly_revenue) >= 2:
+
+        current = monthly_revenue[-1]["revenue"]
+        previous = monthly_revenue[-2]["revenue"]
+
+        if previous > 0:
+            revenue_growth = round(
+                (
+                    (current - previous)
+                    / previous
+                ) * 100,
+                1
+            )
+
+    # ---------------------------------------------------------
+    # 10. BAR CHART DATA
+    # ---------------------------------------------------------
+
+    max_monthly_revenue = max(
+        (
+            item["revenue"]
+            for item in monthly_revenue
+        ),
+        default=Decimal("0.00")
+    )
+
+    for item in monthly_revenue:
+
+        if max_monthly_revenue > 0:
+            item["height"] = round(
+                (
+                    item["revenue"]
+                    / max_monthly_revenue
+                ) * 100,
+                1
+            )
+        else:
+            item["height"] = 0
+
+    # ---------------------------------------------------------
+    # 11. CONTEXT
+    # ---------------------------------------------------------
+
+    context = {
+        "start_date": start_date,
+        "end_date": end_date,
+
+        "gbv": gbv,
+        "platform_revenue": platform_revenue,
+        "take_rate": take_rate,
+
+        "total_rides": total_rides,
+
+        "total_drivers": total_drivers,
+        "utilized_drivers": utilized_drivers,
+        "fleet_utilization": fleet_utilization,
+
+        "class_breakdown": aggregated_breakdown,
+
+        "monthly_revenue": monthly_revenue,
+        "growth_trajectory": growth_trajectory,
+        "revenue_growth": revenue_growth,
+    }
+
+    return render(
+        request,
+        "admin_pages/executive_revenue.html",
+        context
+    )
 @admin_required
 def driver_loyalty(request: HttpRequest) -> HttpResponse:
     return render(request, "admin_pages/driver_loyalty.html")

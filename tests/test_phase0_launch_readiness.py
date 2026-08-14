@@ -408,7 +408,7 @@ def test_executive_revenue_view_uses_completed_trip_data(client):
     client.force_login(admin_user)
 
     status, _ = TripStatus.objects.get_or_create(status_code='completed')
-    vehicle_type = VehicleType.objects.create(type='sedan')
+    vehicle_type = VehicleType.objects.create(type='Sedan')
     Trip.objects.create(
         user_id=User.objects.create_user(phone_number='+917000000002', role='rider'),
         driver_id=None,
@@ -426,7 +426,7 @@ def test_executive_revenue_view_uses_completed_trip_data(client):
     resp = client.get('/executive_revenue/')
     assert resp.status_code == 200, resp.content
     assert resp.context['gbv'] == Decimal('420.00')
-    assert any(item['name'] == 'sedan' for item in resp.context['class_breakdown'])
+    assert any(item['name'] == 'Sedan' for item in resp.context['class_breakdown'])
 
 
 @pytest.mark.django_db

@@ -194,7 +194,7 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://localhost:\d+$",
     r"^http://127\.0\.0\.1:\d+$",
-] if DEBUG else []
+]
 
 # Production security headers. No-ops in DEBUG.
 if not DEBUG:

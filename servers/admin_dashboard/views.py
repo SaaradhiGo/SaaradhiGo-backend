@@ -13,8 +13,6 @@ from servers.ride.models import FarePricing, Trip
 from django.db import models
 from django.db.models.functions import Coalesce
 from django.db.models import (Avg,Count, Q,Sum,F,Value,DecimalField,)
-from servers.driver.models import Driver
-from servers.ride.models import Trip
 def admin_required(view_func):
     """
     Decorator for admin dashboard views.

@@ -93,7 +93,8 @@ def get_driver_vehicle_type(driver_id, refresh=False):
 
     if redis_client is not None:
         try:
-            redis_client.setex(key, VEHICLE_TYPE_TTL_SECONDS, vehicle_type or '-')
+            if vehicle_type:
+                redis_client.setex(key, VEHICLE_TYPE_TTL_SECONDS, vehicle_type)
         except Exception as exc:  # noqa: BLE001
             logger.debug('vehicle-type cache write failed: %s', exc)
     return vehicle_type

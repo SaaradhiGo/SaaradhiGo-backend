@@ -121,6 +121,7 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
         action=request.POST.get('action',None)
         if action=="approve":
             selected_driver.doc_status='approved'
+            selected_driver.approved=True
             selected_driver.save()
         elif action=="reject":
             selected_driver.doc_status='rejected'

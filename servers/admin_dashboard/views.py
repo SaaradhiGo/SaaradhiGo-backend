@@ -6,16 +6,13 @@ from django.contrib.auth import authenticate, login as auth_login, logout as aut
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
 # from servers.driver.admin_utils import list_drivers_admin
-from servers.driver.models import Driver,WithdrawalRequest
 from servers.support.models import SupportTicket
 from django.core.paginator import Paginator
-from servers.ride.models import FarePricing, Trip
 from django.db import models
 from django.db.models.functions import Coalesce
 from django.db.models import (Avg,Count, Q,Sum,F,Value,DecimalField,)
-
-from servers.driver.models import Driver
-from servers.ride.models import Trip
+from servers.driver.models import Driver, WithdrawalRequest
+from servers.ride.models import FarePricing, Trip
 from servers.pricing.services import commission_percent_for_trip
 def admin_required(view_func):
     """

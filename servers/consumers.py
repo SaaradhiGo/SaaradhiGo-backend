@@ -339,6 +339,8 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                     pickup_address=pickup_address,
                     destination_address=destination_address,
                     vehicle_type=vehicle_type,
+                    distance_km=distance_km,
+                    duration_min=duration_min,
                 )
             )
 
@@ -428,7 +430,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
     async def _notify_nearby_drivers(self, trip, pickup_lng, pickup_lat,
                                       destination_lat, destination_lng,
                                       pickup_address, destination_address,
-                                      radius=None, vehicle_type=None):
+                                      radius=None, vehicle_type=None,distance_km=None,duration_min=None):
         """Rolling fanout: offer the trip in expanding waves.
 
         Each wave queries a wider radius and offers the ride only to drivers
@@ -486,6 +488,8 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                     'pickup_address': pickup_address,
                     'destination_address': destination_address,
                     'estimated_fare': str(trip.estimated_fare) if trip.estimated_fare else '',
+                    'distance_km':str(distance_km),
+                    'duration_min':str(duration_min),
                 })
                 total_notified += 1
                 await self._send_driver_push(

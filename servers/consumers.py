@@ -155,6 +155,10 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
             'pickup_address': event.get('pickup_address', ''),
             'destination_address': event.get('destination_address', ''),
             'estimated_fare': event.get('estimated_fare', ''),
+            'distance_km': event.get('distance_km', ''),
+            'duration_min': event.get('duration_min', ''),
+            'payment_method': event.get('payment_method', ''),
+            'vehicle_type': event.get('vehicle_type', ''),
         }))
 
     # -- Database helpers --
@@ -492,9 +496,10 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                     'pickup_address': pickup_address,
                     'destination_address': destination_address,
                     'estimated_fare': str(trip.estimated_fare) if trip.estimated_fare else '',
-                    'distance_km':str(distance_km),
-                    'duration_min':str(duration_min),
-                    'payment_method':str(payment_method)
+                    'distance_km': str(distance_km) if distance_km is not None else '',
+                    'duration_min': str(duration_min) if duration_min is not None else '',
+                    'payment_method': str(payment_method) if payment_method else '',
+                    'vehicle_type': str(vehicle_type) if vehicle_type else '',
                 })
                 total_notified += 1
                 await self._send_driver_push(

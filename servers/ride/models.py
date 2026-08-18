@@ -37,6 +37,8 @@ class Trip(models.Model):
     destination_long=models.DecimalField(max_digits=10,decimal_places=7)
     estimated_distance_km=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
     actual_distance_km=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
+    estimated_duration_min=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
+    actual_duration_min=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
     estimated_fare=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
     final_fare=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
     surge_multiplier=models.DecimalField(max_digits=4,decimal_places=2,default=1.00)

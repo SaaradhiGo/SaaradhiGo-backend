@@ -408,8 +408,8 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             destination_address=trip.destination_address or '',
             radius=radius,
             vehicle_type=vt_name,
-            distance_km=trip.distance_km,
-            duration_min=trip.duration_min,
+            distance_km=trip.estimated_distance_km,
+            duration_min=trip.estimated_duration_min,
             payment_method=trip.payment_method
         )
 
@@ -645,6 +645,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                     destination_address=destination_address,
                     estimated_fare=fare['total_fare'],
                     estimated_distance_km=Decimal(str(dist)) if dist else None,
+                    estimated_duration_min=Decimal(str(dur)) if dur else None,
                     surge_multiplier=fare['surge_multiplier'],
                     requested_vehicle_type=requested_vt,
                     payment_method=payment_method,

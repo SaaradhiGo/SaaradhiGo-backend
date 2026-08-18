@@ -1,4 +1,5 @@
 {% extends 'admin_pages/base.html' %}
+
 {% block title %}SaaradhiGo - Fleet Loyalty{% endblock %}
 
 {% block extra_css %}
@@ -6,319 +7,448 @@
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
 }
+
 .gold-gradient {
     background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
 }
-.gold-glow {
-    box-shadow: 0 40px 40px rgba(212, 175, 55, 0.08);
+
+::-webkit-scrollbar {
+    width: 4px;
 }
-::-webkit-scrollbar { width: 4px; }
-::-webkit-scrollbar-track { background: #131313; }
-::-webkit-scrollbar-thumb { background: #4d4635; }
+
+::-webkit-scrollbar-track {
+    background: #131313;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #4d4635;
+}
 {% endblock %}
 
 {% block main_class %}overflow-y-auto w-full{% endblock %}
 
 {% block content %}
+
 <div class="p-6 md:p-8 lg:px-12 pb-20 max-w-[1600px] mx-auto">
 
-    <!-- Header -->
+    <!-- HEADER -->
     <header class="mb-10 flex flex-col xl:flex-row xl:items-end xl:justify-between gap-6">
+
         <div>
-            <span class="font-label text-sm uppercase tracking-[0.2em] text-on-surface-variant font-semibold">
+            <span class="text-sm uppercase tracking-[0.2em] text-on-surface-variant font-semibold">
                 Aurelian Elite
             </span>
-            <h1 class="font-headline text-4xl md:text-5xl font-extrabold text-on-background mt-2 tracking-tight">
+
+            <h1 class="text-4xl md:text-5xl font-extrabold text-on-background mt-2">
                 Fleet Loyalty Dashboard
             </h1>
-            <p class="text-on-surface-variant mt-3 max-w-xl text-base md:text-lg leading-relaxed">
+
+            <p class="text-on-surface-variant mt-3 max-w-xl">
                 Monitor loyalty and performance using live driver and trip data.
             </p>
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full xl:w-auto">
-            <div class="bg-surface-container-low px-6 py-4 rounded-xl border border-outline-variant/10 min-w-[210px]">
-                <span class="block text-xs text-on-surface-variant font-medium">
-                    {{ miles_period_label|upper }} ESTIMATED MILES
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+            <!-- TOTAL MILES -->
+            <div class="bg-surface-container-low px-6 py-4 rounded-xl border border-outline-variant/10">
+                <span class="block text-xs text-on-surface-variant">
+                    ESTIMATED MILES
                 </span>
-                <span class="text-3xl font-headline font-bold text-primary tracking-tighter">
+
+                <span class="text-3xl font-bold text-primary">
                     {{ total_miles|floatformat:1 }} mi
                 </span>
             </div>
 
-            <div class="bg-surface-container-low px-6 py-4 rounded-xl border border-outline-variant/10 min-w-[210px]">
-                <span class="block text-xs text-on-surface-variant font-medium">
+            <!-- ACTIVE DRIVERS -->
+            <div class="bg-surface-container-low px-6 py-4 rounded-xl border border-outline-variant/10">
+                <span class="block text-xs text-on-surface-variant">
                     ACTIVE LOYALTY DRIVERS
                 </span>
-                <span class="text-3xl font-headline font-bold text-primary tracking-tighter">
+
+                <span class="text-3xl font-bold text-primary">
                     {{ active_loyalty_drivers }}
                 </span>
             </div>
+
         </div>
     </header>
 
-    <!-- Main KPI area -->
-    <div class="grid grid-cols-12 gap-6 lg:gap-8 mb-10">
 
-        <!-- Loyalty progress -->
-        <section class="col-span-12 lg:col-span-8 bg-surface-container rounded-2xl p-6 md:p-8 relative overflow-hidden">
-            <div class="absolute top-0 right-0 w-64 h-64 bg-primary/5 rounded-full -mr-20 -mt-20 blur-3xl"></div>
+    <!-- LOYALTY + STATISTICS -->
+    <div class="grid grid-cols-12 gap-6 mb-10">
 
-            <div class="flex justify-between items-start mb-8 relative z-10">
+        <!-- GOLDEN MILES -->
+        <section class="col-span-12 lg:col-span-8 bg-surface-container rounded-2xl p-6 md:p-8">
+
+            <div class="flex justify-between items-start mb-8">
+
                 <div>
-                    <h2 class="font-headline text-2xl font-bold">Golden Miles Progress</h2>
+                    <h2 class="text-2xl font-bold">
+                        Golden Miles Progress
+                    </h2>
+
                     <p class="text-on-surface-variant text-sm mt-1">
-                        {{ progress_period_label }}
+                        Fleet loyalty progress based on completed trip miles.
                     </p>
                 </div>
-                <span class="material-symbols-outlined text-primary text-4xl" data-weight="fill">
+
+                <span class="material-symbols-outlined text-primary text-4xl">
                     workspace_premium
                 </span>
+
             </div>
 
-            <div class="space-y-7 relative z-10">
 
-                <div>
-                    <div class="flex justify-between items-center text-sm mb-3 gap-4">
-                        <span class="font-medium">
-                            Fleet Productivity Tier:
-                            <span class="text-primary">{{ fleet_tier }}</span>
-                        </span>
-                        <span class="text-on-surface-variant whitespace-nowrap">
-                            {{ progress_percent|floatformat:1 }}% of target
-                        </span>
-                    </div>
+            <!-- PROGRESS -->
+            <div class="mb-7">
 
-                    <div class="h-3 bg-surface-container-highest rounded-full overflow-hidden">
-                        <div
-                            class="h-full gold-gradient rounded-full transition-all duration-700"
-                            style="width: {{ progress_percent }}%;">
-                        </div>
-                    </div>
+                <div class="flex justify-between items-center text-sm mb-3">
 
-                    <div class="flex justify-between mt-2 text-xs text-on-surface-variant">
-                        <span>{{ period_miles|floatformat:1 }} mi completed</span>
-                        <span>Target: {{ loyalty_target_miles|floatformat:1 }} mi</span>
-                    </div>
+                    <span>
+                        Fleet Productivity Tier:
+                        <strong class="text-primary">
+                            {{ loyalty_tier }}
+                        </strong>
+                    </span>
+
+                    <span class="text-on-surface-variant">
+                        {{ goal_percentage|floatformat:1 }}% of target
+                    </span>
+
                 </div>
 
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="h-3 bg-surface-container-highest rounded-full overflow-hidden">
 
-                    <div class="bg-surface-container-low p-5 rounded-xl border-l-2 border-primary">
-                        <span class="block text-xs text-on-surface-variant mb-1">
-                            CURRENT TIER
-                        </span>
-                        <span class="block text-lg font-bold">
-                            {{ fleet_tier }}
-                        </span>
-                    </div>
-
-                    <div class="bg-surface-container-low p-5 rounded-xl border-l-2 border-primary/40">
-                        <span class="block text-xs text-on-surface-variant mb-1">
-                            NEXT MILESTONE
-                        </span>
-                        <span class="block text-lg font-bold">
-                            {{ next_milestone }}
-                        </span>
-                    </div>
-
-                    <div class="bg-surface-container-low p-5 rounded-xl border-l-2 border-primary/20">
-                        <span class="block text-xs text-on-surface-variant mb-1">
-                            REMAINING TARGET
-                        </span>
-                        <span class="block text-lg font-bold">
-                            {{ remaining_miles|floatformat:1 }} mi
-                        </span>
+                    <div
+                        class="h-full gold-gradient rounded-full"
+                        style="width: {{ goal_percentage }}%;">
                     </div>
 
                 </div>
+
+                <div class="flex justify-between mt-2 text-xs text-on-surface-variant">
+
+                    <span>
+                        {{ total_miles|floatformat:1 }} mi completed
+                    </span>
+
+                    <span>
+                        Target: 100000 mi
+                    </span>
+
+                </div>
+
             </div>
+
+
+            <!-- MILESTONE CARDS -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+                <div class="bg-surface-container-low p-5 rounded-xl border-l-2 border-primary">
+
+                    <span class="block text-xs text-on-surface-variant mb-1">
+                        CURRENT TIER
+                    </span>
+
+                    <span class="text-lg font-bold">
+                        {{ loyalty_tier }}
+                    </span>
+
+                </div>
+
+
+                <div class="bg-surface-container-low p-5 rounded-xl border-l-2 border-primary/40">
+
+                    <span class="block text-xs text-on-surface-variant mb-1">
+                        NEXT MILESTONE
+                    </span>
+
+                    <span class="text-lg font-bold">
+                        {{ next_milestone }}
+                    </span>
+
+                </div>
+
+
+                <div class="bg-surface-container-low p-5 rounded-xl border-l-2 border-primary/20">
+
+                    <span class="block text-xs text-on-surface-variant mb-1">
+                        REMAINING TARGET
+                    </span>
+
+                    <span class="text-lg font-bold">
+                        {{ remaining_target|floatformat:1 }} mi
+                    </span>
+
+                </div>
+
+            </div>
+
         </section>
 
-        <!-- Live statistics -->
+
+        <!-- STATISTICS -->
         <section class="col-span-12 lg:col-span-4 flex flex-col gap-6">
 
-            <div class="bg-surface-container p-6 rounded-2xl flex-1 flex flex-col justify-center border border-outline-variant/10">
-                <span class="material-symbols-outlined text-primary mb-3">task_alt</span>
-                <h3 class="text-on-surface-variant font-medium text-sm mb-1 uppercase tracking-wider">
+            <!-- COMPLETION RATE -->
+            <div class="bg-surface-container p-6 rounded-2xl flex-1 flex flex-col justify-center">
+
+                <span class="material-symbols-outlined text-primary mb-3">
+                    task_alt
+                </span>
+
+                <h3 class="text-on-surface-variant font-medium text-sm mb-1 uppercase">
                     Fleet Completion Rate
                 </h3>
+
                 <div class="flex items-end gap-3">
-                    <span class="text-4xl font-headline font-extrabold">
-                        {{ fleet_completion_rate|floatformat:1 }}%
+
+                    <span class="text-4xl font-extrabold">
+                        {{ fleet_acceptance|floatformat:1 }}%
                     </span>
+
                     <span class="text-on-surface-variant text-xs mb-1">
                         completed assigned trips
                     </span>
+
                 </div>
+
             </div>
 
-            <div class="bg-surface-container p-6 rounded-2xl flex-1 flex flex-col justify-center border border-outline-variant/10">
-                <span class="material-symbols-outlined text-primary mb-3">star</span>
-                <h3 class="text-on-surface-variant font-medium text-sm mb-1 uppercase tracking-wider">
+
+            <!-- RATING -->
+            <div class="bg-surface-container p-6 rounded-2xl flex-1 flex flex-col justify-center">
+
+                <span class="material-symbols-outlined text-primary mb-3">
+                    star
+                </span>
+
+                <h3 class="text-on-surface-variant font-medium text-sm mb-1 uppercase">
                     Avg. Star Rating
                 </h3>
+
                 <div class="flex items-end gap-3">
-                    <span class="text-4xl font-headline font-extrabold">
-                        {{ average_rating|floatformat:2 }}
+
+                    <span class="text-4xl font-extrabold">
+                        {{ avg_rating|floatformat:2 }}
                     </span>
+
                     <span class="text-on-surface-variant text-xs mb-1">
                         across rated drivers
                     </span>
+
                 </div>
+
             </div>
 
         </section>
+
     </div>
 
-    <!-- Driver cards -->
+
+    <!-- DRIVER CARDS -->
     <section>
-        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
-            <div>
-                <h2 class="font-headline text-3xl font-bold tracking-tight">
-                    Active Performance Cards
-                </h2>
-                <p class="text-sm text-on-surface-variant mt-1">
-                    Showing live values from the Driver and Trip records.
-                </p>
-            </div>
-            <span class="text-sm text-on-surface-variant">
-                {{ drivers_count }} drivers
-            </span>
+
+        <div class="mb-6">
+
+            <h2 class="text-3xl font-bold">
+                Active Performance Cards
+            </h2>
+
+            <p class="text-sm text-on-surface-variant mt-1">
+                Showing live values from the Driver and Trip records.
+            </p>
+
         </div>
+
 
         <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
 
             {% for d in drivers %}
-            <article class="bg-surface-container p-6 rounded-2xl border border-outline-variant/10 flex flex-col justify-between hover:bg-surface-container-high transition-all duration-300">
 
-                <div>
-                    <div class="flex items-center gap-4 mb-6">
+            <article class="bg-surface-container p-6 rounded-2xl border border-outline-variant/10">
 
-                        <div class="w-14 h-14 rounded-full overflow-hidden border-2 border-primary/20 flex items-center justify-center bg-surface-container-highest shrink-0">
-                            <span class="material-symbols-outlined text-on-surface">
-                                person
-                            </span>
-                        </div>
+                <!-- DRIVER -->
+                <div class="flex items-center gap-4 mb-6">
 
-                        <div class="min-w-0">
-                            <div class="flex items-center gap-2">
-                                <h4 class="font-bold text-lg text-on-surface truncate">
-                                    {{ d.name }}
-                                </h4>
-                            </div>
+                    <div class="w-14 h-14 rounded-full flex items-center justify-center bg-surface-container-highest">
 
-                            <div class="flex flex-wrap items-center gap-2 mt-1">
-
-                                <span class="text-xs px-2.5 py-0.5 rounded-full font-bold
-                                    {% if d.status_class == 'online' %}
-                                        bg-emerald-400/10 text-emerald-300 border border-emerald-400/20
-                                    {% elif d.status_class == 'busy' %}
-                                        bg-amber-400/10 text-amber-300 border border-amber-400/20
-                                    {% else %}
-                                        bg-slate-400/10 text-slate-300 border border-slate-400/20
-                                    {% endif %}">
-                                    {{ d.status_label }}
-                                </span>
-
-                                <span class="text-xs px-2.5 py-0.5 rounded-full font-bold
-                                    {% if d.loyalty_tier == 'PLATINUM' %}
-                                        bg-purple-500/10 text-purple-300 border border-purple-500/20
-                                    {% elif d.loyalty_tier == 'GOLD' %}
-                                        bg-amber-400/10 text-amber-300 border border-amber-400/20
-                                    {% elif d.loyalty_tier == 'SILVER' %}
-                                        bg-slate-400/10 text-slate-300 border border-slate-400/20
-                                    {% else %}
-                                        bg-stone-400/10 text-stone-300 border border-stone-400/20
-                                    {% endif %}">
-                                    {{ d.loyalty_tier }}
-                                </span>
-
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="grid grid-cols-3 gap-3 border-t border-outline-variant/10 pt-4 text-center">
-
-                        <div>
-                            <span class="block text-[10px] text-on-surface-variant uppercase mb-1">
-                                Star Rating
-                            </span>
-                            <span class="font-bold text-primary flex items-center justify-center gap-1">
-                                {{ d.rating|floatformat:2 }}
-                                <span class="material-symbols-outlined text-[14px]">star</span>
-                            </span>
-                        </div>
-
-                        <div class="border-x border-outline-variant/10">
-                            <span class="block text-[10px] text-on-surface-variant uppercase mb-1">
-                                Completed Trips
-                            </span>
-                            <span class="font-bold text-on-surface">
-                                {{ d.completed_trips }}
-                            </span>
-                        </div>
-
-                        <div>
-                            <span class="block text-[10px] text-on-surface-variant uppercase mb-1">
-                                Miles
-                            </span>
-                            <span class="font-bold text-on-surface">
-                                {{ d.total_miles|floatformat:1 }}
-                            </span>
-                        </div>
-
-                    </div>
-
-                    <div class="mt-4 pt-4 border-t border-outline-variant/10 flex justify-between text-xs">
-                        <span class="text-on-surface-variant">Revenue</span>
-                        <span class="font-bold text-on-surface">
-                            ₹{{ d.total_revenue|floatformat:2 }}
+                        <span class="material-symbols-outlined">
+                            person
                         </span>
+
                     </div>
+
+
+                    <div class="min-w-0">
+
+                        <h4 class="font-bold text-lg truncate">
+                            {{ d.name }}
+                        </h4>
+
+
+                        <div class="flex gap-2 mt-1">
+
+                            <!-- STATUS -->
+                            <span class="text-xs px-2.5 py-0.5 rounded-full font-bold bg-slate-400/10 text-slate-300">
+
+                                {{ d.status }}
+
+                            </span>
+
+
+                            <!-- LOYALTY -->
+                            <span class="text-xs px-2.5 py-0.5 rounded-full font-bold bg-stone-400/10 text-stone-300">
+
+                                {{ d.loyalty_tier }}
+
+                            </span>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+                <!-- DRIVER STATS -->
+                <div class="grid grid-cols-3 gap-3 border-t border-outline-variant/10 pt-4 text-center">
+
+
+                    <!-- RATING -->
+                    <div>
+
+                        <span class="block text-[10px] text-on-surface-variant uppercase mb-1">
+                            Star Rating
+                        </span>
+
+                        <span class="font-bold text-primary">
+
+                            {{ d.rating|floatformat:2 }}
+
+                            <span class="material-symbols-outlined text-[14px]">
+                                star
+                            </span>
+
+                        </span>
+
+                    </div>
+
+
+                    <!-- TRIPS -->
+                    <div class="border-x border-outline-variant/10">
+
+                        <span class="block text-[10px] text-on-surface-variant uppercase mb-1">
+                            Completed Trips
+                        </span>
+
+                        <span class="font-bold">
+                            {{ d.total_trips }}
+                        </span>
+
+                    </div>
+
+
+                    <!-- MILES -->
+                    <div>
+
+                        <span class="block text-[10px] text-on-surface-variant uppercase mb-1">
+                            Miles
+                        </span>
+
+                        <span class="font-bold">
+                            {{ d.total_distance|floatformat:1 }} mi
+                        </span>
+
+                    </div>
+
+                </div>
+
+
+                <!-- REVENUE -->
+                <div class="mt-4 pt-4 border-t border-outline-variant/10 flex justify-between text-xs">
+
+                    <span class="text-on-surface-variant">
+                        Revenue
+                    </span>
+
+                    <span class="font-bold">
+                        ₹{{ d.total_revenue|floatformat:2 }}
+                    </span>
+
                 </div>
 
             </article>
 
+
             {% empty %}
+
             <div class="col-span-full text-center p-10 bg-surface-container rounded-xl text-on-surface-variant">
+
                 No drivers found in the database.
+
             </div>
+
             {% endfor %}
 
         </div>
 
-        <!-- Pagination -->
+
+        <!-- PAGINATION -->
         {% if page_obj.has_other_pages %}
-        <div class="flex items-center justify-between pt-8 mt-6 border-t border-outline-variant/10 text-sm">
+
+        <div class="flex items-center justify-between pt-8 mt-6 border-t border-outline-variant/10">
 
             <div>
+
                 {% if page_obj.has_previous %}
+
                 <a
                     href="?page={{ page_obj.previous_page_number }}"
-                    class="px-4 py-2 bg-surface-container hover:bg-surface-container-high rounded-lg text-on-surface transition-colors">
+                    class="px-4 py-2 bg-surface-container rounded-lg">
+
                     Previous
+
                 </a>
+
                 {% endif %}
+
             </div>
 
+
             <span class="text-on-surface-variant">
-                Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
+
+                Page {{ page_obj.number }}
+                of
+                {{ page_obj.paginator.num_pages }}
+
             </span>
 
+
             <div>
+
                 {% if page_obj.has_next %}
+
                 <a
                     href="?page={{ page_obj.next_page_number }}"
-                    class="px-4 py-2 bg-surface-container hover:bg-surface-container-high rounded-lg text-on-surface transition-colors">
+                    class="px-4 py-2 bg-surface-container rounded-lg">
+
                     Next
+
                 </a>
+
                 {% endif %}
+
             </div>
 
         </div>
+
         {% endif %}
+
     </section>
 
 </div>
+
 {% endblock %}

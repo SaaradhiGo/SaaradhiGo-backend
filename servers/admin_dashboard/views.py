@@ -579,7 +579,6 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
     }
 
     return render(request,"admin_pages/executive_revenue.html",context,)
-
 @admin_required
 def driver_loyalty(request: HttpRequest) -> HttpResponse:
 
@@ -602,7 +601,7 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
                 "actual_distance_km",
                 "estimated_distance_km",
                 output_field=DecimalField(
-                    max_digits=10,
+                    max_digits=12,
                     decimal_places=2,
                 ),
             )
@@ -615,12 +614,16 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
                 "final_fare",
                 "estimated_fare",
                 output_field=DecimalField(
-                    max_digits=10,
+                    max_digits=12,
                     decimal_places=2,
                 ),
             )
         )
     )["total"] or Decimal("0")
+
+    # ==========================================================
+    # ACTIVE LOYALTY DRIVERS
+    # ==========================================================
 
     active_loyalty_drivers = Driver.objects.filter(
         approved=True,
@@ -632,79 +635,83 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
         ],
     ).count()
 
+    # ==========================================================
+    # AVERAGE DRIVER RATING
+    # ==========================================================
+
     avg_rating = Driver.objects.aggregate(
         average=Avg("ratings")
     )["average"] or Decimal("0")
 
     # ==========================================================
-    # FLEET ACCEPTANCE RATE
+    # FLEET COMPLETION RATE
     # ==========================================================
 
-    total_requested = Trip.objects.filter(
+    total_assigned = Trip.objects.filter(
         driver_id__isnull=False
     ).count()
 
-    accepted_trips = Trip.objects.filter(
-        driver_id__isnull=False,
-        status_id__status_code__in=[
-            "accepted",
-            "reached",
-            "in_progress",
-            "completed",
-        ],
-    ).count()
+    completed_count = completed_trips.count()
 
-    if total_requested:
-        fleet_acceptance = (
-            accepted_trips / total_requested
+    if total_assigned > 0:
+        fleet_completion_rate = (
+            completed_count / total_assigned
         ) * 100
     else:
-        fleet_acceptance = 0
+        fleet_completion_rate = 0
 
     # ==========================================================
-    # GOLDEN MILES PROGRESS
+    # GOLDEN MILES / LOYALTY TARGET
     # ==========================================================
 
-    # Example monthly target.
-    # Change this value according to your business requirement.
-    monthly_target_km = Decimal("100000")
+    # Monthly fleet target.
+    # Change this value based on your actual business target.
+    monthly_target_miles = Decimal("100000")
 
     goal_percentage = (
-        total_miles / monthly_target_km
-    ) * 100 if monthly_target_km else Decimal("0")
+        total_miles / monthly_target_miles
+    ) * 100 if monthly_target_miles else Decimal("0")
 
-    goal_percentage = min(goal_percentage, Decimal("100"))
+    goal_percentage = min(
+        goal_percentage,
+        Decimal("100")
+    )
 
     remaining_target = max(
-        monthly_target_km - total_miles,
+        monthly_target_miles - total_miles,
         Decimal("0"),
     )
 
     # ==========================================================
-    # LOYALTY INCENTIVE
+    # FLEET LOYALTY TIER
     # ==========================================================
 
     if goal_percentage >= 100:
+
         loyalty_tier = "DIAMOND ELITE"
         unlocked_incentive = "Fuel Rebate 12%"
         next_milestone = "Premium Fleet Benefits"
 
     elif goal_percentage >= 75:
+
         loyalty_tier = "PLATINUM"
         unlocked_incentive = "Fuel Rebate 8%"
         next_milestone = "Fuel Rebate 12%"
 
     elif goal_percentage >= 50:
+
         loyalty_tier = "GOLD"
         unlocked_incentive = "Fuel Rebate 5%"
         next_milestone = "Fuel Rebate 8%"
 
     elif goal_percentage >= 25:
+
         loyalty_tier = "SILVER"
         unlocked_incentive = "Priority Support"
         next_milestone = "Fuel Rebate 5%"
 
     else:
+
         loyalty_tier = "BRONZE"
         unlocked_incentive = "Basic Loyalty Benefits"
         next_milestone = "Priority Support"
@@ -717,6 +724,11 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
         Driver.objects
         .select_related("user_id")
         .annotate(
+
+            # ----------------------------------------------
+            # COMPLETED TRIPS
+            # ----------------------------------------------
+
             completed_trip_count=Count(
                 "trips",
                 filter=Q(
@@ -725,46 +737,62 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
                 distinct=True,
             ),
 
-            revenue=Coalesce(
-                Sum(
+            # ----------------------------------------------
+            # REVENUE
+            # ----------------------------------------------
+
+            revenue=Sum(
+                Coalesce(
                     "trips__final_fare",
-                    filter=Q(
-                        trips__status_id__status_code="completed"
+                    "trips__estimated_fare",
+                    output_field=DecimalField(
+                        max_digits=12,
+                        decimal_places=2,
                     ),
                 ),
-                Value(Decimal("0")),
-                output_field=DecimalField(
-                    max_digits=12,
-                    decimal_places=2,
+                filter=Q(
+                    trips__status_id__status_code="completed"
                 ),
             ),
 
-            distance_km=Coalesce(
-                Sum(
+            # ----------------------------------------------
+            # DISTANCE
+            # ----------------------------------------------
+
+            distance_km=Sum(
+                Coalesce(
                     "trips__actual_distance_km",
-                    filter=Q(
-                        trips__status_id__status_code="completed"
+                    "trips__estimated_distance_km",
+                    output_field=DecimalField(
+                        max_digits=12,
+                        decimal_places=2,
                     ),
                 ),
-                Value(Decimal("0")),
-                output_field=DecimalField(
-                    max_digits=12,
-                    decimal_places=2,
+                filter=Q(
+                    trips__status_id__status_code="completed"
                 ),
             ),
         )
-        .order_by("-completed_trip_count", "-ratings")
+        .order_by(
+            "-completed_trip_count",
+            "-ratings",
+        )
     )
 
     # ==========================================================
     # PAGINATION
     # ==========================================================
 
-    paginator = Paginator(drivers_qs, 12)
+    paginator = Paginator(
+        drivers_qs,
+        12
+    )
 
     page_number = request.GET.get("page")
 
-    page_obj = paginator.get_page(page_number)
+    page_obj = paginator.get_page(
+        page_number
+    )
 
     # ==========================================================
     # DRIVER CARD DATA
@@ -775,46 +803,72 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
     for driver in page_obj:
 
         trips = driver.completed_trip_count or 0
+
         rating = driver.ratings or Decimal("0")
+
         revenue = driver.revenue or Decimal("0")
+
         distance = driver.distance_km or Decimal("0")
 
-        # Driver-specific loyalty tier
+        # ----------------------------------------------
+        # DRIVER LOYALTY TIER
+        # ----------------------------------------------
+
         if trips >= 500:
+
             driver_tier = "PLATINUM"
 
         elif trips >= 250:
+
             driver_tier = "GOLD"
 
         elif trips >= 100:
+
             driver_tier = "SILVER"
 
         else:
+
             driver_tier = "BRONZE"
 
+        # ----------------------------------------------
+        # DRIVER NAME
+        # ----------------------------------------------
+
+        if driver.user_id.full_name:
+
+            driver_name = driver.user_id.full_name
+
+        else:
+
+            driver_name = driver.user_id.phone_number
+
+        # ----------------------------------------------
+        # DRIVER DATA
+        # ----------------------------------------------
+
         drivers.append({
+
             "id": driver.id,
 
-            "name": (
-                driver.user_id.full_name
-                if driver.user_id.full_name
-                else driver.user_id.phone_number
-            ),
+            "name": driver_name,
 
             "loyalty_tier": driver_tier,
 
-            "rating": round(float(rating), 2),
+            "rating": round(
+                float(rating),
+                2
+            ),
 
             "total_trips": trips,
 
-            "total_revenue": round(
-                float(revenue),
-                2,
-            ),
-
             "total_distance": round(
                 float(distance),
-                2,
+                2
+            ),
+
+            "total_revenue": round(
+                float(revenue),
+                2
             ),
 
             "status": driver.status,
@@ -828,42 +882,91 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
 
     context = {
 
+        # ----------------------------------------------
+        # DRIVERS
+        # ----------------------------------------------
+
         "drivers": drivers,
 
         "page_obj": page_obj,
 
-        # Fleet statistics
-        "total_miles": round(float(total_miles),2,),
+        # ----------------------------------------------
+        # TOP KPI
+        # ----------------------------------------------
 
-        "active_loyalty_drivers":active_loyalty_drivers,
+        "total_miles": round(
+            float(total_miles),
+            2
+        ),
 
-        "avg_rating": round(float(avg_rating),2,),
+        "active_loyalty_drivers": active_loyalty_drivers,
 
-        "total_revenue": round(float(total_revenue),2,),
+        # ----------------------------------------------
+        # REVENUE
+        # ----------------------------------------------
 
-        # Acceptance
-        "fleet_acceptance": round(fleet_acceptance,1,),
+        "total_revenue": round(
+            float(total_revenue),
+            2
+        ),
 
-        # Loyalty
-        "goal_percentage": round(float(goal_percentage),1,),
+        # ----------------------------------------------
+        # RATING
+        # ----------------------------------------------
+
+        "average_rating": round(
+            float(avg_rating),
+            2
+        ),
+
+        # ----------------------------------------------
+        # COMPLETION
+        # ----------------------------------------------
+
+        "fleet_completion_rate": round(
+            float(fleet_completion_rate),
+            1
+        ),
+
+        # ----------------------------------------------
+        # GOLDEN MILES
+        # ----------------------------------------------
+
+        "goal_percentage": round(
+            float(goal_percentage),
+            1
+        ),
+
+        "monthly_target_miles": round(
+            float(monthly_target_miles),
+            2
+        ),
+
+        "remaining_target": round(
+            float(remaining_target),
+            2
+        ),
+
+        # ----------------------------------------------
+        # LOYALTY
+        # ----------------------------------------------
 
         "loyalty_tier": loyalty_tier,
 
-        "unlocked_incentive":unlocked_incentive,
+        "unlocked_incentive": unlocked_incentive,
 
-        "next_milestone":next_milestone,
-
-        "remaining_target":round(float(remaining_target),2,),
+        "next_milestone": next_milestone,
     }
+
+    # ==========================================================
+    # RENDER
+    # ==========================================================
 
     return render(
         request,
         "admin_pages/driver_loyalty.html",
         context,
     )
-   
-
-
 @admin_required
 def fare_surge(request: HttpRequest) -> HttpResponse:
     return render(request, "admin_pages/fare_surge.html")

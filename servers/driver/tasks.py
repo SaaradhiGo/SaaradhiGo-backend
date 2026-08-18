@@ -63,7 +63,7 @@ def block_expired_driver_licenses():
 
     blocked_ids = list(expired.values_list('id', flat=True))
     # update() can't be combined with distinct(); re-filter on ids.
-    Driver.objects.filter(id__in=blocked_ids).update(status='blocked')
+    Driver.objects.filter(id__in=blocked_ids).update(status='blocked',approved=False)
 
     logger.warning(
         f"driver.block_expired_driver_licenses: blocked {count} drivers "

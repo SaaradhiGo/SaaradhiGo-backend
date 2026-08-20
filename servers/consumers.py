@@ -114,6 +114,14 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
                         'lat': lat,
                         'driver_id': self.driver_id,
                     })
+                
+                # Stream location update to admin dashboard group
+                await self.channel_layer.group_send('admin_dashboard', {
+                    'type': 'driver_location_update',
+                    'lng': lng,
+                    'lat': lat,
+                    'driver_id': self.driver_id,
+                })
             else:
                 await self.send(text_data=json.dumps({
                     'type': 'error',
@@ -1633,4 +1641,56 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
         """Process refund if payment was completed online (delegates to shared utility)."""
         from servers.ride.utils import process_refund_on_cancel
         return process_refund_on_cancel(trip)
+
+
+class AdminDashboardConsumer(AsyncWebsocketConsumer):
+    """
+    WebSocket consumer for Admin Dashboard real-time driver locations.
+    
+    Connect: ws://host/ws/admin/live-locations/?token=<jwt>
+    """
+    
+    async def connect(self):
+        self.user = self.scope.get('user')
+
+        if isinstance(self.user, AnonymousUser) or not self.user.is_authenticated:
+            logger.info("WS reject 4001: unauthenticated socket")
+            await self.close(code=4001)
+            return
+
+        if not (self.user.is_staff or self.user.is_superuser):
+            logger.info("WS reject 4003: user is not an admin")
+            await self.close(code=4003)
+            return
+
+        # Accept the connection
+        await self.accept()
+        
+        # Add to the admin_dashboard group
+        self.admin_group = 'admin_dashboard'
+        await self.channel_layer.group_add(self.admin_group, self.channel_name)
+
+        # Send initial snapshot of all drivers
+        from servers.redis_client import get_all_active_drivers
+        drivers = await database_sync_to_async(get_all_active_drivers)()
+        
+        await self.send(text_data=json.dumps({
+            'type': 'initial_locations',
+            'drivers': drivers
+        }))
+
+    async def disconnect(self, close_code):
+        if hasattr(self, 'admin_group'):
+            await self.channel_layer.group_discard(self.admin_group, self.channel_name)
+
+    async def receive(self, text_data):
+        # Admin doesn't send data in this MVP
+        pass
+
+    async def driver_location_update(self, event):
+        """
+        Forward driver location updates to the admin client.
+        """
+        await self.send(text_data=json.dumps(event))
+
 

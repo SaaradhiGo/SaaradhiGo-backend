@@ -1114,7 +1114,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
         try:
             with transaction.atomic():
-                trip = Trip.objects.select_for_update().get(id=self.trip_id)
+                trip = Trip.objects.select_for_update(of=('self',)).get(id=self.trip_id)
 
                 # Check if already accepted
                 if trip.driver_id is not None:
@@ -1143,8 +1143,8 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 # rides.
                 try:
                     driver = (
-                        Driver.objects.select_for_update()
-                        .select_related('user_id', 'active_vehicle')
+                        Driver.objects.select_for_update(of=('self',))
+                        .select_related('user_id')
                         .get(pk=self.user.driver.id)
                     )
                 except Driver.DoesNotExist:
@@ -1288,7 +1288,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
         try:
             with transaction.atomic():
                 trip = (
-                    Trip.objects.select_for_update()
+                    Trip.objects.select_for_update(of=('self',))
                     .select_related('status_id')
                     .get(id=self.trip_id)
                 )
@@ -1362,7 +1362,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
         try:
             with transaction.atomic():
                 # select_for_update() locks the row until the transaction ends
-                trip = Trip.objects.select_for_update().get(id=self.trip_id)
+                trip = Trip.objects.select_for_update(of=('self',)).get(id=self.trip_id)
                 current_status = trip.status_id.status_code if trip.status_id else None
 
                 # Define strict transition rules

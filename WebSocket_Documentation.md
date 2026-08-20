@@ -230,3 +230,41 @@ Emitted to all participants inside the `trip_id` socket group successfully evalu
 }
 ```
 *(Note: Initial `accept` payload also includes `otp`, `driver_info` and `vehicle_info` similarly to the `trip_update` payload in the Request Consumer)*
+
+---
+
+## 4. Admin Dashboard Consumer (`AdminDashboardConsumer`)
+This consumer provides the admin operations dashboard with a live feed of all driver locations without needing to poll the REST API.
+
+**Endpoint:** `ws://<host>/ws/admin/live-locations/?token=<JWT>`
+**Role:** Admin Only (`is_staff` or `is_superuser`)
+
+### Connection Flow
+1. Connect with Admin JWT Token.
+2. **Response on Success (Initial Snapshot):**
+   Immediately upon connection, the server pushes the current cached snapshot of all online drivers.
+   ```json
+   {
+       "type": "initial_locations",
+       "drivers": [
+           {
+               "driver_id": "15",
+               "vehicle_type": "sedan",
+               "lng": 78.4867,
+               "lat": 17.3850
+           }
+       ]
+   }
+   ```
+
+### Server -> Client Broadcasts
+**Event: Real-time Location Update**
+When any driver updates their location, a broadcast is immediately sent to all connected admins.
+```json
+{
+    "type": "driver_location_update",
+    "lng": 78.4870,
+    "lat": 17.3855,
+    "driver_id": 15
+}
+```

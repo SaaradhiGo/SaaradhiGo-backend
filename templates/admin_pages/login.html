@@ -79,16 +79,16 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
 
             <form class="space-y-6" action="{% url 'login' %}" method="post">
                 {% csrf_token %}
-                <!-- Username -->
+                <!-- Phone Number -->
                 <div class="space-y-2">
                     <label
-                        class="text-xs font-label uppercase tracking-widest text-on-surface-variant ml-1">Username</label>
+                        class="text-xs font-label uppercase tracking-widest text-on-surface-variant ml-1">Phone Number</label>
                     <div class="relative group h-14">
                         <span
-                            class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-outline text-sm">person</span>
+                            class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-outline text-sm">phone</span>
                         <input id="id_username" name="username"
                             class="w-full h-full bg-surface-container-highest border-b border-outline-variant/30 focus:border-primary pl-10 pr-4 text-on-surface transition-all placeholder:text-outline/50 outline-none"
-                            placeholder="admin" type="text" required autocomplete="username" />
+                            placeholder="e.g. 9876543210" type="text" required autocomplete="username" />
                         <div
                             class="absolute bottom-0 left-0 h-[1px] w-0 bg-primary transition-all duration-300 group-focus-within:w-full">
                         </div>

@@ -5,7 +5,7 @@ It details the sequence of events, connections, request payloads, and server-emi
 
 ---
 
-## 1. Driver Location System (`DriverLocationConsumer`)
+## 1. Driver Location System (``)
 This consumer tracks the driver's real-time live location, activates them to an "online" status upon connection, and receives incoming ride requests.
 
 **Endpoint:** `ws://<host>/ws/driver/location/?token=<JWT>&lat=<lat>&lng=<lng>`
@@ -230,3 +230,80 @@ Emitted to all participants inside the `trip_id` socket group successfully evalu
 }
 ```
 *(Note: Initial `accept` payload also includes `otp`, `driver_info` and `vehicle_info` similarly to the `trip_update` payload in the Request Consumer)*
+
+---
+
+## 4. Admin Fleet Monitor & Dashboard (`AdminDashboardConsumer`)
+This consumer powers the God View / Fleet Monitor (`fleet_monitor.html`) and predictive dashboards, streaming live driver locations and system events across the fleet.
+
+**Endpoint:** `ws://<host>/ws/admin/dashboard/` (supports Django session cookies or `?token=<JWT>`)
+**Role:** Admin / Superuser Only
+
+### Connection Flow
+1. Connect via browser (session cookie) or with admin JWT token in query string.
+2. Server verifies `admin` role or `superuser` status.
+3. **Response on Success:**
+   ```json
+   {
+       "type": "connection_established",
+       "message": "Connected to live fleet telemetry stream"
+   }
+   ```
+4. **Initial Drivers Snapshot (Immediately pushed on connection):**
+   ```json
+   {
+       "type": "initial_drivers",
+       "count": 2,
+       "drivers": [
+           {
+               "driver_id": 15,
+               "driver_name": "Ramesh Kumar",
+               "phone_number": "+919876543210",
+               "ratings": "4.85",
+               "vehicle_model": "Swift Dzire",
+               "vehicle_number": "TS09EA1234",
+               "lat": 17.3850,
+               "lng": 78.4867,
+               "status": "online"
+           }
+       ]
+   }
+   ```
+
+### Client -> Server Events
+**Action: Refresh Driver Snapshot**
+```json
+{ "action": "refresh" }
+```
+
+**Action: Heartbeat Ping**
+```json
+{ "action": "ping" }
+```
+
+### Server -> Client Broadcasts
+**Event: Driver Location Update (Live GPS telemetry)**
+```json
+{
+    "type": "driver_location_update",
+    "driver_id": 15,
+    "driver_name": "Ramesh Kumar",
+    "phone_number": "+919876543210",
+    "vehicle_model": "Swift Dzire",
+    "vehicle_number": "TS09EA1234",
+    "lat": 17.3854,
+    "lng": 78.4871,
+    "status": "online",
+    "active_trip_id": null
+}
+```
+
+**Event: Driver Status Update (Offline / Online)**
+```json
+{
+    "type": "driver_status_update",
+    "driver_id": 15,
+    "status": "offline"
+}
+```
+

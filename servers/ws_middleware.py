@@ -7,7 +7,6 @@ from rest_framework_simplejwt.tokens import AccessToken
 from django.contrib.auth import get_user_model
 
 logger = logging.getLogger(__name__)
-User = get_user_model()
 
 
 @database_sync_to_async
@@ -22,11 +21,12 @@ def get_user_from_token(token_str):
         User instance or AnonymousUser if token is invalid
     """
     try:
+        User = get_user_model()
         token = AccessToken(token_str)
         user_id = token['user_id']
         return User.objects.get(id=user_id)
-    except Exception as e:
-        logger.warning(f"WebSocket JWT auth failed: {str(e)}")
+    except Exception:
+        logger.warning("WebSocket JWT authentication failed")
         return AnonymousUser()
 
 
@@ -44,8 +44,12 @@ class JWTAuthMiddleware(BaseMiddleware):
         token_list = query_params.get('token', [])
         # print(token_list)
         if token_list:
-            scope['user'] = await get_user_from_token(token_list[0])
-        else:
+            user = await get_user_from_token(token_list[0])
+            if user and user.is_authenticated:
+                scope['user'] = user
+            else:
+                scope['user'] = AnonymousUser()
+        elif 'user' not in scope:
             scope['user'] = AnonymousUser()
 
         # Extract coordinates if provided

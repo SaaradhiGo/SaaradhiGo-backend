@@ -143,6 +143,14 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
                         'lat': lat,
                         'driver_id': self.driver_id,
                     })
+                
+                # Stream location update to admin dashboard group
+                await self.channel_layer.group_send('admin_dashboard', {
+                    'type': 'driver_location_update',
+                    'lng': lng,
+                    'lat': lat,
+                    'driver_id': self.driver_id,
+                })
             else:
                 await self.send(text_data=json.dumps({
                     'type': 'error',
@@ -459,8 +467,8 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             destination_address=trip.destination_address or '',
             radius=radius,
             vehicle_type=vt_name,
-            distance_km=trip.distance_km,
-            duration_min=trip.duration_min,
+            distance_km=trip.estimated_distance_km,
+            duration_min=trip.estimated_duration_min,
             payment_method=trip.payment_method
         )
 
@@ -696,6 +704,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
                     destination_address=destination_address,
                     estimated_fare=fare['total_fare'],
                     estimated_distance_km=Decimal(str(dist)) if dist else None,
+                    estimated_duration_min=Decimal(str(dur)) if dur else None,
                     surge_multiplier=fare['surge_multiplier'],
                     requested_vehicle_type=requested_vt,
                     payment_method=payment_method,
@@ -1164,7 +1173,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
         try:
             with transaction.atomic():
-                trip = Trip.objects.select_for_update().get(id=self.trip_id)
+                trip = Trip.objects.select_for_update(of=('self',)).get(id=self.trip_id)
 
                 # Check if already accepted
                 if trip.driver_id is not None:
@@ -1193,8 +1202,8 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                 # rides.
                 try:
                     driver = (
-                        Driver.objects.select_for_update()
-                        .select_related('user_id', 'active_vehicle')
+                        Driver.objects.select_for_update(of=('self',))
+                        .select_related('user_id')
                         .get(pk=self.user.driver.id)
                     )
                 except Driver.DoesNotExist:
@@ -1338,7 +1347,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
         try:
             with transaction.atomic():
                 trip = (
-                    Trip.objects.select_for_update()
+                    Trip.objects.select_for_update(of=('self',))
                     .select_related('status_id')
                     .get(id=self.trip_id)
                 )
@@ -1412,7 +1421,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
         try:
             with transaction.atomic():
                 # select_for_update() locks the row until the transaction ends
-                trip = Trip.objects.select_for_update().get(id=self.trip_id)
+                trip = Trip.objects.select_for_update(of=('self',)).get(id=self.trip_id)
                 current_status = trip.status_id.status_code if trip.status_id else None
 
                 # Define strict transition rules
@@ -1687,45 +1696,38 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
 class AdminDashboardConsumer(AsyncWebsocketConsumer):
     """
-    WebSocket consumer for Admin Fleet Monitor & Dashboard God View.
+    WebSocket consumer for Admin Dashboard real-time driver locations.
     
-    Connect: ws://host/ws/admin/dashboard/ (supports session cookie and ?token=<jwt>)
-    Broadcasts:
-      - initial_drivers: snapshot of currently active drivers upon connection
-      - driver_location_update: real-time telemetry from online drivers
-      - driver_status_update: online/offline/busy state changes
-      - trip_status_update: real-time trip status updates
+    Connect: ws://host/ws/admin/live-locations/?token=<jwt>
     """
-
+    
     async def connect(self):
-        self.user = self.scope.get('user', AnonymousUser())
+        self.user = self.scope.get('user')
 
         if isinstance(self.user, AnonymousUser) or not self.user.is_authenticated:
-            logger.info("WS reject 4001: unauthenticated admin dashboard socket")
+            logger.info("WS reject 4001: unauthenticated socket")
             await self.close(code=4001)
             return
 
-        is_admin = await self._is_admin()
-        if not is_admin:
-            logger.info("WS reject 4003: non-admin user attempted to connect to admin dashboard")
+        if not (self.user.is_staff or self.user.is_superuser):
+            logger.info("WS reject 4003: user is not an admin")
             await self.close(code=4003)
             return
 
+        # Accept the connection
+        await self.accept()
+        
+        # Add to the admin_dashboard group
         self.admin_group = 'admin_dashboard'
         await self.channel_layer.group_add(self.admin_group, self.channel_name)
 
-        await self.accept()
+        # Send initial snapshot of all drivers
+        from servers.redis_client import get_all_active_drivers
+        drivers = await database_sync_to_async(get_all_active_drivers)()
+        
         await self.send(text_data=json.dumps({
-            'type': 'connection_established',
-            'message': 'Connected to live fleet telemetry stream',
-        }))
-
-        # Send initial snapshot of all active/online drivers
-        initial_drivers = await self._get_initial_drivers()
-        await self.send(text_data=json.dumps({
-            'type': 'initial_drivers',
-            'drivers': initial_drivers,
-            'count': len(initial_drivers),
+            'type': 'initial_locations',
+            'drivers': drivers
         }))
 
     async def disconnect(self, close_code):
@@ -1733,101 +1735,13 @@ class AdminDashboardConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_discard(self.admin_group, self.channel_name)
 
     async def receive(self, text_data):
-        """
-        Admin client can send ping or request refreshed driver list.
-        """
-        try:
-            data = json.loads(text_data)
-            action = data.get('action')
-            if action == 'ping':
-                await self.send(text_data=json.dumps({'type': 'pong'}))
-            elif action == 'refresh':
-                initial_drivers = await self._get_initial_drivers()
-                await self.send(text_data=json.dumps({
-                    'type': 'initial_drivers',
-                    'drivers': initial_drivers,
-                    'count': len(initial_drivers),
-                }))
-        except Exception as e:
-            logger.error(f"Error in AdminDashboardConsumer.receive: {e}")
-
-    # -- Channel layer event handlers --
+        # Admin doesn't send data in this MVP
+        pass
 
     async def driver_location_update(self, event):
-        """Send live driver GPS update to admin."""
-        await self.send(text_data=json.dumps({
-            'type': 'driver_location_update',
-            'driver_id': event['driver_id'],
-            'driver_name': event.get('driver_name', f"Driver {event['driver_id']}"),
-            'phone_number': event.get('phone_number', ''),
-            'ratings': event.get('ratings', '0.00'),
-            'vehicle_model': event.get('vehicle_model', ''),
-            'vehicle_number': event.get('vehicle_number', ''),
-            'lat': event['lat'],
-            'lng': event['lng'],
-            'status': event.get('status', 'online'),
-            'active_trip_id': event.get('active_trip_id'),
-        }))
-
-    async def driver_status_update(self, event):
-        """Send driver online/offline/busy status update to admin."""
-        await self.send(text_data=json.dumps({
-            'type': 'driver_status_update',
-            'driver_id': event['driver_id'],
-            'status': event['status'],
-        }))
-
-    async def trip_status_update(self, event):
-        """Send trip status updates to admin."""
-        await self.send(text_data=json.dumps({
-            'type': 'trip_status_update',
-            'trip_id': event.get('trip_id'),
-            'status': event.get('status'),
-            'message': event.get('message', ''),
-            'driver_id': event.get('driver_id'),
-        }))
-
-    # -- Database helpers --
-
-    @database_sync_to_async
-    def _is_admin(self):
-        try:
-            if not self.user or not self.user.is_authenticated:
-                return False
-            role = str(getattr(self.user, 'role', '') or '').strip().lower()
-            return (
-                role in ('admin', 'staff')
-                or getattr(self.user, 'is_staff', False)
-                or getattr(self.user, 'is_superuser', False)
-            )
-        except Exception as e:
-            logger.error(f"_is_admin check error: {e}")
-            return False
-
-    @database_sync_to_async
-    def _get_initial_drivers(self):
-        from servers.redis_client import get_all_online_drivers
-        from servers.driver.models import Driver
-        try:
-            redis_drivers = get_all_online_drivers()
-            driver_map = {d['driver_id']: d for d in redis_drivers}
-            
-            # Enrich with driver profiles from database
-            driver_ids = list(driver_map.keys())
-            if driver_ids:
-                qs = Driver.objects.filter(id__in=driver_ids).select_related('user_id', 'active_vehicle')
-                for d in qs:
-                    info = driver_map.get(d.id)
-                    if info:
-                        info['driver_name'] = d.user_id.full_name or d.user_id.phone_number or f"Driver {d.id}"
-                        info['phone_number'] = d.user_id.phone_number or ''
-                        info['ratings'] = str(d.ratings or '0.00')
-                        if d.active_vehicle:
-                            info['vehicle_model'] = d.active_vehicle.model or ''
-                            info['vehicle_number'] = d.active_vehicle.vehicle_number or ''
-            return list(driver_map.values())
-        except Exception as e:
-            logger.error(f"Error getting initial drivers in AdminDashboardConsumer: {e}")
-            return []
+        """
+        Forward driver location updates to the admin client.
+        """
+        await self.send(text_data=json.dumps(event))
 
 

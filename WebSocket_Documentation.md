@@ -5,7 +5,7 @@ It details the sequence of events, connections, request payloads, and server-emi
 
 ---
 
-## 1. Driver Location System (`DriverLocationConsumer`)
+## 1. Driver Location System (``)
 This consumer tracks the driver's real-time live location, activates them to an "online" status upon connection, and receives incoming ride requests.
 
 **Endpoint:** `ws://<host>/ws/driver/location/?token=<JWT>&lat=<lat>&lng=<lng>`

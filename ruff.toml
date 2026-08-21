@@ -13,13 +13,15 @@
 
 target-version = "py312"
 line-length = 120
-
 exclude = [
     ".git",
     "__pycache__",
+    ".venv",
+    "venv",
     "staticfiles",
     "*/migrations/*",
 ]
+
 
 [lint]
 select = [

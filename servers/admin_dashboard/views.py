@@ -6,13 +6,14 @@ from django.contrib.auth import authenticate, login as auth_login, logout as aut
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
 # from servers.driver.admin_utils import list_drivers_admin
-from servers.driver.models import Driver,WithdrawalRequest
 from servers.support.models import SupportTicket
 from django.core.paginator import Paginator
-from servers.ride.models import FarePricing, Trip
 from django.db import models
 from django.db.models.functions import Coalesce
 from django.db.models import (Avg,Count, Q,Sum,F,Value,DecimalField,)
+from servers.driver.models import Driver, WithdrawalRequest
+from servers.ride.models import FarePricing, Trip
+from servers.pricing.services import commission_percent_for_trip
 def admin_required(view_func):
     """
     Decorator for admin dashboard views.
@@ -194,17 +195,21 @@ def payment_dashboard(request: HttpRequest) -> HttpResponse:
     page_obj = paginator.get_page(page_number)
     print(page_obj)
     return render(request, "admin_pages/payment_dashboard.html",{"total_payments": total_gross_revenue, "completed_count": completed_count, "cancelled_count": cancelled_count, "page_obj": page_obj})
-
-
 @admin_required
 def executive_revenue(request: HttpRequest) -> HttpResponse:
     tz = timezone.get_current_timezone()
+
     start_date = (request.GET.get("start_date") or "").strip()
     end_date = (request.GET.get("end_date") or "").strip()
+
+    # ---------------------------------------------------------
+    # DATE PARSER
+    # ---------------------------------------------------------
 
     def parse_date(value: str):
         if not value:
             return None
+
         try:
             return datetime.strptime(value, "%Y-%m-%d").date()
         except ValueError:
@@ -212,94 +217,240 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
 
     start_day = parse_date(start_date)
     end_day = parse_date(end_date)
+
     # ---------------------------------------------------------
     # 1. BASE QUERY - COMPLETED TRIPS
     # ---------------------------------------------------------
 
-    trip_qs = Trip.objects.filter(status_id__status_code="completed")
-    if start_day:
-        start_dt = timezone.make_aware(datetime.combine(start_day, time.min), tz)
-        trip_qs = trip_qs.filter(completed_at__gte=start_dt)
-    if end_day:
-        end_dt = timezone.make_aware(datetime.combine(end_day + timedelta(days=1), time.min), tz)
-        trip_qs = trip_qs.filter(completed_at__lt=end_dt)
+    trip_qs = Trip.objects.filter(
+        status_id__status_code="completed"
+    )
 
-    completed_trips = trip_qs.select_related("requested_vehicle_type", "vehicle_id__vehicle_type_id")
+    if start_day:
+        start_dt = timezone.make_aware(
+            datetime.combine(start_day, time.min),
+            tz
+        )
+
+        trip_qs = trip_qs.filter(
+            completed_at__gte=start_dt
+        )
+
+    if end_day:
+        end_dt = timezone.make_aware(
+            datetime.combine(
+                end_day + timedelta(days=1),
+                time.min
+            ),
+            tz
+        )
+
+        trip_qs = trip_qs.filter(
+            completed_at__lt=end_dt
+        )
+
+    completed_trips = trip_qs.select_related(
+        "requested_vehicle_type",
+        "vehicle_id__vehicle_type_id",
+    )
+
     # ---------------------------------------------------------
     # 2. TOTAL RIDES
     # ---------------------------------------------------------
 
     total_rides = completed_trips.count()
+
     # ---------------------------------------------------------
-    # 3. GROSS BOOKING VALUE
+    # 3. CALCULATE REVENUE PER TRIP
+    #
+    # Priority:
+    #     1. final_fare
+    #     2. estimated_fare
+    #     3. 0
     # ---------------------------------------------------------
 
-    gbv = completed_trips.aggregate(total=models.Sum("final_fare"))["total"] or Decimal("0.00")
-    gbv = Decimal(str(gbv)) if not isinstance(gbv, Decimal) else gbv
+    trip_revenues = []
+
+    for trip in completed_trips:
+
+        # Use final fare when available
+        fare = trip.final_fare
+
+        # Fall back to estimated fare
+        if fare is None:
+            fare = trip.estimated_fare
+
+        # If both are empty, use zero
+        fare = Decimal(str(fare or "0.00"))
+
+        # -----------------------------------------------------
+        # VEHICLE CLASS
+        #
+        # Prefer requested vehicle type.
+        # Fall back to actual vehicle type.
+        # -----------------------------------------------------
+
+        vehicle_type = trip.requested_vehicle_type
+
+        if not vehicle_type and trip.vehicle_id:
+            vehicle_type = trip.vehicle_id.vehicle_type_id
+
+        if vehicle_type:
+            vehicle_name = (
+                getattr(vehicle_type, "type", None)
+                or "Unknown"
+            )
+        else:
+            vehicle_name = "Unknown"
+
+        trip_revenues.append({
+            "trip": trip,
+            "trip_id": trip.pk,
+            "vehicle": vehicle_name,
+            "fare": fare,
+            "completed_at": trip.completed_at,
+        })
+
     # ---------------------------------------------------------
-    # 4. PLATFORM REVENUE
+    # 4. GROSS BOOKING VALUE
     # ---------------------------------------------------------
-    platform_revenue = gbv * Decimal("0.15")
-    take_rate = 15.0
+
+    gbv = sum(
+        item["fare"]
+        for item in trip_revenues
+    )
+
+    gbv = Decimal(str(gbv or "0.00"))
+
     # ---------------------------------------------------------
-    # 5. TOTAL / UTILIZED DRIVERS
+    # 5. PLATFORM REVENUE
+    # ---------------------------------------------------------
+
+
+    platform_revenue = Decimal("0.00")
+    total_commission_rate = Decimal("0.00")
+
+    for item in trip_revenues:
+
+        trip = item["trip"]
+        fare = item["fare"]
+
+    # Get commission rate from the trip's RateCard
+        commission_rate = commission_percent_for_trip(trip)
+
+        commission_rate = Decimal(
+            str(commission_rate or "0.00"))
+
+    # Calculate platform commission for this trip
+        commission = (fare * commission_rate / Decimal("100")).quantize(Decimal("0.01"))
+        platform_revenue += commission
+
+        total_commission_rate += (commission_rate * fare )
+
+# Weighted average take rate across completed trips
+    if gbv > 0:
+        take_rate = (
+            total_commission_rate / gbv
+        ).quantize(
+            Decimal("0.1")
+        )
+    else:
+        take_rate = Decimal("0.0")
+
+    
+
+    # ---------------------------------------------------------
+    # 6. TOTAL / UTILIZED DRIVERS
     # ---------------------------------------------------------
 
     total_drivers = Driver.objects.count()
-    utilized_drivers = (
-        completed_trips.exclude(driver_id__isnull=True)
-        .values_list("driver_id", flat=True)
-        .distinct()
-        .count() if total_rides else 0
+
+    if total_rides:
+        utilized_drivers = (
+            completed_trips
+            .exclude(driver_id__isnull=True)
+            .values_list("driver_id", flat=True)
+            .distinct()
+            .count()
+        )
+    else:
+        utilized_drivers = 0
+
+    fleet_utilization = round(
+        (
+            utilized_drivers / total_drivers * 100
+        )
+        if total_drivers
+        else 0,
+        1,
     )
-    fleet_utilization = round((utilized_drivers / total_drivers * 100) if total_drivers else 0, 1)
+
     # ---------------------------------------------------------
-    # 6. REVENUE BY VEHICLE CLASS
-    # ----------------------
+    # 7. REVENUE BY VEHICLE CLASS
+    # ---------------------------------------------------------
+
     bucketed = {}
-    for trip in completed_trips:
-        vehicle_type = None
-        if trip.vehicle_id and trip.vehicle_id.vehicle_type_id:
-            vehicle_type = trip.vehicle_id.vehicle_type_id
-        elif trip.requested_vehicle_type:
-            vehicle_type = trip.requested_vehicle_type
 
-        if not vehicle_type:
-            continue
+    for item in trip_revenues:
 
-        name = getattr(vehicle_type, "type", None) or "Unknown"
-        revenue = Decimal(str(trip.final_fare or Decimal("0.00")))
-        bucketed[name] = bucketed.get(name, Decimal("0.00")) + revenue
+        vehicle_name = item["vehicle"]
+        fare = item["fare"]
+
+        bucketed[vehicle_name] = (
+            bucketed.get(
+                vehicle_name,
+                Decimal("0.00")
+            )
+            + fare
+        )
+
+    # ---------------------------------------------------------
+    # 8. FORMAT VEHICLE CLASS BREAKDOWN
+    # ---------------------------------------------------------
 
     aggregated_breakdown = []
-    for name, revenue in sorted(bucketed.items(), key=lambda item: item[1], reverse=True):
-        pct = round((revenue / gbv * 100) if gbv else 0, 1)
+
+    for name, revenue in sorted(
+        bucketed.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    ):
+
+        if gbv > 0:
+            pct = round(
+                (revenue / gbv * 100),
+                1,
+            )
+        else:
+            pct = 0
+
         aggregated_breakdown.append({
             "name": name,
             "revenue": revenue,
             "pct": pct,
         })
 
-      # ---------------------------------------------------------
-    # 7. MONTHLY REVENUE
+    # ---------------------------------------------------------
+    # 9. MONTHLY REVENUE
+    #
+    # IMPORTANT:
+    # Uses the SAME final_fare -> estimated_fare fallback
+    # as GBV and vehicle-class revenue.
     # ---------------------------------------------------------
 
     monthly_data = {}
 
-    for trip in completed_trips:
+    for item in trip_revenues:
 
-        if not trip.completed_at:
+        completed_at = item["completed_at"]
+
+        if not completed_at:
             continue
 
-        month_key = trip.completed_at.strftime("%Y-%m")
-        month_name = trip.completed_at.strftime("%b %Y")
+        month_key = completed_at.strftime("%Y-%m")
+        month_name = completed_at.strftime("%b %Y")
 
-        fare = Decimal(
-            str(
-                trip.final_fare
-                or Decimal("0.00")
-            )
-        )
+        fare = item["fare"]
 
         if month_key not in monthly_data:
             monthly_data[month_key] = {
@@ -313,11 +464,11 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
 
     monthly_revenue = sorted(
         monthly_data.values(),
-        key=lambda x: x["month"]
+        key=lambda x: x["month"],
     )
 
     # ---------------------------------------------------------
-    # 8. MONTH-OVER-MONTH GROWTH
+    # 10. MONTH-OVER-MONTH GROWTH
     # ---------------------------------------------------------
 
     growth_trajectory = []
@@ -328,10 +479,15 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
 
         current_revenue = item["revenue"]
 
-        if previous_revenue and previous_revenue > 0:
-
+        if (
+            previous_revenue is not None
+            and previous_revenue > 0
+        ):
             growth = (
-                (current_revenue - previous_revenue)
+                (
+                    current_revenue
+                    - previous_revenue
+                )
                 / previous_revenue
             ) * 100
 
@@ -350,7 +506,7 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
         previous_revenue = current_revenue
 
     # ---------------------------------------------------------
-    # 9. CURRENT MONTH GROWTH
+    # 11. CURRENT MONTH GROWTH
     # ---------------------------------------------------------
 
     revenue_growth = 0
@@ -363,14 +519,17 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
         if previous > 0:
             revenue_growth = round(
                 (
-                    (current - previous)
+                    (
+                        current
+                        - previous
+                    )
                     / previous
                 ) * 100,
-                1
+                1,
             )
 
     # ---------------------------------------------------------
-    # 10. BAR CHART DATA
+    # 12. BAR CHART DATA
     # ---------------------------------------------------------
 
     max_monthly_revenue = max(
@@ -378,7 +537,7 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
             item["revenue"]
             for item in monthly_revenue
         ),
-        default=Decimal("0.00")
+        default=Decimal("0.00"),
     )
 
     for item in monthly_revenue:
@@ -389,13 +548,13 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
                     item["revenue"]
                     / max_monthly_revenue
                 ) * 100,
-                1
+                1,
             )
         else:
             item["height"] = 0
 
     # ---------------------------------------------------------
-    # 11. CONTEXT
+    # 13. CONTEXT
     # ---------------------------------------------------------
 
     context = {
@@ -419,12 +578,7 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
         "revenue_growth": revenue_growth,
     }
 
-    return render(
-        request,
-        "admin_pages/executive_revenue.html",
-        context
-    )
-
+    return render(request,"admin_pages/executive_revenue.html",context,)
 @admin_required
 def driver_loyalty(request: HttpRequest) -> HttpResponse:
 
@@ -447,7 +601,7 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
                 "actual_distance_km",
                 "estimated_distance_km",
                 output_field=DecimalField(
-                    max_digits=10,
+                    max_digits=12,
                     decimal_places=2,
                 ),
             )
@@ -460,12 +614,16 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
                 "final_fare",
                 "estimated_fare",
                 output_field=DecimalField(
-                    max_digits=10,
+                    max_digits=12,
                     decimal_places=2,
                 ),
             )
         )
     )["total"] or Decimal("0")
+
+    # ==========================================================
+    # ACTIVE LOYALTY DRIVERS
+    # ==========================================================
 
     active_loyalty_drivers = Driver.objects.filter(
         approved=True,
@@ -477,79 +635,83 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
         ],
     ).count()
 
+    # ==========================================================
+    # AVERAGE DRIVER RATING
+    # ==========================================================
+
     avg_rating = Driver.objects.aggregate(
         average=Avg("ratings")
     )["average"] or Decimal("0")
 
     # ==========================================================
-    # FLEET ACCEPTANCE RATE
+    # FLEET COMPLETION RATE
     # ==========================================================
 
-    total_requested = Trip.objects.filter(
+    total_assigned = Trip.objects.filter(
         driver_id__isnull=False
     ).count()
 
-    accepted_trips = Trip.objects.filter(
-        driver_id__isnull=False,
-        status_id__status_code__in=[
-            "accepted",
-            "reached",
-            "in_progress",
-            "completed",
-        ],
-    ).count()
+    completed_count = completed_trips.count()
 
-    if total_requested:
-        fleet_acceptance = (
-            accepted_trips / total_requested
+    if total_assigned > 0:
+        fleet_completion_rate = (
+            completed_count / total_assigned
         ) * 100
     else:
-        fleet_acceptance = 0
+        fleet_completion_rate = 0
 
     # ==========================================================
-    # GOLDEN MILES PROGRESS
+    # GOLDEN MILES / LOYALTY TARGET
     # ==========================================================
 
-    # Example monthly target.
-    # Change this value according to your business requirement.
-    monthly_target_km = Decimal("100000")
+    # Monthly fleet target.
+    # Change this value based on your actual business target.
+    monthly_target_miles = Decimal("100000")
 
     goal_percentage = (
-        total_miles / monthly_target_km
-    ) * 100 if monthly_target_km else Decimal("0")
+        total_miles / monthly_target_miles
+    ) * 100 if monthly_target_miles else Decimal("0")
 
-    goal_percentage = min(goal_percentage, Decimal("100"))
+    goal_percentage = min(
+        goal_percentage,
+        Decimal("100")
+    )
 
     remaining_target = max(
-        monthly_target_km - total_miles,
+        monthly_target_miles - total_miles,
         Decimal("0"),
     )
 
     # ==========================================================
-    # LOYALTY INCENTIVE
+    # FLEET LOYALTY TIER
     # ==========================================================
 
     if goal_percentage >= 100:
+
         loyalty_tier = "DIAMOND ELITE"
         unlocked_incentive = "Fuel Rebate 12%"
         next_milestone = "Premium Fleet Benefits"
 
     elif goal_percentage >= 75:
+
         loyalty_tier = "PLATINUM"
         unlocked_incentive = "Fuel Rebate 8%"
         next_milestone = "Fuel Rebate 12%"
 
     elif goal_percentage >= 50:
+
         loyalty_tier = "GOLD"
         unlocked_incentive = "Fuel Rebate 5%"
         next_milestone = "Fuel Rebate 8%"
 
     elif goal_percentage >= 25:
+
         loyalty_tier = "SILVER"
         unlocked_incentive = "Priority Support"
         next_milestone = "Fuel Rebate 5%"
 
     else:
+
         loyalty_tier = "BRONZE"
         unlocked_incentive = "Basic Loyalty Benefits"
         next_milestone = "Priority Support"
@@ -562,6 +724,11 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
         Driver.objects
         .select_related("user_id")
         .annotate(
+
+            # ----------------------------------------------
+            # COMPLETED TRIPS
+            # ----------------------------------------------
+
             completed_trip_count=Count(
                 "trips",
                 filter=Q(
@@ -570,46 +737,62 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
                 distinct=True,
             ),
 
-            revenue=Coalesce(
-                Sum(
+            # ----------------------------------------------
+            # REVENUE
+            # ----------------------------------------------
+
+            revenue=Sum(
+                Coalesce(
                     "trips__final_fare",
-                    filter=Q(
-                        trips__status_id__status_code="completed"
+                    "trips__estimated_fare",
+                    output_field=DecimalField(
+                        max_digits=12,
+                        decimal_places=2,
                     ),
                 ),
-                Value(Decimal("0")),
-                output_field=DecimalField(
-                    max_digits=12,
-                    decimal_places=2,
+                filter=Q(
+                    trips__status_id__status_code="completed"
                 ),
             ),
 
-            distance_km=Coalesce(
-                Sum(
+            # ----------------------------------------------
+            # DISTANCE
+            # ----------------------------------------------
+
+            distance_km=Sum(
+                Coalesce(
                     "trips__actual_distance_km",
-                    filter=Q(
-                        trips__status_id__status_code="completed"
+                    "trips__estimated_distance_km",
+                    output_field=DecimalField(
+                        max_digits=12,
+                        decimal_places=2,
                     ),
                 ),
-                Value(Decimal("0")),
-                output_field=DecimalField(
-                    max_digits=12,
-                    decimal_places=2,
+                filter=Q(
+                    trips__status_id__status_code="completed"
                 ),
             ),
         )
-        .order_by("-completed_trip_count", "-ratings")
+        .order_by(
+            "-completed_trip_count",
+            "-ratings",
+        )
     )
 
     # ==========================================================
     # PAGINATION
     # ==========================================================
 
-    paginator = Paginator(drivers_qs, 12)
+    paginator = Paginator(
+        drivers_qs,
+        12
+    )
 
     page_number = request.GET.get("page")
 
-    page_obj = paginator.get_page(page_number)
+    page_obj = paginator.get_page(
+        page_number
+    )
 
     # ==========================================================
     # DRIVER CARD DATA
@@ -620,46 +803,72 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
     for driver in page_obj:
 
         trips = driver.completed_trip_count or 0
+
         rating = driver.ratings or Decimal("0")
+
         revenue = driver.revenue or Decimal("0")
+
         distance = driver.distance_km or Decimal("0")
 
-        # Driver-specific loyalty tier
+        # ----------------------------------------------
+        # DRIVER LOYALTY TIER
+        # ----------------------------------------------
+
         if trips >= 500:
+
             driver_tier = "PLATINUM"
 
         elif trips >= 250:
+
             driver_tier = "GOLD"
 
         elif trips >= 100:
+
             driver_tier = "SILVER"
 
         else:
+
             driver_tier = "BRONZE"
 
+        # ----------------------------------------------
+        # DRIVER NAME
+        # ----------------------------------------------
+
+        if driver.user_id.full_name:
+
+            driver_name = driver.user_id.full_name
+
+        else:
+
+            driver_name = driver.user_id.phone_number
+
+        # ----------------------------------------------
+        # DRIVER DATA
+        # ----------------------------------------------
+
         drivers.append({
+
             "id": driver.id,
 
-            "name": (
-                driver.user_id.full_name
-                if driver.user_id.full_name
-                else driver.user_id.phone_number
-            ),
+            "name": driver_name,
 
             "loyalty_tier": driver_tier,
 
-            "rating": round(float(rating), 2),
+            "rating": round(
+                float(rating),
+                2
+            ),
 
             "total_trips": trips,
 
-            "total_revenue": round(
-                float(revenue),
-                2,
-            ),
-
             "total_distance": round(
                 float(distance),
-                2,
+                2
+            ),
+
+            "total_revenue": round(
+                float(revenue),
+                2
             ),
 
             "status": driver.status,
@@ -673,64 +882,91 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
 
     context = {
 
+        # ----------------------------------------------
+        # DRIVERS
+        # ----------------------------------------------
+
         "drivers": drivers,
 
         "page_obj": page_obj,
 
-        # Fleet statistics
+        # ----------------------------------------------
+        # TOP KPI
+        # ----------------------------------------------
+
         "total_miles": round(
             float(total_miles),
-            2,
+            2
         ),
 
-        "active_loyalty_drivers":
-            active_loyalty_drivers,
+        "active_loyalty_drivers": active_loyalty_drivers,
 
-        "avg_rating": round(
-            float(avg_rating),
-            2,
-        ),
+        # ----------------------------------------------
+        # REVENUE
+        # ----------------------------------------------
 
         "total_revenue": round(
             float(total_revenue),
-            2,
+            2
         ),
 
-        # Acceptance
-        "fleet_acceptance": round(
-            fleet_acceptance,
-            1,
+        # ----------------------------------------------
+        # RATING
+        # ----------------------------------------------
+
+        "average_rating": round(
+            float(avg_rating),
+            2
         ),
 
-        # Loyalty
+        # ----------------------------------------------
+        # COMPLETION
+        # ----------------------------------------------
+
+        "fleet_completion_rate": round(
+            float(fleet_completion_rate),
+            1
+        ),
+
+        # ----------------------------------------------
+        # GOLDEN MILES
+        # ----------------------------------------------
+
         "goal_percentage": round(
             float(goal_percentage),
-            1,
+            1
         ),
+
+        "monthly_target_miles": round(
+            float(monthly_target_miles),
+            2
+        ),
+
+        "remaining_target": round(
+            float(remaining_target),
+            2
+        ),
+
+        # ----------------------------------------------
+        # LOYALTY
+        # ----------------------------------------------
 
         "loyalty_tier": loyalty_tier,
 
-        "unlocked_incentive":
-            unlocked_incentive,
+        "unlocked_incentive": unlocked_incentive,
 
-        "next_milestone":
-            next_milestone,
-
-        "remaining_target":
-            round(
-                float(remaining_target),
-                2,
-            ),
+        "next_milestone": next_milestone,
     }
+
+    # ==========================================================
+    # RENDER
+    # ==========================================================
 
     return render(
         request,
         "admin_pages/driver_loyalty.html",
         context,
     )
-   
-
-
 @admin_required
 def fare_surge(request: HttpRequest) -> HttpResponse:
     return render(request, "admin_pages/fare_surge.html")

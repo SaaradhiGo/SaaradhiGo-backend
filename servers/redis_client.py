@@ -571,6 +571,52 @@ def remove_driver(driver_id):
         return {"success": False, "error": "An unexpected error occurred"}
 
 
+def get_all_online_drivers():
+    """
+    Retrieve current coordinates and status for all active/online drivers.
+
+    Returns:
+        list: List of dicts with driver_id, lat, lng, status, vehicle_type
+    """
+    if redis_client is None:
+        return []
+    drivers = []
+    seen_driver_ids = set()
+    try:
+        for key in redis_client.scan_iter(match=f'{GEO_KEY_PREFIX}*', count=100):
+            members = redis_client.zrange(key, 0, -1) or []
+            for member in members:
+                # member format: driver:<driver_id>:<vehicle_type>
+                parts = member.split(':')
+                if len(parts) >= 2:
+                    driver_id_str = parts[1]
+                    try:
+                        driver_id = int(driver_id_str)
+                    except ValueError:
+                        continue
+                    if driver_id in seen_driver_ids:
+                        continue
+                    if not redis_client.exists(f'{HEARTBEAT_PREFIX}{driver_id}'):
+                        continue
+                    pos = redis_client.geopos(key, member)
+                    if pos and pos[0]:
+                        lng, lat = pos[0]
+                        active_trip_id = get_driver_active_trip(driver_id)
+                        vehicle_type = parts[2] if len(parts) >= 3 else get_driver_vehicle_type(driver_id)
+                        seen_driver_ids.add(driver_id)
+                        drivers.append({
+                            'driver_id': driver_id,
+                            'lat': lat,
+                            'lng': lng,
+                            'status': 'busy' if active_trip_id else 'online',
+                            'active_trip_id': active_trip_id,
+                            'vehicle_type': vehicle_type,
+                        })
+    except Exception as exc:
+        logger.error(f"Error fetching online drivers from Redis: {exc}")
+    return drivers
+
+
 def publish_ride_request(ride_id, rider_id, pickup_lng, pickup_lat, destination_lng, destination_lat):
     """
     Publish a ride request to Redis Stream for future analytics.

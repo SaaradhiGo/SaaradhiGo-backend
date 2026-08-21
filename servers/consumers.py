@@ -47,6 +47,7 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
         lng = self.scope.get('lng')
         if not(lat and lng):
             await self.close(code=4003)
+            return
         self.driver_id = self.driver.id
         self.driver_group = f'driver_{self.driver_id}'
         
@@ -62,11 +63,21 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
         
         await self._add_driver_location(lng, lat)
         
-            
         # Join driver's personal group (for receiving ride requests)
         await self.channel_layer.group_add(self.driver_group, self.channel_name)
         # Join global online drivers group
         await self.channel_layer.group_add('online_drivers', self.channel_name)
+
+        # Notify admin dashboard of online driver
+        driver_details = await self._get_driver_broadcast_info()
+        driver_details.update({
+            'type': 'driver_location_update',
+            'driver_id': self.driver_id,
+            'lat': float(lat),
+            'lng': float(lng),
+            'status': 'online',
+        })
+        await self.channel_layer.group_send('admin_dashboard', driver_details)
 
     async def disconnect(self, close_code):
         if hasattr(self, 'driver_id'):
@@ -76,6 +87,12 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_discard('online_drivers', self.channel_name)
             # Remove from Redis geo index
             await self._remove_driver_location()
+            # Notify admin dashboard that driver went offline
+            await self.channel_layer.group_send('admin_dashboard', {
+                'type': 'driver_status_update',
+                'driver_id': self.driver_id,
+                'status': 'offline',
+            })
             logger.info(f"Driver {self.driver_id} disconnected")
 
     async def receive(self, text_data):
@@ -105,8 +122,20 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
                     'lat': lat,
                 }))
                 
-                # If driver is on an active trip, stream location to the rider
+                # Stream location to admin dashboard for real-time fleet monitor
                 active_trip_id = result.get('active_trip_id')
+                driver_details = await self._get_driver_broadcast_info()
+                driver_details.update({
+                    'type': 'driver_location_update',
+                    'driver_id': self.driver_id,
+                    'lat': lat,
+                    'lng': lng,
+                    'status': 'busy' if active_trip_id else 'online',
+                    'active_trip_id': active_trip_id,
+                })
+                await self.channel_layer.group_send('admin_dashboard', driver_details)
+
+                # If driver is on an active trip, stream location to the rider
                 if active_trip_id:
                     await self.channel_layer.group_send(f'trip_{active_trip_id}', {
                         'type': 'driver_location_update',
@@ -178,6 +207,28 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
         except Exception as e:
             logger.debug("driver lookup failed: %s", e)
             return None
+
+    @database_sync_to_async
+    def _get_driver_broadcast_info(self):
+        try:
+            driver = self.user.driver
+            vehicle = getattr(driver, 'active_vehicle', None)
+            return {
+                'driver_name': str(self.user.full_name or self.user.phone_number or f'Driver {driver.id}'),
+                'phone_number': str(self.user.phone_number or ''),
+                'ratings': str(driver.ratings or '0.00'),
+                'vehicle_model': str(vehicle.model if vehicle else ''),
+                'vehicle_number': str(vehicle.vehicle_number if vehicle else ''),
+            }
+        except Exception as e:
+            logger.debug("driver broadcast info lookup failed: %s", e)
+            return {
+                'driver_name': f'Driver {getattr(self, "driver_id", "")}',
+                'phone_number': '',
+                'ratings': '0.00',
+                'vehicle_model': '',
+                'vehicle_number': '',
+            }
     @database_sync_to_async
     def _active_the_driver(self):
         """Flip the driver online + open a DriverSession.

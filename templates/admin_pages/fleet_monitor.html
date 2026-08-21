@@ -386,131 +386,290 @@ font-family: 'Manrope', sans-serif;
     }
 
     // ---- WebSocket live driver tracking ----
-    // const socket = new WebSocket(
-    //     (window.location.protocol === 'https:' ? 'wss://' : 'ws://')
-    //     + window.location.host
-    //     + '/ws/admin/dashboard/'
-    // );
+    const driverFeed = document.getElementById('driver-feed');
+    const drivers = new Map();
+    let socket = null;
+    let reconnectAttempts = 0;
+    let reconnectTimer = null;
+    const MAX_RECONNECT_ATTEMPTS = 50;
+    const BASE_RECONNECT_DELAY_MS = 1000;
+    const MAX_RECONNECT_DELAY_MS = 15000;
 
-    // const driverFeed = document.getElementById('driver-feed');
-    // const drivers = new Map();
+    function getWebSocketUrl() {
+        const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        const host = window.location.host;
+        // Check for token in storage if available; Django session cookie handles auth by default
+        const token = localStorage.getItem('access_token') || sessionStorage.getItem('access_token') || '';
+        const query = token ? `?token=${encodeURIComponent(token)}` : '';
+        return `${protocol}${host}/ws/admin/dashboard/${query}`;
+    }
 
-    // socket.onopen = function (e) {
-    //     document.getElementById('connection-status-text').innerText = 'Live Mode';
-    //     document.getElementById('connection-status-dot').classList.remove('bg-error');
-    //     document.getElementById('connection-status-dot').classList.add('bg-primary');
-    //     document.getElementById('connection-status-pulse').classList.remove('bg-error');
-    //     document.getElementById('connection-status-pulse').classList.add('bg-primary');
-    //     document.getElementById('ticker-status').innerText = 'NOMINAL';
-    //     document.getElementById('status-dot-indicator').classList.remove('bg-error');
-    //     document.getElementById('status-dot-indicator').classList.add('bg-emerald-500');
-    //     document.getElementById('status-dot-indicator').style.boxShadow = '0 0 8px rgba(16,185,129,0.6)';
-    //     console.log("WebSocket connected");
-    // };
+    function setConnectionStatus(status) {
+        const textEl = document.getElementById('connection-status-text');
+        const dotEl = document.getElementById('connection-status-dot');
+        const pulseEl = document.getElementById('connection-status-pulse');
+        const tickerStatusEl = document.getElementById('ticker-status');
+        const statusDotIndicator = document.getElementById('status-dot-indicator');
+        const latencyEl = document.getElementById('latency-indicator');
 
-    // socket.onmessage = function (e) {
-    //     const data = JSON.parse(e.data);
+        if (status === 'connected') {
+            if (textEl) textEl.innerText = 'Live Mode';
+            if (dotEl) { dotEl.classList.remove('bg-error'); dotEl.classList.add('bg-primary'); }
+            if (pulseEl) { pulseEl.classList.remove('bg-error'); pulseEl.classList.add('bg-primary'); }
+            if (tickerStatusEl) tickerStatusEl.innerText = 'NOMINAL';
+            if (statusDotIndicator) {
+                statusDotIndicator.classList.remove('bg-error');
+                statusDotIndicator.classList.add('bg-emerald-500');
+                statusDotIndicator.style.boxShadow = '0 0 8px rgba(16,185,129,0.6)';
+            }
+            if (latencyEl) {
+                const now = new Date();
+                latencyEl.innerText = 'Sync: ' + now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            }
+        } else if (status === 'connecting') {
+            if (textEl) textEl.innerText = 'Connecting...';
+            if (dotEl) { dotEl.classList.remove('bg-primary'); dotEl.classList.add('bg-error'); }
+            if (pulseEl) { pulseEl.classList.remove('bg-primary'); pulseEl.classList.add('bg-error'); }
+            if (tickerStatusEl) tickerStatusEl.innerText = 'CONNECTING';
+            if (statusDotIndicator) {
+                statusDotIndicator.classList.remove('bg-emerald-500');
+                statusDotIndicator.classList.add('bg-error');
+                statusDotIndicator.style.boxShadow = '0 0 8px rgba(255,0,0,0.6)';
+            }
+            if (latencyEl) latencyEl.innerText = 'Sync: ---';
+        } else {
+            if (textEl) textEl.innerText = 'Offline';
+            if (dotEl) { dotEl.classList.remove('bg-primary'); dotEl.classList.add('bg-error'); }
+            if (pulseEl) { pulseEl.classList.remove('bg-primary'); pulseEl.classList.add('bg-error'); }
+            if (tickerStatusEl) tickerStatusEl.innerText = 'OFFLINE';
+            if (statusDotIndicator) {
+                statusDotIndicator.classList.remove('bg-emerald-500');
+                statusDotIndicator.classList.add('bg-error');
+                statusDotIndicator.style.boxShadow = '0 0 8px rgba(255,0,0,0.6)';
+            }
+            if (latencyEl) latencyEl.innerText = 'Sync: Disconnected';
+        }
+    }
 
-    //     if (data.type === 'driver_location_update') {
-    //         updateDriverMarker(data);
-    //     }
-    // };
+    function connectWebSocket() {
+        if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+            return;
+        }
 
-    // // Open the Active Fleet sidebar (if collapsed) and scroll the
-    // // matching driver card into view, highlighting it briefly.
-    // function focusDriverInFeed(driver_id) {
-    //     const sidebar = document.getElementById('driver-feed');
-    //     if (sidebar) {
-    //         // Ensure the sidebar is visible (it is always rendered, but
-    //         // this also clears any "hidden" state just in case).
-    //         const aside = sidebar.closest('aside');
-    //         if (aside) aside.classList.remove('hidden');
-    //     }
-    //     const card = document.getElementById('driver-card-' + driver_id);
-    //     if (card && sidebar) {
-    //         card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    //         // Brief highlight pulse so the user notices which card was selected.
-    //         card.classList.add('ring-2', 'ring-primary/60', 'border-primary/40');
-    //         setTimeout(() => {
-    //             card.classList.remove('ring-2', 'ring-primary/60', 'border-primary/40');
-    //         }, 1600);
-    //     }
-    // }
+        setConnectionStatus('connecting');
+        const wsUrl = getWebSocketUrl();
+        console.log('[FleetMonitor] Connecting to WebSocket:', wsUrl);
 
-    // function updateDriverMarker(data) {
-    //     const { driver_id, lat, lng } = data;
-    //     let driver = drivers.get(driver_id);
+        try {
+            socket = new WebSocket(wsUrl);
+        } catch (err) {
+            console.error('[FleetMonitor] WebSocket instantiation error:', err);
+            scheduleReconnect();
+            return;
+        }
 
-    //     // Buffer updates until the map is ready, then flush.
-    //     if (!map) {
-    //         pendingUpdates.push(data);
-    //         return;
-    //     }
+        socket.onopen = function (e) {
+            console.log('[FleetMonitor] WebSocket connected successfully');
+            reconnectAttempts = 0;
+            setConnectionStatus('connected');
+        };
 
-    //     if (!driver) {
-    //         // Create Leaflet marker with custom gold icon
-    //         const marker = L.marker([lat, lng], {
-    //             icon: window.makeDriverIcon(),
-    //             title: 'DRIVER_' + driver_id,
-    //         }).addTo(map);
+        socket.onmessage = function (e) {
+            try {
+                const data = JSON.parse(e.data);
+                const now = new Date();
+                const latencyEl = document.getElementById('latency-indicator');
+                if (latencyEl) {
+                    latencyEl.innerText = 'Sync: ' + now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                }
 
-    //         marker.bindPopup(
-    //             `<div class="driver-marker-popup">`
-    //             + `<p class="text-[11px] font-headline font-extrabold text-primary tracking-tight">DRIVER_${driver_id}</p>`
-    //             + `<p class="text-[10px] font-label text-on-surface-variant mt-1">${lat.toFixed(4)}, ${lng.toFixed(4)}</p>`
-    //             + `</div>`
-    //         );
+                if (data.type === 'initial_drivers') {
+                    console.log(`[FleetMonitor] Received initial snapshot of ${data.drivers ? data.drivers.length : 0} drivers`);
+                    if (Array.isArray(data.drivers)) {
+                        data.drivers.forEach(driverData => updateDriverMarker(driverData));
+                    }
+                } else if (data.type === 'driver_location_update') {
+                    updateDriverMarker(data);
+                } else if (data.type === 'driver_status_update') {
+                    handleDriverStatusUpdate(data);
+                }
+            } catch (err) {
+                console.error('[FleetMonitor] Error parsing WebSocket message:', err, e.data);
+            }
+        };
 
-    //         // Clicking a marker on the map opens the Active Fleet sidebar
-    //         // and scrolls the matching driver card into view.
-    //         marker.on('click', () => focusDriverInFeed(driver_id));
+        socket.onclose = function (e) {
+            console.warn(`[FleetMonitor] WebSocket closed (code: ${e.code}, reason: ${e.reason || 'None'})`);
+            setConnectionStatus('offline');
+            scheduleReconnect();
+        };
 
-    //         // Create New Feed Card
-    //         const card = document.createElement('div');
-    //         card.id = 'driver-card-' + driver_id;
-    //         card.className = 'group p-4 bg-surface-container-low hover:bg-surface-container rounded-lg transition-all border border-transparent hover:border-primary/10 cursor-pointer';
-    //         card.innerHTML = `
-    //             <div class="flex items-start justify-between">
-    //                 <div class="flex items-center space-x-3">
-    //                     <div class="w-10 h-10 rounded-full bg-surface-container-highest flex items-center justify-center text-primary border border-outline-variant/20 overflow-hidden">
-    //                         <span class="material-symbols-outlined text-sm">person</span>
-    //                     </div>
-    //                     <div>
-    //                         <p class="text-xs font-headline font-bold text-on-surface group-hover:text-primary transition-colors">Driver ${driver_id}</p>
-    //                         <p class="text-[10px] font-label text-on-surface-variant flex items-center">
-    //                             <span class="material-symbols-outlined text-[10px] mr-1">pin_drop</span> Live Tracking
-    //                         </p>
-    //                     </div>
-    //                 </div>
-    //             </div>
-    //         `;
-    //         // Clicking a feed card flies the map to that driver.
-    //         card.addEventListener('click', () => {
-    //             const ll = driver.marker.getLatLng();
-    //             map.flyTo([ll.lat, ll.lng], Math.max(map.getZoom(), 14), { duration: 0.8 });
-    //             driver.marker.openPopup();
-    //         });
-    //         driverFeed.appendChild(card);
+        socket.onerror = function (e) {
+            console.error('[FleetMonitor] WebSocket error encountered:', e);
+            if (socket) socket.close();
+        };
+    }
 
-    //         driver = { marker, card };
-    //         drivers.set(driver_id, driver);
-    //     } else {
-    //         // Smoothly move existing marker to the new lat/lng
-    //         driver.marker.setLatLng([lat, lng]);
-    //         driver.marker.setPopupContent(
-    //             `<div class="driver-marker-popup">`
-    //             + `<p class="text-[11px] font-headline font-extrabold text-primary tracking-tight">DRIVER_${driver_id}</p>`
-    //             + `<p class="text-[10px] font-label text-on-surface-variant mt-1">${lat.toFixed(4)}, ${lng.toFixed(4)}</p>`
-    //             + `</div>`
-    //         );
-    //     }
+    function scheduleReconnect() {
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            console.error('[FleetMonitor] Max reconnect attempts reached');
+            return;
+        }
 
-    //     document.getElementById('active-driver-count').innerText = drivers.size + ' Online';
-    // }
+        reconnectAttempts++;
+        const delay = Math.min(
+            BASE_RECONNECT_DELAY_MS * Math.pow(1.5, reconnectAttempts) + (Math.random() * 500),
+            MAX_RECONNECT_DELAY_MS
+        );
+        console.log(`[FleetMonitor] Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+        reconnectTimer = setTimeout(connectWebSocket, delay);
+    }
 
-    // socket.onclose = function (e) {
-    //     console.error('WebSocket closed unexpectedly');
-    // };
+    // Open the Active Fleet sidebar (if collapsed) and scroll the
+    // matching driver card into view, highlighting it briefly.
+    function focusDriverInFeed(driver_id) {
+        const sidebar = document.getElementById('driver-feed');
+        if (sidebar) {
+            const aside = sidebar.closest('aside');
+            if (aside) aside.classList.remove('hidden');
+        }
+        const card = document.getElementById('driver-card-' + driver_id);
+        if (card && sidebar) {
+            card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            card.classList.add('ring-2', 'ring-primary/60', 'border-primary/40');
+            setTimeout(() => {
+                card.classList.remove('ring-2', 'ring-primary/60', 'border-primary/40');
+            }, 1600);
+        }
+    }
+
+    function updateDriverMarker(data) {
+        const driver_id = data.driver_id;
+        const lat = parseFloat(data.lat);
+        const lng = parseFloat(data.lng);
+        const driverName = data.driver_name || `Driver ${driver_id}`;
+        const phone = data.phone_number || '';
+        const vehicleModel = data.vehicle_model || data.vehicle_type || '';
+        const vehicleNumber = data.vehicle_number || '';
+        const status = data.status || 'online';
+        const isBusy = status === 'busy' || status === 'on ride';
+
+        if (isNaN(lat) || isNaN(lng)) return;
+
+        // Buffer updates until the map is ready, then flush.
+        if (!map) {
+            pendingUpdates.push(data);
+            return;
+        }
+
+        let driver = drivers.get(driver_id);
+
+        const popupContent = `
+            <div class="driver-marker-popup">
+                <div class="flex items-center justify-between gap-2 border-b border-outline-variant/20 pb-1 mb-1">
+                    <span class="text-[11px] font-headline font-extrabold text-primary tracking-tight">${driverName}</span>
+                    <span class="text-[9px] px-1.5 py-0.2 rounded font-bold uppercase ${isBusy ? 'bg-amber-500/20 text-amber-400' : 'bg-primary/20 text-primary'}">${isBusy ? 'BUSY' : 'ONLINE'}</span>
+                </div>
+                ${vehicleNumber || vehicleModel ? `<p class="text-[10px] text-on-surface font-medium">${vehicleModel} ${vehicleNumber ? '• ' + vehicleNumber : ''}</p>` : ''}
+                ${phone ? `<p class="text-[9px] text-on-surface-variant">${phone}</p>` : ''}
+                <p class="text-[9px] font-label text-on-surface-variant/70 mt-1">${lat.toFixed(4)}, ${lng.toFixed(4)}</p>
+            </div>
+        `;
+
+        if (!driver) {
+            // Create Leaflet marker with custom gold icon
+            const marker = L.marker([lat, lng], {
+                icon: window.makeDriverIcon(),
+                title: driverName,
+            }).addTo(map);
+
+            marker.bindPopup(popupContent);
+            marker.on('click', () => focusDriverInFeed(driver_id));
+
+            // Create New Feed Card in sidebar
+            const card = document.createElement('div');
+            card.id = 'driver-card-' + driver_id;
+            card.className = 'group p-3.5 bg-surface-container-low hover:bg-surface-container rounded-lg transition-all border border-outline-variant/10 hover:border-primary/30 cursor-pointer shadow-sm';
+            card.innerHTML = `
+                <div class="flex items-start justify-between">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-9 h-9 rounded-full bg-surface-container-highest flex items-center justify-center text-primary border border-outline-variant/20 overflow-hidden flex-shrink-0">
+                            <span class="material-symbols-outlined text-base">person</span>
+                        </div>
+                        <div class="overflow-hidden">
+                            <p class="text-xs font-headline font-bold text-on-surface group-hover:text-primary transition-colors truncate">${driverName}</p>
+                            <p class="text-[10px] font-label text-on-surface-variant flex items-center gap-1 truncate">
+                                <span class="material-symbols-outlined text-[11px] text-primary">pin_drop</span>
+                                <span class="driver-coords">${lat.toFixed(3)}, ${lng.toFixed(3)}</span>
+                            </p>
+                            ${vehicleNumber ? `<p class="text-[9px] font-mono text-outline truncate">${vehicleNumber}</p>` : ''}
+                        </div>
+                    </div>
+                    <span class="driver-status-badge text-[9px] font-bold px-1.5 py-0.5 rounded-full ${isBusy ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30' : 'bg-primary/10 text-primary border border-primary/20'}">
+                        ${isBusy ? 'Busy' : 'Online'}
+                    </span>
+                </div>
+            `;
+
+            // Clicking a feed card flies the map to that driver.
+            card.addEventListener('click', () => {
+                const ll = driver.marker.getLatLng();
+                map.flyTo([ll.lat, ll.lng], Math.max(map.getZoom(), 14), { duration: 0.8 });
+                driver.marker.openPopup();
+            });
+
+            if (driverFeed) {
+                driverFeed.appendChild(card);
+            }
+
+            driver = { marker, card, lat, lng, name: driverName };
+            drivers.set(driver_id, driver);
+        } else {
+            // Smoothly move existing marker to the new lat/lng
+            driver.marker.setLatLng([lat, lng]);
+            driver.marker.setPopupContent(popupContent);
+            driver.lat = lat;
+            driver.lng = lng;
+
+            // Update feed card coords and status badge
+            if (driver.card) {
+                const coordsEl = driver.card.querySelector('.driver-coords');
+                if (coordsEl) coordsEl.innerText = `${lat.toFixed(3)}, ${lng.toFixed(3)}`;
+                const statusBadge = driver.card.querySelector('.driver-status-badge');
+                if (statusBadge) {
+                    statusBadge.innerText = isBusy ? 'Busy' : 'Online';
+                    statusBadge.className = `driver-status-badge text-[9px] font-bold px-1.5 py-0.5 rounded-full ${isBusy ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30' : 'bg-primary/10 text-primary border border-primary/20'}`;
+                }
+            }
+        }
+
+        const countEl = document.getElementById('active-driver-count');
+        if (countEl) countEl.innerText = drivers.size + ' Online';
+    }
+
+    function handleDriverStatusUpdate(data) {
+        const driver_id = data.driver_id;
+        const status = data.status;
+
+        if (status === 'offline') {
+            const driver = drivers.get(driver_id);
+            if (driver) {
+                if (driver.marker && map) {
+                    map.removeLayer(driver.marker);
+                }
+                if (driver.card) {
+                    driver.card.remove();
+                }
+                drivers.delete(driver_id);
+            }
+            const countEl = document.getElementById('active-driver-count');
+            if (countEl) countEl.innerText = drivers.size + ' Online';
+        }
+    }
+
+    // Start WebSocket connection
+    connectWebSocket();
 
 </script>
 {% endblock %}

@@ -483,7 +483,7 @@ font-family: 'Manrope', sans-serif;
                     latencyEl.innerText = 'Sync: ' + now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                 }
 
-                if (data.type === 'initial_drivers') {
+                if (data.type === 'initial_drivers' || data.type === 'initial_locations') {
                     console.log(`[FleetMonitor] Received initial snapshot of ${data.drivers ? data.drivers.length : 0} drivers`);
                     if (Array.isArray(data.drivers)) {
                         data.drivers.forEach(driverData => updateDriverMarker(driverData));

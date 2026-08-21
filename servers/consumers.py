@@ -1726,7 +1726,7 @@ class AdminDashboardConsumer(AsyncWebsocketConsumer):
         drivers = await database_sync_to_async(get_all_active_drivers)()
         
         await self.send(text_data=json.dumps({
-            'type': 'initial_locations',
+            'type': 'initial_drivers',
             'drivers': drivers
         }))
 
@@ -1741,6 +1741,12 @@ class AdminDashboardConsumer(AsyncWebsocketConsumer):
     async def driver_location_update(self, event):
         """
         Forward driver location updates to the admin client.
+        """
+        await self.send(text_data=json.dumps(event))
+
+    async def driver_status_update(self, event):
+        """
+        Forward driver status updates (e.g. offline) to the admin client.
         """
         await self.send(text_data=json.dumps(event))
 

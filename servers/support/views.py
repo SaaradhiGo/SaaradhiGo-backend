@@ -85,7 +85,7 @@ def list_my_tickets(request):
     paginator.page_size = 20
     page = paginator.paginate_queryset(qs, request)
     data = SupportTicketSerializer(page, many=True).data
-    return paginator.get_paginated_response(data)
+    return success_response(paginator.get_paginated_response(data).data, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -174,7 +174,7 @@ def admin_list_tickets(request):
     paginator = PageNumberPagination()
     paginator.page_size = 25
     page = paginator.paginate_queryset(qs, request)
-    return paginator.get_paginated_response(SupportTicketSerializer(page, many=True).data)
+    return success_response(paginator.get_paginated_response(SupportTicketSerializer(page, many=True).data).data, status.HTTP_200_OK)
 
 
 @api_view(['POST'])

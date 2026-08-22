@@ -195,6 +195,105 @@ Fetch all users. Requires Admin permissions.
 }
 ```
 
+### 1.7 Logout
+Log out the caller by blacklisting their refresh token.
+- **URL**: `/auth/logout/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+**Parameters**:
+| Name | Type | Required | Description |
+| ---- | ---- | -------- | ----------- |
+| `refresh_token` | string | **Yes** | The active refresh token to be blacklisted. |
+
+**Sample Request**:
+```json
+{
+  "refresh_token": "eyJhbG..."
+}
+```
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "message": "Successfully logged out"
+  }
+}
+```
+
+### 1.8 Admin Login
+Admin login using phone number and password.
+- **URL**: `/auth/admin/login/`
+- **Method**: `POST`
+- **Auth Required**: No
+
+**Parameters**:
+| Name | Type | Required | Description |
+| ---- | ---- | -------- | ----------- |
+| `phone_number` | string | **Yes** | Admin's phone number |
+| `password` | string | **Yes** | Admin's password |
+
+**Sample Request**:
+```json
+{
+  "phone_number": "+919876543210",
+  "password": "securepassword"
+}
+```
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "token": "eyJhbGciOi...",
+    "refresh_token": "eyJhbG...",
+    "user": {
+      "id": 1,
+      "username": "admin_user",
+      "role": "admin"
+    }
+  }
+}
+```
+
+### 1.9 Export My Data (DPDP)
+DPDP Act 2023 compliance. Exports all data related to the authenticated user.
+- **URL**: `/auth/me/export/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+**Sample Request**: `GET /auth/me/export/`
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "user": { "id": 1, "phone_number": "+919876543210" },
+    "trips_count": 5,
+    "transactions_count": 10,
+    "requested_at": "2026-08-22T10:00:00Z"
+  }
+}
+```
+
+### 1.10 Delete My Account (DPDP)
+DPDP Act 2023 compliance. Hard deletes the authenticated user and all associated PII data.
+- **URL**: `/auth/me/delete/`
+- **Method**: `DELETE`
+- **Auth Required**: Yes
+
+**Sample Request**: `DELETE /auth/me/delete/`
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "message": "Account successfully deleted."
+  }
+}
+```
+
 ---
 
 ## 2. Rider Functions (App: `rider`)
@@ -435,6 +534,70 @@ Initiate a direct payment from wallet without external gateway. Used for interna
     "reference_id": "TRIP_123",
     "idempotency_key": "unique-key-123",
     "message": "Payment successful"
+  }
+}
+```
+
+### 2.11 Get Notification Preferences
+Get the caller's notification preferences.
+- **URL**: `/rider/notifications/preferences/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+**Sample Request**: `GET /rider/notifications/preferences/`
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "transactional": true,
+    "ride_event": true,
+    "payment": true,
+    "payout": true,
+    "sos": true,
+    "kyc": true,
+    "system": true,
+    "marketing": false,
+    "promo": false,
+    "push_enabled": true,
+    "email_enabled": true,
+    "sms_enabled": false,
+    "user_toggleable": ["marketing", "promo", "ride_event", "system"]
+  }
+}
+```
+
+### 2.12 Update Notification Preferences
+Update the caller's notification preferences (only user-toggleable fields).
+- **URL**: `/rider/notifications/preferences/update/`
+- **Method**: `PATCH`
+- **Auth Required**: Yes
+
+**Parameters**:
+Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_enabled`, `sms_enabled`.
+
+**Sample Request**:
+```json
+{
+  "marketing": false,
+  "push_enabled": true
+}
+```
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "updated": ["marketing", "push_enabled"],
+    "preferences": {
+      "marketing": false,
+      "promo": false,
+      "ride_event": true,
+      "system": true,
+      "push_enabled": true,
+      "email_enabled": true,
+      "sms_enabled": false
+    }
   }
 }
 ```
@@ -851,6 +1014,48 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 }
 ```
 
+### 3.22 Admin: Driver Full Detail
+Fetch aggregated driver details across 9 surfaces (core driver data, vehicles, earnings, fatigue, recent trips, etc.) for Ops view.
+- **URL**: `/driver/admin/<driver_id>/full/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsAdmin)
+
+**Sample Request**: `GET /driver/admin/15/full/`
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "core": {
+      "id": 15,
+      "status": "offline",
+      "rating": "4.8",
+      "approved": true
+    },
+    "user": {
+      "id": 5,
+      "full_name": "Driver A",
+      "phone_number": "+919000000000"
+    },
+    "earnings": {
+      "lifetime": "25000.00",
+      "today": "1500.00",
+      "this_month": "15000.00",
+      "last_withdrawal": "2026-08-20T10:00:00Z"
+    },
+    "vehicles": [],
+    "sessions": [],
+    "recent_trips": [],
+    "withdrawals": [],
+    "cancellations": {
+      "24h": 0,
+      "7d": 1,
+      "30d": 3
+    }
+  }
+}
+```
+
 ---
 
 ## 4. Rides & Trips (App: `ride`)
@@ -1110,6 +1315,62 @@ Driver cancels a trip AFTER accepting it (before the trip starts).
 }
 ```
 
+### 4.11 Get Active Trip
+- **URL**: `/ride/active/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+**Sample Response**: Trip details.
+
+### 4.12 Resend Receipt
+- **URL**: `/ride/trip/<trip_id>/receipt/resend/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 4.13 PDF Receipt
+- **URL**: `/ride/trip/<trip_id>/receipt/pdf/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+### 4.14 Trip Chat History
+- **URL**: `/ride/trip/<trip_id>/chat/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+### 4.15 Apply Promo
+- **URL**: `/ride/promo/apply/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 4.16 Maps Proxy: Geocode
+- **URL**: `/ride/maps/geocode`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 4.17 Maps Proxy: Place Details
+- **URL**: `/ride/maps/place-details`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 4.18 Maps Proxy: Reverse Geocode
+- **URL**: `/ride/maps/reverse-geocode`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 4.19 Maps Proxy: Directions
+- **URL**: `/ride/maps/directions`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 4.20 Admin: Single Trip Detail
+- **URL**: `/ride/admin/trips/<trip_id>/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsAdmin)
+
+### 4.21 Admin: Dashboard
+- **URL**: `/ride/admin/dashboard/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsAdmin)
+
 ---
 
 ## 5. Payments (App: `payments`)
@@ -1276,3 +1537,117 @@ Trigger refunds gracefully.
 - Filters: `status`
 
 **Sample Response**: Paginated TransactionHistory payloads.
+
+### 5.8 Payout Webhook
+- **URL**: `/payments/payout-webhook/`
+- **Method**: `POST`
+- **Auth Required**: No
+
+### 5.9 Switch Payment Method
+- **URL**: `/payments/switch/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 5.10 Retry Payment
+- **URL**: `/payments/retry/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 5.11 Pending Payments
+- **URL**: `/payments/pending/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+---
+
+## 6. SOS (App: `sos`)
+### 6.1 Raise SOS
+- **URL**: `/sos/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 6.2 Admin List SOS
+- **URL**: `/sos/admin/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsAdmin)
+
+### 6.3 Admin Acknowledge SOS
+- **URL**: `/sos/<sos_id>/acknowledge/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsAdmin)
+
+### 6.4 Admin Resolve SOS
+- **URL**: `/sos/<sos_id>/resolve/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsAdmin)
+
+### 6.5 Admin False Alarm SOS
+- **URL**: `/sos/<sos_id>/false-alarm/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsAdmin)
+
+---
+
+## 7. Pricing (App: `pricing`)
+### 7.1 Public Zones
+- **URL**: `/pricing/zones/`
+- **Method**: `GET`
+- **Auth Required**: No
+
+### 7.2 Fare Quote
+- **URL**: `/pricing/quote/`
+- **Method**: `POST`
+- **Auth Required**: No
+
+### 7.3 Admin Zones CRUD
+- **URL**: `/pricing/admin/zones/`
+- **Method**: `GET`, `POST`, `PUT`, `DELETE`
+- **Auth Required**: Yes (IsAdmin)
+
+### 7.4 Admin Rate Cards CRUD
+- **URL**: `/pricing/admin/rate-cards/`
+- **Method**: `GET`, `POST`, `PUT`, `DELETE`
+- **Auth Required**: Yes (IsAdmin)
+
+---
+
+## 8. Support (App: `support`)
+### 8.1 List My Tickets
+- **URL**: `/support/tickets/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+### 8.2 Create Ticket
+- **URL**: `/support/tickets/create/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 8.3 Ticket Detail
+- **URL**: `/support/tickets/<ticket_id>/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+### 8.4 Add Ticket Message
+- **URL**: `/support/tickets/<ticket_id>/messages/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 8.5 Close Ticket
+- **URL**: `/support/tickets/<ticket_id>/close/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 8.6 Admin List Tickets
+- **URL**: `/support/admin/tickets/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsAdmin)
+
+### 8.7 Admin Reply Ticket
+- **URL**: `/support/admin/tickets/<ticket_id>/reply/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsAdmin)
+
+### 8.8 Admin Assign Ticket
+- **URL**: `/support/admin/tickets/<ticket_id>/assign/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsAdmin)

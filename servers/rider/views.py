@@ -294,7 +294,7 @@ def list_notifications(request):
     paginator.page_size = 20
     result_page = paginator.paginate_queryset(notifs, request)
     serializer = NotificationSerializer(result_page, many=True)
-    return paginator.get_paginated_response(serializer.data)
+    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
 
 
 @api_view(['PATCH'])
@@ -361,7 +361,7 @@ def get_wallet_transactions(request):
     paginator.page_size = 20
     result_page = paginator.paginate_queryset(transactions, request)
     serializer = WalletTransactionSerializer(result_page, many=True)
-    return success_response(serializer.data,status.HTTP_200_OK)
+    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])

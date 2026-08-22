@@ -344,7 +344,7 @@ def ride_history(request):
     page = paginator.paginate_queryset(trips, request)
     serializer = TripListSerializer(page, many=True)
 
-    return paginator.get_paginated_response(serializer.data)
+    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -385,7 +385,7 @@ def driver_history(request):
     page = paginator.paginate_queryset(trips, request)
     serializer = TripListSerializer(page, many=True)
 
-    return paginator.get_paginated_response(serializer.data)
+    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -826,7 +826,7 @@ def trip_chat_history(request, trip_id):
         ChatMessage.objects.filter(trip=trip).exclude(
             sender_role=role,
         ).filter(read_at__isnull=True).update(read_at=timezone.now())
-    return paginator.get_paginated_response(payload)
+    return success_response(paginator.get_paginated_response(payload).data, status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -1202,14 +1202,21 @@ def get_active_trip(request):
     """
     # Active trips are those not completed and not cancelled
     active_statuses = ['requested','accepted', 'reached', 'in_progress']
-
-    trip = Trip.objects.filter(
-        user_id=request.user,
-        status_id__status_code__in=active_statuses
-    ).select_related(
-        'status_id', 'driver_id', 'driver_id__user_id',
-        'vehicle_id', 'vehicle_id__vehicle_type_id'
-    ).order_by('-requested_at').first()
+    if request.user.role=='rider':
+        trip = Trip.objects.filter(
+            user_id=request.user,
+            status_id__status_code__in=active_statuses
+        ).select_related(
+            'status_id', 'driver_id', 'driver_id__user_id',
+            'vehicle_id', 'vehicle_id__vehicle_type_id'
+        ).order_by('-requested_at').first()
+    else:
+        trip= Trip.objects.filter(
+            driver_id__user_id=request.user,
+            status_id__status_code__in=active_statuses
+        ).select_related(
+            'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id'
+        ).order_by('-requested_at').first()
 
     # If no active trip, check for recently completed (within 1 hour)
     # This handles the case where app was killed after trip completion
@@ -1218,13 +1225,23 @@ def get_active_trip(request):
         from datetime import timedelta
 
         one_hour_ago = timezone.now() - timedelta(hours=1)
-        trip = Trip.objects.filter(
-            user_id=request.user,
-            status_id__status_code='completed',
-            completed_at__gte=one_hour_ago
-        ).select_related(
-            'status_id', 'driver_id', 'vehicle_id'
-        ).order_by('-completed_at').first()
+        
+        if request.user.role == 'rider':
+            trip = Trip.objects.filter(
+                user_id=request.user,
+                status_id__status_code='completed',
+                completed_at__gte=one_hour_ago
+            ).select_related(
+                'status_id', 'driver_id', 'driver_id__user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id'
+            ).order_by('-completed_at').first()
+        else:
+            trip = Trip.objects.filter(
+                driver_id__user_id=request.user,
+                status_id__status_code='completed',
+                completed_at__gte=one_hour_ago
+            ).select_related(
+                'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id'
+            ).order_by('-completed_at').first()
 
     if not trip:
         return error_response(

@@ -35,7 +35,7 @@ class TripListSerializer(serializers.ModelSerializer):
             'estimated_distance_km', 'actual_distance_km',
             'payment_method', 'payment_status',
             'status', 'driver_name', 'vehicle_info',
-            'requested_at', 'completed_at', 'cancelled_at',
+            'requested_at', 'completed_at', 'cancelled_at','estimated_duration_min','actual_duration_min'
         ]
 
     def get_status(self, obj):

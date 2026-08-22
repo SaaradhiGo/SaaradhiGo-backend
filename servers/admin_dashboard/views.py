@@ -1,5 +1,4 @@
 from datetime import datetime, time, timedelta
-from decimal import Decimal
 from functools import wraps
 from django.utils import timezone
 from django.contrib.auth import authenticate, login as auth_login, logout as auth_logout

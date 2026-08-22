@@ -853,7 +853,7 @@ def payment_history(request):
         
         data.append(payment_data)
 
-    return paginator.get_paginated_response(data)
+    return success_response(paginator.get_paginated_response(data).data, status.HTTP_200_OK)
 
 
 @api_view(['POST'])

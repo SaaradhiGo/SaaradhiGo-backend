@@ -10,10 +10,15 @@ from servers.support.models import SupportTicket
 from django.core.paginator import Paginator
 from django.db import models
 from django.db.models.functions import Coalesce
-from django.db.models import (Avg,Count, Q,Sum,F,Value,DecimalField,)
+from django.db.models import (Avg,Count, Q,Sum,F,Max,Value,DecimalField,)
 from servers.driver.models import Driver, WithdrawalRequest
 from servers.ride.models import FarePricing, Trip
 from servers.pricing.services import commission_percent_for_trip
+from servers.pricing.models import ServiceZone, RateCard
+from decimal import Decimal, InvalidOperation
+from django.http import JsonResponse
+from django.views.decorators.http import require_POST
+
 def admin_required(view_func):
     """
     Decorator for admin dashboard views.
@@ -967,10 +972,283 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
         "admin_pages/driver_loyalty.html",
         context,
     )
+
+
 @admin_required
 def fare_surge(request: HttpRequest) -> HttpResponse:
-    return render(request, "admin_pages/fare_surge.html")
 
+    now = timezone.now()
+    one_hour_ago = now - timedelta(hours=1)
+
+    # ---------------------------------------------------------
+    # 1. CURRENT FARE CONFIGURATION
+    # ---------------------------------------------------------
+    config = (
+        RateCard.objects
+        .filter(
+            is_active=True,
+            effective_from__lte=now
+        )
+        .filter(
+            Q(effective_to__isnull=True) |
+            Q(effective_to__gt=now)
+        )
+        .order_by(
+            '-effective_from',
+            '-version'
+        )
+        .first()
+    )
+
+    # ---------------------------------------------------------
+    # 2. RECENT TRIPS - LAST ONE HOUR
+    # ---------------------------------------------------------
+    recent_trips = Trip.objects.filter(
+        requested_at__gte=one_hour_ago
+    )
+
+    # ---------------------------------------------------------
+    # 3. ACTIVE SURGE ZONES
+    #
+    # A zone is considered active when:
+    #   - zone is active
+    #   - trip happened/requested in last hour
+    #   - trip has surge > 1
+    #
+    # Drivers are counted from drivers assigned to those trips.
+    # ---------------------------------------------------------
+    surge_zones = (
+        ServiceZone.objects
+        .filter(
+            is_active=True,
+            trips__requested_at__gte=one_hour_ago,
+            trips__surge_multiplier__gt=1,
+        )
+        .annotate(
+
+            # Number of surge requests during last hour
+            requests_per_hour=Count(
+                'trips',
+                distinct=True,
+            ),
+
+            # Number of UNIQUE drivers assigned to those trips
+            active_drivers=Count(
+                'trips__driver_id',
+                filter=Q(
+                    trips__driver_id__isnull=False,
+                ),
+                distinct=True,
+            ),
+
+            # Highest surge multiplier in this zone
+            multiplier=Max(
+                'trips__surge_multiplier',
+            ),
+        )
+        .order_by(
+            '-multiplier',
+            '-requests_per_hour',
+        )
+    )
+
+    # ---------------------------------------------------------
+    # 4. NUMBER OF ACTIVE SURGE ZONES
+    # ---------------------------------------------------------
+    active_zones_count = surge_zones.count()
+
+    # ---------------------------------------------------------
+    # 5. PEAK SURGE ZONE
+    # ---------------------------------------------------------
+    peak_zone = surge_zones.first()
+
+    # ---------------------------------------------------------
+    # 6. AVERAGE SURGE MULTIPLIER
+    # ---------------------------------------------------------
+    avg_multiplier = (
+        recent_trips
+        .filter(
+            surge_multiplier__gt=1
+        )
+        .aggregate(
+            avg=Avg('surge_multiplier')
+        )
+        .get('avg')
+    )
+
+    if avg_multiplier is None:
+        avg_multiplier = 1.0
+
+    # ---------------------------------------------------------
+    # 7. CONTEXT FOR TEMPLATE
+    # ---------------------------------------------------------
+    context = {
+        'config': config,
+
+        'surge_zones': surge_zones,
+
+        'peak_zone': peak_zone,
+
+        'avg_multiplier': round(
+            float(avg_multiplier),
+            2
+        ),
+
+        'active_zones_count': active_zones_count,
+
+        'recent_trips': recent_trips,
+    }
+
+    # ---------------------------------------------------------
+    # 8. RENDER PAGE
+    # ---------------------------------------------------------
+    return render(
+        request,
+        "admin_pages/fare_surge.html",
+        context
+    )
+
+@admin_required
+@require_POST
+def update_global_config(request: HttpRequest) -> JsonResponse:
+
+    now = timezone.now()
+
+    # Get currently active RateCard
+    config = (
+        RateCard.objects
+        .filter(
+            is_active=True,
+            effective_from__lte=now,
+        )
+        .filter(
+            Q(effective_to__isnull=True) |
+            Q(effective_to__gt=now)
+        )
+        .order_by(
+            '-effective_from',
+            '-version',
+        )
+        .first()
+    )
+
+    if not config:
+        return JsonResponse(
+            {
+                'success': False,
+                'message': 'No active fare configuration found.'
+            },
+            status=404,
+        )
+
+    # ---------------------------------------------------------
+    # DEBUG: See exactly what the browser sent
+    # ---------------------------------------------------------
+
+    print("GLOBAL CONFIG POST DATA:")
+    print(request.POST.dict())
+
+    try:
+
+        # Get values from POST
+        base_fare_value = request.POST.get('base_fare')
+        per_km_fare_value = request.POST.get('per_km_fare')
+        per_min_fare_value = request.POST.get('per_min_fare')
+        surge_cap_value = request.POST.get('surge_cap_multiplier')
+        night_surge_value = request.POST.get('night_surge_multiplier')
+
+        print("base_fare =", base_fare_value)
+        print("per_km_fare =", per_km_fare_value)
+        print("per_min_fare =", per_min_fare_value)
+        print("surge_cap_multiplier =", surge_cap_value)
+        print("night_surge_multiplier =", night_surge_value)
+
+        # Check for missing values
+        if not base_fare_value:
+            raise ValueError("Base Fare is empty.")
+
+        if not per_km_fare_value:
+            raise ValueError("Per KM Fare is empty.")
+
+        if not per_min_fare_value:
+            raise ValueError("Per Minute Fare is empty.")
+
+        if not surge_cap_value:
+            raise ValueError("Surge Cap is empty.")
+
+        if not night_surge_value:
+            raise ValueError("Night Surge is empty.")
+
+        # Convert to Decimal
+        base_fare = Decimal(base_fare_value)
+        per_km_fare = Decimal(per_km_fare_value)
+        per_min_fare = Decimal(per_min_fare_value)
+        surge_cap = Decimal(surge_cap_value)
+        night_surge = Decimal(night_surge_value)
+
+        # ---------------------------------------------------------
+        # VALIDATION
+        # ---------------------------------------------------------
+
+        if base_fare < 0:
+            raise ValueError("Base Fare cannot be negative.")
+
+        if per_km_fare < 0:
+            raise ValueError("Per KM Fare cannot be negative.")
+
+        if per_min_fare < 0:
+            raise ValueError("Per Minute Fare cannot be negative.")
+
+        if surge_cap < 1:
+            raise ValueError("Surge Cap must be at least 1.00.")
+
+        if night_surge < 1:
+            raise ValueError("Night Surge must be at least 1.00.")
+
+    except (TypeError, ValueError, InvalidOperation) as e:
+
+        print("FARE CONFIG VALIDATION ERROR:", str(e))
+
+        return JsonResponse(
+            {
+                'success': False,
+                'message': str(e),
+            },
+            status=400,
+        )
+
+    # ---------------------------------------------------------
+    # UPDATE DATABASE
+    # ---------------------------------------------------------
+
+    config.base_fare = base_fare
+    config.per_km_fare = per_km_fare
+    config.per_min_fare = per_min_fare
+    config.surge_cap_multiplier = surge_cap
+    config.night_surge_multiplier = night_surge
+
+    config.save()
+
+    print("FARE CONFIG UPDATED SUCCESSFULLY")
+    print("RateCard ID:", config.id)
+
+    return JsonResponse(
+        {
+            'success': True,
+            'message': 'Global fare configuration updated successfully.',
+            'config': {
+                'base_fare': str(config.base_fare),
+                'per_km_fare': str(config.per_km_fare),
+                'per_min_fare': str(config.per_min_fare),
+                'surge_cap_multiplier': str(
+                    config.surge_cap_multiplier
+                ),
+                'night_surge_multiplier': str(
+                    config.night_surge_multiplier
+                ),
+            }
+        }
+    )
 
 @admin_required
 def predictive_heatmaps(request: HttpRequest) -> HttpResponse:

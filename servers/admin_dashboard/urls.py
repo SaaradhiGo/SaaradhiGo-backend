@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import login, dashboard, driver_onboarding, dispute_support, payment_dashboard, executive_revenue, driver_loyalty, fare_surge, predictive_heatmaps, admin_logout
+from .views import login, dashboard, driver_onboarding, dispute_support, payment_dashboard, executive_revenue, driver_loyalty, fare_surge, predictive_heatmaps, admin_logout, update_global_config
 
 urlpatterns=[
     path('login/',login,name='login'),
@@ -10,6 +10,7 @@ urlpatterns=[
     path('executive_revenue/',executive_revenue,name='executive_revenue'),
     path('driver_loyalty/',driver_loyalty,name='driver_loyalty'),
     path('fare_surge/',fare_surge,name='fare_surge'),
+    path('api/global-config/',update_global_config,name='update_global_config'),
     path('predictive_heatmaps/',predictive_heatmaps,name='predictive_heatmaps'),
     path('logout/',admin_logout,name='logout')
 ]

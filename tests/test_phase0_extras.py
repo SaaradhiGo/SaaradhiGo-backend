@@ -11,7 +11,7 @@ Covers:
   - 3 new ServiceZones (VJA / WGL / VTZ) resolve via
     find_zone_for_point() and have rate cards
 """
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -392,6 +392,7 @@ def test_quote_fare_in_vja_uses_local_rate(auth_client_rider):
         distance_km=Decimal('5'), duration_min=Decimal('10'),
         vehicle_type='auto',
         pickup_lat=16.51, pickup_lon=80.63,
+        at=timezone.make_aware(datetime(2026, 8, 23, 12, 0)),
     )
     assert fare['source'] == 'db'
     assert fare['zone_code'] == 'IN-AP-VJA'

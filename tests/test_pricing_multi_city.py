@@ -9,9 +9,9 @@ Covers the new pricing layer added in feat/multi-city-pricing:
   * Admin endpoints (zone CRUD, rate card CRUD) honour IsPlatformAdmin
   * Legacy base.service_area.validate_service_area still works on top
 """
-from datetime import timedelta
-from decimal import Decimal
 
+from datetime import datetime, timedelta
+from decimal import Decimal
 import pytest
 from django.utils import timezone
 
@@ -219,6 +219,7 @@ def test_quote_fare_uses_rate_card_when_zone_known():
         distance_km=Decimal('10'), duration_min=Decimal('20'),
         vehicle_type='hatchback',
         pickup_lat=HYD_CENTRE_LAT, pickup_lon=HYD_CENTRE_LON,
+        at=timezone.make_aware(datetime(2026, 8, 23, 12, 0)),
     )
     assert fare['source'] == 'db'
     assert fare['zone_code'] == 'IN-TG-HYD'

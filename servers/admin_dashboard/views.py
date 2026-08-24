@@ -1019,7 +1019,7 @@ def fare_surge(request: HttpRequest) -> HttpResponse:
             selected_zone = (
                 ServiceZone.objects
                 .get(
-                    id=zone_id,
+                     id=selected_zone_id,
                     is_active=True,
                 )
             )

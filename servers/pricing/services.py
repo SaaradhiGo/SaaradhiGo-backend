@@ -304,21 +304,25 @@ def compute_surge_multiplier(
         return Decimal('1.00')
 
 
-def _is_night_now(card: RateCard) -> bool:
-    """Is the current local hour inside the card's night window?"""
+def _is_night_now(card: RateCard, at=None) -> bool:
+    """Is the supplied local hour inside the card's night window?"""
     try:
-        hour = timezone.localtime(timezone.now()).hour
+        check_time = at or timezone.now()
+        hour = timezone.localtime(check_time).hour
     except Exception:  # noqa: BLE001
         return False
+
     start = int(card.night_surge_start_hour)
     end = int(card.night_surge_end_hour)
+
     if start == end:
         return False
+
     if start < end:
         return start <= hour < end
+
     # wraps midnight, e.g. 23 -> 5
     return hour >= start or hour < end
-
 
 # ---------------------------------------------------------------------------
 # Quote
@@ -454,7 +458,7 @@ def quote_fare(
     surge_multiplier = Decimal('1.00')
 
     night_applied = False
-    if card is not None and night_surge > Decimal('1.00') and _is_night_now(card):
+    if card is not None and night_surge > Decimal('1.00') and _is_night_now(card, at=at):
         subtotal = subtotal * night_surge
         surge_multiplier = surge_multiplier * night_surge
         night_applied = True

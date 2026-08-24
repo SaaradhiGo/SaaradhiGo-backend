@@ -25,7 +25,8 @@ class TripListSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
     driver_name = serializers.SerializerMethodField()
     vehicle_info = serializers.SerializerMethodField()
-
+    user=serializers.SerializerMethodField()
+    
     class Meta:
         model = Trip
         fields = [
@@ -35,7 +36,7 @@ class TripListSerializer(serializers.ModelSerializer):
             'estimated_distance_km', 'actual_distance_km',
             'payment_method', 'payment_status',
             'status', 'driver_name', 'vehicle_info',
-            'requested_at', 'completed_at', 'cancelled_at','estimated_duration_min','actual_duration_min'
+            'requested_at', 'completed_at', 'cancelled_at','estimated_duration_min','actual_duration_min','user'
         ]
 
     def get_status(self, obj):
@@ -57,7 +58,8 @@ class TripListSerializer(serializers.ModelSerializer):
                 'type': str(v.vehicle_type_id) if v.vehicle_type_id else None,
             }
         return None
-
+    def get_user(self,obj):
+        return obj.user_id.full_name
 
 class TripDetailSerializer(TripListSerializer):
     """Full serializer for single trip detail with fare breakdown and ratings."""

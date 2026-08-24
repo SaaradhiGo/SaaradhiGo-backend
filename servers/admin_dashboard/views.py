@@ -7,16 +7,17 @@ from django.shortcuts import redirect, render
 # from servers.driver.admin_utils import list_drivers_admin
 from servers.support.models import SupportTicket
 from django.core.paginator import Paginator
-from django.db import models
+from django.db import models,transaction
 from django.db.models.functions import Coalesce
 from django.db.models import (Avg,Count, Q,Sum,F,Max,Value,DecimalField,)
-from servers.driver.models import Driver, WithdrawalRequest
+from servers.driver.models import Driver, WithdrawalRequest,VehicleType
 from servers.ride.models import FarePricing, Trip
 from servers.pricing.services import commission_percent_for_trip
 from servers.pricing.models import ServiceZone, RateCard
 from decimal import Decimal, InvalidOperation
 from django.http import JsonResponse
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_POST,require_http_methods
+from django.contrib.admin.views.decorators import staff_member_required
 
 def admin_required(view_func):
     """
@@ -971,8 +972,6 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
         "admin_pages/driver_loyalty.html",
         context,
     )
-
-
 @admin_required
 def fare_surge(request: HttpRequest) -> HttpResponse:
 
@@ -980,42 +979,135 @@ def fare_surge(request: HttpRequest) -> HttpResponse:
     one_hour_ago = now - timedelta(hours=1)
 
     # ---------------------------------------------------------
-    # 1. CURRENT FARE CONFIGURATION
+    # VEHICLE TYPES
     # ---------------------------------------------------------
-    config = (
-        RateCard.objects
-        .filter(
-            is_active=True,
-            effective_from__lte=now
-        )
-        .filter(
-            Q(effective_to__isnull=True) |
-            Q(effective_to__gt=now)
-        )
-        .order_by(
-            '-effective_from',
-            '-version'
-        )
-        .first()
+
+    vehicle_types = (
+        VehicleType.objects
+        .all()
+        .order_by('type')
     )
 
     # ---------------------------------------------------------
-    # 2. RECENT TRIPS - LAST ONE HOUR
+    # ALL ACTIVE ZONES
     # ---------------------------------------------------------
+
+    zones = (
+        ServiceZone.objects
+        .filter(is_active=True)
+        .order_by('name')
+    )
+
+    # ---------------------------------------------------------
+    # SELECTED ZONE
+    #
+    # If zone_id is provided:
+    #     use that zone
+    #
+    # Otherwise:
+    #     use first active zone
+    # ---------------------------------------------------------
+
+    selected_zone_id = request.GET.get('zone_id')
+
+    selected_zone = None
+
+    if selected_zone_id:
+
+        try:
+
+            selected_zone = (
+                ServiceZone.objects
+                .get(
+                    id=zone_id,
+                    is_active=True,
+                )
+            )
+
+        except ServiceZone.DoesNotExist:
+
+            selected_zone = zones.first()
+
+    else:
+
+        selected_zone = zones.first()
+
+    # ---------------------------------------------------------
+    # VEHICLE CONFIGURATIONS FOR SELECTED ZONE
+    # ---------------------------------------------------------
+
+    vehicle_configs = []
+
+    if selected_zone:
+
+        for vehicle_type in vehicle_types:
+
+            config = (
+                RateCard.objects
+                .filter(
+                    zone=selected_zone,
+                    vehicle_type=vehicle_type,
+                    is_active=True,
+                    effective_from__lte=now,
+                )
+                .filter(
+                    Q(effective_to__isnull=True) |
+                    Q(effective_to__gt=now)
+                )
+                .order_by(
+                    '-effective_from',
+                    '-version',
+                )
+                .first()
+            )
+
+            vehicle_configs.append(
+                {
+                    'vehicle_type': vehicle_type,
+                    'config': config,
+                }
+            )
+
+    # ---------------------------------------------------------
+    # CURRENT FARE CONFIGURATION
+    #
+    # Only for the selected zone
+    # ---------------------------------------------------------
+
+    config = None
+
+    if selected_zone:
+
+        config = (
+            RateCard.objects
+            .filter(
+                zone=selected_zone,
+                is_active=True,
+                effective_from__lte=now,
+            )
+            .filter(
+                Q(effective_to__isnull=True) |
+                Q(effective_to__gt=now)
+            )
+            .order_by(
+                '-effective_from',
+                '-version',
+            )
+            .first()
+        )
+
+    # ---------------------------------------------------------
+    # RECENT TRIPS - LAST ONE HOUR
+    # ---------------------------------------------------------
+
     recent_trips = Trip.objects.filter(
         requested_at__gte=one_hour_ago
     )
 
     # ---------------------------------------------------------
-    # 3. ACTIVE SURGE ZONES
-    #
-    # A zone is considered active when:
-    #   - zone is active
-    #   - trip happened/requested in last hour
-    #   - trip has surge > 1
-    #
-    # Drivers are counted from drivers assigned to those trips.
+    # ACTIVE SURGE ZONES
     # ---------------------------------------------------------
+
     surge_zones = (
         ServiceZone.objects
         .filter(
@@ -1025,13 +1117,11 @@ def fare_surge(request: HttpRequest) -> HttpResponse:
         )
         .annotate(
 
-            # Number of surge requests during last hour
             requests_per_hour=Count(
                 'trips',
                 distinct=True,
             ),
 
-            # Number of UNIQUE drivers assigned to those trips
             active_drivers=Count(
                 'trips__driver_id',
                 filter=Q(
@@ -1040,7 +1130,6 @@ def fare_surge(request: HttpRequest) -> HttpResponse:
                 distinct=True,
             ),
 
-            # Highest surge multiplier in this zone
             multiplier=Max(
                 'trips__surge_multiplier',
             ),
@@ -1052,18 +1141,21 @@ def fare_surge(request: HttpRequest) -> HttpResponse:
     )
 
     # ---------------------------------------------------------
-    # 4. NUMBER OF ACTIVE SURGE ZONES
+    # ACTIVE SURGE ZONES COUNT
     # ---------------------------------------------------------
+
     active_zones_count = surge_zones.count()
 
     # ---------------------------------------------------------
-    # 5. PEAK SURGE ZONE
+    # PEAK SURGE ZONE
     # ---------------------------------------------------------
+
     peak_zone = surge_zones.first()
 
     # ---------------------------------------------------------
-    # 6. AVERAGE SURGE MULTIPLIER
+    # AVERAGE SURGE MULTIPLIER
     # ---------------------------------------------------------
+
     avg_multiplier = (
         recent_trips
         .filter(
@@ -1076,12 +1168,15 @@ def fare_surge(request: HttpRequest) -> HttpResponse:
     )
 
     if avg_multiplier is None:
+
         avg_multiplier = 1.0
 
     # ---------------------------------------------------------
-    # 7. CONTEXT FOR TEMPLATE
+    # CONTEXT
     # ---------------------------------------------------------
+
     context = {
+
         'config': config,
 
         'surge_zones': surge_zones,
@@ -1093,161 +1188,376 @@ def fare_surge(request: HttpRequest) -> HttpResponse:
             2
         ),
 
-        'active_zones_count': active_zones_count,
+        'active_zones_count':
+            active_zones_count,
 
-        'recent_trips': recent_trips,
+        'recent_trips':
+            recent_trips,
+
+        'vehicle_configs':
+            vehicle_configs,
+
+        'zones':
+            zones,
+
+        'selected_zone':
+            selected_zone,
     }
 
     # ---------------------------------------------------------
-    # 8. RENDER PAGE
+    # RENDER PAGE
     # ---------------------------------------------------------
+
     return render(
         request,
         "admin_pages/fare_surge.html",
         context
     )
+@staff_member_required
+@require_http_methods(["GET", "POST"])
+def update_global_config(request):
 
-@admin_required
-@require_POST
-def update_global_config(request: HttpRequest) -> JsonResponse:
+    # ============================================================
+    # GET
+    # ============================================================
+    if request.method == "GET":
 
-    now = timezone.now()
+        zone_id = request.GET.get("zone_id")
 
-    # Get currently active RateCard
-    config = (
-        RateCard.objects
-        .filter(
-            is_active=True,
-            effective_from__lte=now,
-        )
-        .filter(
-            Q(effective_to__isnull=True) |
-            Q(effective_to__gt=now)
-        )
-        .order_by(
-            '-effective_from',
-            '-version',
-        )
-        .first()
-    )
+        if not zone_id:
+            return JsonResponse({
+                "success": False,
+                "message": "Zone ID is required.",
+                "configurations": {}
+            }, status=400)
 
-    if not config:
-        return JsonResponse(
-            {
-                'success': False,
-                'message': 'No active fare configuration found.'
-            },
-            status=404,
-        )
+        try:
+            zone = ServiceZone.objects.get(
+                id=zone_id,
+                is_active=True
+            )
+        except ServiceZone.DoesNotExist:
+            return JsonResponse({
+                "success": False,
+                "message": "Selected zone does not exist or is inactive.",
+                "configurations": {}
+            }, status=404)
 
-    # ---------------------------------------------------------
-    # DEBUG: See exactly what the browser sent
-    # ---------------------------------------------------------
+        try:
+            rate_cards = (
+                RateCard.objects
+                .filter(
+                    zone=zone,
+                    is_active=True
+                )
+                .select_related("vehicle_type")
+                .order_by("vehicle_type__type")
+            )
 
-    print("GLOBAL CONFIG POST DATA:")
-    print(request.POST.dict())
+            configurations = {}
+
+            for rate_card in rate_cards:
+
+                if not rate_card.vehicle_type:
+                    continue
+
+                vehicle_type = rate_card.vehicle_type
+                vehicle_id = str(vehicle_type.id)
+
+                configurations[vehicle_id] = {
+                    "id": rate_card.id,
+                    "vehicleTypeId": vehicle_type.id,
+                    "vehicleName": str(vehicle_type.type),
+
+                    "baseFare": str(
+                        rate_card.base_fare
+                        if rate_card.base_fare is not None
+                        else ""
+                    ),
+
+                    "perKmFare": str(
+                        rate_card.per_km_fare
+                        if rate_card.per_km_fare is not None
+                        else ""
+                    ),
+
+                    "perMinFare": str(
+                        rate_card.per_min_fare
+                        if rate_card.per_min_fare is not None
+                        else ""
+                    ),
+
+                    "surgeCap": str(
+                        rate_card.surge_cap_multiplier
+                        if rate_card.surge_cap_multiplier is not None
+                        else "1"
+                    ),
+
+                    "nightSurge": str(
+                        rate_card.night_surge_multiplier
+                        if rate_card.night_surge_multiplier is not None
+                        else "1"
+                    ),
+                }
+
+            return JsonResponse({
+                "success": True,
+                "zone_id": zone.id,
+                "zone_name": zone.name,
+                "configurations": configurations,
+                "vehicle_count": len(configurations)
+            })
+
+        except Exception as e:
+
+            import logging
+            logger = logging.getLogger(__name__)
+
+            logger.exception(
+                "Error loading fare configuration for zone %s",
+                zone_id
+            )
+
+            return JsonResponse({
+                "success": False,
+                "message": "Unable to load fare configuration.",
+                "error": str(e),
+                "configurations": {}
+            }, status=500)
+
+    # ============================================================
+    # POST
+    # ============================================================
+
+    zone_id = request.POST.get("zone_id")
+    vehicle_type_id = request.POST.get("vehicle_type_id")
+
+    base_fare = request.POST.get("base_fare")
+    per_km_fare = request.POST.get("per_km_fare")
+    per_min_fare = request.POST.get("per_min_fare")
+    surge_cap_multiplier = request.POST.get("surge_cap_multiplier")
+    night_surge_multiplier = request.POST.get("night_surge_multiplier")
+
+    # ------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------
+
+    if not zone_id:
+        return JsonResponse({
+            "success": False,
+            "message": "Zone is required."
+        }, status=400)
+
+    if not vehicle_type_id:
+        return JsonResponse({
+            "success": False,
+            "message": "Vehicle type is required."
+        }, status=400)
+
+    required_fields = {
+        "Base fare": base_fare,
+        "Per KM fare": per_km_fare,
+        "Per minute fare": per_min_fare,
+        "Surge cap": surge_cap_multiplier,
+        "Night surge": night_surge_multiplier,
+    }
+
+    for field_name, value in required_fields.items():
+
+        if value in [None, ""]:
+            return JsonResponse({
+                "success": False,
+                "message": f"{field_name} is required."
+            }, status=400)
+
+    # ------------------------------------------------------------
+    # Convert values
+    # ------------------------------------------------------------
 
     try:
 
-        # Get values from POST
-        base_fare_value = request.POST.get('base_fare')
-        per_km_fare_value = request.POST.get('per_km_fare')
-        per_min_fare_value = request.POST.get('per_min_fare')
-        surge_cap_value = request.POST.get('surge_cap_multiplier')
-        night_surge_value = request.POST.get('night_surge_multiplier')
+        base_fare = Decimal(base_fare)
+        per_km_fare = Decimal(per_km_fare)
+        per_min_fare = Decimal(per_min_fare)
+        surge_cap_multiplier = Decimal(surge_cap_multiplier)
+        night_surge_multiplier = Decimal(night_surge_multiplier)
 
-        print("base_fare =", base_fare_value)
-        print("per_km_fare =", per_km_fare_value)
-        print("per_min_fare =", per_min_fare_value)
-        print("surge_cap_multiplier =", surge_cap_value)
-        print("night_surge_multiplier =", night_surge_value)
+    except (InvalidOperation, TypeError, ValueError):
 
-        # Check for missing values
-        if not base_fare_value:
-            raise ValueError("Base Fare is empty.")
+        return JsonResponse({
+            "success": False,
+            "message": "Invalid fare value."
+        }, status=400)
 
-        if not per_km_fare_value:
-            raise ValueError("Per KM Fare is empty.")
+    # ------------------------------------------------------------
+    # Validate values
+    # ------------------------------------------------------------
 
-        if not per_min_fare_value:
-            raise ValueError("Per Minute Fare is empty.")
+    if base_fare < 0:
+        return JsonResponse({
+            "success": False,
+            "message": "Base fare cannot be negative."
+        }, status=400)
 
-        if not surge_cap_value:
-            raise ValueError("Surge Cap is empty.")
+    if per_km_fare < 0:
+        return JsonResponse({
+            "success": False,
+            "message": "Per KM fare cannot be negative."
+        }, status=400)
 
-        if not night_surge_value:
-            raise ValueError("Night Surge is empty.")
+    if per_min_fare < 0:
+        return JsonResponse({
+            "success": False,
+            "message": "Per minute fare cannot be negative."
+        }, status=400)
 
-        # Convert to Decimal
-        base_fare = Decimal(base_fare_value)
-        per_km_fare = Decimal(per_km_fare_value)
-        per_min_fare = Decimal(per_min_fare_value)
-        surge_cap = Decimal(surge_cap_value)
-        night_surge = Decimal(night_surge_value)
+    if surge_cap_multiplier < 1:
+        return JsonResponse({
+            "success": False,
+            "message": "Surge cap must be at least 1."
+        }, status=400)
 
-        # ---------------------------------------------------------
-        # VALIDATION
-        # ---------------------------------------------------------
+    if night_surge_multiplier < 1:
+        return JsonResponse({
+            "success": False,
+            "message": "Night surge must be at least 1."
+        }, status=400)
 
-        if base_fare < 0:
-            raise ValueError("Base Fare cannot be negative.")
+    # ------------------------------------------------------------
+    # Get ServiceZone
+    # ------------------------------------------------------------
 
-        if per_km_fare < 0:
-            raise ValueError("Per KM Fare cannot be negative.")
+    try:
 
-        if per_min_fare < 0:
-            raise ValueError("Per Minute Fare cannot be negative.")
-
-        if surge_cap < 1:
-            raise ValueError("Surge Cap must be at least 1.00.")
-
-        if night_surge < 1:
-            raise ValueError("Night Surge must be at least 1.00.")
-
-    except (TypeError, ValueError, InvalidOperation) as e:
-
-        print("FARE CONFIG VALIDATION ERROR:", str(e))
-
-        return JsonResponse(
-            {
-                'success': False,
-                'message': str(e),
-            },
-            status=400,
+        zone = ServiceZone.objects.get(
+            id=zone_id,
+            is_active=True
         )
 
-    # ---------------------------------------------------------
-    # UPDATE DATABASE
-    # ---------------------------------------------------------
+    except ServiceZone.DoesNotExist:
 
-    config.base_fare = base_fare
-    config.per_km_fare = per_km_fare
-    config.per_min_fare = per_min_fare
-    config.surge_cap_multiplier = surge_cap
-    config.night_surge_multiplier = night_surge
+        return JsonResponse({
+            "success": False,
+            "message": "Selected zone does not exist or is inactive."
+        }, status=404)
 
-    config.save()
+    # ------------------------------------------------------------
+    # Get VehicleType
+    # ------------------------------------------------------------
 
-    print("FARE CONFIG UPDATED SUCCESSFULLY")
-    print("RateCard ID:", config.id)
+    try:
 
-    return JsonResponse(
-        {
-            'success': True,
-            'message': 'Global fare configuration updated successfully.',
-            'config': {
-                'base_fare': str(config.base_fare),
-                'per_km_fare': str(config.per_km_fare),
-                'per_min_fare': str(config.per_min_fare),
-                'surge_cap_multiplier': str(
-                    config.surge_cap_multiplier
+        vehicle_type = VehicleType.objects.get(
+            id=vehicle_type_id,
+
+        )
+
+    except VehicleType.DoesNotExist:
+
+        return JsonResponse({
+            "success": False,
+            "message": "Selected vehicle type does not exist or is inactive."
+        }, status=404)
+
+    # ------------------------------------------------------------
+# Create / Update RateCard
+# ------------------------------------------------------------
+
+    try:
+        with transaction.atomic():
+            rate_card = (
+            RateCard.objects
+            .filter(
+                zone=zone,
+                vehicle_type=vehicle_type,
+                is_active=True
+            )
+            .order_by("-id")
+            .first()
+        )
+
+        if rate_card is None:
+
+            rate_card = RateCard.objects.create(
+                zone=zone,
+                vehicle_type=vehicle_type,
+
+                base_fare=base_fare,
+                per_km_fare=per_km_fare,
+                per_min_fare=per_min_fare,
+
+                # Required model field
+                min_fare=base_fare,
+
+                surge_cap_multiplier=surge_cap_multiplier,
+                night_surge_multiplier=night_surge_multiplier,
+
+                is_active=True
+            )
+
+            action = "created"
+
+        else:
+
+            rate_card.base_fare = base_fare
+            rate_card.per_km_fare = per_km_fare
+            rate_card.per_min_fare = per_min_fare
+
+            # Keep existing minimum fare when updating
+            if rate_card.min_fare is None:
+                rate_card.min_fare = base_fare
+
+            rate_card.surge_cap_multiplier = surge_cap_multiplier
+            rate_card.night_surge_multiplier = night_surge_multiplier
+
+            rate_card.save()
+
+            action = "updated"
+
+        return JsonResponse({
+            "success": True,
+
+            "message": (
+                f"{vehicle_type.type} fare "
+                f"{action} successfully for "
+                f"{zone.name}."
+            ),
+
+            "configuration": {
+                "id": rate_card.id,
+                "vehicleTypeId": vehicle_type.id,
+                "vehicleName": str(vehicle_type.type),
+
+                "baseFare": str(rate_card.base_fare),
+                "perKmFare": str(rate_card.per_km_fare),
+                "perMinFare": str(rate_card.per_min_fare),
+
+                "surgeCap": str(
+                    rate_card.surge_cap_multiplier
                 ),
-                'night_surge_multiplier': str(
-                    config.night_surge_multiplier
-                ),
+
+                "nightSurge": str(
+                    rate_card.night_surge_multiplier
+                )
             }
-        }
-    )
+        })
+
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.exception(
+            "GLOBAL CONFIG UPDATE FAILED | zone=%s | vehicle=%s",
+            zone_id,
+            vehicle_type_id
+        )
+
+        return JsonResponse({
+            "success": False,
+            "message": str(e),
+            "error": str(e),
+        }, status=500)
+    
 
 @admin_required
 def predictive_heatmaps(request: HttpRequest) -> HttpResponse:

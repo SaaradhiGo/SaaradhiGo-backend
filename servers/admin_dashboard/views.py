@@ -1557,8 +1557,144 @@ def update_global_config(request):
             "message": str(e),
             "error": str(e),
         }, status=500)
-    
+@admin_required
+def ride(request):
+    """
+    Ride Management page.
 
+    Uses the existing Trip model only.
+    No database/model changes are required.
+
+    Supports:
+    - All rides
+    - Requested
+    - Accepted
+    - In Progress
+    - Completed
+    - Cancelled
+    - Ride statistics
+    - Rider/Driver/Vehicle relationships
+    """
+
+    # ---------------------------------------------------------
+    # STATUS FILTER
+    # ---------------------------------------------------------
+
+    selected_status = request.GET.get('status', '').strip().lower()
+
+    valid_statuses = {
+        'requested',
+        'accepted',
+        'in_progress',
+        'completed',
+        'cancelled',
+    }
+
+    # ---------------------------------------------------------
+    # BASE QUERYSET
+    # ---------------------------------------------------------
+
+    trips = (
+        Trip.objects
+        .select_related(
+            'user_id',
+            'driver_id',
+            'vehicle_id',
+            'requested_vehicle_type',
+            'status_id',
+            'zone',
+        )
+        .order_by('-requested_at')
+    )
+
+    # ---------------------------------------------------------
+    # APPLY STATUS FILTER
+    # ---------------------------------------------------------
+
+    if selected_status in valid_statuses:
+        trips = trips.filter(
+            status_id__status_code=selected_status
+        )
+
+    # ---------------------------------------------------------
+    # TOTAL RIDES
+    # ---------------------------------------------------------
+
+    total_rides = Trip.objects.count()
+
+    # ---------------------------------------------------------
+    # STATUS COUNTS
+    # ---------------------------------------------------------
+
+    requested_count = Trip.objects.filter(
+        status_id__status_code='requested'
+    ).count()
+
+    accepted_count = Trip.objects.filter(
+        status_id__status_code='accepted'
+    ).count()
+
+    reached_count = Trip.objects.filter(
+        status_id__status_code='reached'
+    ).count()
+
+    in_progress_count = Trip.objects.filter(
+        status_id__status_code='in_progress'
+    ).count()
+
+    completed_count = Trip.objects.filter(
+        status_id__status_code='completed'
+    ).count()
+
+    cancelled_count = Trip.objects.filter(
+        status_id__status_code='cancelled'
+    ).count()
+
+    # ---------------------------------------------------------
+    # ACTIVE RIDES
+    #
+    # A ride is considered active when it is:
+    # requested, accepted, reached or in progress.
+    # ---------------------------------------------------------
+
+    active_rides = (
+        requested_count
+        + accepted_count
+        + reached_count
+        + in_progress_count
+    )
+
+    # ---------------------------------------------------------
+    # TEMPLATE CONTEXT
+    # ---------------------------------------------------------
+
+    context = {
+        # Ride records
+        'trips': trips,
+
+        # Main statistics
+        'total_rides': total_rides,
+        'active_rides': active_rides,
+        'completed_rides': completed_count,
+        'cancelled_rides': cancelled_count,
+
+        # Individual status counts
+        'requested_count': requested_count,
+        'accepted_count': accepted_count,
+        'reached_count': reached_count,
+        'in_progress_count': in_progress_count,
+        'completed_count': completed_count,
+        'cancelled_count': cancelled_count,
+
+        # Current filter
+        'selected_status': selected_status,
+    }
+
+    return render(
+        request,
+        'admin_pages/ride.html',
+        context
+    )
 @admin_required
 def predictive_heatmaps(request: HttpRequest) -> HttpResponse:
     return render(request, "admin_pages/predictive_heatmaps.html")

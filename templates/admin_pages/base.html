@@ -4,14 +4,19 @@
 <head>
     <meta charset="utf-8" />
     <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+
     <title>{% block title %}SaaradhiGo Admin{% endblock %}</title>
+
     <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+
     <link
-        href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;700;800&amp;family=Inter:wght@400;500;600&amp;display=swap"
+        href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;700;800&family=Inter:wght@400;500;600&display=swap"
         rel="stylesheet" />
+
     <link
-        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap"
+        href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
         rel="stylesheet" />
+
     <script id="tailwind-config">
         tailwind.config = {
             darkMode: "class",
@@ -66,354 +71,968 @@
                         "on-surface-variant": "#d0c5af",
                         "tertiary-container": "#cdb157"
                     },
+
                     fontFamily: {
                         "headline": ["Manrope"],
                         "body": ["Inter"],
                         "label": ["Inter"]
                     },
-                    borderRadius: { "DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem" },
+
+                    borderRadius: {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
                 },
             },
         }
     </script>
+
     <style>
         .material-symbols-outlined {
-            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            font-variation-settings:
+                'FILL' 0,
+                'wght' 400,
+                'GRAD' 0,
+                'opsz' 24;
         }
 
-            {
-            % block extra_css %
-        }
-
-            {
-            % endblock %
-        }
+        {% block extra_css %}
+        {% endblock %}
     </style>
+
     {% block extra_head %}{% endblock %}
 </head>
+
 
 <body
     class="bg-surface font-body text-on-surface {% block body_class %}flex min-h-screen selection:bg-primary/30{% endblock %}">
 
     {% block sidebar %}
+
     <aside
         class="bg-[#131313] dark:bg-[#131313] h-screen w-64 border-r border-[#4d4635]/15 flex flex-col sticky top-0 overflow-y-auto z-50">
+
+        <!-- BRAND -->
         <div class="p-8">
-            <span class="text-2xl font-black tracking-tighter text-[#F2CA50]">Gilded Admin</span>
-            <p class="font-headline font-bold text-xs uppercase tracking-widest text-on-surface-variant/50 mt-1">Fleet
-                Operations</p>
+
+            <span class="text-2xl font-black tracking-tighter text-[#F2CA50]">
+                Gilded Admin
+            </span>
+
+            <p
+                class="font-headline font-bold text-xs uppercase tracking-widest text-on-surface-variant/50 mt-1">
+                Fleet Operations
+            </p>
+
         </div>
+
+
+        <!-- SIDEBAR NAVIGATION -->
         <nav class="flex-1 px-4 space-y-2">
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'fleet_monitor' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+
+            <!-- GOD VIEW -->
+            <a
+                class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
+                {% if request.resolver_match.url_name == 'fleet_monitor' %}
+                    text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3
+                {% else %}
+                    text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]
+                {% endif %}"
                 href="{% url 'fleet_monitor' %}">
-                <span class="material-symbols-outlined w-6 text-center">monitoring</span>
-                <span class="font-label text-sm">God View</span>
+
+                <span class="material-symbols-outlined w-6 text-center">
+                    monitoring
+                </span>
+
+                <span class="font-label text-sm">
+                    God View
+                </span>
+
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'driver_onboarding' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+
+
+            <!-- KYC & ONBOARDING -->
+            <a
+                class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
+                {% if request.resolver_match.url_name == 'driver_onboarding' %}
+                    text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3
+                {% else %}
+                    text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]
+                {% endif %}"
                 href="{% url 'driver_onboarding' %}">
-                <span class="material-symbols-outlined w-6 text-center">person_add</span>
-                <span class="font-label text-sm">KYC & Onboarding</span>
+
+                <span class="material-symbols-outlined w-6 text-center">
+                    person_add
+                </span>
+
+                <span class="font-label text-sm">
+                    KYC & Onboarding
+                </span>
+
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'dispute_support' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+
+
+            <!-- SUPPORT CENTER -->
+            <a
+                class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
+                {% if request.resolver_match.url_name == 'dispute_support' %}
+                    text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3
+                {% else %}
+                    text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]
+                {% endif %}"
                 href="{% url 'dispute_support' %}">
-                <span class="material-symbols-outlined w-6 text-center">headphones</span>
-                <span class="font-label text-sm">Support Center</span>
+
+                <span class="material-symbols-outlined w-6 text-center">
+                    headphones
+                </span>
+
+                <span class="font-label text-sm">
+                    Support Center
+                </span>
+
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'payment_dashboard' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+
+
+            <!-- PAYMENTS -->
+            <a
+                class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
+                {% if request.resolver_match.url_name == 'payment_dashboard' %}
+                    text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3
+                {% else %}
+                    text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]
+                {% endif %}"
                 href="{% url 'payment_dashboard' %}">
-                <span class="material-symbols-outlined w-6 text-center">account_balance_wallet</span>
-                <span class="font-label text-sm">Payments</span>
+
+                <span class="material-symbols-outlined w-6 text-center">
+                    account_balance_wallet
+                </span>
+
+                <span class="font-label text-sm">
+                    Payments
+                </span>
+
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'executive_revenue' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+
+
+            <!-- REVENUE ANALYTICS -->
+            <a
+                class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
+                {% if request.resolver_match.url_name == 'executive_revenue' %}
+                    text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3
+                {% else %}
+                    text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]
+                {% endif %}"
                 href="{% url 'executive_revenue' %}">
-                <span class="material-symbols-outlined w-6 text-center">trending_up</span>
-                <span class="font-label text-sm">Revenue Analytics</span>
+
+                <span class="material-symbols-outlined w-6 text-center">
+                    trending_up
+                </span>
+
+                <span class="font-label text-sm">
+                    Revenue Analytics
+                </span>
+
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'driver_loyalty' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+
+
+            <!-- DRIVER LOYALTY -->
+            <a
+                class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
+                {% if request.resolver_match.url_name == 'driver_loyalty' %}
+                    text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3
+                {% else %}
+                    text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]
+                {% endif %}"
                 href="{% url 'driver_loyalty' %}">
-                <span class="material-symbols-outlined w-6 text-center">military_tech</span>
-                <span class="font-label text-sm">Driver Loyalty</span>
+
+                <span class="material-symbols-outlined w-6 text-center">
+                    military_tech
+                </span>
+
+                <span class="font-label text-sm">
+                    Driver Loyalty
+                </span>
+
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'fare_surge' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+
+
+            <!-- ================================================= -->
+            <!-- RIDE - NEW -->
+            <!-- ================================================= -->
+
+            <a
+                class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
+                {% if request.resolver_match.url_name == 'ride' %}
+                    text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3
+                {% else %}
+                    text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]
+                {% endif %}"
+                href="{% url 'ride' %}">
+
+                <span class="material-symbols-outlined w-6 text-center">
+                    directions_car
+                </span>
+
+                <span class="font-label text-sm">
+                    Ride
+                </span>
+
+            </a>
+
+
+            <!-- FARE & SURGE -->
+            <a
+                class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
+                {% if request.resolver_match.url_name == 'fare_surge' %}
+                    text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3
+                {% else %}
+                    text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]
+                {% endif %}"
                 href="{% url 'fare_surge' %}">
-                <span class="material-symbols-outlined w-6 text-center">speed</span>
-                <span class="font-label text-sm">Fare & Surge</span>
+
+                <span class="material-symbols-outlined w-6 text-center">
+                    speed
+                </span>
+
+                <span class="font-label text-sm">
+                    Fare & Surge
+                </span>
+
             </a>
-            <a class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'predictive_heatmaps' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}"
+
+
+            <!-- PREDICTIVE HEATMAPS -->
+            <a
+                class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
+                {% if request.resolver_match.url_name == 'predictive_heatmaps' %}
+                    text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3
+                {% else %}
+                    text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]
+                {% endif %}"
                 href="{% url 'predictive_heatmaps' %}">
-                <span class="material-symbols-outlined w-6 text-center">map</span>
-                <span class="font-label text-sm">Predictive Heatmaps</span>
+
+                <span class="material-symbols-outlined w-6 text-center">
+                    map
+                </span>
+
+                <span class="font-label text-sm">
+                    Predictive Heatmaps
+                </span>
+
             </a>
+
         </nav>
+
+
+        <!-- ADMIN PROFILE -->
         <div class="p-6 border-t border-[#4d4635]/15">
+
             <div class="flex items-center gap-3">
-                <img alt="Admin User Profile" class="w-10 h-10 rounded-full border border-primary/20"
+
+                <img
+                    alt="Admin User Profile"
+                    class="w-10 h-10 rounded-full border border-primary/20"
                     src="https://lh3.googleusercontent.com/aida-public/AB6AXuB1T1r1pgabRYevvFMmQs8CFZDppoAo76tQwElWNjBPkBunIY6PuWvMuBs79xv-6qxKs-BnHjmE_IMIHAs2ZgTMjZX__f9IAjIZUxwiSNlTTUuEjH80cVjyBf6Ef-BJ6GqEW3ljTz2y2WpAMDpEOcU0xxzb_QmmHkktP5Zpk7-qL9B-EWTyuxgjys9OsEH9Qc_aCJDBztkO-BopetXYEWj_OXI0Cq76uyoqpDBSlEk1WNhKucF3JOTTwnH3OT4gJX35DPn0KlqtT2k" />
+
                 <div>
-                    <p class="text-sm font-bold text-on-surface">{% if request.user.is_authenticated %}{{ request.user.username }}{% else %}Guest{% endif %}</p>
-                    <p class="text-xs text-on-surface-variant">{% if request.user.is_staff %}Staff Administrator{% else %}System User{% endif %}</p>
+
+                    <p class="text-sm font-bold text-on-surface">
+
+                        {% if request.user.is_authenticated %}
+                            {{ request.user.username }}
+                        {% else %}
+                            Guest
+                        {% endif %}
+
+                    </p>
+
+                    <p class="text-xs text-on-surface-variant">
+
+                        {% if request.user.is_staff %}
+                            Staff Administrator
+                        {% else %}
+                            System User
+                        {% endif %}
+
+                    </p>
+
                 </div>
+
             </div>
+
+
             <div class="mt-4">
-                <a href="{% url 'logout' %}" class="text-xs text-error font-medium hover:underline">Log Out</a>
+
+                <a
+                    href="{% url 'logout' %}"
+                    class="text-xs text-error font-medium hover:underline">
+
+                    Log Out
+
+                </a>
+
             </div>
+
         </div>
+
     </aside>
+
     {% endblock %}
 
+
+    <!-- MAIN CONTENT -->
     <main class="flex-1 flex flex-col min-w-0 {% block main_class %}{% endblock %}">
+
         {% block topnav %}
+
         <header
             class="bg-[#131313]/60 backdrop-blur-md w-full h-16 border-b border-[#4d4635]/15 sticky top-0 z-50 flex items-center justify-between px-8 shadow-[0_40px_40px_rgba(212,175,55,0.08)]">
+
             <div class="flex items-center flex-1 max-w-xl relative">
+
                 <div class="relative w-full group">
+
                     <span
-                        class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#e5e2e1]/40 group-focus-within:text-[#F2CA50] transition-colors">search</span>
-                    <input id="global-search-input" autocomplete="off"
+                        class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#e5e2e1]/40 group-focus-within:text-[#F2CA50] transition-colors">
+                        search
+                    </span>
+
+                    <input
+                        id="global-search-input"
+                        autocomplete="off"
                         class="w-full bg-surface-container-highest border-b border-outline-variant/30 focus:border-[#F2CA50] focus:ring-0 text-sm pl-10 pr-4 py-2 text-on-surface placeholder:text-on-surface-variant/40 transition-all rounded-t-sm"
-                        placeholder="Search drivers by ID, name or document..." type="text" />
+                        placeholder="Search drivers by ID, name or document..."
+                        type="text" />
+
                 </div>
-                <!-- Search Dropdown Overlay -->
-                <div id="global-search-dropdown"
+
+
+                <!-- SEARCH DROPDOWN -->
+                <div
+                    id="global-search-dropdown"
                     class="absolute top-full left-0 right-0 mt-2 bg-[#201f1f]/95 border border-[#4d4635] rounded-lg shadow-xl overflow-hidden hidden z-50 backdrop-blur-md">
-                    <div id="search-results-list" class="max-h-80 overflow-y-auto divide-y divide-outline-variant/10">
-                        <!-- Dynamic results will be inserted here -->
+
+                    <div
+                        id="search-results-list"
+                        class="max-h-80 overflow-y-auto divide-y divide-outline-variant/10">
                     </div>
+
                 </div>
+
             </div>
+
+
             <div class="flex items-center gap-6">
+
                 <div class="flex items-center gap-4">
+
+                    <!-- NOTIFICATIONS -->
                     <div class="relative">
-                        <button id="notification-bell"
+
+                        <button
+                            id="notification-bell"
                             class="relative text-[#e5e2e1]/70 hover:text-[#F2CA50] transition-colors focus:outline-none flex items-center">
-                            <span class="material-symbols-outlined">notifications</span>
-                            <span id="notification-badge"
-                                class="absolute top-0 right-0 w-2 h-2 bg-primary rounded-full border-2 border-background hidden"></span>
+
+                            <span class="material-symbols-outlined">
+                                notifications
+                            </span>
+
+                            <span
+                                id="notification-badge"
+                                class="absolute top-0 right-0 w-2 h-2 bg-primary rounded-full border-2 border-background hidden">
+                            </span>
+
                         </button>
-                        <!-- Notifications Dropdown -->
-                        <div id="notification-dropdown"
+
+
+                        <!-- NOTIFICATION DROPDOWN -->
+                        <div
+                            id="notification-dropdown"
                             class="absolute right-0 mt-3 w-80 bg-[#201f1f]/95 border border-[#4d4635] rounded-xl shadow-2xl overflow-hidden hidden z-50 backdrop-blur-md">
-                            <div class="px-4 py-3 border-b border-outline-variant/10 flex justify-between items-center">
-                                <span class="font-headline font-bold text-sm text-on-surface">Notifications</span>
-                                <span id="notification-unread-count"
-                                    class="text-[10px] bg-primary/20 text-primary font-bold px-2 py-0.5 rounded-full hidden">0
-                                    Unread</span>
+
+                            <div
+                                class="px-4 py-3 border-b border-outline-variant/10 flex justify-between items-center">
+
+                                <span class="font-headline font-bold text-sm text-on-surface">
+                                    Notifications
+                                </span>
+
+                                <span
+                                    id="notification-unread-count"
+                                    class="text-[10px] bg-primary/20 text-primary font-bold px-2 py-0.5 rounded-full hidden">
+                                    0 Unread
+                                </span>
+
                             </div>
-                            <div id="notification-list"
+
+
+                            <div
+                                id="notification-list"
                                 class="max-h-96 overflow-y-auto divide-y divide-outline-variant/10 custom-scrollbar">
-                                <!-- Dynamic notifications go here -->
                             </div>
+
                         </div>
+
                     </div>
-                    <button class="text-[#e5e2e1]/70 hover:text-[#F2CA50] transition-colors">
-                        <span class="material-symbols-outlined">help_outline</span>
+
+
+                    <!-- HELP -->
+                    <button
+                        class="text-[#e5e2e1]/70 hover:text-[#F2CA50] transition-colors">
+
+                        <span class="material-symbols-outlined">
+                            help_outline
+                        </span>
+
                     </button>
+
                 </div>
+
+
                 <div class="h-4 w-px bg-outline-variant/30"></div>
+
+
                 <button
-                    class="text-sm font-semibold text-[#D4AF37] hover:text-[#F2CA50] transition-colors">Support</button>
-                <span class="font-headline font-extrabold text-[#F2CA50] tracking-tight ml-4">ADMIN PORTAL</span>
+                    class="text-sm font-semibold text-[#D4AF37] hover:text-[#F2CA50] transition-colors">
+                    Support
+                </button>
+
+
+                <span
+                    class="font-headline font-extrabold text-[#F2CA50] tracking-tight ml-4">
+                    ADMIN PORTAL
+                </span>
+
             </div>
+
         </header>
+
         {% endblock %}
 
+
         {% block content %}{% endblock %}
+
     </main>
 
+
+    <!-- JAVASCRIPT -->
     <script>
+
         document.addEventListener('DOMContentLoaded', () => {
+
             const csrfToken = "{{ csrf_token }}";
 
-            // --- Search Logic ---
-            const searchInput = document.getElementById('global-search-input');
-            const searchDropdown = document.getElementById('global-search-dropdown');
-            const searchResultsList = document.getElementById('search-results-list');
+
+            // =====================================================
+            // SEARCH LOGIC
+            // =====================================================
+
+            const searchInput =
+                document.getElementById('global-search-input');
+
+            const searchDropdown =
+                document.getElementById('global-search-dropdown');
+
+            const searchResultsList =
+                document.getElementById('search-results-list');
+
             let searchTimeout = null;
 
+
             if (searchInput) {
+
                 searchInput.addEventListener('input', () => {
+
                     clearTimeout(searchTimeout);
-                    const query = searchInput.value.trim();
+
+                    const query =
+                        searchInput.value.trim();
+
+
                     if (!query) {
+
                         searchDropdown.classList.add('hidden');
+
                         return;
+
                     }
+
 
                     searchTimeout = setTimeout(() => {
-                        fetch(`/api/search/?q=${encodeURIComponent(query)}`)
-                            .then(res => res.json())
-                            .then(data => {
-                                if (data.status === 'ok') {
-                                    renderSearchResults(data.results);
-                                }
-                            })
-                            .catch(err => console.error("Search error:", err));
+
+                        fetch(
+                            `/api/search/?q=${encodeURIComponent(query)}`
+                        )
+
+                        .then(res => res.json())
+
+                        .then(data => {
+
+                            if (data.status === 'ok') {
+
+                                renderSearchResults(
+                                    data.results
+                                );
+
+                            }
+
+                        })
+
+                        .catch(err =>
+                            console.error(
+                                "Search error:",
+                                err
+                            )
+                        );
+
                     }, 300);
+
                 });
+
 
                 searchInput.addEventListener('focus', () => {
+
                     if (searchInput.value.trim()) {
-                        searchDropdown.classList.remove('hidden');
+
+                        searchDropdown.classList.remove(
+                            'hidden'
+                        );
+
                     }
+
                 });
+
             }
 
+
             function renderSearchResults(results) {
+
                 searchResultsList.innerHTML = '';
+
+
                 if (results.length === 0) {
+
                     searchResultsList.innerHTML = `
                         <div class="p-4 text-center text-xs text-on-surface-variant italic">
                             No results found
                         </div>
                     `;
-                } else {
-                    results.forEach(item => {
-                        const icon = item.type === 'driver' ? 'person' : 'payments';
-                        const el = document.createElement('a');
-                        el.href = item.url;
-                        el.className = "block px-4 py-3 hover:bg-surface-container-highest transition-colors";
-                        el.innerHTML = `
-                            <div class="flex items-center gap-3">
-                                <div class="w-8 h-8 rounded-lg bg-surface-container flex items-center justify-center text-primary">
-                                    <span class="material-symbols-outlined text-lg">${icon}</span>
-                                </div>
-                                <div>
-                                    <p class="text-sm font-semibold text-on-surface">${item.title}</p>
-                                    <p class="text-xs text-on-surface-variant">${item.subtitle}</p>
-                                </div>
-                            </div>
-                        `;
-                        searchResultsList.appendChild(el);
-                    });
+
                 }
+
+                else {
+
+                    results.forEach(item => {
+
+                        const icon =
+                            item.type === 'driver'
+                                ? 'person'
+                                : 'payments';
+
+
+                        const el =
+                            document.createElement('a');
+
+
+                        el.href = item.url;
+
+
+                        el.className =
+                            "block px-4 py-3 hover:bg-surface-container-highest transition-colors";
+
+
+                        el.innerHTML = `
+
+                            <div class="flex items-center gap-3">
+
+                                <div
+                                    class="w-8 h-8 rounded-lg bg-surface-container flex items-center justify-center text-primary">
+
+                                    <span
+                                        class="material-symbols-outlined text-lg">
+                                        ${icon}
+                                    </span>
+
+                                </div>
+
+
+                                <div>
+
+                                    <p class="text-sm font-semibold text-on-surface">
+                                        ${item.title}
+                                    </p>
+
+                                    <p class="text-xs text-on-surface-variant">
+                                        ${item.subtitle}
+                                    </p>
+
+                                </div>
+
+                            </div>
+
+                        `;
+
+                        searchResultsList.appendChild(el);
+
+                    });
+
+                }
+
+
                 searchDropdown.classList.remove('hidden');
+
             }
 
-            // --- Notification Logic ---
-            const bellBtn = document.getElementById('notification-bell');
-            const notifBadge = document.getElementById('notification-badge');
-            const notifDropdown = document.getElementById('notification-dropdown');
-            const notifList = document.getElementById('notification-list');
-            const notifUnreadCount = document.getElementById('notification-unread-count');
+
+            // =====================================================
+            // NOTIFICATION LOGIC
+            // =====================================================
+
+            const bellBtn =
+                document.getElementById('notification-bell');
+
+            const notifBadge =
+                document.getElementById('notification-badge');
+
+            const notifDropdown =
+                document.getElementById('notification-dropdown');
+
+            const notifList =
+                document.getElementById('notification-list');
+
+            const notifUnreadCount =
+                document.getElementById(
+                    'notification-unread-count'
+                );
+
 
             const iconMap = {
-                'ALERT': { icon: 'error', colorClass: 'text-rose-400 bg-rose-400/10' },
-                'WARNING': { icon: 'warning', colorClass: 'text-amber-400 bg-amber-400/10' },
-                'INFO': { icon: 'info', colorClass: 'text-primary bg-primary/10' }
+
+                'ALERT': {
+                    icon: 'error',
+                    colorClass:
+                        'text-rose-400 bg-rose-400/10'
+                },
+
+                'WARNING': {
+                    icon: 'warning',
+                    colorClass:
+                        'text-amber-400 bg-amber-400/10'
+                },
+
+                'INFO': {
+                    icon: 'info',
+                    colorClass:
+                        'text-primary bg-primary/10'
+                }
+
             };
 
+
             function fetchNotifications() {
+
                 fetch('/api/notifications/')
+
                     .then(res => res.json())
+
                     .then(data => {
+
                         if (data.status === 'ok') {
-                            renderNotifications(data.notifications);
+
+                            renderNotifications(
+                                data.notifications
+                            );
+
                         }
+
                     })
-                    .catch(err => console.error("Notification fetch error:", err));
+
+                    .catch(err =>
+                        console.error(
+                            "Notification fetch error:",
+                            err
+                        )
+                    );
+
             }
 
+
             function renderNotifications(notifications) {
+
                 notifList.innerHTML = '';
-                const count = notifications.length;
+
+                const count =
+                    notifications.length;
+
 
                 if (count > 0) {
+
                     notifBadge.classList.remove('hidden');
-                    notifUnreadCount.textContent = `${count} Unread`;
-                    notifUnreadCount.classList.remove('hidden');
+
+                    notifUnreadCount.textContent =
+                        `${count} Unread`;
+
+                    notifUnreadCount.classList.remove(
+                        'hidden'
+                    );
+
 
                     notifications.forEach(n => {
-                        const cfg = iconMap[n.notification_type] || iconMap['INFO'];
-                        const div = document.createElement('div');
-                        div.className = "p-4 flex gap-3 hover:bg-surface-container-highest transition-colors group relative";
-                        div.setAttribute('data-id', n.id);
+
+                        const cfg =
+                            iconMap[n.notification_type]
+                            || iconMap['INFO'];
+
+
+                        const div =
+                            document.createElement('div');
+
+
+                        div.className =
+                            "p-4 flex gap-3 hover:bg-surface-container-highest transition-colors group relative";
+
+
+                        div.setAttribute(
+                            'data-id',
+                            n.id
+                        );
+
+
                         div.innerHTML = `
-                            <div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${cfg.colorClass}">
-                                <span class="material-symbols-outlined text-lg">${cfg.icon}</span>
+
+                            <div
+                                class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${cfg.colorClass}">
+
+                                <span class="material-symbols-outlined text-lg">
+                                    ${cfg.icon}
+                                </span>
+
                             </div>
+
+
                             <div class="flex-1 min-w-0 pr-6">
-                                <p class="text-xs font-bold text-on-surface truncate">${n.title}</p>
-                                <p class="text-[11px] text-on-surface-variant mt-0.5 leading-relaxed">${n.message}</p>
-                                <span class="text-[9px] text-on-surface-variant/40 mt-1 block">${n.created_at}</span>
+
+                                <p class="text-xs font-bold text-on-surface truncate">
+                                    ${n.title}
+                                </p>
+
+                                <p class="text-[11px] text-on-surface-variant mt-0.5 leading-relaxed">
+                                    ${n.message}
+                                </p>
+
+                                <span class="text-[9px] text-on-surface-variant/40 mt-1 block">
+                                    ${n.created_at}
+                                </span>
+
                             </div>
-                            <button class="mark-read-btn absolute right-3 top-4 text-on-surface-variant hover:text-primary opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity" title="Mark as read" data-id="${n.id}">
-                                <span class="material-symbols-outlined text-sm">check</span>
+
+
+                            <button
+                                class="mark-read-btn absolute right-3 top-4 text-on-surface-variant hover:text-primary opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                                title="Mark as read"
+                                data-id="${n.id}">
+
+                                <span class="material-symbols-outlined text-sm">
+                                    check
+                                </span>
+
                             </button>
+
                         `;
+
+
                         notifList.appendChild(div);
+
                     });
 
-                    // Bind click events to Mark Read buttons
-                    notifList.querySelectorAll('.mark-read-btn').forEach(btn => {
-                        btn.addEventListener('click', (e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            const notifId = btn.getAttribute('data-id');
-                            markAsRead(notifId);
+
+                    // MARK AS READ
+
+                    notifList
+                        .querySelectorAll('.mark-read-btn')
+                        .forEach(btn => {
+
+                            btn.addEventListener(
+                                'click',
+                                (e) => {
+
+                                    e.preventDefault();
+
+                                    e.stopPropagation();
+
+
+                                    const notifId =
+                                        btn.getAttribute(
+                                            'data-id'
+                                        );
+
+
+                                    markAsRead(
+                                        notifId
+                                    );
+
+                                }
+                            );
+
                         });
-                    });
-                } else {
+
+                }
+
+                else {
+
                     notifBadge.classList.add('hidden');
-                    notifUnreadCount.classList.add('hidden');
+
+                    notifUnreadCount.classList.add(
+                        'hidden'
+                    );
+
+
                     notifList.innerHTML = `
                         <div class="p-8 text-center text-xs text-on-surface-variant italic">
                             No unread notifications
                         </div>
                     `;
+
                 }
+
             }
+
 
             function markAsRead(id) {
-                fetch(`/api/notifications/${id}/read/`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRFToken': csrfToken,
-                        'X-Requested-With': 'XMLHttpRequest'
-                    }
-                })
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.status === 'ok') {
-                            // Remove notification element from UI
-                            const item = notifList.querySelector(`[data-id="${id}"]`);
-                            if (item) {
-                                item.remove();
-                            }
-                            // Refetch to update counts and UI state
-                            fetchNotifications();
+
+                fetch(
+                    `/api/notifications/${id}/read/`,
+                    {
+                        method: 'POST',
+
+                        headers: {
+                            'Content-Type':
+                                'application/json',
+
+                            'X-CSRFToken':
+                                csrfToken,
+
+                            'X-Requested-With':
+                                'XMLHttpRequest'
                         }
-                    })
-                    .catch(err => console.error("Error marking read:", err));
+                    }
+                )
+
+                .then(res => res.json())
+
+                .then(data => {
+
+                    if (data.status === 'ok') {
+
+                        const item =
+                            notifList.querySelector(
+                                `[data-id="${id}"]`
+                            );
+
+
+                        if (item) {
+
+                            item.remove();
+
+                        }
+
+
+                        fetchNotifications();
+
+                    }
+
+                })
+
+                .catch(err =>
+                    console.error(
+                        "Error marking read:",
+                        err
+                    )
+                );
+
             }
+
 
             if (bellBtn) {
-                bellBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    notifDropdown.classList.toggle('hidden');
-                    if (searchDropdown) {
-                        searchDropdown.classList.add('hidden'); // Close search dropdown
+
+                bellBtn.addEventListener(
+                    'click',
+                    (e) => {
+
+                        e.stopPropagation();
+
+                        notifDropdown.classList.toggle(
+                            'hidden'
+                        );
+
+
+                        if (searchDropdown) {
+
+                            searchDropdown.classList.add(
+                                'hidden'
+                            );
+
+                        }
+
                     }
-                });
+                );
+
             }
 
-            // Close dropdowns on clicking outside
-            document.addEventListener('click', (e) => {
-                if (searchDropdown && !searchDropdown.contains(e.target) && e.target !== searchInput) {
-                    searchDropdown.classList.add('hidden');
-                }
-                if (notifDropdown && !notifDropdown.contains(e.target) && e.target !== bellBtn) {
-                    notifDropdown.classList.add('hidden');
-                }
-            });
 
-            // Initial notifications fetch
+            // CLOSE DROPDOWNS
+
+            document.addEventListener(
+                'click',
+                (e) => {
+
+                    if (
+                        searchDropdown &&
+                        !searchDropdown.contains(e.target) &&
+                        e.target !== searchInput
+                    ) {
+
+                        searchDropdown.classList.add(
+                            'hidden'
+                        );
+
+                    }
+
+
+                    if (
+                        notifDropdown &&
+                        !notifDropdown.contains(e.target) &&
+                        e.target !== bellBtn
+                    ) {
+
+                        notifDropdown.classList.add(
+                            'hidden'
+                        );
+
+                    }
+
+                }
+            );
+
+
+            // INITIAL NOTIFICATION FETCH
+
             fetchNotifications();
 
-            // Poll for notifications every 30 seconds
-            setInterval(fetchNotifications, 30000);
+
+            // POLL EVERY 30 SECONDS
+
+            setInterval(
+                fetchNotifications,
+                30000
+            );
+
         });
+
     </script>
+
 </body>
 
 </html>

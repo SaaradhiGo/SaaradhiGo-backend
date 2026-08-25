@@ -1,0 +1,506 @@
+{% extends 'admin_pages/base.html' %}
+
+{% block title %}Ride Management | SaaradhiGo{% endblock %}
+
+{% block content %}
+
+<div class="p-8 space-y-6">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between">
+        <div>
+            <p class="text-xs uppercase tracking-widest text-primary font-bold">
+                Fleet Operations
+            </p>
+
+            <h1 class="text-3xl font-extrabold mt-2">
+                Ride Management
+            </h1>
+
+            <p class="text-sm text-on-surface-variant mt-1">
+                Monitor all SaaradhiGo rides.
+            </p>
+        </div>
+
+        <div class="flex items-center gap-2 text-xs text-on-surface-variant">
+            <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+            Live ride data
+        </div>
+    </div>
+
+
+    <!-- Statistics -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+
+        <div class="bg-surface-container rounded-xl border border-outline-variant/15 p-5">
+            <p class="text-xs uppercase tracking-wider text-on-surface-variant">
+                Total Rides
+            </p>
+
+            <p class="text-3xl font-extrabold text-primary mt-2">
+                {{ total_rides }}
+            </p>
+        </div>
+
+        <div class="bg-surface-container rounded-xl border border-outline-variant/15 p-5">
+            <p class="text-xs uppercase tracking-wider text-on-surface-variant">
+                Active Rides
+            </p>
+
+            <p class="text-3xl font-extrabold text-primary mt-2">
+                {{ active_rides }}
+            </p>
+        </div>
+
+        <div class="bg-surface-container rounded-xl border border-outline-variant/15 p-5">
+            <p class="text-xs uppercase tracking-wider text-on-surface-variant">
+                Completed
+            </p>
+
+            <p class="text-3xl font-extrabold text-primary mt-2">
+                {{ completed_rides }}
+            </p>
+        </div>
+
+        <div class="bg-surface-container rounded-xl border border-outline-variant/15 p-5">
+            <p class="text-xs uppercase tracking-wider text-on-surface-variant">
+                Cancelled
+            </p>
+
+            <p class="text-3xl font-extrabold text-primary mt-2">
+                {{ cancelled_rides }}
+            </p>
+        </div>
+
+    </div>
+
+
+    <!-- Rides -->
+    <div class="bg-surface-container rounded-xl border border-outline-variant/15 overflow-hidden">
+
+        <!-- Table Header -->
+        <div class="p-6 border-b border-outline-variant/15">
+
+            <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+
+                <div>
+                    <h2 class="text-xl font-extrabold">
+                        Recent Rides
+                    </h2>
+
+                    <p class="text-xs text-on-surface-variant mt-1">
+                        Latest ride activity.
+                    </p>
+                </div>
+
+                <!-- Search -->
+                <div class="relative w-full lg:w-80">
+
+                    <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant/50">
+                        search
+                    </span>
+
+                    <input
+                        id="ride-search"
+                        type="text"
+                        placeholder="Search ride, rider or driver..."
+                        class="w-full bg-surface-container-highest border border-outline-variant/20 rounded-lg pl-10 pr-4 py-2.5 text-sm"
+                    >
+
+                </div>
+
+            </div>
+
+
+            <!-- Filters -->
+            <div class="flex flex-wrap gap-2 mt-5">
+
+                <a href="{% url 'ride' %}"
+                   class="px-4 py-2 rounded-lg text-xs font-bold
+                   {% if not selected_status %}
+                       bg-primary text-on-primary
+                   {% else %}
+                       bg-surface-container-highest text-on-surface-variant
+                   {% endif %}">
+                    All {{ total_rides }}
+                </a>
+
+                <a href="{% url 'ride' %}?status=requested"
+                   class="px-4 py-2 rounded-lg text-xs font-bold
+                   {% if selected_status == 'requested' %}
+                       bg-yellow-400/15 text-yellow-400
+                   {% else %}
+                       bg-surface-container-highest text-on-surface-variant
+                   {% endif %}">
+                    Requested {{ requested_count }}
+                </a>
+
+                <a href="{% url 'ride' %}?status=accepted"
+                   class="px-4 py-2 rounded-lg text-xs font-bold
+                   {% if selected_status == 'accepted' %}
+                       bg-primary/15 text-primary
+                   {% else %}
+                       bg-surface-container-highest text-on-surface-variant
+                   {% endif %}">
+                    Accepted {{ accepted_count }}
+                </a>
+
+                <a href="{% url 'ride' %}?status=in_progress"
+                   class="px-4 py-2 rounded-lg text-xs font-bold
+                   {% if selected_status == 'in_progress' %}
+                       bg-blue-400/15 text-blue-400
+                   {% else %}
+                       bg-surface-container-highest text-on-surface-variant
+                   {% endif %}">
+                    In Progress {{ in_progress_count }}
+                </a>
+
+                <a href="{% url 'ride' %}?status=completed"
+                   class="px-4 py-2 rounded-lg text-xs font-bold
+                   {% if selected_status == 'completed' %}
+                       bg-emerald-400/15 text-emerald-400
+                   {% else %}
+                       bg-surface-container-highest text-on-surface-variant
+                   {% endif %}">
+                    Completed {{ completed_count }}
+                </a>
+
+                <a href="{% url 'ride' %}?status=cancelled"
+                   class="px-4 py-2 rounded-lg text-xs font-bold
+                   {% if selected_status == 'cancelled' %}
+                       bg-red-400/15 text-red-400
+                   {% else %}
+                       bg-surface-container-highest text-on-surface-variant
+                   {% endif %}">
+                    Cancelled {{ cancelled_count }}
+                </a>
+
+            </div>
+
+        </div>
+
+
+        <!-- Table -->
+        <div class="overflow-x-auto">
+
+            <table class="w-full min-w-[1000px]">
+
+                <thead class="bg-surface-container-highest/50">
+
+                    <tr>
+
+                        <th class="px-6 py-4 text-left text-[11px] uppercase tracking-wider text-on-surface-variant">
+                            Ride ID
+                        </th>
+
+                        <th class="px-6 py-4 text-left text-[11px] uppercase tracking-wider text-on-surface-variant">
+                            Rider
+                        </th>
+
+                        <th class="px-6 py-4 text-left text-[11px] uppercase tracking-wider text-on-surface-variant">
+                            Driver
+                        </th>
+
+                        <th class="px-6 py-4 text-left text-[11px] uppercase tracking-wider text-on-surface-variant">
+                            Vehicle
+                        </th>
+
+                        <th class="px-6 py-4 text-left text-[11px] uppercase tracking-wider text-on-surface-variant">
+                            Status
+                        </th>
+
+                        <th class="px-6 py-4 text-left text-[11px] uppercase tracking-wider text-on-surface-variant">
+                            Fare
+                        </th>
+
+                        <th class="px-6 py-4 text-left text-[11px] uppercase tracking-wider text-on-surface-variant">
+                            Requested
+                        </th>
+
+                    </tr>
+
+                </thead>
+
+
+                <tbody id="ride-table-body">
+
+                    {% for trip in trips %}
+
+                    <tr
+                        class="ride-row border-b border-outline-variant/10 hover:bg-surface-container-highest/40"
+                        data-search="{{ trip.id }} {{ trip.user_id }} {{ trip.driver_id.user_id }} {{ trip.vehicle_id.vehicle_number }}"
+                    >
+
+                        <!-- Ride ID -->
+                        <td class="px-6 py-4">
+                            <span class="font-mono text-sm text-primary font-bold">
+                                #{{ trip.id }}
+                            </span>
+                        </td>
+
+
+                        <!-- Rider -->
+                        <td class="px-6 py-4">
+
+                            <div class="flex items-center gap-2">
+
+                                <span class="material-symbols-outlined text-primary">
+                                    person
+                                </span>
+
+                                <div>
+
+                                    <p class="text-sm font-semibold">
+                                        {{ trip.user_id.full_name|default:trip.user_id.phone_number }}
+                                    </p>
+
+                                    <p class="text-[10px] text-on-surface-variant">
+                                        Rider
+                                    </p>
+
+                                </div>
+
+                            </div>
+
+                        </td>
+
+
+                        <!-- Driver -->
+                        <td class="px-6 py-4">
+
+                            {% if trip.driver_id %}
+
+                                <div class="flex items-center gap-2">
+
+                                    <span class="material-symbols-outlined text-primary">
+                                        badge
+                                    </span>
+
+                                    <div>
+
+                                        <p class="text-sm font-semibold">
+                                            {{ trip.driver_id.user_id.full_name|default:trip.driver_id.user_id.phone_number }}
+                                        </p>
+
+                                        <p class="text-[10px] text-on-surface-variant">
+                                            Driver
+                                        </p>
+
+                                    </div>
+
+                                </div>
+
+                            {% else %}
+
+                                <span class="text-xs text-on-surface-variant">
+                                    Not assigned
+                                </span>
+
+                            {% endif %}
+
+                        </td>
+
+
+                        <!-- Vehicle -->
+                        <td class="px-6 py-4">
+
+                            {% if trip.vehicle_id %}
+
+                                <div class="flex items-center gap-2">
+
+                                    <span class="material-symbols-outlined text-on-surface-variant">
+                                        directions_car
+                                    </span>
+
+                                    <div>
+
+                                        <p class="text-sm font-semibold">
+                                            {{ trip.vehicle_id.vehicle_number }}
+                                        </p>
+
+                                        <p class="text-[10px] text-on-surface-variant">
+                                            {{ trip.vehicle_id.vehicle_type_id.type }}
+                                        </p>
+
+                                    </div>
+
+                                </div>
+
+                            {% elif trip.requested_vehicle_type %}
+
+                                <div class="flex items-center gap-2">
+
+                                    <span class="material-symbols-outlined text-on-surface-variant">
+                                        directions_car
+                                    </span>
+
+                                    <span class="text-sm text-on-surface-variant">
+                                        {{ trip.requested_vehicle_type.type }}
+                                    </span>
+
+                                </div>
+
+                            {% else %}
+
+                                <span class="text-xs text-on-surface-variant">
+                                    Not assigned
+                                </span>
+
+                            {% endif %}
+
+                        </td>
+
+
+                        <!-- Status -->
+                        <td class="px-6 py-4">
+
+                            {% if trip.status_id.status_code == 'requested' %}
+
+                                <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-yellow-400/10 text-yellow-400">
+                                    Requested
+                                </span>
+
+                            {% elif trip.status_id.status_code == 'accepted' %}
+
+                                <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-primary/10 text-primary">
+                                    Accepted
+                                </span>
+
+                            {% elif trip.status_id.status_code == 'in_progress' %}
+
+                                <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-blue-400/10 text-blue-400">
+                                    In Progress
+                                </span>
+
+                            {% elif trip.status_id.status_code == 'completed' %}
+
+                                <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-400/10 text-emerald-400">
+                                    Completed
+                                </span>
+
+                            {% elif trip.status_id.status_code == 'cancelled' %}
+
+                                <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-red-400/10 text-red-400">
+                                    Cancelled
+                                </span>
+
+                            {% else %}
+
+                                <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-surface-container-highest text-on-surface-variant">
+                                    {{ trip.status_id.status_code|title }}
+                                </span>
+
+                            {% endif %}
+
+                        </td>
+
+
+                        <!-- Fare -->
+                        <td class="px-6 py-4">
+
+                            <span class="text-sm font-bold text-primary">
+                                ₹{{ trip.final_fare|default:trip.estimated_fare|default:"0.00" }}
+                            </span>
+
+                        </td>
+
+
+                        <!-- Requested -->
+                        <td class="px-6 py-4">
+
+                            {% if trip.requested_at %}
+
+                                <p class="text-xs">
+                                    {{ trip.requested_at|date:"d M Y" }}
+                                </p>
+
+                                <p class="text-[10px] text-on-surface-variant">
+                                    {{ trip.requested_at|date:"h:i A" }}
+                                </p>
+
+                            {% else %}
+
+                                —
+
+                            {% endif %}
+
+                        </td>
+
+                    </tr>
+
+                    {% empty %}
+
+                    <tr>
+
+                        <td colspan="7" class="px-6 py-16 text-center">
+
+                            <span class="material-symbols-outlined text-4xl text-on-surface-variant">
+                                directions_car
+                            </span>
+
+                            <p class="font-bold text-lg mt-3">
+                                No rides found
+                            </p>
+
+                            <p class="text-xs text-on-surface-variant mt-1">
+                                No ride records are available.
+                            </p>
+
+                        </td>
+
+                    </tr>
+
+                    {% endfor %}
+
+                </tbody>
+
+            </table>
+
+        </div>
+
+
+        <!-- Footer -->
+        <div class="px-6 py-4 border-t border-outline-variant/10">
+
+            <p class="text-xs text-on-surface-variant">
+                Showing
+                <span class="font-semibold text-on-surface">
+                    {{ trips|length }}
+                </span>
+                ride{{ trips|length|pluralize }}
+            </p>
+
+        </div>
+
+    </div>
+
+</div>
+
+
+<!-- Search -->
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+
+    const input = document.getElementById("ride-search");
+    const rows = document.querySelectorAll(".ride-row");
+
+    input.addEventListener("input", function () {
+
+        const query = this.value.toLowerCase().trim();
+
+        rows.forEach(function (row) {
+
+            const text = row
+                .getAttribute("data-search")
+                .toLowerCase();
+
+            row.style.display = text.includes(query) ? "" : "none";
+
+        });
+
+    });
+
+});
+</script>
+
+{% endblock %}

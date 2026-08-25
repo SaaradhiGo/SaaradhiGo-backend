@@ -2,7 +2,8 @@ from django.urls import path
 from .views import (
     driver_earnings, driver_earnings_summary,
     list_vehicles, create_vehicle, update_vehicle, delete_vehicle, update_driver_profile, get_driver_profile,
-    driver_withdrawal_balance, driver_withdrawal_request, driver_withdrawal_history, driver_withdrawal_block_status
+    driver_withdrawal_balance, driver_withdrawal_request, driver_withdrawal_history, driver_withdrawal_block_status,
+    driver_incentives, driver_elite_status
 )
 from .admin_views import (
     list_drivers_admin, retrieve_driver_admin, driver_full_detail_admin,
@@ -17,6 +18,8 @@ urlpatterns = [
     # Driver
     path('driver/update/',update_driver_profile),
     path('driver/profile/',get_driver_profile),
+    path('driver/incentives/', driver_incentives),
+    path('driver/elite-status/', driver_elite_status),
     # Earnings
     path('earnings/', driver_earnings),
     path('earnings/summary/', driver_earnings_summary),

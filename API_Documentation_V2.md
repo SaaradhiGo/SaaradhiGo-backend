@@ -152,7 +152,36 @@ Update user demographic data. Supports `multipart/form-data` for files.
 }
 ```
 
-### 1.5 Get User Profile
+### 1.5 Update Bank Details
+Update the driver's bank account details for payouts.
+- **URL**: `/auth/bank-details/`
+- **Method**: `PATCH`
+- **Auth Required**: Yes (Must be a driver)
+
+**Parameters (JSON)**: `bank_name`, `account_number`, `ifsc_code`.
+
+**Sample Request (JSON)**:
+```json
+{
+  "bank_name": "State Bank of India",
+  "account_number": "12345678901",
+  "ifsc_code": "SBIN0001234"
+}
+```
+
+**Sample Response (200 OK or 201 Created)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "bank_name": "State Bank of India",
+    "account_number": "12345678901",
+    "ifsc_code": "SBIN0001234"
+  }
+}
+```
+
+### 1.6 Get User Profile
 Fetch the current authenticated user's profile.
 - **URL**: `/auth/profile/`
 - **Method**: `GET`
@@ -642,7 +671,59 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 ```
 **Sample Response**: DriverProfile object (From 3.1).
 
-### 3.3 List Driver Earnings
+**Sample Response**: DriverProfile object (From 3.1).
+
+### 3.3 Driver Incentives / Quest Progress
+Get active incentives/quests and the driver's progress towards completing them.
+- **URL**: `/driver/incentives/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsDriver)
+
+**Sample Request**: `GET /driver/incentives/`
+
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": [
+    {
+      "id": 1,
+      "title": "Complete 10 trips this week",
+      "description": "Earn an extra ₹500 by completing 10 trips.",
+      "target_trips": 10,
+      "reward_amount": "500.00",
+      "start_date": "2023-10-01T00:00:00Z",
+      "end_date": "2023-10-07T23:59:59Z",
+      "progress_trips": 4,
+      "is_completed": false
+    }
+  ]
+}
+```
+
+### 3.4 Driver Elite Status
+Get the driver's current elite tier status based on total trips.
+- **URL**: `/driver/elite-status/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsDriver)
+
+**Sample Request**: `GET /driver/elite-status/`
+
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "tier": "Gold",
+    "total_trips": 120,
+    "rating": "4.8",
+    "acceptance_rate": "100%",
+    "cancellation_rate": "0%"
+  }
+}
+```
+
+### 3.5 List Driver Earnings
 - **URL**: `/driver/earnings/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsDriver)

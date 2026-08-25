@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Vehicle, VehicleType, Driver, WithdrawalRequest
+from .models import Vehicle, VehicleType, Driver, WithdrawalRequest, DriverBankAccount, IncentiveQuest
 from servers.auth_user.serializers import UserModelSerializer
 from base.serializer_fields import NullableFileField
 
@@ -30,6 +30,21 @@ class DriverProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = Driver
         fields = ['id', 'license_doc', 'license_expiry', 'active_vehicle_details', 'status', 'approved', 'total_trips', 'ratings']
+
+
+class DriverBankAccountSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DriverBankAccount
+        fields = ['bank_name', 'account_number', 'ifsc_code']
+
+
+class IncentiveQuestSerializer(serializers.ModelSerializer):
+    progress_trips = serializers.IntegerField(read_only=True, default=0)
+    is_completed = serializers.BooleanField(read_only=True, default=False)
+    
+    class Meta:
+        model = IncentiveQuest
+        fields = ['id', 'title', 'description', 'target_trips', 'reward_amount', 'start_date', 'end_date', 'progress_trips', 'is_completed']
 
 
 class VehicleCreateSerializer(serializers.Serializer):

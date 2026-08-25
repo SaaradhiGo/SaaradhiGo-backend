@@ -268,3 +268,54 @@ When any driver updates their location, a broadcast is immediately sent to all c
     "driver_id": 15
 }
 ```
+
+---
+
+## 5. In-App Chat Consumer (`TripChatConsumer`)
+This consumer handles real-time messaging between a rider and driver during an active trip. Both participants join the same trip-specific chat group.
+
+**Endpoint:** `ws://<host>/ws/ride/trip/<trip_id>/chat/?token=<JWT>`
+**Role:** Rider & Driver
+
+### Connection Flow
+1. Connect with JWT Token.
+2. **Response on Success:**
+   ```json
+   {
+       "type": "connection_established",
+       "trip_id": "101",
+       "role": "rider"
+   }
+   ```
+
+### Client -> Server Events
+**Action: Send Message**
+Send a message to the peer.
+```json
+{
+    "action": "send",
+    "body": "Where are you?"
+}
+```
+
+**Action: Mark All Read**
+Mark all unread messages from the peer as read.
+```json
+{
+    "action": "read_all"
+}
+```
+
+### Server -> Client Broadcasts
+**Event: New Chat Message**
+Pushed when a peer (or system) sends a message.
+```json
+{
+    "type": "message",
+    "id": 42,
+    "sender_role": "driver",
+    "body": "I am arriving in 2 minutes",
+    "created_at": "2023-10-01T12:34:56Z",
+    "is_system": false
+}
+```

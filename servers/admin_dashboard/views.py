@@ -18,6 +18,7 @@ from decimal import Decimal, InvalidOperation
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST,require_http_methods
 from django.contrib.admin.views.decorators import staff_member_required
+from servers.payments.models import Payment
 
 def admin_required(view_func):
     """
@@ -1696,9 +1697,825 @@ def ride(request):
         context
     )
 @admin_required
+def payment_dashboard(request):
+    payments = (
+        Payment.objects
+        .select_related("trip")
+        .order_by("-created_at")
+    )
+
+    # ---------------------------------------------------------
+    # FILTER
+    # ---------------------------------------------------------
+
+    status = request.GET.get("status")
+
+    if status:
+        payments = payments.filter(status=status)
+
+    method = request.GET.get("method")
+
+    if method:
+        payments = payments.filter(method=method)
+
+    # ---------------------------------------------------------
+    # STATISTICS
+    # ---------------------------------------------------------
+
+    total_transactions = payments.count()
+
+    successful_transactions = payments.filter(
+        status="completed"
+    ).count()
+
+    pending_transactions = payments.filter(
+        status="pending"
+    ).count()
+
+    failed_transactions = payments.filter(
+        status="failed"
+    ).count()
+
+    successful_amount = payments.filter(
+        status="completed"
+    ).aggregate(
+        total=Sum("amount")
+    )["total"] or Decimal("0.00")
+
+    pending_amount = payments.filter(
+        status="pending"
+    ).aggregate(
+        total=Sum("amount")
+    )["total"] or Decimal("0.00")
+
+    failed_amount = payments.filter(
+        status="failed"
+    ).aggregate(
+        total=Sum("amount")
+    )["total"] or Decimal("0.00")
+
+    # ---------------------------------------------------------
+    # TRANSACTION LIST
+    # ---------------------------------------------------------
+
+    transaction_list = []
+
+    for payment in payments:
+
+        trip = getattr(payment, "trip", None)
+
+        transaction_list.append({
+            "id": payment.id,
+            "transaction_id": f"TXN-{payment.id:06d}",
+
+            "trip_id": (
+                trip.id
+                if trip
+                else None
+            ),
+
+            "amount": payment.amount,
+
+            "method": (
+                payment.get_method_display()
+                if hasattr(payment, "get_method_display")
+                else payment.method
+            ),
+
+            "status": (
+                payment.get_status_display()
+                if hasattr(payment, "get_status_display")
+                else payment.status
+            ),
+
+            "gateway": getattr(
+                payment,
+                "payment_gateway",
+                ""
+            ),
+
+            "gateway_order_id": getattr(
+                payment,
+                "gateway_order_id",
+                ""
+            ),
+
+            "gateway_payment_id": getattr(
+                payment,
+                "gateway_payment_id",
+                ""
+            ),
+
+            "created_at": payment.created_at,
+
+            "trip": trip,
+        })
+
+    context = {
+        "payments": transaction_list,
+
+        "total_transactions": total_transactions,
+        "successful_transactions": successful_transactions,
+        "pending_transactions": pending_transactions,
+        "failed_transactions": failed_transactions,
+
+        "successful_amount": successful_amount,
+        "pending_amount": pending_amount,
+        "failed_amount": failed_amount,
+
+        "selected_status": status or "",
+        "selected_method": method or "",
+    }
+
+    return render(
+        request,
+        "admin_pages/payment_dashboard.html",
+        context,)
+@admin_required
+def transaction_dashboard(request):
+    from decimal import Decimal
+    from django.core.paginator import Paginator
+
+    # =========================================================
+    # FILTERS
+    # =========================================================
+
+    search = request.GET.get("q", "").strip()
+    selected_type = request.GET.get("type", "").strip()
+    selected_status = request.GET.get("status", "").strip()
+
+    # =========================================================
+    # GET TRIPS
+    # =========================================================
+
+    trips = (
+        Trip.objects
+        .select_related(
+            "user_id",
+            "driver_id",
+            "driver_id__user_id",
+            "status_id",
+        )
+        .order_by("-requested_at")
+    )
+
+    transactions = []
+
+    # =========================================================
+    # BUILD TRANSACTIONS
+    # =========================================================
+
+    for trip in trips:
+
+        # -----------------------------------------------------
+        # RIDER
+        # -----------------------------------------------------
+
+        rider = trip.user_id
+
+        rider_name = (
+            getattr(rider, "full_name", None)
+            or getattr(rider, "phone_number", None)
+            or "Unknown Rider"
+        )
+
+        # -----------------------------------------------------
+        # DRIVER
+        # -----------------------------------------------------
+
+        driver = trip.driver_id
+
+        if driver:
+            driver_user = getattr(driver, "user_id", None)
+
+            if driver_user:
+                driver_name = (
+                    getattr(driver_user, "full_name", None)
+                    or getattr(driver_user, "phone_number", None)
+                    or getattr(driver_user, "username", None)
+                    or f"Driver #{driver.pk}"
+                )
+            else:
+                driver_name = f"Driver #{driver.pk}"
+        else:
+            driver_name = "Not Assigned"
+
+        # -----------------------------------------------------
+        # TRIP STATUS
+        # -----------------------------------------------------
+
+        trip_status = ""
+
+        if trip.status_id:
+            trip_status = (
+                getattr(
+                    trip.status_id,
+                    "status_code",
+                    None,
+                )
+                or getattr(
+                    trip.status_id,
+                    "name",
+                    None,
+                )
+                or str(trip.status_id)
+            )
+
+        trip_status = str(
+            trip_status
+        ).lower().strip()
+
+        # -----------------------------------------------------
+        # PAYMENT STATUS
+        # -----------------------------------------------------
+
+        payment_status = str(
+            getattr(
+                trip,
+                "payment_status",
+                ""
+            ) or ""
+        ).lower().strip()
+
+        # -----------------------------------------------------
+        # FARE
+        # -----------------------------------------------------
+
+        amount = (
+            trip.final_fare
+            if trip.final_fare is not None
+            else trip.estimated_fare
+        )
+
+        if amount is None:
+            amount = Decimal("0.00")
+
+        amount = Decimal(
+            str(amount)
+        ).quantize(
+            Decimal("0.01")
+        )
+
+        # =====================================================
+        # TRANSACTION TYPE
+        # =====================================================
+
+        if (
+            "cancel" in trip_status
+            or getattr(
+                trip,
+                "cancelled_at",
+                None,
+            )
+        ):
+            transaction_type = "cancellation"
+            transaction_status = "cancelled"
+
+        elif payment_status in [
+            "failed",
+            "failure",
+            "payment_failed",
+            "failed_payment",
+        ]:
+            transaction_type = "failed"
+            transaction_status = "failed"
+
+        elif payment_status in [
+            "refunded",
+            "refund",
+            "refunded_success",
+        ]:
+            transaction_type = "refund"
+            transaction_status = "refunded"
+
+        elif payment_status in [
+            "pending",
+            "processing",
+            "initiated",
+        ]:
+            transaction_type = "pending"
+            transaction_status = "pending"
+
+        elif (
+            "complete" in trip_status
+            and payment_status in [
+                "success",
+                "successful",
+                "completed",
+                "paid",
+            ]
+        ):
+            transaction_type = "rider_payment"
+            transaction_status = "success"
+
+        elif "complete" in trip_status:
+            transaction_type = "rider_payment"
+            transaction_status = "success"
+
+        else:
+            transaction_type = "pending"
+            transaction_status = "pending"
+
+        # =====================================================
+        # ADD TRANSACTION
+        # =====================================================
+
+        transactions.append(
+            {
+                "transaction_id": f"TXN-{trip.id}",
+                "type": transaction_type,
+                "trip_id": trip.id,
+                "rider": str(rider_name),
+                "driver": str(driver_name),
+                "amount": amount,
+                "status": transaction_status,
+                "payment_method": (
+                    getattr(
+                        trip,
+                        "payment_method",
+                        None,
+                    )
+                    or "—"
+                ),
+                "created_at": (
+                    getattr(
+                        trip,
+                        "completed_at",
+                        None,
+                    )
+                    or getattr(
+                        trip,
+                        "cancelled_at",
+                        None,
+                    )
+                    or getattr(
+                        trip,
+                        "requested_at",
+                        None,
+                    )
+                ),
+            }
+        )
+
+    # =========================================================
+    # DRIVER PAYOUTS
+    # =========================================================
+
+    try:
+        withdrawals = (
+            WithdrawalRequest.objects
+            .select_related(
+                "driver",
+                "driver__user_id",
+            )
+            .order_by("-requested_at")
+        )
+
+        for withdrawal in withdrawals:
+
+            driver = withdrawal.driver
+
+            if driver:
+
+                driver_user = getattr(
+                    driver,
+                    "user_id",
+                    None,
+                )
+
+                if driver_user:
+                    driver_name = (
+                        getattr(
+                            driver_user,
+                            "full_name",
+                            None,
+                        )
+                        or getattr(
+                            driver_user,
+                            "phone_number",
+                            None,
+                        )
+                        or getattr(
+                            driver_user,
+                            "username",
+                            None,
+                        )
+                        or f"Driver #{driver.pk}"
+                    )
+                else:
+                    driver_name = (
+                        getattr(
+                            driver,
+                            "full_name",
+                            None,
+                        )
+                        or getattr(
+                            driver,
+                            "name",
+                            None,
+                        )
+                        or getattr(
+                            driver,
+                            "phone_number",
+                            None,
+                        )
+                        or f"Driver #{driver.pk}"
+                    )
+
+            else:
+                driver_name = "Unknown Driver"
+
+            # -------------------------------------------------
+            # PAYOUT STATUS
+            # -------------------------------------------------
+
+            payout_status = str(
+                getattr(
+                    withdrawal,
+                    "status",
+                    None,
+                )
+                or "pending"
+            ).lower().strip()
+
+            if payout_status in [
+                "completed",
+                "processed",
+                "approved",
+                "success",
+                "successful",
+            ]:
+                dashboard_status = "success"
+
+            elif payout_status in [
+                "failed",
+                "failure",
+            ]:
+                dashboard_status = "failed"
+
+            elif payout_status in [
+                "rejected",
+                "cancelled",
+                "canceled",
+            ]:
+                dashboard_status = "cancelled"
+
+            else:
+                dashboard_status = "pending"
+
+            # -------------------------------------------------
+            # PAYOUT AMOUNT
+            # -------------------------------------------------
+
+            payout_amount = (
+                withdrawal.amount
+                if withdrawal.amount is not None
+                else Decimal("0.00")
+            )
+
+            payout_amount = Decimal(
+                str(payout_amount)
+            ).quantize(
+                Decimal("0.01")
+            )
+
+            # -------------------------------------------------
+            # ADD PAYOUT
+            # -------------------------------------------------
+
+            transactions.append(
+                {
+                    "transaction_id": (
+                        getattr(
+                            withdrawal,
+                            "payout_reference_id",
+                            None,
+                        )
+                        or f"PAYOUT-{withdrawal.id}"
+                    ),
+                    "type": "driver_payout",
+                    "trip_id": None,
+                    "rider": "—",
+                    "driver": str(driver_name),
+                    "amount": payout_amount,
+                    "status": dashboard_status,
+                    "payment_method": (
+                        getattr(
+                            withdrawal,
+                            "payout_method",
+                            None,
+                        )
+                        or "—"
+                    ),
+                    "created_at": (
+                        getattr(
+                            withdrawal,
+                            "processed_at",
+                            None,
+                        )
+                        or getattr(
+                            withdrawal,
+                            "requested_at",
+                            None,
+                        )
+                    ),
+                }
+            )
+
+    except Exception:
+        pass
+
+    # =========================================================
+    # SORT
+    # =========================================================
+
+    transactions.sort(
+        key=lambda item: (
+            item.get("created_at") or 0
+        ),
+        reverse=True,
+    )
+
+    # =========================================================
+    # ALL TRANSACTIONS
+    # =========================================================
+
+    all_transactions = list(transactions)
+
+    # =========================================================
+    # SEARCH
+    # =========================================================
+
+    if search:
+
+        query = search.lower()
+
+        transactions = [
+            transaction
+            for transaction in transactions
+            if (
+                query in str(
+                    transaction.get(
+                        "transaction_id",
+                        "",
+                    )
+                ).lower()
+                or query in str(
+                    transaction.get(
+                        "trip_id",
+                        "",
+                    )
+                ).lower()
+                or query in str(
+                    transaction.get(
+                        "rider",
+                        "",
+                    )
+                ).lower()
+                or query in str(
+                    transaction.get(
+                        "driver",
+                        "",
+                    )
+                ).lower()
+                or query in str(
+                    transaction.get(
+                        "payment_method",
+                        "",
+                    )
+                ).lower()
+            )
+        ]
+
+    # =========================================================
+    # TYPE FILTER
+    # =========================================================
+
+    if selected_type:
+
+        transactions = [
+            transaction
+            for transaction in transactions
+            if transaction.get("type")
+            == selected_type
+        ]
+
+    # =========================================================
+    # STATUS FILTER
+    # =========================================================
+
+    if selected_status:
+
+        transactions = [
+            transaction
+            for transaction in transactions
+            if transaction.get("status")
+            == selected_status
+        ]
+
+    # =========================================================
+    # SUMMARY
+    # =========================================================
+
+    total_transactions = len(
+        all_transactions
+    )
+
+    # ---------------------------------------------------------
+    # RIDER TOTAL
+    # ---------------------------------------------------------
+
+    rider_payments = Decimal("0.00")
+
+    for transaction in all_transactions:
+
+        if transaction.get("type") == "rider_payment":
+
+            rider_payments += Decimal(
+                str(
+                    transaction.get(
+                        "amount",
+                        "0.00",
+                    )
+                )
+            )
+
+    rider_payments = rider_payments.quantize(
+        Decimal("0.01")
+    )
+
+    # ---------------------------------------------------------
+    # DRIVER TOTAL
+    # ---------------------------------------------------------
+
+    driver_payments = Decimal("0.00")
+
+    for transaction in all_transactions:
+
+        if transaction.get("type") in [
+            "driver_payout",
+            "driver_earning",
+        ]:
+            driver_payments += Decimal(
+                str(
+                    transaction.get(
+                        "amount",
+                        "0.00",
+                    )
+                )
+            )
+
+    driver_payments = driver_payments.quantize(
+        Decimal("0.01")
+    )
+
+    # ---------------------------------------------------------
+    # REFUND TOTAL
+    # ---------------------------------------------------------
+
+    refunds = Decimal("0.00")
+
+    for transaction in all_transactions:
+
+        if transaction.get("type") == "refund":
+
+            refunds += Decimal(
+                str(
+                    transaction.get(
+                        "amount",
+                        "0.00",
+                    )
+                )
+            )
+
+    refunds = refunds.quantize(
+        Decimal("0.01")
+    )
+
+    # =========================================================
+    # COUNTS
+    # =========================================================
+
+    failed_count = sum(
+        1
+        for transaction in all_transactions
+        if transaction.get("status") == "failed"
+    )
+
+    cancelled_count = sum(
+        1
+        for transaction in all_transactions
+        if transaction.get("status") == "cancelled"
+    )
+
+    pending_count = sum(
+        1
+        for transaction in all_transactions
+        if transaction.get("status") == "pending"
+    )
+
+    # =========================================================
+    # PAGINATION
+    # =========================================================
+
+    paginator = Paginator(
+        transactions,
+        10,
+    )
+
+    page_number = request.GET.get(
+        "page",
+        1,
+    )
+
+    page_obj = paginator.get_page(
+        page_number
+    )
+
+    # =========================================================
+    # CONTEXT
+    # =========================================================
+
+    context = {
+
+        # -----------------------------------------------------
+        # TRANSACTIONS
+        # -----------------------------------------------------
+
+        "transactions": transactions,
+        "page_obj": page_obj,
+
+        # -----------------------------------------------------
+        # TOTAL
+        # -----------------------------------------------------
+
+        "total_transactions": total_transactions,
+        "total_transaction_count": total_transactions,
+
+        # -----------------------------------------------------
+        # RIDER
+        # -----------------------------------------------------
+
+        "rider_payments": rider_payments,
+        "rider_total": rider_payments,
+
+        # Extra aliases in case the existing HTML uses one
+        # of these names.
+        "rider_transactions": rider_payments,
+        "rider_transaction_total": rider_payments,
+        "total_rider_transactions": rider_payments,
+
+        # -----------------------------------------------------
+        # DRIVER
+        # -----------------------------------------------------
+
+        "driver_payments": driver_payments,
+        "driver_total": driver_payments,
+
+        "driver_transactions": driver_payments,
+        "driver_transaction_total": driver_payments,
+        "total_driver_transactions": driver_payments,
+
+        # -----------------------------------------------------
+        # REFUNDS
+        # -----------------------------------------------------
+
+        "refunds": refunds,
+        "refund_total": refunds,
+
+        "refund_transactions": refunds,
+        "refund_transaction_total": refunds,
+        "total_refunds": refunds,
+
+        # -----------------------------------------------------
+        # COUNTS
+        # -----------------------------------------------------
+
+        "failed_count": failed_count,
+        "cancelled_count": cancelled_count,
+        "pending_count": pending_count,
+
+        "failed_transactions": failed_count,
+        "cancelled_transactions": cancelled_count,
+        "pending_transactions": pending_count,
+
+        # -----------------------------------------------------
+        # FILTERS
+        # -----------------------------------------------------
+
+        "search": search,
+        "transaction_type": selected_type,
+        "transaction_status": selected_status,
+    }
+
+    return render(
+        request,
+        "admin_pages/transaction_dashboard.html",
+        context,
+    )
+@admin_required
 def predictive_heatmaps(request: HttpRequest) -> HttpResponse:
     return render(request, "admin_pages/predictive_heatmaps.html")
-
 
 def admin_logout(request: HttpRequest) -> HttpResponse:
     auth_logout(request)

@@ -214,7 +214,23 @@
                 </span>
 
             </a>
+            <a
+    href="{% url 'transaction_dashboard' %}"
+    class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
+    {% if request.resolver_match.url_name == 'transaction_dashboard' %}
+        text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3
+    {% else %}
+        text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]
+    {% endif %}"
+>
+    <span class="material-symbols-outlined w-6 text-center">
+        swap_vert
+    </span>
 
+    <span class="font-label text-sm">
+        Transactions
+    </span>
+</a>
 
             <!-- REVENUE ANALYTICS -->
             <a

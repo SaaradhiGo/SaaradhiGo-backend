@@ -1,0 +1,1465 @@
+{% extends 'admin_pages/base.html' %}
+
+{% block title %}Transactions | SaaradhiGo{% endblock %}
+
+{% block extra_css %}
+<style>
+/* =========================================================
+   TRANSACTIONS PAGE
+   ========================================================= */
+
+.transaction-page {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow-x: hidden;
+}
+
+/* ---------- HEADER ---------- */
+
+.transaction-page-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    margin-bottom: 28px;
+}
+
+.transaction-page-title {
+    margin: 0;
+    color: #f5f5f5;
+    font-size: 34px;
+    line-height: 1.1;
+    font-weight: 800;
+}
+
+.transaction-page-subtitle {
+    margin: 10px 0 0;
+    color: #999;
+    font-size: 15px;
+}
+
+.system-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    padding: 14px 18px;
+    border-radius: 12px;
+    background: rgba(34,197,94,.12);
+    border: 1px solid rgba(34,197,94,.16);
+    color: #35d56d;
+    font-size: 14px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.system-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #35d56d;
+    box-shadow: 0 0 8px rgba(53,213,109,.45);
+}
+
+/* ---------- SUMMARY CARDS ---------- */
+
+.transaction-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 20px;
+    margin-bottom: 28px;
+}
+
+.transaction-summary-card {
+    position: relative;
+    min-width: 0;
+    min-height: 178px;
+    padding: 25px;
+    box-sizing: border-box;
+    overflow: hidden;
+    background: #1b1b1b;
+    border: 1px solid #303030;
+    border-radius: 18px;
+    transition: transform .2s ease, border-color .2s ease, background .2s ease;
+}
+
+.transaction-summary-card:hover {
+    transform: translateY(-2px);
+    border-color: #444;
+    background: #1e1e1e;
+}
+
+.summary-content {
+    position: relative;
+    z-index: 2;
+    padding-right: 48px;
+}
+
+.summary-label {
+    margin: 0 0 20px;
+    color: #b1b1b1;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.summary-value {
+    margin: 0;
+    color: #f5f5f5;
+    font-size: 31px;
+    line-height: 1;
+    font-weight: 800;
+}
+
+.summary-description {
+    margin: 13px 0 0;
+    color: #858585;
+    font-size: 13px;
+}
+
+.summary-icon {
+    position: absolute;
+    top: 26px;
+    right: 25px;
+    width: 42px;
+    height: 42px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    background: rgba(212,175,55,.10);
+}
+
+.summary-icon .material-symbols-outlined {
+    color: #d4af37;
+    font-size: 25px;
+}
+
+/* ---------- SECTIONS ---------- */
+
+.transaction-section {
+    width: 100%;
+    margin-bottom: 28px;
+    box-sizing: border-box;
+    background: #191919;
+    border: 1px solid #303030;
+    border-radius: 18px;
+    overflow: hidden;
+}
+
+.transaction-section-header,
+.history-header {
+    padding: 26px;
+    border-bottom: 1px solid #2b2b2b;
+}
+
+.transaction-section-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+.transaction-section-title {
+    margin: 0;
+    color: #f5f5f5;
+    font-size: 21px;
+    font-weight: 750;
+}
+
+.transaction-section-subtitle {
+    margin: 8px 0 0;
+    color: #8e8e8e;
+    font-size: 13px;
+}
+
+/* ---------- FILTERS ---------- */
+
+.filter-body {
+    padding: 26px;
+}
+
+.filter-grid {
+    display: grid;
+    grid-template-columns:
+        minmax(240px, 1.6fr)
+        minmax(170px, 1fr)
+        minmax(170px, 1fr)
+        auto
+        auto;
+    gap: 16px;
+    align-items: end;
+}
+
+.filter-field {
+    min-width: 0;
+}
+
+.filter-label {
+    display: block;
+    margin-bottom: 9px;
+    color: #a8a8a8;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.filter-input,
+.filter-select {
+    width: 100%;
+    height: 52px;
+    box-sizing: border-box;
+    padding: 0 15px;
+    border: 1px solid #393939;
+    border-radius: 10px;
+    outline: none;
+    background: #242424;
+    color: #f2f2f2;
+    font-size: 14px;
+    transition: border-color .2s ease, background .2s ease, box-shadow .2s ease;
+}
+
+.filter-input::placeholder {
+    color: #888;
+}
+
+.filter-input:focus,
+.filter-select:focus {
+    border-color: #d4af37;
+    background: #292929;
+    box-shadow: 0 0 0 3px rgba(212,175,55,.08);
+}
+
+.filter-select {
+    cursor: pointer;
+}
+
+.filter-select option {
+    background: #222;
+    color: #fff;
+}
+
+.filter-button,
+.reset-button {
+    height: 52px;
+    padding: 0 22px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 750;
+    cursor: pointer;
+    transition: transform .15s ease, opacity .15s ease, background .15s ease;
+}
+
+.filter-button {
+    border: 1px solid #d4af37;
+    background: #d4af37;
+    color: #111;
+}
+
+.filter-button:hover {
+    opacity: .9;
+    transform: translateY(-1px);
+}
+
+.reset-button {
+    border: 1px solid #3a3a3a;
+    background: #292929;
+    color: #eee;
+}
+
+.reset-button:hover {
+    background: #333;
+    transform: translateY(-1px);
+}
+
+/* ---------- HISTORY ---------- */
+
+.history-header {
+    padding: 27px 26px;
+}
+
+.history-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 74px;
+    height: 34px;
+    padding: 0 13px;
+    border-radius: 18px;
+    background: #292929;
+    color: #ddd;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+/* ---------- TABLE ---------- */
+
+.transaction-table-wrapper {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #4b4b4b transparent;
+}
+
+.transaction-table-wrapper::-webkit-scrollbar {
+    height: 8px;
+}
+
+.transaction-table-wrapper::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.transaction-table-wrapper::-webkit-scrollbar-thumb {
+    background: #444;
+    border-radius: 10px;
+}
+
+.transaction-table {
+    width: 100%;
+    min-width: 1080px;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+.transaction-table th {
+    height: 53px;
+    padding: 0 18px;
+    background: #171717;
+    border-bottom: 1px solid #2c2c2c;
+    color: #858585;
+    text-align: left;
+    vertical-align: middle;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.transaction-table td {
+    height: 64px;
+    padding: 0 18px;
+    border-bottom: 1px solid #292929;
+    color: #eee;
+    font-size: 13px;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+.transaction-table tbody tr {
+    background: #191919;
+    transition: background .15s ease;
+}
+
+.transaction-table tbody tr:hover {
+    background: #202020;
+}
+
+.transaction-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+/* Column widths */
+
+.col-transaction { width: 12%; }
+.col-type        { width: 18%; }
+.col-trip        { width: 8%; }
+.col-rider       { width: 11%; }
+.col-driver      { width: 11%; }
+.col-amount      { width: 11%; }
+.col-status      { width: 11%; }
+.col-payment     { width: 9%; }
+.col-date        { width: 9%; }
+
+/* Cell content */
+
+.transaction-id {
+    display: block;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #eee;
+    font-family: monospace;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.trip-number {
+    color: #d4af37;
+    font-weight: 800;
+}
+
+.person-name {
+    display: block;
+    max-width: 110px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #f1f1f1;
+    font-weight: 700;
+}
+
+.amount-value {
+    color: #f4f4f4;
+    font-size: 14px;
+    font-weight: 800;
+}
+
+.type-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 34px;
+    max-width: 170px;
+    padding: 0 11px;
+    overflow: hidden;
+    border-radius: 9px;
+    background: rgba(212,175,55,.10);
+    color: #d4af37;
+    font-size: 12px;
+    font-weight: 750;
+    white-space: nowrap;
+}
+
+.type-badge .material-symbols-outlined {
+    flex: 0 0 auto;
+    font-size: 17px;
+}
+
+.payment-method {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: #bcbcbc;
+    font-size: 12px;
+    font-weight: 650;
+}
+
+.payment-method .material-symbols-outlined {
+    color: #9e9e9e;
+    font-size: 17px;
+}
+
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 31px;
+    padding: 0 11px;
+    border-radius: 8px;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: capitalize;
+    white-space: nowrap;
+}
+
+.status-dot {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+}
+
+.status-success {
+    background: rgba(34,197,94,.12);
+    color: #32d56c;
+}
+
+.status-success .status-dot {
+    background: #32d56c;
+}
+
+.status-pending {
+    background: rgba(212,175,55,.12);
+    color: #d4af37;
+}
+
+.status-pending .status-dot {
+    background: #d4af37;
+}
+
+.status-failed {
+    background: rgba(239,68,68,.12);
+    color: #f87171;
+}
+
+.status-failed .status-dot {
+    background: #f87171;
+}
+
+.status-refunded {
+    background: rgba(59,130,246,.12);
+    color: #60a5fa;
+}
+
+.status-refunded .status-dot {
+    background: #60a5fa;
+}
+
+.status-default {
+    background: rgba(156,163,175,.12);
+    color: #c4c4c4;
+}
+
+.status-default .status-dot {
+    background: #9ca3af;
+}
+
+.date-value {
+    color: #999;
+    font-size: 12px;
+}
+
+/* ---------- EMPTY STATE ---------- */
+
+.empty-state {
+    padding: 70px 25px;
+    text-align: center;
+}
+
+.empty-icon {
+    width: 58px;
+    height: 58px;
+    margin: 0 auto 17px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: #252525;
+    color: #777;
+}
+
+.empty-icon .material-symbols-outlined {
+    font-size: 28px;
+}
+
+.empty-title {
+    margin: 0;
+    color: #eee;
+    font-size: 16px;
+    font-weight: 750;
+}
+
+.empty-description {
+    margin: 7px 0 0;
+    color: #777;
+    font-size: 13px;
+}
+
+/* ---------- PAGINATION ---------- */
+
+.pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 18px 26px;
+    border-top: 1px solid #2b2b2b;
+    background: #181818;
+}
+
+.pagination-info {
+    color: #888;
+    font-size: 12px;
+}
+
+.pagination-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.pagination-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 38px;
+    height: 36px;
+    padding: 0 12px;
+    border: 1px solid #363636;
+    border-radius: 8px;
+    background: #242424;
+    color: #ddd;
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 700;
+    transition: background .15s ease;
+}
+
+.pagination-link:hover {
+    background: #303030;
+}
+
+.pagination-current {
+    color: #d4af37;
+    font-size: 12px;
+    font-weight: 750;
+}
+
+/* ---------- RESPONSIVE ---------- */
+
+@media (max-width: 1200px) {
+    .transaction-summary-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .filter-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .filter-button,
+    .reset-button {
+        width: 100%;
+    }
+}
+
+@media (max-width: 700px) {
+    .transaction-page-header {
+        flex-direction: column;
+    }
+
+    .system-status {
+        align-self: flex-start;
+    }
+
+    .transaction-page-title {
+        font-size: 28px;
+    }
+
+    .transaction-summary-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .filter-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .transaction-section-header,
+    .filter-body,
+    .history-header {
+        padding: 20px;
+    }
+
+    .transaction-table {
+        min-width: 1080px;
+    }
+
+    .pagination {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}
+
+/* Prevent old transaction drawers from breaking layout */
+
+.transaction-detail-panel,
+.transaction-details-panel,
+.transaction-drawer,
+.payment-detail-panel,
+.transaction-overlay,
+.transaction-modal-backdrop {
+    display: none !important;
+}
+</style>
+{% endblock %}
+
+
+{% block content %}
+
+<div class="transaction-page">
+
+    <!-- =====================================================
+         PAGE HEADER
+         ===================================================== -->
+
+    <div class="transaction-page-header">
+
+        <div>
+            <h1 class="transaction-page-title">
+                Transactions
+            </h1>
+
+            <p class="transaction-page-subtitle">
+                Complete financial transaction ledger
+            </p>
+        </div>
+
+        <div class="system-status">
+            <span class="system-status-dot"></span>
+            Transaction System Active
+        </div>
+
+    </div>
+
+
+    <!-- =====================================================
+         SUMMARY CARDS
+         ===================================================== -->
+
+    <div class="transaction-summary-grid">
+
+        <!-- TOTAL -->
+
+        <div class="transaction-summary-card">
+
+            <div class="summary-icon">
+                <span class="material-symbols-outlined">
+                    receipt_long
+                </span>
+            </div>
+
+            <div class="summary-content">
+
+                <p class="summary-label">
+                    Total Transactions
+                </p>
+
+                <h2 class="summary-value">
+                    {{ total_transactions|default:"0" }}
+                </h2>
+
+                <p class="summary-description">
+                    All transaction types
+                </p>
+
+            </div>
+
+        </div>
+
+
+        <!-- RIDER -->
+
+        <div class="transaction-summary-card">
+
+            <div class="summary-icon">
+                <span class="material-symbols-outlined">
+                    receipt_long
+                </span>
+            </div>
+
+            <div class="summary-content">
+
+                <p class="summary-label">
+                    Rider Transactions
+                </p>
+
+                <h2 class="summary-value">
+                    ₹{{ rider_transactions|default:"0.00" }}
+                </h2>
+
+                <p class="summary-description">
+                    Rider payments
+                </p>
+
+            </div>
+
+        </div>
+
+
+        <!-- DRIVER -->
+
+        <div class="transaction-summary-card">
+
+            <div class="summary-icon">
+                <span class="material-symbols-outlined">
+                    person
+                </span>
+            </div>
+
+            <div class="summary-content">
+
+                <p class="summary-label">
+                    Driver Transactions
+                </p>
+
+                <h2 class="summary-value">
+                    ₹{{ driver_transactions|default:"0.00" }}
+                </h2>
+
+                <p class="summary-description">
+                    Earnings &amp; payouts
+                </p>
+
+            </div>
+
+        </div>
+
+
+        <!-- REFUNDS -->
+
+        <div class="transaction-summary-card">
+
+            <div class="summary-icon">
+                <span class="material-symbols-outlined">
+                    undo
+                </span>
+            </div>
+
+            <div class="summary-content">
+
+                <p class="summary-label">
+                    Refunds
+                </p>
+
+                <h2 class="summary-value">
+                    ₹{{ refunds|default:"0.00" }}
+                </h2>
+
+                <p class="summary-description">
+                    Returned to riders
+                </p>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- =====================================================
+         FILTERS
+         ===================================================== -->
+
+    <section class="transaction-section">
+
+        <div class="transaction-section-header">
+
+            <h2 class="transaction-section-title">
+                Transaction Filters
+            </h2>
+
+            <p class="transaction-section-subtitle">
+                Filter by financial activity
+            </p>
+
+        </div>
+
+
+        <div class="filter-body">
+
+            <form method="get"
+                  action=""
+                  id="transactionFilterForm">
+
+                <div class="filter-grid">
+
+                    <!-- SEARCH -->
+
+                    <div class="filter-field">
+
+                        <label
+                            class="filter-label"
+                            for="transactionSearch"
+                        >
+                            Search
+                        </label>
+
+                        <input
+                            id="transactionSearch"
+                            name="q"
+                            type="text"
+                            class="filter-input"
+                            value="{{ request.GET.q|default:'' }}"
+                            placeholder="Search transaction, rider, driver..."
+                            autocomplete="off"
+                        >
+
+                    </div>
+
+
+                    <!-- TYPE -->
+
+                    <div class="filter-field">
+
+                        <label
+                            class="filter-label"
+                            for="transactionType"
+                        >
+                            Transaction Type
+                        </label>
+
+                        <select
+                            id="transactionType"
+                            name="type"
+                            class="filter-select"
+                        >
+
+                            <option value="">
+                                All Types
+                            </option>
+
+                            <option
+                                value="rider_payment"
+                                {% if request.GET.type == "rider_payment" %}
+                                    selected
+                                {% endif %}
+                            >
+                                Rider Payment
+                            </option>
+
+                            <option
+                                value="driver_payout"
+                                {% if request.GET.type == "driver_payout" %}
+                                    selected
+                                {% endif %}
+                            >
+                                Driver Payout
+                            </option>
+
+                            <option
+                                value="refund"
+                                {% if request.GET.type == "refund" %}
+                                    selected
+                                {% endif %}
+                            >
+                                Refund
+                            </option>
+
+                            <option
+                                value="cancellation"
+                                {% if request.GET.type == "cancellation" %}
+                                    selected
+                                {% endif %}
+                            >
+                                Cancellation
+                            </option>
+
+                        </select>
+
+                    </div>
+
+
+                    <!-- STATUS -->
+
+                    <div class="filter-field">
+
+                        <label
+                            class="filter-label"
+                            for="transactionStatus"
+                        >
+                            Status
+                        </label>
+
+                        <select
+                            id="transactionStatus"
+                            name="status"
+                            class="filter-select"
+                        >
+
+                            <option value="">
+                                All Status
+                            </option>
+
+                            <option
+                                value="completed"
+                                {% if request.GET.status == "completed" %}
+                                    selected
+                                {% endif %}
+                            >
+                                Success
+                            </option>
+
+                            <option
+                                value="pending"
+                                {% if request.GET.status == "pending" %}
+                                    selected
+                                {% endif %}
+                            >
+                                Pending
+                            </option>
+
+                            <option
+                                value="failed"
+                                {% if request.GET.status == "failed" %}
+                                    selected
+                                {% endif %}
+                            >
+                                Failed
+                            </option>
+
+                            <option
+                                value="refunded"
+                                {% if request.GET.status == "refunded" %}
+                                    selected
+                                {% endif %}
+                            >
+                                Refunded
+                            </option>
+
+                        </select>
+
+                    </div>
+
+
+                    <!-- FILTER BUTTON -->
+
+                    <button
+                        type="submit"
+                        class="filter-button"
+                    >
+                        Filter
+                    </button>
+
+
+                    <!-- RESET BUTTON -->
+
+                    <button
+                        type="button"
+                        class="reset-button"
+                        id="resetTransactionFilters"
+                    >
+                        Reset
+                    </button>
+
+                </div>
+
+            </form>
+
+        </div>
+
+    </section>
+
+
+    <!-- =====================================================
+         TRANSACTION HISTORY
+         ===================================================== -->
+
+    <section class="transaction-section">
+
+        <div class="history-header">
+
+            <div class="transaction-section-title-row">
+
+                <div>
+
+                    <h2 class="transaction-section-title">
+                        Transaction History
+                    </h2>
+
+                    <p class="transaction-section-subtitle">
+                        Rider, driver, cancellation, refund and payment activity
+                    </p>
+
+                </div>
+
+                <span class="history-count">
+                    {{ page_obj.paginator.count|default:"0" }} records
+                </span>
+
+            </div>
+
+        </div>
+
+
+        <!-- TABLE -->
+
+        <div class="transaction-table-wrapper">
+
+            <table class="transaction-table">
+
+                <thead>
+
+                    <tr>
+
+                        <th class="col-transaction">
+                            Transaction
+                        </th>
+
+                        <th class="col-type">
+                            Type
+                        </th>
+
+                        <th class="col-trip">
+                            Trip
+                        </th>
+
+                        <th class="col-rider">
+                            Rider
+                        </th>
+
+                        <th class="col-driver">
+                            Driver
+                        </th>
+
+                        <th class="col-amount">
+                            Amount
+                        </th>
+
+                        <th class="col-status">
+                            Status
+                        </th>
+
+                        <th class="col-payment">
+                            Payment
+                        </th>
+
+                        <th class="col-date">
+                            Date
+                        </th>
+
+                    </tr>
+
+                </thead>
+
+
+                <tbody>
+
+                    {% for t in page_obj %}
+
+                    <tr>
+
+                        <!-- TRANSACTION -->
+
+                        <td>
+
+                            <span class="transaction-id">
+                                {{ t.transaction_id|default:"TXN-" }}
+                            </span>
+
+                        </td>
+
+
+                        <!-- TYPE -->
+
+                        <td>
+
+                            <span class="type-badge">
+
+                                <span class="material-symbols-outlined">
+                                    receipt_long
+                                </span>
+
+                                {{ t.type|default:"Transaction"|title }}
+
+                            </span>
+
+                        </td>
+
+
+                        <!-- TRIP -->
+
+                        <td>
+
+                            <span class="trip-number">
+
+                                {% if t.trip_id %}
+                                    #{{ t.trip_id }}
+                                {% else %}
+                                    —
+                                {% endif %}
+
+                            </span>
+
+                        </td>
+
+
+                        <!-- RIDER -->
+
+                        <td>
+
+                            <span class="person-name">
+                                {{ t.rider|default:"—" }}
+                            </span>
+
+                        </td>
+
+
+                        <!-- DRIVER -->
+
+                        <td>
+
+                            <span class="person-name">
+                                {{ t.driver|default:"—" }}
+                            </span>
+
+                        </td>
+
+
+                        <!-- AMOUNT -->
+
+                        <td>
+
+                            <span class="amount-value">
+                                ₹{{ t.amount|default:"0.00" }}
+                            </span>
+
+                        </td>
+
+
+                        <!-- STATUS -->
+
+                        <td>
+
+                            {% with current_status=t.status|default:"unknown" %}
+
+                            <span class="status-badge
+
+                                {% if current_status == 'completed' or current_status == 'success' or current_status == 'successful' or current_status == 'paid' %}
+                                    status-success
+                                {% elif current_status == 'pending' or current_status == 'processed' or current_status == 'approved' %}
+                                    status-pending
+                                {% elif current_status == 'failed' or current_status == 'rejected' %}
+                                    status-failed
+                                {% elif current_status == 'refunded' %}
+                                    status-refunded
+                                {% else %}
+                                    status-default
+                                {% endif %}
+
+                            ">
+
+                                <span class="status-dot"></span>
+
+                                {% if current_status == 'completed' or current_status == 'success' or current_status == 'successful' or current_status == 'paid' %}
+
+                                    Success
+
+                                {% else %}
+
+                                    {{ current_status|title }}
+
+                                {% endif %}
+
+                            </span>
+
+                            {% endwith %}
+
+                        </td>
+
+
+                        <!-- PAYMENT -->
+
+                        <td>
+
+                            <span class="payment-method">
+
+                                {% if t.payment_method and t.payment_method != "—" %}
+
+                                    {% if t.payment_method|lower == "cash" %}
+
+                                        <span class="material-symbols-outlined">
+                                            payments
+                                        </span>
+
+                                    {% elif t.payment_method|lower == "card" or t.payment_method|lower == "credit_card" or t.payment_method|lower == "debit_card" %}
+
+                                        <span class="material-symbols-outlined">
+                                            credit_card
+                                        </span>
+
+                                    {% else %}
+
+                                        <span class="material-symbols-outlined">
+                                            qr_code_2
+                                        </span>
+
+                                    {% endif %}
+
+                                    <span>
+                                        {{ t.payment_method|upper }}
+                                    </span>
+
+                                {% else %}
+
+                                    <span>—</span>
+
+                                {% endif %}
+
+                            </span>
+
+                        </td>
+
+
+                        <!-- DATE -->
+
+                        <td>
+
+                            <span class="date-value">
+
+                                {% if t.created_at %}
+
+                                    {{ t.created_at|date:"d M Y" }}
+
+                                {% elif t.requested_at %}
+
+                                    {{ t.requested_at|date:"d M Y" }}
+
+                                {% elif t.issued_at %}
+
+                                    {{ t.issued_at|date:"d M Y" }}
+
+                                {% else %}
+
+                                    —
+
+                                {% endif %}
+
+                            </span>
+
+                        </td>
+
+                    </tr>
+
+
+                    {% empty %}
+
+                    <tr>
+
+                        <td colspan="9">
+
+                            <div class="empty-state">
+
+                                <div class="empty-icon">
+
+                                    <span class="material-symbols-outlined">
+                                        receipt_long
+                                    </span>
+
+                                </div>
+
+                                <h3 class="empty-title">
+                                    No transactions found
+                                </h3>
+
+                                <p class="empty-description">
+                                    Try changing your search or filter criteria.
+                                </p>
+
+                            </div>
+
+                        </td>
+
+                    </tr>
+
+                    {% endfor %}
+
+                </tbody>
+
+            </table>
+
+        </div>
+
+
+        <!-- =================================================
+             PAGINATION
+             ================================================= -->
+
+        {% if page_obj.has_other_pages %}
+
+        <div class="pagination">
+
+            <div class="pagination-info">
+
+                Showing
+                {{ page_obj.start_index }}
+                –
+                {{ page_obj.end_index }}
+                of
+                {{ page_obj.paginator.count }}
+                transactions
+
+            </div>
+
+
+            <div class="pagination-actions">
+
+                {% if page_obj.has_previous %}
+
+                <a
+                    class="pagination-link"
+                    href="?q={{ request.GET.q|urlencode }}&type={{ request.GET.type|urlencode }}&status={{ request.GET.status|urlencode }}&page={{ page_obj.previous_page_number }}"
+                >
+                    Previous
+                </a>
+
+                {% endif %}
+
+
+                <span class="pagination-current">
+
+                    Page {{ page_obj.number }}
+                    of
+                    {{ page_obj.paginator.num_pages }}
+
+                </span>
+
+
+                {% if page_obj.has_next %}
+
+                <a
+                    class="pagination-link"
+                    href="?q={{ request.GET.q|urlencode }}&type={{ request.GET.type|urlencode }}&status={{ request.GET.status|urlencode }}&page={{ page_obj.next_page_number }}"
+                >
+                    Next
+                </a>
+
+                {% endif %}
+
+            </div>
+
+        </div>
+
+        {% endif %}
+
+    </section>
+
+</div>
+
+
+<!-- =========================================================
+     JAVASCRIPT
+     ========================================================= -->
+
+<script>
+(function () {
+
+    "use strict";
+
+    /* Reset filters */
+
+    const resetButton =
+        document.getElementById("resetTransactionFilters");
+
+    if (resetButton) {
+
+        resetButton.addEventListener("click", function () {
+
+            window.location.href =
+                window.location.pathname;
+
+        });
+
+    }
+
+
+    /* Enter key search */
+
+    const searchInput =
+        document.getElementById("transactionSearch");
+
+    if (searchInput) {
+
+        searchInput.addEventListener("keydown", function (event) {
+
+            if (event.key === "Enter") {
+
+                event.preventDefault();
+
+                const form =
+                    document.getElementById(
+                        "transactionFilterForm"
+                    );
+
+                if (form) {
+                    form.submit();
+                }
+
+            }
+
+        });
+
+    }
+
+})();
+</script>
+
+{% endblock %}

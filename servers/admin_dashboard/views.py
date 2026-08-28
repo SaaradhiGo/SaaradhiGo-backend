@@ -7,7 +7,7 @@ from django.shortcuts import redirect, render
 # from servers.driver.admin_utils import list_drivers_admin
 from servers.support.models import SupportTicket
 from django.core.paginator import Paginator
-from django.db import models,transaction
+from django.db import models, transaction as db_transaction
 from django.db.models.functions import Coalesce
 from django.db.models import (Avg,Count, Q,Sum,F,Max,Value,DecimalField,)
 from servers.driver.models import Driver, WithdrawalRequest,VehicleType
@@ -18,8 +18,6 @@ from decimal import Decimal, InvalidOperation
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST,require_http_methods
 from django.contrib.admin.views.decorators import staff_member_required
-from servers.payments.models import Payment
-
 def admin_required(view_func):
     """
     Decorator for admin dashboard views.
@@ -1465,7 +1463,7 @@ def update_global_config(request):
 # ------------------------------------------------------------
 
     try:
-        with transaction.atomic():
+        with db_transaction.atomic():
             rate_card = (
             RateCard.objects
             .filter(
@@ -1696,141 +1694,6 @@ def ride(request):
         'admin_pages/ride.html',
         context
     )
-@admin_required
-def payment_dashboard(request):
-    payments = (
-        Payment.objects
-        .select_related("trip")
-        .order_by("-created_at")
-    )
-
-    # ---------------------------------------------------------
-    # FILTER
-    # ---------------------------------------------------------
-
-    status = request.GET.get("status")
-
-    if status:
-        payments = payments.filter(status=status)
-
-    method = request.GET.get("method")
-
-    if method:
-        payments = payments.filter(method=method)
-
-    # ---------------------------------------------------------
-    # STATISTICS
-    # ---------------------------------------------------------
-
-    total_transactions = payments.count()
-
-    successful_transactions = payments.filter(
-        status="completed"
-    ).count()
-
-    pending_transactions = payments.filter(
-        status="pending"
-    ).count()
-
-    failed_transactions = payments.filter(
-        status="failed"
-    ).count()
-
-    successful_amount = payments.filter(
-        status="completed"
-    ).aggregate(
-        total=Sum("amount")
-    )["total"] or Decimal("0.00")
-
-    pending_amount = payments.filter(
-        status="pending"
-    ).aggregate(
-        total=Sum("amount")
-    )["total"] or Decimal("0.00")
-
-    failed_amount = payments.filter(
-        status="failed"
-    ).aggregate(
-        total=Sum("amount")
-    )["total"] or Decimal("0.00")
-
-    # ---------------------------------------------------------
-    # TRANSACTION LIST
-    # ---------------------------------------------------------
-
-    transaction_list = []
-
-    for payment in payments:
-
-        trip = getattr(payment, "trip", None)
-
-        transaction_list.append({
-            "id": payment.id,
-            "transaction_id": f"TXN-{payment.id:06d}",
-
-            "trip_id": (
-                trip.id
-                if trip
-                else None
-            ),
-
-            "amount": payment.amount,
-
-            "method": (
-                payment.get_method_display()
-                if hasattr(payment, "get_method_display")
-                else payment.method
-            ),
-
-            "status": (
-                payment.get_status_display()
-                if hasattr(payment, "get_status_display")
-                else payment.status
-            ),
-
-            "gateway": getattr(
-                payment,
-                "payment_gateway",
-                ""
-            ),
-
-            "gateway_order_id": getattr(
-                payment,
-                "gateway_order_id",
-                ""
-            ),
-
-            "gateway_payment_id": getattr(
-                payment,
-                "gateway_payment_id",
-                ""
-            ),
-
-            "created_at": payment.created_at,
-
-            "trip": trip,
-        })
-
-    context = {
-        "payments": transaction_list,
-
-        "total_transactions": total_transactions,
-        "successful_transactions": successful_transactions,
-        "pending_transactions": pending_transactions,
-        "failed_transactions": failed_transactions,
-
-        "successful_amount": successful_amount,
-        "pending_amount": pending_amount,
-        "failed_amount": failed_amount,
-
-        "selected_status": status or "",
-        "selected_method": method or "",
-    }
-
-    return render(
-        request,
-        "admin_pages/payment_dashboard.html",
-        context,)
 @admin_required
 def transaction_dashboard(request):
     from decimal import Decimal

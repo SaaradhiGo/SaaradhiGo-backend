@@ -584,7 +584,9 @@ def update_user(request):
             )
         
         update_data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
-        avatar_provided, avatar_value, avatar_error = resolve_file_input(request, 'avatar')
+        avatar_provided, avatar_value, avatar_error = resolve_file_input(
+            request, 'avatar', kind='avatar'
+        )
         if avatar_error:
             return error_response(
                 code='UPLOAD_FAILED',
@@ -679,6 +681,53 @@ def get_user_profile(request):
         )
     except Exception as e:
         logger.error(f"Unexpected error in get_user_profile: {str(e)}")
+        return error_response(
+            code='AUTH_INTERNAL_ERROR',
+            message='An unexpected error occurred',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def update_bank_details(request):
+    """
+    Update driver's bank account details.
+    """
+    from servers.driver.models import DriverBankAccount
+    from servers.driver.serializers import DriverBankAccountSerializer
+    
+    try:
+        user = request.user
+        if not hasattr(user, 'driver'):
+            return error_response(
+                code='AUTH_NOT_DRIVER',
+                message='Only drivers can have bank accounts',
+                field='user',
+                issue='User is not a driver',
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
+        driver = user.driver
+        bank_account, created = DriverBankAccount.objects.get_or_create(driver=driver)
+        
+        serializer = DriverBankAccountSerializer(bank_account, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return success_response(
+                serializer.data,
+                status.HTTP_200_OK if not created else status.HTTP_201_CREATED
+            )
+        return error_response(
+            code='AUTH_INVALID_DATA',
+            message='Invalid bank details',
+            field='data',
+            issue=serializer.errors,
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error in update_bank_details: {str(e)}")
         return error_response(
             code='AUTH_INTERNAL_ERROR',
             message='An unexpected error occurred',

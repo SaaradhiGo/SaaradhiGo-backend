@@ -46,6 +46,7 @@ def storage_fields(monkeypatch):
     storage_map = {
         User._meta.get_field("avatar"): public_storage,
         Driver._meta.get_field("license_doc"): private_storage,
+        Driver._meta.get_field("license_doc_back"): private_storage,
         Vehicle._meta.get_field("rc_doc"): private_storage,
         Vehicle._meta.get_field("vehicle_pic"): public_storage,
     }

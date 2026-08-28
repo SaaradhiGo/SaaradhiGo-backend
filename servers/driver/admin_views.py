@@ -248,6 +248,7 @@ def driver_full_detail_admin(request, driver_id):
         'total_trips': driver.total_trips,
         'license_expiry': driver.license_expiry.isoformat() if driver.license_expiry else None,
         'license_doc_url': driver.license_doc.url if driver.license_doc else None,
+        'license_doc_back_url': driver.license_doc_back.url if driver.license_doc_back else None,
         'upi_id': driver.upi_id,
         'fatigue_lockout_until': driver.fatigue_lockout_until.isoformat() if driver.fatigue_lockout_until else None,
         'user': {

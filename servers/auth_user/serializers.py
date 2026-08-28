@@ -1,9 +1,9 @@
 from rest_framework.serializers import ModelSerializer
 from django.contrib.auth import get_user_model
-from base.serializer_fields import NullableFileField
+from base.serializer_fields import S3UploadKeyField
 
 class UserModelSerializer(ModelSerializer):
-    avatar = NullableFileField(required=False, allow_null=True)
+    avatar = S3UploadKeyField(kind="avatar", required=False, allow_null=True)
 
     class Meta:
         model = get_user_model()

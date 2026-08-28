@@ -152,7 +152,36 @@ Update user demographic data. Supports `multipart/form-data` for files.
 }
 ```
 
-### 1.5 Get User Profile
+### 1.5 Update Bank Details
+Update the driver's bank account details for payouts.
+- **URL**: `/auth/bank-details/`
+- **Method**: `PATCH`
+- **Auth Required**: Yes (Must be a driver)
+
+**Parameters (JSON)**: `bank_name`, `account_number`, `ifsc_code`.
+
+**Sample Request (JSON)**:
+```json
+{
+  "bank_name": "State Bank of India",
+  "account_number": "12345678901",
+  "ifsc_code": "SBIN0001234"
+}
+```
+
+**Sample Response (200 OK or 201 Created)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "bank_name": "State Bank of India",
+    "account_number": "12345678901",
+    "ifsc_code": "SBIN0001234"
+  }
+}
+```
+
+### 1.6 Get User Profile
 Fetch the current authenticated user's profile.
 - **URL**: `/auth/profile/`
 - **Method**: `GET`
@@ -621,13 +650,33 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
     "user": { "id": 2, "full_name": "Driver A" },
     "status": "offline",
     "approved": true,
-    "license_doc": "/media/docs/l123.jpg",
+    "license_doc": "https://<bucket>.s3.amazonaws.com/license_docs/a1b2c3d4e5f60718293a4b5c6d7e8f90.jpg?X-Amz-Expires=900&X-Amz-Signature=...",
+    "license_doc_back": "https://<bucket>.s3.amazonaws.com/license_docs_back/b2c3d4e5f60718293a4b5c6d7e8f90a1.png?X-Amz-Expires=900&X-Amz-Signature=...",
     "license_expiry": "2028-10-10",
-    "active_vehicle": 1,
+    "active_vehicle_details": {
+      "id": 1,
+      "vehicle_number": "TS07AB1234",
+      "vehicle_type": { "id": 2, "type": "sedan", "description": "Sedan" },
+      "vehicle_type_id_val": 2,
+      "brand": "Maruti",
+      "model": "Swift Dzire",
+      "color": "White",
+      "year": 2020,
+      "capacity": 4,
+      "vehicle_pic": "https://<bucket>.s3.amazonaws.com/vehicle_pics/9f1c2b34d5e64f70a1b2c3d4e5f60718.png",
+      "rc_doc": "https://<bucket>.s3.amazonaws.com/rc_docs/6e53a6edee3f480dbb86045e26589872.pdf?X-Amz-Expires=900&X-Amz-Signature=...",
+      "status": "active"
+    },
     "ratings": "4.5"
   }
 }
 ```
+
+Field notes:
+- `license_doc` / `license_doc_back` / `active_vehicle_details.rc_doc` are
+  **short-lived signed URLs (~15 min expiry)** — refetch the endpoint to refresh.
+- `active_vehicle_details.vehicle_pic` is a **stable public URL** (no expiry).
+- `license_doc_back` and `active_vehicle_details` are `null` when not yet set.
 
 ### 3.2 Update Driver Profile
 - **URL**: `/driver/driver/update/`
@@ -636,13 +685,74 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 
 **Parameters (All Optional)**: `license_doc` (file), `license_expiry` (string YYYY-MM-DD), `active_vehicle` (int).
 
+**Parameters (All Optional)**: `license_doc` (file or S3 key), `license_doc_back` (file or S3 key — licence back side), `license_expiry` (string YYYY-MM-DD), `active_vehicle` (int).
+
 **Sample Request (JSON)**:
 ```json
-{ "active_vehicle": 2 }
+{
+  "active_vehicle": 2,
+  "license_doc_back": "license_docs_back/b2c3d4e5f60718293a4b5c6d7e8f90a1.png"
+}
 ```
 **Sample Response**: DriverProfile object (From 3.1).
 
-### 3.3 List Driver Earnings
+Notes:
+- `license_doc` / `license_doc_back` accept a multipart file, an S3 key from
+  §3.6 presign (`kind: license_doc` / `kind: license_doc_back`), or `null`
+  to clear the field.
+- The back side is **optional** today and is not required for KYC approval.
+
+### 3.3 Driver Incentives / Quest Progress
+Get active incentives/quests and the driver's progress towards completing them.
+- **URL**: `/driver/incentives/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsDriver)
+
+**Sample Request**: `GET /driver/incentives/`
+
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": [
+    {
+      "id": 1,
+      "title": "Complete 10 trips this week",
+      "description": "Earn an extra ₹500 by completing 10 trips.",
+      "target_trips": 10,
+      "reward_amount": "500.00",
+      "start_date": "2023-10-01T00:00:00Z",
+      "end_date": "2023-10-07T23:59:59Z",
+      "progress_trips": 4,
+      "is_completed": false
+    }
+  ]
+}
+```
+
+### 3.4 Driver Elite Status
+Get the driver's current elite tier status based on total trips.
+- **URL**: `/driver/elite-status/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsDriver)
+
+**Sample Request**: `GET /driver/elite-status/`
+
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "tier": "Gold",
+    "total_trips": 120,
+    "rating": "4.8",
+    "acceptance_rate": "100%",
+    "cancellation_rate": "0%"
+  }
+}
+```
+
+### 3.5 List Driver Earnings
 - **URL**: `/driver/earnings/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsDriver)
@@ -704,19 +814,91 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
     {
       "id": 1,
       "vehicle_number": "TS07AB1234",
-      "vehicle_type": { "type": "sedan", "name": "Sedan" },
+      "vehicle_type": { "id": 2, "type": "sedan", "description": "Sedan" },
+      "vehicle_type_id_val": 2,
       "brand": "Maruti",
       "model": "Swift Dzire",
       "color": "White",
       "year": 2020,
       "capacity": 4,
+      "vehicle_pic": "https://<bucket>.s3.amazonaws.com/vehicle_pics/9f1c2b34d5e64f70a1b2c3d4e5f60718.png",
+      "rc_doc": "https://<bucket>.s3.amazonaws.com/rc_docs/6e53a6edee3f480dbb86045e26589872.pdf?X-Amz-Expires=900&X-Amz-Signature=...",
       "status": "active"
     }
   ]
 }
 ```
 
-### 3.6 Create Vehicle
+Field notes:
+- The image field is named **`vehicle_pic`** — a single string holding the
+  full URL (`null` when no picture). There is no separate `*_url` field.
+- `vehicle_pic` is a **stable public S3 URL** (no expiry) — safe to cache
+  long-term; it does not follow the signed-URL/refetch pattern.
+- `rc_doc` is **private**: returned as a short-lived signed URL (~15 min);
+  refetch to refresh. Same object shape applies to create (§3.7),
+  update (§3.8), admin vehicle lists, and `active_vehicle_details` in §3.1.
+
+### 3.6 Presigned Upload (new)
+
+Direct-to-S3 upload flow. File bytes go browser → S3 and never transit the
+API, so large documents no longer block request workers.
+
+**Step 1** — mint a short-lived upload URL:
+
+- **URL**: `/uploads/presign/`
+- **Method**: `POST`
+- **Auth Required**: Yes. `avatar` is open to all users; `license_doc`,
+  `license_doc_back`, `rc_doc`, `vehicle_pic` require a driver profile.
+
+```json
+{ "kind": "rc_doc", "content_type": "image/png" }
+```
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `kind` | string | One of `avatar`, `license_doc`, `license_doc_back`, `rc_doc`, `vehicle_pic`. |
+| `content_type` | string | MIME type; images for pics/avatars, images+PDF for docs. |
+
+All kinds are capped at **5 MB**; pics/avatars accept JPG/PNG/WebP/GIF,
+documents (`license_doc`, `license_doc_back`, `rc_doc`) additionally accept
+PDF.
+
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "kind": "rc_doc",
+    "key": "rc_docs/6e53a6edee3f480dbb86045e26589872.png",
+    "upload_url": "https://<bucket>.s3.amazonaws.com/rc_docs/6e53...?X-Amz-...",
+    "expires_in": 900,
+    "method": "PUT",
+    "headers": { "Content-Type": "image/png" }
+  }
+}
+```
+
+**Step 2** — PUT the raw bytes to `upload_url` **with exactly that
+Content-Type header**, then submit `key` to the resource endpoint below.
+The key is verified server-side (prefix, existence, ≤5 MB, content type)
+before being saved.
+
+**Step 3 — read-back: how uploaded fields are returned.** Resource
+endpoints never echo the raw S3 key; the stored key is resolved to a full
+URL at serialization time under a single bare field name (no separate
+`*_url` companion):
+
+| Field | Returned as |
+| ----- | ----------- |
+| `avatar`, `vehicle_pic` | **Stable public S3 URL** — no expiry; safe to cache long-term (no refetch-to-refresh needed). |
+| `license_doc`, `license_doc_back`, `rc_doc` | **Short-lived signed GET URL (~15 min**, `expires_in` 900s**)** — refetch the resource endpoint to get a fresh signature when it expires. |
+
+Example: after presigning `kind: vehicle_pic` and PATCHing the returned
+key onto a vehicle, every vehicle response (`GET /driver/vehicles/`,
+§3.7 create, §3.8 update, and `active_vehicle_details` in §3.1) carries
+`vehicle_pic` as its display URL.
+
+### 3.7 Create Vehicle
 - **URL**: `/driver/vehicles/add/`
 - **Method**: `POST`
 - **Auth Required**: Yes (IsDriver)
@@ -728,7 +910,7 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 | `vehicle_type` | string | **Yes** | e.g. `sedan`, `auto`, `suv`. |
 | `brand`, `model`, `color` | string | No | Cosmetic details. |
 | `year`, `capacity` | int | No | Vehicle age and seater. |
-| `rc_doc`, `vehicle_pic` | file | No | Multipart file uploads. |
+| `rc_doc`, `vehicle_pic` | file or key | No | Multipart files, or S3 keys from §3.6 presign. |
 
 **Sample Request**:
 ```json
@@ -739,23 +921,51 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
   "model": "Innova",
   "color": "Silver",
   "year": 2023,
-  "capacity": 6
+  "capacity": 6,
+  "rc_doc": "rc_docs/6e53a6edee3f480dbb86045e26589872.pdf",
+  "vehicle_pic": "vehicle_pics/9f1c2b34d5e64f70a1b2c3d4e5f60718.png"
 }
 ```
-**Sample Response (201 Created)**: (returns Vehicle object same as 3.5).
+Multipart file uploads remain supported during migration.
 
-### 3.7 Update Vehicle
+**Sample Response (201 Created)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "id": 1,
+    "vehicle_number": "AP09XY8888",
+    "vehicle_type": { "id": 3, "type": "suv", "description": "SUV" },
+    "vehicle_type_id_val": 3,
+    "brand": "Toyota",
+    "model": "Innova",
+    "color": "Silver",
+    "year": 2023,
+    "capacity": 6,
+    "vehicle_pic": "https://<bucket>.s3.amazonaws.com/vehicle_pics/9f1c2b34d5e64f70a1b2c3d4e5f60718.png",
+    "rc_doc": "https://<bucket>.s3.amazonaws.com/rc_docs/6e53a6edee3f480dbb86045e26589872.pdf?X-Amz-Expires=900&X-Amz-Signature=...",
+    "status": "active"
+  }
+}
+```
+(Same object shape as §3.5 — `vehicle_pic` is the resolved public URL.)
+
+### 3.8 Update Vehicle
 - **URL**: `/driver/vehicles/<vehicle_id>/`
 - **Method**: `PATCH`
 - **Auth Required**: Yes (IsDriver)
 
 **Sample Request**:
 ```json
-{ "color": "Matte Black" }
+{ "color": "Matte Black", "rc_doc": "rc_docs/6e53a6edee3f480dbb86045e26589872.pdf", "vehicle_pic": "vehicle_pics/9f1c2b34d5e64f70a1b2c3d4e5f60718.png" }
 ```
-**Sample Response**: Updated vehicle object.
+`license_doc` / `license_doc_back` (`PATCH /driver/driver/update/`) and
+`avatar` (`PATCH /auth/update/`) accept keys the same way.
 
-### 3.8 Delete Vehicle
+**Sample Response**: Updated vehicle object (same shape as §3.5, with
+`vehicle_pic` resolved to its public URL).
+
+### 3.10 Delete Vehicle
 - **URL**: `/driver/vehicles/<vehicle_id>/delete/`
 - **Method**: `DELETE`
 - **Auth Required**: Yes (IsDriver)
@@ -769,7 +979,7 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 }
 ```
 
-### 3.9 Admin: List Drivers
+### 3.10 Admin: List Drivers
 - **URL**: `/driver/admin/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsAdmin)
@@ -777,14 +987,14 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 
 **Sample Response**: Paginated Driver profiles.
 
-### 3.10 Admin: Retrieve Driver
+### 3.11 Admin: Retrieve Driver
 - **URL**: `/driver/admin/<driver_id>/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsAdmin)
 
 **Sample Response**: Driver detail including user struct and vehicle relationships.
 
-### 3.11 Admin: Update KYC Status
+### 3.12 Admin: Update KYC Status
 - **URL**: `/driver/admin/<driver_id>/update-kyc/`
 - **Method**: `PATCH`
 - **Auth Required**: Yes (IsAdmin)
@@ -792,19 +1002,19 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 **Parameters**: Optional `approved` (bool), `status` (string).
 **Sample Request**: `{"approved": true}`
 
-### 3.12 Admin: Delete Driver
+### 3.13 Admin: Delete Driver
 - **URL**: `/driver/admin/<driver_id>/delete/`
 - **Method**: `DELETE`
 - **Auth Required**: Yes (IsAdmin)
 **Sample Response**: `{"message": "Driver deleted successfully"}`
 
-### 3.13 Admin: Get Driver Vehicles
+### 3.14 Admin: Get Driver Vehicles
 - **URL**: `/driver/admin/<driver_id>/vehicles/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsAdmin)
 **Sample Response**: Array of vehicle objects matching 3.5.
 
-### 3.14 Driver Withdrawal Balance
+### 3.15 Driver Withdrawal Balance
 - **URL**: `/driver/withdrawals/balance/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsDriver)
@@ -823,7 +1033,7 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 }
 ```
 
-### 3.15 Driver Withdrawal Request
+### 3.16 Driver Withdrawal Request
 - **URL**: `/driver/withdrawals/request/`
 - **Method**: `POST`
 - **Auth Required**: Yes (IsDriver)
@@ -852,7 +1062,7 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 }
 ```
 
-### 3.16 Driver Withdrawal History
+### 3.17 Driver Withdrawal History
 - **URL**: `/driver/withdrawals/history/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsDriver)
@@ -876,7 +1086,7 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 }
 ```
 
-### 3.17 Driver Withdrawal Block Status
+### 3.18 Driver Withdrawal Block Status
 - **URL**: `/driver/withdrawals/block-status/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsDriver)
@@ -896,7 +1106,7 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 }
 ```
 
-### 3.18 Admin: List Withdrawals
+### 3.19 Admin: List Withdrawals
 - **URL**: `/driver/admin/withdrawals/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsAdmin)
@@ -922,7 +1132,7 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 }
 ```
 
-### 3.19 Admin: Approve Withdrawal
+### 3.20 Admin: Approve Withdrawal
 - **URL**: `/driver/admin/withdrawals/<withdrawal_id>/approve/`
 - **Method**: `POST`
 - **Auth Required**: Yes (IsAdmin)
@@ -951,7 +1161,7 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 }
 ```
 
-### 3.20 Admin: Reject Withdrawal
+### 3.21 Admin: Reject Withdrawal
 - **URL**: `/driver/admin/withdrawals/<withdrawal_id>/reject/`
 - **Method**: `POST`
 - **Auth Required**: Yes (IsAdmin)
@@ -981,7 +1191,7 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 }
 ```
 
-### 3.21 Admin: Bulk Action Withdrawals
+### 3.22 Admin: Bulk Action Withdrawals
 - **URL**: `/driver/admin/withdrawals/bulk-action/`
 - **Method**: `POST`
 - **Auth Required**: Yes (IsAdmin)
@@ -1014,7 +1224,7 @@ Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_en
 }
 ```
 
-### 3.22 Admin: Driver Full Detail
+### 3.23 Admin: Driver Full Detail
 Fetch aggregated driver details across 9 surfaces (core driver data, vehicles, earnings, fatigue, recent trips, etc.) for Ops view.
 - **URL**: `/driver/admin/<driver_id>/full/`
 - **Method**: `GET`

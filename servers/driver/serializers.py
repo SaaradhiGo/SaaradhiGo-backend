@@ -1,7 +1,7 @@
 from rest_framework import serializers
-from .models import Vehicle, VehicleType, Driver, WithdrawalRequest
+from .models import Vehicle, VehicleType, Driver, WithdrawalRequest, DriverBankAccount, IncentiveQuest
 from servers.auth_user.serializers import UserModelSerializer
-from base.serializer_fields import NullableFileField
+from base.serializer_fields import S3UploadKeyField
 
 
 class VehicleTypeSerializer(serializers.ModelSerializer):
@@ -24,12 +24,30 @@ class VehicleSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'status']
 class DriverProfileSerializer(serializers.ModelSerializer):
-    license_doc = NullableFileField(required=False, allow_null=True)
+    # Accepts a multipart file or an already-uploaded S3 key
+    # (license_docs/<uuid>.<ext> from /api/v1/uploads/presign/).
+    license_doc = S3UploadKeyField(kind="license_doc", required=False, allow_null=True)
+    license_doc_back = S3UploadKeyField(kind="license_doc_back", required=False, allow_null=True)
     active_vehicle_details = VehicleSerializer(source='active_vehicle', read_only=True)
 
     class Meta:
         model = Driver
-        fields = ['id', 'license_doc', 'license_expiry', 'active_vehicle_details', 'status', 'approved', 'total_trips', 'ratings']
+        fields = ['id', 'license_doc', 'license_doc_back', 'license_expiry', 'active_vehicle', 'active_vehicle_details', 'status', 'approved', 'total_trips', 'ratings']
+
+
+class DriverBankAccountSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DriverBankAccount
+        fields = ['bank_name', 'account_number', 'ifsc_code']
+
+
+class IncentiveQuestSerializer(serializers.ModelSerializer):
+    progress_trips = serializers.IntegerField(read_only=True, default=0)
+    is_completed = serializers.BooleanField(read_only=True, default=False)
+    
+    class Meta:
+        model = IncentiveQuest
+        fields = ['id', 'title', 'description', 'target_trips', 'reward_amount', 'start_date', 'end_date', 'progress_trips', 'is_completed']
 
 
 class VehicleCreateSerializer(serializers.Serializer):
@@ -40,8 +58,8 @@ class VehicleCreateSerializer(serializers.Serializer):
     color = serializers.CharField(max_length=50, required=False, default='')
     year = serializers.IntegerField(required=False, default=None)
     capacity = serializers.IntegerField(required=False, default=1)
-    rc_doc = NullableFileField(required=False, allow_null=True)
-    vehicle_pic = NullableFileField(required=False, allow_null=True)
+    rc_doc = S3UploadKeyField(kind="rc_doc", required=False, allow_null=True)
+    vehicle_pic = S3UploadKeyField(kind="vehicle_pic", required=False, allow_null=True)
 
     def validate_vehicle_type(self, value):
         try:
@@ -128,7 +146,7 @@ class DriverAdminDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Driver
-        fields = ['id', 'user_details', 'license_doc', 'license_expiry', 'status', 'total_trips', 'ratings', 'approved', 'vehicles', 'active_vehicle']
+        fields = ['id', 'user_details', 'license_doc', 'license_doc_back', 'license_expiry', 'status', 'total_trips', 'ratings', 'approved', 'vehicles', 'active_vehicle']
 
 
 class WithdrawalRequestSerializer(serializers.ModelSerializer):

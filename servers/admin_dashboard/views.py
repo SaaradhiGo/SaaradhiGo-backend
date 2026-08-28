@@ -7,16 +7,18 @@ from django.shortcuts import redirect, render
 # from servers.driver.admin_utils import list_drivers_admin
 from servers.support.models import SupportTicket
 from django.core.paginator import Paginator
-from django.db import models
+from django.db import models,transaction
 from django.db.models.functions import Coalesce
 from django.db.models import (Avg,Count, Q,Sum,F,Max,Value,DecimalField,)
-from servers.driver.models import Driver, WithdrawalRequest
+from servers.driver.models import Driver, WithdrawalRequest,VehicleType
 from servers.ride.models import FarePricing, Trip
 from servers.pricing.services import commission_percent_for_trip
 from servers.pricing.models import ServiceZone, RateCard
 from decimal import Decimal, InvalidOperation
 from django.http import JsonResponse
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_POST,require_http_methods
+from django.contrib.admin.views.decorators import staff_member_required
+from servers.payments.models import Payment
 
 def admin_required(view_func):
     """
@@ -971,8 +973,6 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
         "admin_pages/driver_loyalty.html",
         context,
     )
-
-
 @admin_required
 def fare_surge(request: HttpRequest) -> HttpResponse:
 
@@ -980,42 +980,135 @@ def fare_surge(request: HttpRequest) -> HttpResponse:
     one_hour_ago = now - timedelta(hours=1)
 
     # ---------------------------------------------------------
-    # 1. CURRENT FARE CONFIGURATION
+    # VEHICLE TYPES
     # ---------------------------------------------------------
-    config = (
-        RateCard.objects
-        .filter(
-            is_active=True,
-            effective_from__lte=now
-        )
-        .filter(
-            Q(effective_to__isnull=True) |
-            Q(effective_to__gt=now)
-        )
-        .order_by(
-            '-effective_from',
-            '-version'
-        )
-        .first()
+
+    vehicle_types = (
+        VehicleType.objects
+        .all()
+        .order_by('type')
     )
 
     # ---------------------------------------------------------
-    # 2. RECENT TRIPS - LAST ONE HOUR
+    # ALL ACTIVE ZONES
     # ---------------------------------------------------------
+
+    zones = (
+        ServiceZone.objects
+        .filter(is_active=True)
+        .order_by('name')
+    )
+
+    # ---------------------------------------------------------
+    # SELECTED ZONE
+    #
+    # If zone_id is provided:
+    #     use that zone
+    #
+    # Otherwise:
+    #     use first active zone
+    # ---------------------------------------------------------
+
+    selected_zone_id = request.GET.get('zone_id')
+
+    selected_zone = None
+
+    if selected_zone_id:
+
+        try:
+
+            selected_zone = (
+                ServiceZone.objects
+                .get(
+                     id=selected_zone_id,
+                    is_active=True,
+                )
+            )
+
+        except ServiceZone.DoesNotExist:
+
+            selected_zone = zones.first()
+
+    else:
+
+        selected_zone = zones.first()
+
+    # ---------------------------------------------------------
+    # VEHICLE CONFIGURATIONS FOR SELECTED ZONE
+    # ---------------------------------------------------------
+
+    vehicle_configs = []
+
+    if selected_zone:
+
+        for vehicle_type in vehicle_types:
+
+            config = (
+                RateCard.objects
+                .filter(
+                    zone=selected_zone,
+                    vehicle_type=vehicle_type,
+                    is_active=True,
+                    effective_from__lte=now,
+                )
+                .filter(
+                    Q(effective_to__isnull=True) |
+                    Q(effective_to__gt=now)
+                )
+                .order_by(
+                    '-effective_from',
+                    '-version',
+                )
+                .first()
+            )
+
+            vehicle_configs.append(
+                {
+                    'vehicle_type': vehicle_type,
+                    'config': config,
+                }
+            )
+
+    # ---------------------------------------------------------
+    # CURRENT FARE CONFIGURATION
+    #
+    # Only for the selected zone
+    # ---------------------------------------------------------
+
+    config = None
+
+    if selected_zone:
+
+        config = (
+            RateCard.objects
+            .filter(
+                zone=selected_zone,
+                is_active=True,
+                effective_from__lte=now,
+            )
+            .filter(
+                Q(effective_to__isnull=True) |
+                Q(effective_to__gt=now)
+            )
+            .order_by(
+                '-effective_from',
+                '-version',
+            )
+            .first()
+        )
+
+    # ---------------------------------------------------------
+    # RECENT TRIPS - LAST ONE HOUR
+    # ---------------------------------------------------------
+
     recent_trips = Trip.objects.filter(
         requested_at__gte=one_hour_ago
     )
 
     # ---------------------------------------------------------
-    # 3. ACTIVE SURGE ZONES
-    #
-    # A zone is considered active when:
-    #   - zone is active
-    #   - trip happened/requested in last hour
-    #   - trip has surge > 1
-    #
-    # Drivers are counted from drivers assigned to those trips.
+    # ACTIVE SURGE ZONES
     # ---------------------------------------------------------
+
     surge_zones = (
         ServiceZone.objects
         .filter(
@@ -1025,13 +1118,11 @@ def fare_surge(request: HttpRequest) -> HttpResponse:
         )
         .annotate(
 
-            # Number of surge requests during last hour
             requests_per_hour=Count(
                 'trips',
                 distinct=True,
             ),
 
-            # Number of UNIQUE drivers assigned to those trips
             active_drivers=Count(
                 'trips__driver_id',
                 filter=Q(
@@ -1040,7 +1131,6 @@ def fare_surge(request: HttpRequest) -> HttpResponse:
                 distinct=True,
             ),
 
-            # Highest surge multiplier in this zone
             multiplier=Max(
                 'trips__surge_multiplier',
             ),
@@ -1052,18 +1142,21 @@ def fare_surge(request: HttpRequest) -> HttpResponse:
     )
 
     # ---------------------------------------------------------
-    # 4. NUMBER OF ACTIVE SURGE ZONES
+    # ACTIVE SURGE ZONES COUNT
     # ---------------------------------------------------------
+
     active_zones_count = surge_zones.count()
 
     # ---------------------------------------------------------
-    # 5. PEAK SURGE ZONE
+    # PEAK SURGE ZONE
     # ---------------------------------------------------------
+
     peak_zone = surge_zones.first()
 
     # ---------------------------------------------------------
-    # 6. AVERAGE SURGE MULTIPLIER
+    # AVERAGE SURGE MULTIPLIER
     # ---------------------------------------------------------
+
     avg_multiplier = (
         recent_trips
         .filter(
@@ -1076,12 +1169,15 @@ def fare_surge(request: HttpRequest) -> HttpResponse:
     )
 
     if avg_multiplier is None:
+
         avg_multiplier = 1.0
 
     # ---------------------------------------------------------
-    # 7. CONTEXT FOR TEMPLATE
+    # CONTEXT
     # ---------------------------------------------------------
+
     context = {
+
         'config': config,
 
         'surge_zones': surge_zones,
@@ -1093,166 +1189,1333 @@ def fare_surge(request: HttpRequest) -> HttpResponse:
             2
         ),
 
-        'active_zones_count': active_zones_count,
+        'active_zones_count':
+            active_zones_count,
 
-        'recent_trips': recent_trips,
+        'recent_trips':
+            recent_trips,
+
+        'vehicle_configs':
+            vehicle_configs,
+
+        'zones':
+            zones,
+
+        'selected_zone':
+            selected_zone,
     }
 
     # ---------------------------------------------------------
-    # 8. RENDER PAGE
+    # RENDER PAGE
     # ---------------------------------------------------------
+
     return render(
         request,
         "admin_pages/fare_surge.html",
         context
     )
+@staff_member_required
+@require_http_methods(["GET", "POST"])
+def update_global_config(request):
 
-@admin_required
-@require_POST
-def update_global_config(request: HttpRequest) -> JsonResponse:
+    # ============================================================
+    # GET
+    # ============================================================
+    if request.method == "GET":
 
-    now = timezone.now()
+        zone_id = request.GET.get("zone_id")
 
-    # Get currently active RateCard
-    config = (
-        RateCard.objects
-        .filter(
-            is_active=True,
-            effective_from__lte=now,
-        )
-        .filter(
-            Q(effective_to__isnull=True) |
-            Q(effective_to__gt=now)
-        )
-        .order_by(
-            '-effective_from',
-            '-version',
-        )
-        .first()
-    )
+        if not zone_id:
+            return JsonResponse({
+                "success": False,
+                "message": "Zone ID is required.",
+                "configurations": {}
+            }, status=400)
 
-    if not config:
-        return JsonResponse(
-            {
-                'success': False,
-                'message': 'No active fare configuration found.'
-            },
-            status=404,
-        )
+        try:
+            zone = ServiceZone.objects.get(
+                id=zone_id,
+                is_active=True
+            )
+        except ServiceZone.DoesNotExist:
+            return JsonResponse({
+                "success": False,
+                "message": "Selected zone does not exist or is inactive.",
+                "configurations": {}
+            }, status=404)
 
-    # ---------------------------------------------------------
-    # DEBUG: See exactly what the browser sent
-    # ---------------------------------------------------------
+        try:
+            rate_cards = (
+                RateCard.objects
+                .filter(
+                    zone=zone,
+                    is_active=True
+                )
+                .select_related("vehicle_type")
+                .order_by("vehicle_type__type")
+            )
 
-    print("GLOBAL CONFIG POST DATA:")
-    print(request.POST.dict())
+            configurations = {}
+
+            for rate_card in rate_cards:
+
+                if not rate_card.vehicle_type:
+                    continue
+
+                vehicle_type = rate_card.vehicle_type
+                vehicle_id = str(vehicle_type.id)
+
+                configurations[vehicle_id] = {
+                    "id": rate_card.id,
+                    "vehicleTypeId": vehicle_type.id,
+                    "vehicleName": str(vehicle_type.type),
+
+                    "baseFare": str(
+                        rate_card.base_fare
+                        if rate_card.base_fare is not None
+                        else ""
+                    ),
+
+                    "perKmFare": str(
+                        rate_card.per_km_fare
+                        if rate_card.per_km_fare is not None
+                        else ""
+                    ),
+
+                    "perMinFare": str(
+                        rate_card.per_min_fare
+                        if rate_card.per_min_fare is not None
+                        else ""
+                    ),
+
+                    "surgeCap": str(
+                        rate_card.surge_cap_multiplier
+                        if rate_card.surge_cap_multiplier is not None
+                        else "1"
+                    ),
+
+                    "nightSurge": str(
+                        rate_card.night_surge_multiplier
+                        if rate_card.night_surge_multiplier is not None
+                        else "1"
+                    ),
+                }
+
+            return JsonResponse({
+                "success": True,
+                "zone_id": zone.id,
+                "zone_name": zone.name,
+                "configurations": configurations,
+                "vehicle_count": len(configurations)
+            })
+
+        except Exception as e:
+
+            import logging
+            logger = logging.getLogger(__name__)
+
+            logger.exception(
+                "Error loading fare configuration for zone %s",
+                zone_id
+            )
+
+            return JsonResponse({
+                "success": False,
+                "message": "Unable to load fare configuration.",
+                "error": str(e),
+                "configurations": {}
+            }, status=500)
+
+    # ============================================================
+    # POST
+    # ============================================================
+
+    zone_id = request.POST.get("zone_id")
+    vehicle_type_id = request.POST.get("vehicle_type_id")
+
+    base_fare = request.POST.get("base_fare")
+    per_km_fare = request.POST.get("per_km_fare")
+    per_min_fare = request.POST.get("per_min_fare")
+    surge_cap_multiplier = request.POST.get("surge_cap_multiplier")
+    night_surge_multiplier = request.POST.get("night_surge_multiplier")
+
+    # ------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------
+
+    if not zone_id:
+        return JsonResponse({
+            "success": False,
+            "message": "Zone is required."
+        }, status=400)
+
+    if not vehicle_type_id:
+        return JsonResponse({
+            "success": False,
+            "message": "Vehicle type is required."
+        }, status=400)
+
+    required_fields = {
+        "Base fare": base_fare,
+        "Per KM fare": per_km_fare,
+        "Per minute fare": per_min_fare,
+        "Surge cap": surge_cap_multiplier,
+        "Night surge": night_surge_multiplier,
+    }
+
+    for field_name, value in required_fields.items():
+
+        if value in [None, ""]:
+            return JsonResponse({
+                "success": False,
+                "message": f"{field_name} is required."
+            }, status=400)
+
+    # ------------------------------------------------------------
+    # Convert values
+    # ------------------------------------------------------------
 
     try:
 
-        # Get values from POST
-        base_fare_value = request.POST.get('base_fare')
-        per_km_fare_value = request.POST.get('per_km_fare')
-        per_min_fare_value = request.POST.get('per_min_fare')
-        surge_cap_value = request.POST.get('surge_cap_multiplier')
-        night_surge_value = request.POST.get('night_surge_multiplier')
+        base_fare = Decimal(base_fare)
+        per_km_fare = Decimal(per_km_fare)
+        per_min_fare = Decimal(per_min_fare)
+        surge_cap_multiplier = Decimal(surge_cap_multiplier)
+        night_surge_multiplier = Decimal(night_surge_multiplier)
 
-        print("base_fare =", base_fare_value)
-        print("per_km_fare =", per_km_fare_value)
-        print("per_min_fare =", per_min_fare_value)
-        print("surge_cap_multiplier =", surge_cap_value)
-        print("night_surge_multiplier =", night_surge_value)
+    except (InvalidOperation, TypeError, ValueError):
 
-        # Check for missing values
-        if not base_fare_value:
-            raise ValueError("Base Fare is empty.")
+        return JsonResponse({
+            "success": False,
+            "message": "Invalid fare value."
+        }, status=400)
 
-        if not per_km_fare_value:
-            raise ValueError("Per KM Fare is empty.")
+    # ------------------------------------------------------------
+    # Validate values
+    # ------------------------------------------------------------
 
-        if not per_min_fare_value:
-            raise ValueError("Per Minute Fare is empty.")
+    if base_fare < 0:
+        return JsonResponse({
+            "success": False,
+            "message": "Base fare cannot be negative."
+        }, status=400)
 
-        if not surge_cap_value:
-            raise ValueError("Surge Cap is empty.")
+    if per_km_fare < 0:
+        return JsonResponse({
+            "success": False,
+            "message": "Per KM fare cannot be negative."
+        }, status=400)
 
-        if not night_surge_value:
-            raise ValueError("Night Surge is empty.")
+    if per_min_fare < 0:
+        return JsonResponse({
+            "success": False,
+            "message": "Per minute fare cannot be negative."
+        }, status=400)
 
-        # Convert to Decimal
-        base_fare = Decimal(base_fare_value)
-        per_km_fare = Decimal(per_km_fare_value)
-        per_min_fare = Decimal(per_min_fare_value)
-        surge_cap = Decimal(surge_cap_value)
-        night_surge = Decimal(night_surge_value)
+    if surge_cap_multiplier < 1:
+        return JsonResponse({
+            "success": False,
+            "message": "Surge cap must be at least 1."
+        }, status=400)
 
-        # ---------------------------------------------------------
-        # VALIDATION
-        # ---------------------------------------------------------
+    if night_surge_multiplier < 1:
+        return JsonResponse({
+            "success": False,
+            "message": "Night surge must be at least 1."
+        }, status=400)
 
-        if base_fare < 0:
-            raise ValueError("Base Fare cannot be negative.")
+    # ------------------------------------------------------------
+    # Get ServiceZone
+    # ------------------------------------------------------------
 
-        if per_km_fare < 0:
-            raise ValueError("Per KM Fare cannot be negative.")
+    try:
 
-        if per_min_fare < 0:
-            raise ValueError("Per Minute Fare cannot be negative.")
+        zone = ServiceZone.objects.get(
+            id=zone_id,
+            is_active=True
+        )
 
-        if surge_cap < 1:
-            raise ValueError("Surge Cap must be at least 1.00.")
+    except ServiceZone.DoesNotExist:
 
-        if night_surge < 1:
-            raise ValueError("Night Surge must be at least 1.00.")
+        return JsonResponse({
+            "success": False,
+            "message": "Selected zone does not exist or is inactive."
+        }, status=404)
 
-    except (TypeError, ValueError, InvalidOperation) as e:
+    # ------------------------------------------------------------
+    # Get VehicleType
+    # ------------------------------------------------------------
 
-        print("FARE CONFIG VALIDATION ERROR:", str(e))
+    try:
 
-        return JsonResponse(
-            {
-                'success': False,
-                'message': str(e),
-            },
-            status=400,
+        vehicle_type = VehicleType.objects.get(
+            id=vehicle_type_id,
+
+        )
+
+    except VehicleType.DoesNotExist:
+
+        return JsonResponse({
+            "success": False,
+            "message": "Selected vehicle type does not exist or is inactive."
+        }, status=404)
+
+    # ------------------------------------------------------------
+# Create / Update RateCard
+# ------------------------------------------------------------
+
+    try:
+        with transaction.atomic():
+            rate_card = (
+            RateCard.objects
+            .filter(
+                zone=zone,
+                vehicle_type=vehicle_type,
+                is_active=True
+            )
+            .order_by("-id")
+            .first()
+        )
+
+        if rate_card is None:
+
+            rate_card = RateCard.objects.create(
+                zone=zone,
+                vehicle_type=vehicle_type,
+
+                base_fare=base_fare,
+                per_km_fare=per_km_fare,
+                per_min_fare=per_min_fare,
+
+                # Required model field
+                min_fare=base_fare,
+
+                surge_cap_multiplier=surge_cap_multiplier,
+                night_surge_multiplier=night_surge_multiplier,
+
+                is_active=True
+            )
+
+            action = "created"
+
+        else:
+
+            rate_card.base_fare = base_fare
+            rate_card.per_km_fare = per_km_fare
+            rate_card.per_min_fare = per_min_fare
+
+            # Keep existing minimum fare when updating
+            if rate_card.min_fare is None:
+                rate_card.min_fare = base_fare
+
+            rate_card.surge_cap_multiplier = surge_cap_multiplier
+            rate_card.night_surge_multiplier = night_surge_multiplier
+
+            rate_card.save()
+
+            action = "updated"
+
+        return JsonResponse({
+            "success": True,
+
+            "message": (
+                f"{vehicle_type.type} fare "
+                f"{action} successfully for "
+                f"{zone.name}."
+            ),
+
+            "configuration": {
+                "id": rate_card.id,
+                "vehicleTypeId": vehicle_type.id,
+                "vehicleName": str(vehicle_type.type),
+
+                "baseFare": str(rate_card.base_fare),
+                "perKmFare": str(rate_card.per_km_fare),
+                "perMinFare": str(rate_card.per_min_fare),
+
+                "surgeCap": str(
+                    rate_card.surge_cap_multiplier
+                ),
+
+                "nightSurge": str(
+                    rate_card.night_surge_multiplier
+                )
+            }
+        })
+
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.exception(
+            "GLOBAL CONFIG UPDATE FAILED | zone=%s | vehicle=%s",
+            zone_id,
+            vehicle_type_id
+        )
+
+        return JsonResponse({
+            "success": False,
+            "message": str(e),
+            "error": str(e),
+        }, status=500)
+@admin_required
+def ride(request):
+    """
+    Ride Management page.
+
+    Uses the existing Trip model only.
+    No database/model changes are required.
+
+    Supports:
+    - All rides
+    - Requested
+    - Accepted
+    - In Progress
+    - Completed
+    - Cancelled
+    - Ride statistics
+    - Rider/Driver/Vehicle relationships
+    """
+
+    # ---------------------------------------------------------
+    # STATUS FILTER
+    # ---------------------------------------------------------
+
+    selected_status = request.GET.get('status', '').strip().lower()
+
+    valid_statuses = {
+        'requested',
+        'accepted',
+        'in_progress',
+        'completed',
+        'cancelled',
+    }
+
+    # ---------------------------------------------------------
+    # BASE QUERYSET
+    # ---------------------------------------------------------
+
+    trips = (
+        Trip.objects
+        .select_related(
+            'user_id',
+            'driver_id',
+            'vehicle_id',
+            'requested_vehicle_type',
+            'status_id',
+            'zone',
+        )
+        .order_by('-requested_at')
+    )
+
+    # ---------------------------------------------------------
+    # APPLY STATUS FILTER
+    # ---------------------------------------------------------
+
+    if selected_status in valid_statuses:
+        trips = trips.filter(
+            status_id__status_code=selected_status
         )
 
     # ---------------------------------------------------------
-    # UPDATE DATABASE
+    # TOTAL RIDES
     # ---------------------------------------------------------
 
-    config.base_fare = base_fare
-    config.per_km_fare = per_km_fare
-    config.per_min_fare = per_min_fare
-    config.surge_cap_multiplier = surge_cap
-    config.night_surge_multiplier = night_surge
+    total_rides = Trip.objects.count()
 
-    config.save()
+    # ---------------------------------------------------------
+    # STATUS COUNTS
+    # ---------------------------------------------------------
 
-    print("FARE CONFIG UPDATED SUCCESSFULLY")
-    print("RateCard ID:", config.id)
+    requested_count = Trip.objects.filter(
+        status_id__status_code='requested'
+    ).count()
 
-    return JsonResponse(
-        {
-            'success': True,
-            'message': 'Global fare configuration updated successfully.',
-            'config': {
-                'base_fare': str(config.base_fare),
-                'per_km_fare': str(config.per_km_fare),
-                'per_min_fare': str(config.per_min_fare),
-                'surge_cap_multiplier': str(
-                    config.surge_cap_multiplier
-                ),
-                'night_surge_multiplier': str(
-                    config.night_surge_multiplier
-                ),
-            }
-        }
+    accepted_count = Trip.objects.filter(
+        status_id__status_code='accepted'
+    ).count()
+
+    reached_count = Trip.objects.filter(
+        status_id__status_code='reached'
+    ).count()
+
+    in_progress_count = Trip.objects.filter(
+        status_id__status_code='in_progress'
+    ).count()
+
+    completed_count = Trip.objects.filter(
+        status_id__status_code='completed'
+    ).count()
+
+    cancelled_count = Trip.objects.filter(
+        status_id__status_code='cancelled'
+    ).count()
+
+    # ---------------------------------------------------------
+    # ACTIVE RIDES
+    #
+    # A ride is considered active when it is:
+    # requested, accepted, reached or in progress.
+    # ---------------------------------------------------------
+
+    active_rides = (
+        requested_count
+        + accepted_count
+        + reached_count
+        + in_progress_count
     )
 
+    # ---------------------------------------------------------
+    # TEMPLATE CONTEXT
+    # ---------------------------------------------------------
+
+    context = {
+        # Ride records
+        'trips': trips,
+
+        # Main statistics
+        'total_rides': total_rides,
+        'active_rides': active_rides,
+        'completed_rides': completed_count,
+        'cancelled_rides': cancelled_count,
+
+        # Individual status counts
+        'requested_count': requested_count,
+        'accepted_count': accepted_count,
+        'reached_count': reached_count,
+        'in_progress_count': in_progress_count,
+        'completed_count': completed_count,
+        'cancelled_count': cancelled_count,
+
+        # Current filter
+        'selected_status': selected_status,
+    }
+
+    return render(
+        request,
+        'admin_pages/ride.html',
+        context
+    )
+@admin_required
+def payment_dashboard(request):
+    payments = (
+        Payment.objects
+        .select_related("trip")
+        .order_by("-created_at")
+    )
+
+    # ---------------------------------------------------------
+    # FILTER
+    # ---------------------------------------------------------
+
+    status = request.GET.get("status")
+
+    if status:
+        payments = payments.filter(status=status)
+
+    method = request.GET.get("method")
+
+    if method:
+        payments = payments.filter(method=method)
+
+    # ---------------------------------------------------------
+    # STATISTICS
+    # ---------------------------------------------------------
+
+    total_transactions = payments.count()
+
+    successful_transactions = payments.filter(
+        status="completed"
+    ).count()
+
+    pending_transactions = payments.filter(
+        status="pending"
+    ).count()
+
+    failed_transactions = payments.filter(
+        status="failed"
+    ).count()
+
+    successful_amount = payments.filter(
+        status="completed"
+    ).aggregate(
+        total=Sum("amount")
+    )["total"] or Decimal("0.00")
+
+    pending_amount = payments.filter(
+        status="pending"
+    ).aggregate(
+        total=Sum("amount")
+    )["total"] or Decimal("0.00")
+
+    failed_amount = payments.filter(
+        status="failed"
+    ).aggregate(
+        total=Sum("amount")
+    )["total"] or Decimal("0.00")
+
+    # ---------------------------------------------------------
+    # TRANSACTION LIST
+    # ---------------------------------------------------------
+
+    transaction_list = []
+
+    for payment in payments:
+
+        trip = getattr(payment, "trip", None)
+
+        transaction_list.append({
+            "id": payment.id,
+            "transaction_id": f"TXN-{payment.id:06d}",
+
+            "trip_id": (
+                trip.id
+                if trip
+                else None
+            ),
+
+            "amount": payment.amount,
+
+            "method": (
+                payment.get_method_display()
+                if hasattr(payment, "get_method_display")
+                else payment.method
+            ),
+
+            "status": (
+                payment.get_status_display()
+                if hasattr(payment, "get_status_display")
+                else payment.status
+            ),
+
+            "gateway": getattr(
+                payment,
+                "payment_gateway",
+                ""
+            ),
+
+            "gateway_order_id": getattr(
+                payment,
+                "gateway_order_id",
+                ""
+            ),
+
+            "gateway_payment_id": getattr(
+                payment,
+                "gateway_payment_id",
+                ""
+            ),
+
+            "created_at": payment.created_at,
+
+            "trip": trip,
+        })
+
+    context = {
+        "payments": transaction_list,
+
+        "total_transactions": total_transactions,
+        "successful_transactions": successful_transactions,
+        "pending_transactions": pending_transactions,
+        "failed_transactions": failed_transactions,
+
+        "successful_amount": successful_amount,
+        "pending_amount": pending_amount,
+        "failed_amount": failed_amount,
+
+        "selected_status": status or "",
+        "selected_method": method or "",
+    }
+
+    return render(
+        request,
+        "admin_pages/payment_dashboard.html",
+        context,)
+@admin_required
+def transaction_dashboard(request):
+    from decimal import Decimal
+    from django.core.paginator import Paginator
+
+    # =========================================================
+    # FILTERS
+    # =========================================================
+
+    search = request.GET.get("q", "").strip()
+    selected_type = request.GET.get("type", "").strip()
+    selected_status = request.GET.get("status", "").strip()
+
+    # =========================================================
+    # GET TRIPS
+    # =========================================================
+
+    trips = (
+        Trip.objects
+        .select_related(
+            "user_id",
+            "driver_id",
+            "driver_id__user_id",
+            "status_id",
+        )
+        .order_by("-requested_at")
+    )
+
+    transactions = []
+
+    # =========================================================
+    # BUILD TRANSACTIONS
+    # =========================================================
+
+    for trip in trips:
+
+        # -----------------------------------------------------
+        # RIDER
+        # -----------------------------------------------------
+
+        rider = trip.user_id
+
+        rider_name = (
+            getattr(rider, "full_name", None)
+            or getattr(rider, "phone_number", None)
+            or "Unknown Rider"
+        )
+
+        # -----------------------------------------------------
+        # DRIVER
+        # -----------------------------------------------------
+
+        driver = trip.driver_id
+
+        if driver:
+            driver_user = getattr(driver, "user_id", None)
+
+            if driver_user:
+                driver_name = (
+                    getattr(driver_user, "full_name", None)
+                    or getattr(driver_user, "phone_number", None)
+                    or getattr(driver_user, "username", None)
+                    or f"Driver #{driver.pk}"
+                )
+            else:
+                driver_name = f"Driver #{driver.pk}"
+        else:
+            driver_name = "Not Assigned"
+
+        # -----------------------------------------------------
+        # TRIP STATUS
+        # -----------------------------------------------------
+
+        trip_status = ""
+
+        if trip.status_id:
+            trip_status = (
+                getattr(
+                    trip.status_id,
+                    "status_code",
+                    None,
+                )
+                or getattr(
+                    trip.status_id,
+                    "name",
+                    None,
+                )
+                or str(trip.status_id)
+            )
+
+        trip_status = str(
+            trip_status
+        ).lower().strip()
+
+        # -----------------------------------------------------
+        # PAYMENT STATUS
+        # -----------------------------------------------------
+
+        payment_status = str(
+            getattr(
+                trip,
+                "payment_status",
+                ""
+            ) or ""
+        ).lower().strip()
+
+        # -----------------------------------------------------
+        # FARE
+        # -----------------------------------------------------
+
+        amount = (
+            trip.final_fare
+            if trip.final_fare is not None
+            else trip.estimated_fare
+        )
+
+        if amount is None:
+            amount = Decimal("0.00")
+
+        amount = Decimal(
+            str(amount)
+        ).quantize(
+            Decimal("0.01")
+        )
+
+        # =====================================================
+        # TRANSACTION TYPE
+        # =====================================================
+
+        if (
+            "cancel" in trip_status
+            or getattr(
+                trip,
+                "cancelled_at",
+                None,
+            )
+        ):
+            transaction_type = "cancellation"
+            transaction_status = "cancelled"
+
+        elif payment_status in [
+            "failed",
+            "failure",
+            "payment_failed",
+            "failed_payment",
+        ]:
+            transaction_type = "failed"
+            transaction_status = "failed"
+
+        elif payment_status in [
+            "refunded",
+            "refund",
+            "refunded_success",
+        ]:
+            transaction_type = "refund"
+            transaction_status = "refunded"
+
+        elif payment_status in [
+            "pending",
+            "processing",
+            "initiated",
+        ]:
+            transaction_type = "pending"
+            transaction_status = "pending"
+
+        elif (
+            "complete" in trip_status
+            and payment_status in [
+                "success",
+                "successful",
+                "completed",
+                "paid",
+            ]
+        ):
+            transaction_type = "rider_payment"
+            transaction_status = "success"
+
+        elif "complete" in trip_status:
+            transaction_type = "rider_payment"
+            transaction_status = "success"
+
+        else:
+            transaction_type = "pending"
+            transaction_status = "pending"
+
+        # =====================================================
+        # ADD TRANSACTION
+        # =====================================================
+
+        transactions.append(
+            {
+                "transaction_id": f"TXN-{trip.id}",
+                "type": transaction_type,
+                "trip_id": trip.id,
+                "rider": str(rider_name),
+                "driver": str(driver_name),
+                "amount": amount,
+                "status": transaction_status,
+                "payment_method": (
+                    getattr(
+                        trip,
+                        "payment_method",
+                        None,
+                    )
+                    or "—"
+                ),
+                "created_at": (
+                    getattr(
+                        trip,
+                        "completed_at",
+                        None,
+                    )
+                    or getattr(
+                        trip,
+                        "cancelled_at",
+                        None,
+                    )
+                    or getattr(
+                        trip,
+                        "requested_at",
+                        None,
+                    )
+                ),
+            }
+        )
+
+    # =========================================================
+    # DRIVER PAYOUTS
+    # =========================================================
+
+    try:
+        withdrawals = (
+            WithdrawalRequest.objects
+            .select_related(
+                "driver",
+                "driver__user_id",
+            )
+            .order_by("-requested_at")
+        )
+
+        for withdrawal in withdrawals:
+
+            driver = withdrawal.driver
+
+            if driver:
+
+                driver_user = getattr(
+                    driver,
+                    "user_id",
+                    None,
+                )
+
+                if driver_user:
+                    driver_name = (
+                        getattr(
+                            driver_user,
+                            "full_name",
+                            None,
+                        )
+                        or getattr(
+                            driver_user,
+                            "phone_number",
+                            None,
+                        )
+                        or getattr(
+                            driver_user,
+                            "username",
+                            None,
+                        )
+                        or f"Driver #{driver.pk}"
+                    )
+                else:
+                    driver_name = (
+                        getattr(
+                            driver,
+                            "full_name",
+                            None,
+                        )
+                        or getattr(
+                            driver,
+                            "name",
+                            None,
+                        )
+                        or getattr(
+                            driver,
+                            "phone_number",
+                            None,
+                        )
+                        or f"Driver #{driver.pk}"
+                    )
+
+            else:
+                driver_name = "Unknown Driver"
+
+            # -------------------------------------------------
+            # PAYOUT STATUS
+            # -------------------------------------------------
+
+            payout_status = str(
+                getattr(
+                    withdrawal,
+                    "status",
+                    None,
+                )
+                or "pending"
+            ).lower().strip()
+
+            if payout_status in [
+                "completed",
+                "processed",
+                "approved",
+                "success",
+                "successful",
+            ]:
+                dashboard_status = "success"
+
+            elif payout_status in [
+                "failed",
+                "failure",
+            ]:
+                dashboard_status = "failed"
+
+            elif payout_status in [
+                "rejected",
+                "cancelled",
+                "canceled",
+            ]:
+                dashboard_status = "cancelled"
+
+            else:
+                dashboard_status = "pending"
+
+            # -------------------------------------------------
+            # PAYOUT AMOUNT
+            # -------------------------------------------------
+
+            payout_amount = (
+                withdrawal.amount
+                if withdrawal.amount is not None
+                else Decimal("0.00")
+            )
+
+            payout_amount = Decimal(
+                str(payout_amount)
+            ).quantize(
+                Decimal("0.01")
+            )
+
+            # -------------------------------------------------
+            # ADD PAYOUT
+            # -------------------------------------------------
+
+            transactions.append(
+                {
+                    "transaction_id": (
+                        getattr(
+                            withdrawal,
+                            "payout_reference_id",
+                            None,
+                        )
+                        or f"PAYOUT-{withdrawal.id}"
+                    ),
+                    "type": "driver_payout",
+                    "trip_id": None,
+                    "rider": "—",
+                    "driver": str(driver_name),
+                    "amount": payout_amount,
+                    "status": dashboard_status,
+                    "payment_method": (
+                        getattr(
+                            withdrawal,
+                            "payout_method",
+                            None,
+                        )
+                        or "—"
+                    ),
+                    "created_at": (
+                        getattr(
+                            withdrawal,
+                            "processed_at",
+                            None,
+                        )
+                        or getattr(
+                            withdrawal,
+                            "requested_at",
+                            None,
+                        )
+                    ),
+                }
+            )
+
+    except Exception:
+        pass
+
+    # =========================================================
+    # SORT
+    # =========================================================
+
+    transactions.sort(
+        key=lambda item: (
+            item.get("created_at") or 0
+        ),
+        reverse=True,
+    )
+
+    # =========================================================
+    # ALL TRANSACTIONS
+    # =========================================================
+
+    all_transactions = list(transactions)
+
+    # =========================================================
+    # SEARCH
+    # =========================================================
+
+    if search:
+
+        query = search.lower()
+
+        transactions = [
+            transaction
+            for transaction in transactions
+            if (
+                query in str(
+                    transaction.get(
+                        "transaction_id",
+                        "",
+                    )
+                ).lower()
+                or query in str(
+                    transaction.get(
+                        "trip_id",
+                        "",
+                    )
+                ).lower()
+                or query in str(
+                    transaction.get(
+                        "rider",
+                        "",
+                    )
+                ).lower()
+                or query in str(
+                    transaction.get(
+                        "driver",
+                        "",
+                    )
+                ).lower()
+                or query in str(
+                    transaction.get(
+                        "payment_method",
+                        "",
+                    )
+                ).lower()
+            )
+        ]
+
+    # =========================================================
+    # TYPE FILTER
+    # =========================================================
+
+    if selected_type:
+
+        transactions = [
+            transaction
+            for transaction in transactions
+            if transaction.get("type")
+            == selected_type
+        ]
+
+    # =========================================================
+    # STATUS FILTER
+    # =========================================================
+
+    if selected_status:
+
+        transactions = [
+            transaction
+            for transaction in transactions
+            if transaction.get("status")
+            == selected_status
+        ]
+
+    # =========================================================
+    # SUMMARY
+    # =========================================================
+
+    total_transactions = len(
+        all_transactions
+    )
+
+    # ---------------------------------------------------------
+    # RIDER TOTAL
+    # ---------------------------------------------------------
+
+    rider_payments = Decimal("0.00")
+
+    for transaction in all_transactions:
+
+        if transaction.get("type") == "rider_payment":
+
+            rider_payments += Decimal(
+                str(
+                    transaction.get(
+                        "amount",
+                        "0.00",
+                    )
+                )
+            )
+
+    rider_payments = rider_payments.quantize(
+        Decimal("0.01")
+    )
+
+    # ---------------------------------------------------------
+    # DRIVER TOTAL
+    # ---------------------------------------------------------
+
+    driver_payments = Decimal("0.00")
+
+    for transaction in all_transactions:
+
+        if transaction.get("type") in [
+            "driver_payout",
+            "driver_earning",
+        ]:
+            driver_payments += Decimal(
+                str(
+                    transaction.get(
+                        "amount",
+                        "0.00",
+                    )
+                )
+            )
+
+    driver_payments = driver_payments.quantize(
+        Decimal("0.01")
+    )
+
+    # ---------------------------------------------------------
+    # REFUND TOTAL
+    # ---------------------------------------------------------
+
+    refunds = Decimal("0.00")
+
+    for transaction in all_transactions:
+
+        if transaction.get("type") == "refund":
+
+            refunds += Decimal(
+                str(
+                    transaction.get(
+                        "amount",
+                        "0.00",
+                    )
+                )
+            )
+
+    refunds = refunds.quantize(
+        Decimal("0.01")
+    )
+
+    # =========================================================
+    # COUNTS
+    # =========================================================
+
+    failed_count = sum(
+        1
+        for transaction in all_transactions
+        if transaction.get("status") == "failed"
+    )
+
+    cancelled_count = sum(
+        1
+        for transaction in all_transactions
+        if transaction.get("status") == "cancelled"
+    )
+
+    pending_count = sum(
+        1
+        for transaction in all_transactions
+        if transaction.get("status") == "pending"
+    )
+
+    # =========================================================
+    # PAGINATION
+    # =========================================================
+
+    paginator = Paginator(
+        transactions,
+        10,
+    )
+
+    page_number = request.GET.get(
+        "page",
+        1,
+    )
+
+    page_obj = paginator.get_page(
+        page_number
+    )
+
+    # =========================================================
+    # CONTEXT
+    # =========================================================
+
+    context = {
+
+        # -----------------------------------------------------
+        # TRANSACTIONS
+        # -----------------------------------------------------
+
+        "transactions": transactions,
+        "page_obj": page_obj,
+
+        # -----------------------------------------------------
+        # TOTAL
+        # -----------------------------------------------------
+
+        "total_transactions": total_transactions,
+        "total_transaction_count": total_transactions,
+
+        # -----------------------------------------------------
+        # RIDER
+        # -----------------------------------------------------
+
+        "rider_payments": rider_payments,
+        "rider_total": rider_payments,
+
+        # Extra aliases in case the existing HTML uses one
+        # of these names.
+        "rider_transactions": rider_payments,
+        "rider_transaction_total": rider_payments,
+        "total_rider_transactions": rider_payments,
+
+        # -----------------------------------------------------
+        # DRIVER
+        # -----------------------------------------------------
+
+        "driver_payments": driver_payments,
+        "driver_total": driver_payments,
+
+        "driver_transactions": driver_payments,
+        "driver_transaction_total": driver_payments,
+        "total_driver_transactions": driver_payments,
+
+        # -----------------------------------------------------
+        # REFUNDS
+        # -----------------------------------------------------
+
+        "refunds": refunds,
+        "refund_total": refunds,
+
+        "refund_transactions": refunds,
+        "refund_transaction_total": refunds,
+        "total_refunds": refunds,
+
+        # -----------------------------------------------------
+        # COUNTS
+        # -----------------------------------------------------
+
+        "failed_count": failed_count,
+        "cancelled_count": cancelled_count,
+        "pending_count": pending_count,
+
+        "failed_transactions": failed_count,
+        "cancelled_transactions": cancelled_count,
+        "pending_transactions": pending_count,
+
+        # -----------------------------------------------------
+        # FILTERS
+        # -----------------------------------------------------
+
+        "search": search,
+        "transaction_type": selected_type,
+        "transaction_status": selected_status,
+    }
+
+    return render(
+        request,
+        "admin_pages/transaction_dashboard.html",
+        context,
+    )
 @admin_required
 def predictive_heatmaps(request: HttpRequest) -> HttpResponse:
     return render(request, "admin_pages/predictive_heatmaps.html")
-
 
 def admin_logout(request: HttpRequest) -> HttpResponse:
     auth_logout(request)

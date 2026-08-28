@@ -3,42 +3,43 @@
 {% block title %}Fare & Surge Management | SaaradhiGo{% endblock %}
 
 {% block extra_css %}
+<style>
+    .glass-header {
+        background: rgba(19, 19, 19, 0.6);
+        backdrop-filter: blur(20px);
+    }
 
-.glass-header {
-    background: rgba(19, 19, 19, 0.6);
-    backdrop-filter: blur(20px);
-}
+    .gold-gradient-bg {
+        background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
+    }
 
-.gold-gradient-bg {
-    background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
-}
+    .config-input {
+        transition: all 0.2s ease;
+    }
 
-.config-input {
-    transition: all 0.2s ease;
-}
+    .config-input:focus {
+        box-shadow: 0 4px 12px rgba(212, 175, 55, 0.08);
+    }
 
-.config-input:focus {
-    box-shadow: 0 4px 12px rgba(212, 175, 55, 0.08);
-}
+    button:disabled,
+    select:disabled {
+        opacity: 0.7;
+        cursor: not-allowed;
+    }
 
-button:disabled {
-    opacity: 0.7;
-    cursor: not-allowed;
-}
+    ::-webkit-scrollbar {
+        width: 6px;
+    }
 
-::-webkit-scrollbar {
-    width: 6px;
-}
+    ::-webkit-scrollbar-track {
+        background: #131313;
+    }
 
-::-webkit-scrollbar-track {
-    background: #131313;
-}
-
-::-webkit-scrollbar-thumb {
-    background: #353534;
-    border-radius: 10px;
-}
-
+    ::-webkit-scrollbar-thumb {
+        background: #353534;
+        border-radius: 10px;
+    }
+</style>
 {% endblock %}
 
 {% block main_class %}overflow-y-auto{% endblock %}
@@ -47,20 +48,13 @@ button:disabled {
 
 <div class="p-8 pb-12 space-y-8">
 
-    <!-- =====================================================
-         TOP SECTION
-    ====================================================== -->
-
+    <!-- TOP SECTION -->
     <div class="grid grid-cols-12 gap-6">
 
-        <!-- =================================================
-             LIVE SURGE PULSE
-        ================================================== -->
-
+        <!-- LIVE SURGE PULSE -->
         <div class="col-span-12 lg:col-span-4 bg-surface-container-low rounded-xl p-6 border border-outline-variant/5">
 
             <div class="flex justify-between items-start mb-6">
-
                 <div>
                     <p class="text-[10px] text-on-surface-variant uppercase tracking-[0.2em] font-bold">
                         System Status
@@ -72,21 +66,15 @@ button:disabled {
                 </div>
 
                 <div class="flex items-center gap-2 bg-primary/10 px-3 py-1 rounded-full">
-
                     <span class="w-2 h-2 bg-primary rounded-full animate-pulse"></span>
 
                     <span class="text-[10px] font-bold text-primary uppercase">
                         Active
                     </span>
-
                 </div>
-
             </div>
 
-
             <div class="space-y-6">
-
-                <!-- Peak Multiplier -->
 
                 <div class="flex items-end justify-between">
 
@@ -98,12 +86,8 @@ button:disabled {
                             1.00
                         {% endif %}
 
-                        <span class="text-lg text-primary">
-                            x
-                        </span>
-
+                        <span class="text-lg text-primary">x</span>
                     </span>
-
 
                     <div class="text-right">
 
@@ -120,45 +104,26 @@ button:disabled {
                             {% endif %}
 
                         </p>
-
                     </div>
-
                 </div>
 
-
-                <!-- Surge Graph -->
-
+                <!-- SURGE GRAPH -->
                 <div class="h-24 flex items-end gap-1 px-1">
-
                     <div class="flex-1 bg-outline-variant/20 rounded-t-sm h-[30%]"></div>
-
                     <div class="flex-1 bg-outline-variant/20 rounded-t-sm h-[45%]"></div>
-
                     <div class="flex-1 bg-primary/40 rounded-t-sm h-[60%]"></div>
-
                     <div class="flex-1 bg-primary rounded-t-sm h-[85%]"></div>
-
                     <div class="flex-1 bg-primary/60 rounded-t-sm h-[70%]"></div>
-
                     <div class="flex-1 bg-outline-variant/20 rounded-t-sm h-[40%]"></div>
-
                     <div class="flex-1 bg-outline-variant/20 rounded-t-sm h-[55%]"></div>
-
                     <div class="flex-1 bg-primary/80 rounded-t-sm h-[95%]"></div>
-
                     <div class="flex-1 bg-primary/30 rounded-t-sm h-[50%]"></div>
-
                     <div class="flex-1 bg-outline-variant/20 rounded-t-sm h-[35%]"></div>
-
                 </div>
-
-
-                <!-- Statistics -->
 
                 <div class="grid grid-cols-2 gap-4 pt-4 border-t border-outline-variant/10">
 
                     <div>
-
                         <p class="text-[10px] text-on-surface-variant uppercase">
                             Avg Multiplier
                         </p>
@@ -166,12 +131,9 @@ button:disabled {
                         <p class="text-lg font-bold text-on-surface">
                             {{ avg_multiplier|floatformat:2 }}x
                         </p>
-
                     </div>
 
-
                     <div>
-
                         <p class="text-[10px] text-on-surface-variant uppercase">
                             Active Zones
                         </p>
@@ -179,24 +141,17 @@ button:disabled {
                         <p class="text-lg font-bold text-on-surface">
                             {{ active_zones_count }}
                         </p>
-
                     </div>
 
                 </div>
-
             </div>
-
         </div>
 
 
-        <!-- =================================================
-             DEMAND HEATMAP
-        ================================================== -->
-
+        <!-- DEMAND HEATMAP -->
         <div class="col-span-12 lg:col-span-8 bg-surface-container rounded-xl overflow-hidden relative border border-outline-variant/5 h-[400px]">
 
             <div class="absolute inset-0 bg-gradient-to-t from-surface via-transparent to-transparent"></div>
-
 
             <div class="absolute top-6 left-6 z-10">
 
@@ -210,306 +165,252 @@ button:disabled {
 
             </div>
 
-
-            <!-- Heatmap point 1 -->
-
             <div class="absolute top-1/4 left-1/3 w-16 h-16 bg-primary/20 rounded-full blur-xl"></div>
 
             <div class="absolute top-1/4 left-1/3 w-4 h-4 bg-primary rounded-full border-2 border-on-primary">
-
                 <div class="absolute w-8 h-8 bg-primary/40 rounded-full animate-ping"></div>
-
             </div>
-
-
-            <!-- Heatmap point 2 -->
 
             <div class="absolute bottom-1/3 right-1/4 w-24 h-24 bg-primary/10 rounded-full blur-2xl"></div>
 
             <div class="absolute bottom-1/3 right-1/4 w-6 h-6 bg-primary rounded-full border-2 border-on-primary flex items-center justify-center">
 
                 {% if peak_zone %}
-
                     <span class="text-[8px] font-black text-on-primary">
                         {{ peak_zone.multiplier|floatformat:1 }}x
                     </span>
-
                 {% endif %}
 
             </div>
-
-
-            <!-- Filters -->
 
             <div class="absolute bottom-6 left-6 right-6 z-10 flex items-center justify-between">
 
                 <div class="flex gap-2">
 
-                    <button
-                        type="button"
-                        class="bg-surface-container-highest/80 backdrop-blur px-4 py-2 rounded-lg text-xs font-bold text-on-surface border border-outline-variant/20">
-
+                    <button type="button"
+                            class="bg-surface-container-highest/80 backdrop-blur px-4 py-2 rounded-lg text-xs font-bold text-on-surface border border-outline-variant/20">
                         All Zones
-
                     </button>
 
-
-                    <button
-                        type="button"
-                        class="bg-primary text-on-primary px-4 py-2 rounded-lg text-xs font-bold">
-
+                    <button type="button"
+                            class="bg-primary text-on-primary px-4 py-2 rounded-lg text-xs font-bold">
                         High Demand
-
                     </button>
 
                 </div>
-
             </div>
-
         </div>
-
     </div>
 
 
-    <!-- =====================================================
-         CONFIGURATION + SURGE ZONES
-    ====================================================== -->
-
+    <!-- CONFIGURATION -->
     <div class="grid grid-cols-12 gap-6">
 
-
-        <!-- =================================================
-             GLOBAL FARE CONFIGURATION
-        ================================================== -->
-
-        <div class="col-span-12 lg:col-span-5 space-y-6">
+        <!-- GLOBAL FARE CONFIGURATION -->
+        <div class="col-span-12 lg:col-span-5">
 
             <div class="bg-surface-container-low rounded-xl p-6 border border-outline-variant/5">
 
-                <h3 class="font-headline text-lg font-bold text-primary mb-6">
-                    Global Fare Configuration
-                </h3>
+                <div class="mb-6">
 
+                    <h3 class="font-headline text-lg font-bold text-primary">
+                        Global Fare Configuration
+                    </h3>
 
-                <!-- Status Message -->
+                    <p class="text-xs text-on-surface-variant mt-1">
+                        Configure vehicle fare based on selected zone
+                    </p>
 
-                <div
-                    id="config-status"
-                    class="mb-4 hidden">
                 </div>
 
 
-                <!-- FORM -->
+                <!-- ZONE -->
+                <div class="mb-6">
 
-                <form
-                    id="global-config-form"
-                    class="space-y-6">
+                    <label for="zoneSelect"
+                           class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
+                        Select Zone
+                    </label>
+
+                    <select id="zoneSelect"
+                            class="w-full bg-surface-container-highest border border-outline-variant/20 focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-lg">
+
+                        {% for zone in zones %}
+
+                            <option value="{{ zone.id }}"
+                                {% if selected_zone and zone.id == selected_zone.id %}
+                                    selected
+                                {% endif %}>
+                                {{ zone.name }}
+                            </option>
+
+                        {% empty %}
+
+                            <option value="">
+                                No zones available
+                            </option>
+
+                        {% endfor %}
+
+                    </select>
+                </div>
+
+
+                <!-- VEHICLE -->
+                <div class="mb-6">
+
+                    <label for="vehicleSelect"
+                           class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
+                        Select Vehicle
+                    </label>
+
+                    <select id="vehicleSelect"
+                            class="w-full bg-surface-container-highest border border-outline-variant/20 focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-lg">
+
+                        {% if vehicle_configs %}
+
+                            {% for item in vehicle_configs %}
+
+                                <option value="{{ item.vehicle_type.id }}">
+                                    {{ item.vehicle_type.type|title }}
+                                </option>
+
+                            {% endfor %}
+
+                        {% else %}
+
+                            <option value="">
+                                No vehicles available
+                            </option>
+
+                        {% endif %}
+
+                    </select>
+                </div>
+
+
+                <!-- FARE FORM -->
+                <form id="vehicleFareForm" class="space-y-5">
 
                     {% csrf_token %}
 
-
-                    <!-- =================================================
-                         BASE FARE
-                    ================================================== -->
-
+                    <!-- BASE FARE -->
                     <div>
 
-                        <label
-                            for="cfg-base-fare"
-                            class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
-
+                        <label for="baseFare"
+                               class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
                             Base Fare (₹)
-
                         </label>
 
-                        <div class="relative">
-
-                            <input
-                                id="cfg-base-fare"
-                                name="base_fare"
-                                class="config-input w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 pr-12 text-on-surface font-bold outline-none rounded-t-lg"
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                required
-                                value="{% if config %}{{ config.base_fare }}{% endif %}"
-                            />
-
-                            <span class="absolute right-4 top-1/2 -translate-y-1/2 material-symbols-outlined text-on-surface-variant/40">
-                                edit
-                            </span>
-
-                        </div>
+                        <input type="number"
+                               id="baseFare"
+                               name="base_fare"
+                               min="0"
+                               step="0.01"
+                               required
+                               class="config-input w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg">
 
                     </div>
 
 
-                    <!-- =================================================
-                         PER KM + PER MINUTE
-                    ================================================== -->
+                    <!-- PER KM -->
+                    <div>
 
-                    <div class="grid grid-cols-2 gap-4">
+                        <label for="perKmFare"
+                               class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
+                            Per KM Fare (₹)
+                        </label>
 
-                        <!-- Per KM -->
-
-                        <div>
-
-                            <label
-                                for="cfg-per-km"
-                                class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
-
-                                Per KM Rate (₹)
-
-                            </label>
-
-                            <input
-                                id="cfg-per-km"
-                                name="per_km_fare"
-                                class="config-input w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg"
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                required
-                                value="{% if config %}{{ config.per_km_fare }}{% endif %}"
-                            />
-
-                        </div>
-
-
-                        <!-- Per Minute -->
-
-                        <div>
-
-                            <label
-                                for="cfg-per-min"
-                                class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
-
-                                Per Min Rate (₹)
-
-                            </label>
-
-                            <input
-                                id="cfg-per-min"
-                                name="per_min_fare"
-                                class="config-input w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg"
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                required
-                                value="{% if config %}{{ config.per_min_fare }}{% endif %}"
-                            />
-
-                        </div>
+                        <input type="number"
+                               id="perKmFare"
+                               name="per_km_fare"
+                               min="0"
+                               step="0.01"
+                               required
+                               class="config-input w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg">
 
                     </div>
 
 
-                    <!-- =================================================
-                         SURGE CAP + NIGHT SURGE
-                    ================================================== -->
+                    <!-- PER MINUTE -->
+                    <div>
 
-                    <div class="grid grid-cols-2 gap-4">
+                        <label for="perMinFare"
+                               class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
+                            Per Minute Fare (₹)
+                        </label>
 
-                        <!-- Surge Cap -->
-
-                        <div>
-
-                            <label
-                                for="cfg-surge-cap"
-                                class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
-
-                                Surge Cap
-
-                            </label>
-
-                            <input
-                                id="cfg-surge-cap"
-                                name="surge_cap_multiplier"
-                                class="config-input w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg"
-                                type="number"
-                                min="1"
-                                step="0.01"
-                                required
-                                value="{% if config %}{{ config.surge_cap_multiplier }}{% endif %}"
-                            />
-
-                            <p class="text-[9px] text-on-surface-variant mt-2">
-                                Maximum surge multiplier
-                            </p>
-
-                        </div>
-
-
-                        <!-- Night Surge -->
-
-                        <div>
-
-                            <label
-                                for="cfg-night-surge"
-                                class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
-
-                                Night Surge
-
-                            </label>
-
-                            <input
-                                id="cfg-night-surge"
-                                name="night_surge_multiplier"
-                                class="config-input w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg"
-                                type="number"
-                                min="1"
-                                step="0.01"
-                                required
-                                value="{% if config %}{{ config.night_surge_multiplier }}{% endif %}"
-                            />
-
-                            <p class="text-[9px] text-on-surface-variant mt-2">
-                                Night-time fare multiplier
-                            </p>
-
-                        </div>
+                        <input type="number"
+                               id="perMinFare"
+                               name="per_min_fare"
+                               min="0"
+                               step="0.01"
+                               required
+                               class="config-input w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg">
 
                     </div>
 
 
-                    <!-- =================================================
-                         UPDATE BUTTON
-                    ================================================== -->
+                    <!-- SURGE CAP -->
+                    <div>
 
-                    <div class="pt-4">
+                        <label for="surgeCap"
+                               class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
+                            Surge Cap
+                        </label>
 
-                        <button
-                            type="submit"
-                            id="update-config-btn"
-                            class="w-full gold-gradient-bg text-on-primary font-headline font-bold py-4 rounded-lg text-sm active:scale-95 duration-200 shadow-lg shadow-primary/20">
-
-                            <span id="update-config-btn-text">
-                                Update Global Config
-                            </span>
-
-                            <span
-                                id="update-config-btn-spinner"
-                                class="hidden material-symbols-outlined animate-spin text-sm ml-2">
-
-                                progress_activity
-
-                            </span>
-
-                        </button>
+                        <input type="number"
+                               id="surgeCap"
+                               name="surge_cap_multiplier"
+                               min="1"
+                               step="0.01"
+                               required
+                               class="config-input w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg">
 
                     </div>
+
+
+                    <!-- NIGHT SURGE -->
+                    <div>
+
+                        <label for="nightSurge"
+                               class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
+                            Night Surge
+                        </label>
+
+                        <input type="number"
+                               id="nightSurge"
+                               name="night_surge_multiplier"
+                               min="1"
+                               step="0.01"
+                               required
+                               class="config-input w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary py-3 px-4 text-on-surface font-bold outline-none rounded-t-lg">
+
+                    </div>
+
+
+                    <!-- UPDATE -->
+                    <button type="submit"
+                            id="updateFareBtn"
+                            class="w-full gold-gradient-bg text-on-primary font-headline font-bold py-3 rounded-lg">
+
+                        Update Fare
+
+                    </button>
 
                 </form>
 
-            </div>
 
+                <!-- MESSAGE -->
+                <div id="fareUpdateMessage"
+                     class="mt-4 text-xs font-bold">
+                </div>
+
+            </div>
         </div>
 
 
-        <!-- =================================================
-             ACTIVE SURGE ZONES
-        ================================================== -->
-
+        <!-- ACTIVE SURGE ZONES -->
         <div class="col-span-12 lg:col-span-7 bg-surface-container-low rounded-xl border border-outline-variant/5 overflow-hidden">
 
             <div class="p-6 border-b border-outline-variant/10 flex justify-between items-center">
@@ -526,11 +427,8 @@ button:disabled {
 
                 </div>
 
-
                 <div class="text-xs font-bold text-primary">
-
                     {{ active_zones_count }} Active
-
                 </div>
 
             </div>
@@ -560,10 +458,6 @@ button:disabled {
                                 Drivers
                             </th>
 
-                            <th class="px-6 py-4 font-bold text-right">
-                                Actions
-                            </th>
-
                         </tr>
 
                     </thead>
@@ -571,111 +465,65 @@ button:disabled {
 
                     <tbody class="divide-y divide-outline-variant/5">
 
-
                         {% for zone in surge_zones %}
 
-                        <tr class="hover:bg-surface-container-high/50 transition-colors group">
+                            <tr class="hover:bg-surface-container-high/50 transition-colors">
 
-                            <!-- Zone -->
+                                <td class="px-6 py-4">
 
-                            <td class="px-6 py-4">
+                                    <div class="flex items-center gap-3">
 
-                                <div class="flex items-center gap-3">
+                                        <div class="w-2 h-2 rounded-full bg-primary"></div>
 
-                                    <div class="w-2 h-2 rounded-full bg-primary shadow-[0_0_8px_rgba(212,175,55,0.6)]">
+                                        <div>
+
+                                            <span class="text-sm font-bold text-on-surface">
+                                                {{ zone.name }}
+                                            </span>
+
+                                            <p class="text-[9px] text-on-surface-variant">
+                                                {{ zone.code }}
+                                            </p>
+
+                                        </div>
+
                                     </div>
 
-                                    <div>
-
-                                        <span class="text-sm font-bold text-on-surface">
-                                            {{ zone.name }}
-                                        </span>
-
-                                        <p class="text-[9px] text-on-surface-variant">
-                                            {{ zone.code }}
-                                        </p>
-
-                                    </div>
-
-                                </div>
-
-                            </td>
+                                </td>
 
 
-                            <!-- Multiplier -->
+                                <td class="px-6 py-4">
 
-                            <td class="px-6 py-4">
-
-                                <span class="px-2 py-1 bg-primary/10 text-primary text-xs font-bold rounded border border-primary/20">
-
-                                    {{ zone.multiplier|floatformat:2 }}x
-
-                                </span>
-
-                            </td>
-
-
-                            <!-- Requests -->
-
-                            <td class="px-6 py-4 text-sm text-on-surface-variant">
-
-                                {{ zone.requests_per_hour }}
-
-                            </td>
-
-
-                            <!-- Drivers -->
-
-                            <td class="px-6 py-4 text-sm text-on-surface-variant">
-
-                                {{ zone.active_drivers }}
-
-                            </td>
-
-
-                            <!-- Actions -->
-
-                            <td class="px-6 py-4 text-right">
-
-                                <button
-                                    type="button"
-                                    class="text-on-surface-variant hover:text-primary transition-colors"
-                                    title="Zone actions">
-
-                                    <span class="material-symbols-outlined text-lg">
-                                        more_vert
+                                    <span class="px-2 py-1 bg-primary/10 text-primary text-xs font-bold rounded border border-primary/20">
+                                        {{ zone.multiplier|floatformat:2 }}x
                                     </span>
 
-                                </button>
+                                </td>
 
-                            </td>
 
-                        </tr>
+                                <td class="px-6 py-4 text-sm text-on-surface-variant">
+                                    {{ zone.requests_per_hour }}
+                                </td>
 
+
+                                <td class="px-6 py-4 text-sm text-on-surface-variant">
+                                    {{ zone.active_drivers }}
+                                </td>
+
+                            </tr>
 
                         {% empty %}
 
-                        <tr>
+                            <tr>
 
-                            <td
-                                colspan="5"
-                                class="px-6 py-10 text-center">
+                                <td colspan="4"
+                                    class="px-6 py-10 text-center text-sm text-on-surface-variant">
 
-                                <div class="flex flex-col items-center">
+                                    No active surge zones.
 
-                                    <span class="material-symbols-outlined text-3xl text-on-surface-variant/40 mb-2">
-                                        location_off
-                                    </span>
+                                </td>
 
-                                    <p class="text-sm text-on-surface-variant">
-                                        No active surge zones.
-                                    </p>
-
-                                </div>
-
-                            </td>
-
-                        </tr>
+                            </tr>
 
                         {% endfor %}
 
@@ -684,7 +532,6 @@ button:disabled {
                 </table>
 
             </div>
-
         </div>
 
     </div>
@@ -694,424 +541,973 @@ button:disabled {
 
 <!-- =========================================================
      JAVASCRIPT
-========================================================== -->
+========================================================= -->
 
 <script>
 
-(function () {
+document.addEventListener("DOMContentLoaded", function () {
 
-    'use strict';
+    const zoneSelect = document.getElementById("zoneSelect");
+    const vehicleSelect = document.getElementById("vehicleSelect");
+
+    const baseFare = document.getElementById("baseFare");
+    const perKmFare = document.getElementById("perKmFare");
+    const perMinFare = document.getElementById("perMinFare");
+    const surgeCap = document.getElementById("surgeCap");
+    const nightSurge = document.getElementById("nightSurge");
+
+    const fareForm = document.getElementById("vehicleFareForm");
+    const updateFareBtn = document.getElementById("updateFareBtn");
+    const fareUpdateMessage = document.getElementById("fareUpdateMessage");
 
 
-    /* =========================================================
-       CSRF COOKIE
-    ========================================================= */
+    /* =====================================================
+       DJANGO INITIAL CONFIGURATION
+    ===================================================== */
+
+    const vehicleConfigurations = {};
+
+    {% if selected_zone %}
+
+    vehicleConfigurations["{{ selected_zone.id }}"] = {
+
+        {% for item in vehicle_configs %}
+
+        "{{ item.vehicle_type.id }}": {
+
+            id: "{% if item.config %}{{ item.config.id }}{% endif %}",
+
+            vehicleName:
+                "{{ item.vehicle_type.type|escapejs }}",
+
+            baseFare:
+                "{% if item.config %}{{ item.config.base_fare }}{% endif %}",
+
+            perKmFare:
+                "{% if item.config %}{{ item.config.per_km_fare }}{% endif %}",
+
+            perMinFare:
+                "{% if item.config %}{{ item.config.per_min_fare }}{% endif %}",
+
+            surgeCap:
+                "{% if item.config %}{{ item.config.surge_cap_multiplier }}{% endif %}",
+
+            nightSurge:
+                "{% if item.config %}{{ item.config.night_surge_multiplier }}{% endif %}"
+        },
+
+        {% endfor %}
+
+    };
+
+    {% endif %}
+
+
+    let currentZoneConfigurations = {};
+
+    const initialZoneId =
+        zoneSelect ? zoneSelect.value : "";
+
+
+    /* =====================================================
+       MESSAGE
+    ===================================================== */
+
+    function showMessage(message, type = "normal") {
+
+        if (!fareUpdateMessage) {
+            return;
+        }
+
+        /*
+         * Prevent [object Object]
+         */
+        if (typeof message === "object") {
+
+            message =
+                message.message ||
+                message.error ||
+                message.detail ||
+                "An unexpected error occurred.";
+
+        }
+
+        fareUpdateMessage.textContent =
+            String(message || "");
+
+
+        if (type === "success") {
+
+            fareUpdateMessage.className =
+                "mt-4 text-xs font-bold text-primary";
+
+        } else if (type === "error") {
+
+            fareUpdateMessage.className =
+                "mt-4 text-xs font-bold text-red-400";
+
+        } else {
+
+            fareUpdateMessage.className =
+                "mt-4 text-xs font-bold text-on-surface-variant";
+
+        }
+    }
+
+
+    /* =====================================================
+       CLEAR FORM
+    ===================================================== */
+
+    function clearFareFields() {
+
+        baseFare.value = "";
+        perKmFare.value = "";
+        perMinFare.value = "";
+        surgeCap.value = "";
+        nightSurge.value = "";
+    }
+
+
+    /* =====================================================
+       LOAD VEHICLE CONFIGURATION
+    ===================================================== */
+
+    function loadVehicleConfiguration(vehicleId) {
+
+        clearFareFields();
+
+        if (!vehicleId) {
+            return;
+        }
+
+        const config =
+            currentZoneConfigurations[vehicleId];
+
+
+        if (!config) {
+
+            showMessage(
+                "No fare configuration found for this vehicle.",
+                "error"
+            );
+
+            return;
+        }
+
+
+        baseFare.value =
+            config.baseFare || "";
+
+        perKmFare.value =
+            config.perKmFare || "";
+
+        perMinFare.value =
+            config.perMinFare || "";
+
+        surgeCap.value =
+            config.surgeCap || "";
+
+        nightSurge.value =
+            config.nightSurge || "";
+
+
+        showMessage("", "normal");
+    }
+
+
+    /* =====================================================
+       POPULATE VEHICLES
+    ===================================================== */
+
+    function populateVehicles(configurations) {
+
+        vehicleSelect.innerHTML = "";
+
+        const vehicleIds =
+            Object.keys(configurations || {});
+
+
+        if (vehicleIds.length === 0) {
+
+            vehicleSelect.innerHTML =
+                '<option value="">No vehicles configured</option>';
+
+            vehicleSelect.disabled = false;
+
+            clearFareFields();
+
+            return;
+        }
+
+
+        vehicleIds.forEach(function (vehicleId) {
+
+            const config =
+                configurations[vehicleId];
+
+            if (!config) {
+                return;
+            }
+
+
+            const option =
+                document.createElement("option");
+
+
+            option.value =
+                vehicleId;
+
+            option.textContent =
+                config.vehicleName ||
+                "Vehicle " + vehicleId;
+
+
+            vehicleSelect.appendChild(option);
+
+        });
+
+
+        vehicleSelect.disabled = false;
+
+
+        if (vehicleSelect.options.length > 0) {
+
+            vehicleSelect.selectedIndex = 0;
+
+            loadVehicleConfiguration(
+                vehicleSelect.value
+            );
+        }
+    }
+
+
+    /* =====================================================
+       GET ZONE CONFIGURATION
+    ===================================================== */
+
+    async function loadZoneConfigurations(zoneId) {
+
+        if (!zoneId) {
+
+            vehicleSelect.innerHTML =
+                '<option value="">Please select a zone</option>';
+
+            clearFareFields();
+
+            return;
+        }
+
+
+        vehicleSelect.innerHTML =
+            '<option value="">Loading vehicles...</option>';
+
+        vehicleSelect.disabled = true;
+
+        clearFareFields();
+
+
+        showMessage(
+            "Loading vehicle configuration...",
+            "normal"
+        );
+
+
+        try {
+
+            const response =
+                await fetch(
+                    "/api/global-config/?zone_id=" +
+                    encodeURIComponent(zoneId),
+                    {
+                        method: "GET",
+
+                        headers: {
+                            "X-Requested-With":
+                                "XMLHttpRequest",
+
+                            "Accept":
+                                "application/json"
+                        },
+
+                        credentials:
+                            "same-origin"
+                    }
+                );
+
+
+            const text =
+                await response.text();
+
+
+            console.log(
+                "GET STATUS:",
+                response.status
+            );
+
+            console.log(
+                "GET RESPONSE:",
+                text
+            );
+
+
+            let data = {};
+
+            try {
+
+                data =
+                    JSON.parse(text);
+
+            } catch (e) {
+
+                throw new Error(
+                    "Server returned invalid JSON."
+                );
+            }
+
+
+            if (!response.ok || !data.success) {
+
+                throw new Error(
+                    data.message ||
+                    "Unable to load vehicle configuration."
+                );
+            }
+
+
+            currentZoneConfigurations =
+                data.configurations || {};
+
+
+            vehicleConfigurations[zoneId] =
+                currentZoneConfigurations;
+
+
+            populateVehicles(
+                currentZoneConfigurations
+            );
+
+
+            showMessage("", "normal");
+
+
+        } catch (error) {
+
+            console.error(
+                "Vehicle loading error:",
+                error
+            );
+
+
+            if (
+                vehicleConfigurations[zoneId] &&
+                Object.keys(
+                    vehicleConfigurations[zoneId]
+                ).length > 0
+            ) {
+
+                currentZoneConfigurations =
+                    vehicleConfigurations[zoneId];
+
+
+                populateVehicles(
+                    currentZoneConfigurations
+                );
+
+
+                showMessage(
+                    "Vehicles loaded from page data.",
+                    "normal"
+                );
+
+                return;
+            }
+
+
+            vehicleSelect.innerHTML =
+                '<option value="">Unable to load vehicles</option>';
+
+            vehicleSelect.disabled = false;
+
+            clearFareFields();
+
+
+            showMessage(
+                error.message ||
+                "Failed to load vehicle configuration.",
+                "error"
+            );
+        }
+    }
+
+
+    /* =====================================================
+       INITIAL LOAD
+    ===================================================== */
+
+    if (initialZoneId) {
+
+        if (
+            vehicleConfigurations[initialZoneId] &&
+            Object.keys(
+                vehicleConfigurations[initialZoneId]
+            ).length > 0
+        ) {
+
+            currentZoneConfigurations =
+                vehicleConfigurations[initialZoneId];
+
+
+            populateVehicles(
+                currentZoneConfigurations
+            );
+
+        } else {
+
+            loadZoneConfigurations(
+                initialZoneId
+            );
+        }
+    }
+
+
+    /* =====================================================
+       ZONE CHANGE
+    ===================================================== */
+
+    if (zoneSelect) {
+
+        zoneSelect.addEventListener(
+            "change",
+            function () {
+
+                const zoneId =
+                    this.value;
+
+
+                if (
+                    vehicleConfigurations[zoneId] &&
+                    Object.keys(
+                        vehicleConfigurations[zoneId]
+                    ).length > 0
+                ) {
+
+                    currentZoneConfigurations =
+                        vehicleConfigurations[zoneId];
+
+
+                    populateVehicles(
+                        currentZoneConfigurations
+                    );
+
+
+                    showMessage(
+                        "",
+                        "normal"
+                    );
+
+                    return;
+                }
+
+
+                loadZoneConfigurations(
+                    zoneId
+                );
+            }
+        );
+    }
+
+
+    /* =====================================================
+       VEHICLE CHANGE
+    ===================================================== */
+
+    if (vehicleSelect) {
+
+        vehicleSelect.addEventListener(
+            "change",
+            function () {
+
+                loadVehicleConfiguration(
+                    this.value
+                );
+
+            }
+        );
+    }
+
+
+    /* =====================================================
+       UPDATE FARE
+    ===================================================== */
+
+    if (fareForm) {
+
+        fareForm.addEventListener(
+            "submit",
+            async function (event) {
+
+                event.preventDefault();
+
+
+                const zoneId =
+                    zoneSelect.value;
+
+                const vehicleTypeId =
+                    vehicleSelect.value;
+
+
+                if (!zoneId) {
+
+                    showMessage(
+                        "Please select a zone.",
+                        "error"
+                    );
+
+                    return;
+                }
+
+
+                if (!vehicleTypeId) {
+
+                    showMessage(
+                        "Please select a vehicle.",
+                        "error"
+                    );
+
+                    return;
+                }
+
+
+                if (
+                    baseFare.value === "" ||
+                    perKmFare.value === "" ||
+                    perMinFare.value === "" ||
+                    surgeCap.value === "" ||
+                    nightSurge.value === ""
+                ) {
+
+                    showMessage(
+                        "Please fill all fare fields.",
+                        "error"
+                    );
+
+                    return;
+                }
+
+
+                const formData =
+                    new URLSearchParams();
+
+
+                formData.append(
+                    "zone_id",
+                    zoneId
+                );
+
+                formData.append(
+                    "vehicle_type_id",
+                    vehicleTypeId
+                );
+
+                formData.append(
+                    "base_fare",
+                    baseFare.value
+                );
+
+                formData.append(
+                    "per_km_fare",
+                    perKmFare.value
+                );
+
+                formData.append(
+                    "per_min_fare",
+                    perMinFare.value
+                );
+
+                formData.append(
+                    "surge_cap_multiplier",
+                    surgeCap.value
+                );
+
+                formData.append(
+                    "night_surge_multiplier",
+                    nightSurge.value
+                );
+
+
+                updateFareBtn.disabled =
+                    true;
+
+                updateFareBtn.textContent =
+                    "Saving...";
+
+
+                showMessage(
+                    "Saving fare configuration...",
+                    "normal"
+                );
+
+
+                try {
+
+                    /* =================================================
+                       POST REQUEST
+                    ================================================= */
+
+                    const response =
+                        await fetch(
+                            "/api/global-config/",
+                            {
+                                method: "POST",
+
+                                headers: {
+
+                                    "X-CSRFToken":
+                                        getCookie("csrftoken"),
+
+                                    "X-Requested-With":
+                                        "XMLHttpRequest",
+
+                                    "Content-Type":
+                                        "application/x-www-form-urlencoded; charset=UTF-8",
+
+                                    "Accept":
+                                        "application/json"
+                                },
+
+                                credentials:
+                                    "same-origin",
+
+                                body:
+                                    formData.toString()
+                            }
+                        );
+
+
+                    /* =================================================
+                       READ SERVER RESPONSE
+                    ================================================= */
+
+                    const contentType =
+                        response.headers.get(
+                            "content-type"
+                        ) || "";
+
+
+                    const text =
+                        await response.text();
+
+
+                    console.log(
+                        "HTTP STATUS:",
+                        response.status
+                    );
+
+                    console.log(
+                        "SERVER RESPONSE:",
+                        text
+                    );
+
+
+                    let data = {};
+
+
+                    if (
+                        contentType.includes(
+                            "application/json"
+                        )
+                    ) {
+
+                        try {
+
+                            data =
+                                JSON.parse(text);
+
+                        } catch (parseError) {
+
+                            console.error(
+                                "JSON parse error:",
+                                parseError
+                            );
+
+                            throw new Error(
+                                "Invalid JSON returned by server."
+                            );
+                        }
+
+                    } else {
+
+                        console.error(
+                            "Non JSON response:",
+                            text
+                        );
+
+                        throw new Error(
+                            "Server returned HTML instead of JSON."
+                        );
+                    }
+
+
+                    console.log(
+                        "PARSED DATA:",
+                        data
+                    );
+
+
+                    /* =================================================
+                       SUCCESS
+                    ================================================= */
+
+                    if (
+                        response.ok &&
+                        data.success === true
+                    ) {
+
+                        const saved =
+                            data.configuration || {};
+
+
+                        const selectedConfig =
+                            currentZoneConfigurations[
+                                vehicleTypeId
+                            ] || {};
+
+
+                        currentZoneConfigurations[
+                            vehicleTypeId
+                        ] = {
+
+                            id:
+                                saved.id ||
+                                selectedConfig.id ||
+                                "",
+
+                            vehicleName:
+                                saved.vehicleName ||
+                                selectedConfig.vehicleName ||
+                                vehicleSelect.options[
+                                    vehicleSelect.selectedIndex
+                                ].text,
+
+                            baseFare:
+                                saved.baseFare !== undefined
+                                    ? saved.baseFare
+                                    : baseFare.value,
+
+                            perKmFare:
+                                saved.perKmFare !== undefined
+                                    ? saved.perKmFare
+                                    : perKmFare.value,
+
+                            perMinFare:
+                                saved.perMinFare !== undefined
+                                    ? saved.perMinFare
+                                    : perMinFare.value,
+
+                            surgeCap:
+                                saved.surgeCap !== undefined
+                                    ? saved.surgeCap
+                                    : surgeCap.value,
+
+                            nightSurge:
+                                saved.nightSurge !== undefined
+                                    ? saved.nightSurge
+                                    : nightSurge.value
+                        };
+
+
+                        vehicleConfigurations[
+                            zoneId
+                        ] =
+                            currentZoneConfigurations;
+
+
+                        /* Put returned values into form */
+
+                        baseFare.value =
+                            currentZoneConfigurations[
+                                vehicleTypeId
+                            ].baseFare;
+
+                        perKmFare.value =
+                            currentZoneConfigurations[
+                                vehicleTypeId
+                            ].perKmFare;
+
+                        perMinFare.value =
+                            currentZoneConfigurations[
+                                vehicleTypeId
+                            ].perMinFare;
+
+                        surgeCap.value =
+                            currentZoneConfigurations[
+                                vehicleTypeId
+                            ].surgeCap;
+
+                        nightSurge.value =
+                            currentZoneConfigurations[
+                                vehicleTypeId
+                            ].nightSurge;
+
+
+                        showMessage(
+                            data.message ||
+                            "Fare updated successfully.",
+                            "success"
+                        );
+
+
+                        console.log(
+                            "Fare updated successfully:",
+                            data
+                        );
+
+                    }
+
+
+                    /* =================================================
+                       ERROR RESPONSE
+                    ================================================= */
+
+                    else {
+
+                        let errorMessage =
+                            "Failed to update fare configuration.";
+
+
+                        if (
+                            typeof data.message ===
+                            "string"
+                        ) {
+
+                            errorMessage =
+                                data.message;
+
+                        } else if (
+                            data.error &&
+                            typeof data.error.message ===
+                            "string"
+                        ) {
+
+                            errorMessage =
+                                data.error.message;
+
+                        } else if (
+                            data.error &&
+                            typeof data.error ===
+                            "string"
+                        ) {
+
+                            errorMessage =
+                                data.error;
+
+                        }
+
+
+                        showMessage(
+                            errorMessage,
+                            "error"
+                        );
+
+
+                        console.error(
+                            "Fare update failed:",
+                            data
+                        );
+                    }
+
+
+                } catch (error) {
+
+                    console.error(
+                        "Fare update error:",
+                        error
+                    );
+
+
+                    showMessage(
+                        error.message ||
+                        "Something went wrong while updating fare.",
+                        "error"
+                    );
+
+                } finally {
+
+                    updateFareBtn.disabled =
+                        false;
+
+                    updateFareBtn.textContent =
+                        "Update Fare";
+                }
+
+            }
+        );
+    }
+
+
+    /* =====================================================
+       CSRF
+    ===================================================== */
 
     function getCookie(name) {
 
         let cookieValue = null;
 
-        if (document.cookie && document.cookie !== '') {
 
-            const cookies = document.cookie.split(';');
+        if (document.cookie) {
 
-            for (let i = 0; i < cookies.length; i++) {
+            document.cookie
+                .split(";")
+                .forEach(
+                    function (cookie) {
 
-                const cookie = cookies[i].trim();
+                        cookie =
+                            cookie.trim();
 
-                if (
-                    cookie.substring(0, name.length + 1)
-                    === name + '='
-                ) {
 
-                    cookieValue = decodeURIComponent(
-                        cookie.substring(name.length + 1)
-                    );
+                        if (
+                            cookie.startsWith(
+                                name + "="
+                            )
+                        ) {
 
-                    break;
-                }
-            }
+                            cookieValue =
+                                decodeURIComponent(
+                                    cookie.substring(
+                                        name.length + 1
+                                    )
+                                );
+                        }
+
+                    }
+                );
         }
+
 
         return cookieValue;
     }
 
 
-    /* =========================================================
-       STATUS MESSAGE
-    ========================================================= */
-
-    function showConfigStatus(message, isError) {
-
-        const statusDiv =
-            document.getElementById('config-status');
-
-        if (!statusDiv) {
-            return;
-        }
-
-        statusDiv.textContent = message;
-
-        statusDiv.className =
-            'mb-4 px-4 py-3 rounded-lg text-sm font-bold ' +
-            (
-                isError
-                    ? 'bg-error/10 text-error border border-error/20'
-                    : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-            );
-
-        statusDiv.classList.remove('hidden');
-
-    }
-
-
-    /* =========================================================
-       FORM
-    ========================================================= */
-
-    const form =
-        document.getElementById('global-config-form');
-
-
-    if (!form) {
-        return;
-    }
-
-
-    form.addEventListener(
-        'submit',
-        async function (e) {
-
-            e.preventDefault();
-
-
-            /* =================================================
-               BUTTON
-            ================================================= */
-
-            const btn =
-                document.getElementById(
-                    'update-config-btn'
-                );
-
-            const btnText =
-                document.getElementById(
-                    'update-config-btn-text'
-                );
-
-            const btnSpinner =
-                document.getElementById(
-                    'update-config-btn-spinner'
-                );
-
-
-            btn.disabled = true;
-
-            btnText.textContent = 'Saving...';
-
-            btnSpinner.classList.remove('hidden');
-
-
-            /* =================================================
-               GET INPUT VALUES
-            ================================================= */
-
-            const baseFare =
-                document.getElementById(
-                    'cfg-base-fare'
-                ).value.trim();
-
-
-            const perKmFare =
-                document.getElementById(
-                    'cfg-per-km'
-                ).value.trim();
-
-
-            const perMinFare =
-                document.getElementById(
-                    'cfg-per-min'
-                ).value.trim();
-
-
-            const surgeCap =
-                document.getElementById(
-                    'cfg-surge-cap'
-                ).value.trim();
-
-
-            const nightSurge =
-                document.getElementById(
-                    'cfg-night-surge'
-                ).value.trim();
-
-
-            /* =================================================
-               CLIENT-SIDE VALIDATION
-            ================================================= */
-
-            if (
-                !baseFare ||
-                !perKmFare ||
-                !perMinFare ||
-                !surgeCap ||
-                !nightSurge
-            ) {
-
-                showConfigStatus(
-                    '✗ Please fill in all fare configuration fields.',
-                    true
-                );
-
-                btn.disabled = false;
-
-                btnText.textContent =
-                    'Update Global Config';
-
-                btnSpinner.classList.add('hidden');
-
-                return;
-            }
-
-
-            if (
-                Number(baseFare) < 0 ||
-                Number(perKmFare) < 0 ||
-                Number(perMinFare) < 0
-            ) {
-
-                showConfigStatus(
-                    '✗ Fare values cannot be negative.',
-                    true
-                );
-
-                btn.disabled = false;
-
-                btnText.textContent =
-                    'Update Global Config';
-
-                btnSpinner.classList.add('hidden');
-
-                return;
-            }
-
-
-            if (
-                Number(surgeCap) < 1 ||
-                Number(nightSurge) < 1
-            ) {
-
-                showConfigStatus(
-                    '✗ Surge multipliers must be at least 1.00.',
-                    true
-                );
-
-                btn.disabled = false;
-
-                btnText.textContent =
-                    'Update Global Config';
-
-                btnSpinner.classList.add('hidden');
-
-                return;
-            }
-
-
-            /* =================================================
-               FORM DATA
-
-               IMPORTANT:
-               These names MUST match update_global_config()
-               ================================================= */
-
-            const formData =
-                new URLSearchParams();
-
-
-            formData.append(
-                'base_fare',
-                baseFare
-            );
-
-
-            formData.append(
-                'per_km_fare',
-                perKmFare
-            );
-
-
-            formData.append(
-                'per_min_fare',
-                perMinFare
-            );
-
-
-            formData.append(
-                'surge_cap_multiplier',
-                surgeCap
-            );
-
-
-            formData.append(
-                'night_surge_multiplier',
-                nightSurge
-            );
-
-
-            /* =================================================
-               SEND REQUEST
-            ================================================= */
-
-            try {
-
-                const response =
-                    await fetch(
-                        '/api/global-config/',
-                        {
-                            method: 'POST',
-
-                            headers: {
-                                'X-CSRFToken':
-                                    getCookie('csrftoken'),
-
-                                'X-Requested-With':
-                                    'XMLHttpRequest',
-
-                                'Content-Type':
-                                    'application/x-www-form-urlencoded; charset=UTF-8'
-                            },
-
-                            body: formData
-                        }
-                    );
-
-
-                /* =============================================
-                   READ JSON
-                ============================================= */
-
-                const data =
-                    await response.json();
-
-
-                /* =============================================
-                   SUCCESS
-                ============================================= */
-
-                if (
-                    response.ok &&
-                    data.success === true
-                ) {
-
-                    showConfigStatus(
-                        '✓ ' +
-                        (
-                            data.message ||
-                            'Global fare configuration updated successfully.'
-                        ),
-                        false
-                    );
-
-
-                    /* =========================================
-                       Update displayed input values from server
-                    ========================================= */
-
-                    if (data.config) {
-
-                        document.getElementById(
-                            'cfg-base-fare'
-                        ).value =
-                            data.config.base_fare;
-
-
-                        document.getElementById(
-                            'cfg-per-km'
-                        ).value =
-                            data.config.per_km_fare;
-
-
-                        document.getElementById(
-                            'cfg-per-min'
-                        ).value =
-                            data.config.per_min_fare;
-
-
-                        document.getElementById(
-                            'cfg-surge-cap'
-                        ).value =
-                            data.config.surge_cap_multiplier;
-
-
-                        document.getElementById(
-                            'cfg-night-surge'
-                        ).value =
-                            data.config.night_surge_multiplier;
-
-                    }
-
-                }
-
-
-                /* =============================================
-                   ERROR
-                ============================================= */
-
-                else {
-
-                    showConfigStatus(
-                        '✗ ' +
-                        (
-                            data.message ||
-                            'Unable to update fare configuration.'
-                        ),
-                        true
-                    );
-
-                }
-
-            }
-
-
-            /* =================================================
-               NETWORK / SERVER ERROR
-            ================================================= */
-
-            catch (error) {
-
-                console.error(
-                    'Global fare configuration error:',
-                    error
-                );
-
-
-                showConfigStatus(
-                    '✗ Network error. Please try again.',
-                    true
-                );
-
-            }
-
-
-            /* =================================================
-               RESET BUTTON
-            ================================================= */
-
-            finally {
-
-                btn.disabled = false;
-
-                btnText.textContent =
-                    'Update Global Config';
-
-                btnSpinner.classList.add('hidden');
-
-            }
-
-        }
+    /* =====================================================
+       DEBUG
+    ===================================================== */
+
+    console.log(
+        "Fare & Surge page initialized."
     );
 
-})();
+    console.log(
+        "Initial zone:",
+        initialZoneId
+    );
+
+    console.log(
+        "Vehicle configurations:",
+        vehicleConfigurations
+    );
+
+});
 
 </script>
 

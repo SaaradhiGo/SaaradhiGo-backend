@@ -584,7 +584,9 @@ def update_user(request):
             )
         
         update_data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
-        avatar_provided, avatar_value, avatar_error = resolve_file_input(request, 'avatar')
+        avatar_provided, avatar_value, avatar_error = resolve_file_input(
+            request, 'avatar', kind='avatar'
+        )
         if avatar_error:
             return error_response(
                 code='UPLOAD_FAILED',

@@ -1,5 +1,6 @@
 from django.urls import path, include
 
+from base.uploads_views import presign_upload
 from servers.auth_user import urls as auth_user_urls
 from servers.rider import urls as rider_urls
 from servers.driver import urls as driver_urls
@@ -10,6 +11,7 @@ from servers.pricing import urls as pricing_urls
 from servers.support import urls as support_urls
 
 urlpatterns = [
+    path('uploads/presign/', presign_upload),
     path('auth/', include(auth_user_urls.urlpatterns)),
     path('rider/', include(rider_urls.urlpatterns)),
     path('driver/', include(driver_urls.urlpatterns)),

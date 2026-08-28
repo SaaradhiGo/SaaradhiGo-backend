@@ -548,7 +548,9 @@ def update_vehicle(request, vehicle_id):
         )
 
     for field_name in ('rc_doc', 'vehicle_pic'):
-        field_provided, field_value, field_error = resolve_file_input(request, field_name)
+        field_provided, field_value, field_error = resolve_file_input(
+            request, field_name, kind=field_name
+        )
         if field_error:
             return error_response(
                 code='UPLOAD_FAILED',
@@ -622,7 +624,9 @@ def update_driver_profile(request):
     driver = request.user.driver
     update_data = {}
 
-    license_provided, license_value, license_error = resolve_file_input(request, 'license_doc')
+    license_provided, license_value, license_error = resolve_file_input(
+        request, 'license_doc', kind='license_doc'
+    )
     if license_error:
         return error_response(
             code='UPLOAD_FAILED',
@@ -633,6 +637,20 @@ def update_driver_profile(request):
         )
     if license_provided:
         update_data['license_doc'] = license_value
+
+    license_back_provided, license_back_value, license_back_error = resolve_file_input(
+        request, 'license_doc_back', kind='license_doc_back'
+    )
+    if license_back_error:
+        return error_response(
+            code='UPLOAD_FAILED',
+            message=license_back_error,
+            field='license_doc_back',
+            issue=license_back_error,
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    if license_back_provided:
+        update_data['license_doc_back'] = license_back_value
 
     if 'license_expiry' in request.data:
         license_expiry = request.data.get('license_expiry')
@@ -660,7 +678,7 @@ def update_driver_profile(request):
             code='VALIDATION_ERROR',
             message='No driver profile data provided',
             field='data',
-            issue='Provide at least one of active_vehicle, license_doc, or license_expiry',
+            issue='Provide at least one of active_vehicle, license_doc, license_doc_back, or license_expiry',
             status=status.HTTP_400_BAD_REQUEST
         )
 

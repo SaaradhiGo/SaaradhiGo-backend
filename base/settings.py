@@ -464,6 +464,14 @@ LOGGING = {
         'handlers': ['console'],
         'level': LOG_LEVEL,
     },
+    # AWS SDK chatter: every presign/HEAD emits dozens of DEBUG lines that
+    # drown real signals (and cost latency under load). Keep warnings+.
+    'loggers': {
+        'botocore': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        'boto3': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        's3transfer': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        'urllib3': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+    },
 }
 
 # Internationalization

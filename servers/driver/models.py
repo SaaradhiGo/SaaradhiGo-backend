@@ -15,6 +15,14 @@ class Driver(models.Model):
         upload_to=PrefixedUUIDPath('license_docs'),
         validators=[validate_document_file, validate_file_size],
     )
+    license_doc_back=models.FileField(
+        blank=True,
+        max_length=512,
+        null=True,
+        storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('license_docs_back'),
+        validators=[validate_document_file, validate_file_size],
+    )
     license_expiry=models.DateField(blank=True,null=True)
     status=models.CharField(max_length=20,choices=[
         ('online','Online'),('off','Off'),('active','Active'),

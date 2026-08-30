@@ -1248,6 +1248,7 @@ def get_active_trip(request):
             code='NO_ACTIVE_TRIP',
             message='No active trip found',
             field='trip',
+            issue="No active trip found",
             status=status.HTTP_404_NOT_FOUND
         )
 

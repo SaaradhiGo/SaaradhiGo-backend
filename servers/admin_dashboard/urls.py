@@ -6,8 +6,10 @@ from .views import (
     dispute_support,
     driver_loyalty,
     driver_onboarding,
+    driver_profile,
     executive_revenue,
     fare_surge,
+    global_search,
     login,
     payment_dashboard,
     predictive_heatmaps,
@@ -30,4 +32,10 @@ urlpatterns = [
     path("api/global-config/", update_global_config, name="update_global_config"),
     path("predictive_heatmaps/", predictive_heatmaps, name="predictive_heatmaps"),
     path("logout/", admin_logout, name="logout"),
+
+    # Global Search
+    path("search/", global_search, name="global_search"),
+
+    # Driver Profile
+    path("driver/<int:driver_id>/", driver_profile, name="driver_profile"),
 ]

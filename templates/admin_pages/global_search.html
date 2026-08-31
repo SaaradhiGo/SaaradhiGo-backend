@@ -1,0 +1,538 @@
+{% extends "admin_pages/base.html" %}
+
+{% block title %}
+    Search - SaaradhiGo Admin
+{% endblock %}
+
+{% block content %}
+
+<div class="p-8 space-y-8">
+
+    <!-- PAGE HEADER -->
+
+    <div>
+
+        <p class="text-xs uppercase tracking-widest text-primary font-bold mb-2">
+            Global Search
+        </p>
+
+        <h1 class="font-headline text-3xl font-extrabold text-on-surface">
+            Search Results
+        </h1>
+
+        {% if query %}
+
+            <p class="mt-2 text-sm text-on-surface-variant">
+                Results for
+                <span class="text-primary font-semibold">
+                    "{{ query }}"
+                </span>
+            </p>
+
+        {% else %}
+
+            <p class="mt-2 text-sm text-on-surface-variant">
+                Search drivers, riders, and trips using the search bar above.
+            </p>
+
+        {% endif %}
+
+    </div>
+
+
+    {% if query %}
+
+    <!-- SUMMARY -->
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+        <!-- DRIVERS -->
+
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-5">
+
+            <div class="flex items-center justify-between">
+
+                <div>
+
+                    <p class="text-xs uppercase tracking-wider text-on-surface-variant">
+                        Drivers
+                    </p>
+
+                    <p class="text-2xl font-bold text-primary mt-1">
+                        {{ driver_count }}
+                    </p>
+
+                </div>
+
+                <div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+
+                    <span class="material-symbols-outlined">
+                        person
+                    </span>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- RIDERS -->
+
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-5">
+
+            <div class="flex items-center justify-between">
+
+                <div>
+
+                    <p class="text-xs uppercase tracking-wider text-on-surface-variant">
+                        Riders / Users
+                    </p>
+
+                    <p class="text-2xl font-bold text-primary mt-1">
+                        {{ rider_count }}
+                    </p>
+
+                </div>
+
+                <div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+
+                    <span class="material-symbols-outlined">
+                        group
+                    </span>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- TRIPS -->
+
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-5">
+
+            <div class="flex items-center justify-between">
+
+                <div>
+
+                    <p class="text-xs uppercase tracking-wider text-on-surface-variant">
+                        Trips
+                    </p>
+
+                    <p class="text-2xl font-bold text-primary mt-1">
+                        {{ trip_count }}
+                    </p>
+
+                </div>
+
+                <div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+
+                    <span class="material-symbols-outlined">
+                        directions_car
+                    </span>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- DRIVER RESULTS -->
+
+    <section>
+
+        <div class="flex items-center justify-between mb-4">
+
+            <div>
+
+                <h2 class="font-headline text-xl font-bold text-on-surface">
+                    Drivers
+                </h2>
+
+                <p class="text-xs text-on-surface-variant mt-1">
+                    Matching driver records
+                </p>
+
+            </div>
+
+            {% if drivers %}
+                <span class="text-xs bg-primary/10 text-primary px-3 py-1 rounded-full font-semibold">
+                    {{ driver_count }} found
+                </span>
+            {% endif %}
+
+        </div>
+
+
+        {% if drivers %}
+
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl overflow-hidden">
+
+            {% for driver in drivers %}
+
+            <div class="p-5 border-b border-outline-variant/10 last:border-b-0 hover:bg-surface-container-highest/50 transition-colors">
+
+                <div class="flex items-center justify-between gap-4">
+
+                    <div class="flex items-center gap-4 min-w-0">
+
+                        <div class="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center text-primary flex-shrink-0">
+
+                            <span class="material-symbols-outlined text-2xl">
+                                person
+                            </span>
+
+                        </div>
+
+
+                        <div class="min-w-0">
+
+                            <p class="font-semibold text-on-surface truncate">
+
+                                {% if driver.user_id.full_name %}
+                                    {{ driver.user_id.full_name }}
+                                {% elif driver.user_id.phone_number %}
+                                    {{ driver.user_id.phone_number }}
+                                {% else %}
+                                    Driver #{{ driver.id }}
+                                {% endif %}
+
+                            </p>
+
+
+                            <div class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1">
+
+                                <span class="text-xs text-on-surface-variant">
+                                    Driver ID:
+                                    <span class="text-on-surface font-medium">
+                                        #{{ driver.id }}
+                                    </span>
+                                </span>
+
+
+                                {% if driver.user_id.phone_number %}
+
+                                <span class="text-xs text-on-surface-variant">
+                                    Phone:
+                                    <span class="text-on-surface font-medium">
+                                        {{ driver.user_id.phone_number }}
+                                    </span>
+                                </span>
+
+                                {% endif %}
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+
+                    <a
+                        href="{% url 'driver_profile' driver.id %}"
+                        class="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-on-primary text-xs font-bold hover:opacity-90 transition-opacity flex-shrink-0">
+
+                        <span>
+                            View Profile
+                        </span>
+
+                        <span class="material-symbols-outlined text-base">
+                            arrow_forward
+                        </span>
+
+                    </a>
+
+                </div>
+
+            </div>
+
+            {% endfor %}
+
+        </div>
+
+
+        {% else %}
+
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-10 text-center">
+
+            <div class="w-14 h-14 mx-auto rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant">
+
+                <span class="material-symbols-outlined text-2xl">
+                    person_off
+                </span>
+
+            </div>
+
+            <p class="mt-4 text-sm font-semibold text-on-surface">
+                No drivers found
+            </p>
+
+            <p class="mt-1 text-xs text-on-surface-variant">
+                No driver matches "{{ query }}".
+            </p>
+
+        </div>
+
+        {% endif %}
+
+    </section>
+
+
+    <!-- RIDER / USER RESULTS -->
+
+    <section>
+
+        <div class="mb-4">
+
+            <h2 class="font-headline text-xl font-bold text-on-surface">
+                Riders / Users
+            </h2>
+
+            <p class="text-xs text-on-surface-variant mt-1">
+                Matching user records
+            </p>
+
+        </div>
+
+
+        {% if riders %}
+
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl overflow-hidden">
+
+            {% for rider in riders %}
+
+            <div class="p-5 border-b border-outline-variant/10 last:border-b-0 hover:bg-surface-container-highest/50 transition-colors">
+
+                <div class="flex items-center gap-4">
+
+                    <div class="w-10 h-10 rounded-lg bg-surface-container flex items-center justify-center text-primary">
+
+                        <span class="material-symbols-outlined">
+                            person
+                        </span>
+
+                    </div>
+
+
+                    <div>
+
+                        <p class="text-sm font-semibold text-on-surface">
+
+                            {% if rider.full_name %}
+                                {{ rider.full_name }}
+                            {% else %}
+                                User #{{ rider.id }}
+                            {% endif %}
+
+                        </p>
+
+
+                        <div class="flex gap-4 mt-1">
+
+                            {% if rider.phone_number %}
+
+                            <span class="text-xs text-on-surface-variant">
+                                {{ rider.phone_number }}
+                            </span>
+
+                            {% endif %}
+
+
+                            {% if rider.email %}
+
+                            <span class="text-xs text-on-surface-variant">
+                                {{ rider.email }}
+                            </span>
+
+                            {% endif %}
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+            {% endfor %}
+
+        </div>
+
+
+        {% else %}
+
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-8 text-center">
+
+            <p class="text-sm text-on-surface-variant">
+                No riders/users found.
+            </p>
+
+        </div>
+
+        {% endif %}
+
+    </section>
+
+
+    <!-- TRIP RESULTS -->
+
+    <section>
+
+        <div class="mb-4">
+
+            <h2 class="font-headline text-xl font-bold text-on-surface">
+                Trips
+            </h2>
+
+            <p class="text-xs text-on-surface-variant mt-1">
+                Matching trip records
+            </p>
+
+        </div>
+
+
+        {% if trips %}
+
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl overflow-hidden">
+
+            {% for trip in trips %}
+
+            <div class="p-5 border-b border-outline-variant/10 last:border-b-0 hover:bg-surface-container-highest/50 transition-colors">
+
+                <div class="flex items-center gap-4">
+
+                    <div class="w-10 h-10 rounded-lg bg-surface-container flex items-center justify-center text-primary">
+
+                        <span class="material-symbols-outlined">
+                            directions_car
+                        </span>
+
+                    </div>
+
+
+                    <div class="flex-1 min-w-0">
+
+                        <div class="flex flex-wrap items-center gap-3">
+
+                            <p class="text-sm font-semibold text-on-surface">
+                                Trip #{{ trip.id }}
+                            </p>
+
+
+                            {% if trip.status_id %}
+
+                            <span class="text-[10px] uppercase tracking-wider px-2 py-1 rounded-full bg-primary/10 text-primary font-bold">
+
+                                {{ trip.status_id }}
+
+                            </span>
+
+                            {% endif %}
+
+                        </div>
+
+
+                        <div class="flex flex-wrap gap-x-5 gap-y-1 mt-1">
+
+                            {% if trip.user_id %}
+
+                            <span class="text-xs text-on-surface-variant">
+
+                                Rider:
+
+                                <span class="text-on-surface">
+                                    {{ trip.user_id.full_name|default:"—" }}
+                                </span>
+
+                            </span>
+
+                            {% endif %}
+
+
+                            {% if trip.driver_id %}
+
+                            <span class="text-xs text-on-surface-variant">
+
+                                Driver:
+
+                                <span class="text-on-surface">
+                                    {{ trip.driver_id.user_id.full_name|default:"—" }}
+                                </span>
+
+                            </span>
+
+                            {% endif %}
+
+
+                            {% if trip.requested_at %}
+
+                            <span class="text-xs text-on-surface-variant">
+
+                                {{ trip.requested_at|date:"d M Y, h:i A" }}
+
+                            </span>
+
+                            {% endif %}
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+            {% endfor %}
+
+        </div>
+
+
+        {% else %}
+
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-8 text-center">
+
+            <p class="text-sm text-on-surface-variant">
+                No trips found.
+            </p>
+
+        </div>
+
+        {% endif %}
+
+    </section>
+
+
+    {% else %}
+
+    <!-- NO QUERY -->
+
+    <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-16 text-center">
+
+        <div class="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center text-primary">
+
+            <span class="material-symbols-outlined text-3xl">
+                search
+            </span>
+
+        </div>
+
+        <h2 class="font-headline text-xl font-bold text-on-surface mt-5">
+            Start searching
+        </h2>
+
+        <p class="text-sm text-on-surface-variant mt-2 max-w-md mx-auto">
+            Use the search box at the top to search for a driver by
+            ID, name, phone number, or document.
+        </p>
+
+    </div>
+
+    {% endif %}
+
+</div>
+
+{% endblock %}

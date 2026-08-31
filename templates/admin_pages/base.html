@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html class="dark" lang="en">
 
@@ -118,7 +119,7 @@
         <div class="p-8">
 
             <span class="text-2xl font-black tracking-tighter text-[#F2CA50]">
-                Gilded Admin
+                SaaradhiGo Admin
             </span>
 
             <p
@@ -214,23 +215,28 @@
                 </span>
 
             </a>
-            <a
-    href="{% url 'transaction_dashboard' %}"
-    class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
-    {% if request.resolver_match.url_name == 'transaction_dashboard' %}
-        text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3
-    {% else %}
-        text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]
-    {% endif %}"
->
-    <span class="material-symbols-outlined w-6 text-center">
-        swap_vert
-    </span>
 
-    <span class="font-label text-sm">
-        Transactions
-    </span>
-</a>
+
+            <!-- TRANSACTIONS -->
+            <a
+                href="{% url 'transaction_dashboard' %}"
+                class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
+                {% if request.resolver_match.url_name == 'transaction_dashboard' %}
+                    text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3
+                {% else %}
+                    text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]
+                {% endif %}">
+
+                <span class="material-symbols-outlined w-6 text-center">
+                    swap_vert
+                </span>
+
+                <span class="font-label text-sm">
+                    Transactions
+                </span>
+
+            </a>
+
 
             <!-- REVENUE ANALYTICS -->
             <a
@@ -274,10 +280,7 @@
             </a>
 
 
-            <!-- ================================================= -->
-            <!-- RIDE - NEW -->
-            <!-- ================================================= -->
-
+            <!-- RIDE -->
             <a
                 class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
                 {% if request.resolver_match.url_name == 'ride' %}
@@ -559,6 +562,10 @@
 
             if (searchInput) {
 
+                // ---------------------------------------------
+                // LIVE SEARCH
+                // ---------------------------------------------
+
                 searchInput.addEventListener('input', () => {
 
                     clearTimeout(searchTimeout);
@@ -582,7 +589,17 @@
                             `/api/search/?q=${encodeURIComponent(query)}`
                         )
 
-                        .then(res => res.json())
+                        .then(res => {
+
+                            if (!res.ok) {
+                                throw new Error(
+                                    `HTTP error: ${res.status}`
+                                );
+                            }
+
+                            return res.json();
+
+                        })
 
                         .then(data => {
 
@@ -592,21 +609,64 @@
                                     data.results
                                 );
 
+                            } else {
+
+                                searchDropdown.classList.add(
+                                    'hidden'
+                                );
+
                             }
 
                         })
 
-                        .catch(err =>
+                        .catch(err => {
+
                             console.error(
                                 "Search error:",
                                 err
-                            )
-                        );
+                            );
+
+                        });
 
                     }, 300);
 
                 });
 
+
+                // ---------------------------------------------
+                // ENTER → GLOBAL SEARCH PAGE
+                // ---------------------------------------------
+
+                searchInput.addEventListener(
+                    'keydown',
+                    (event) => {
+
+                        if (event.key === 'Enter') {
+
+                            event.preventDefault();
+
+                            const query =
+                                searchInput.value.trim();
+
+
+                            if (!query) {
+                                return;
+                            }
+
+
+                            // Go to Django global search page
+                            window.location.href =
+                                `/search/?q=${encodeURIComponent(query)}`;
+
+                        }
+
+                    }
+                );
+
+
+                // ---------------------------------------------
+                // FOCUS
+                // ---------------------------------------------
 
                 searchInput.addEventListener('focus', () => {
 
@@ -623,12 +683,16 @@
             }
 
 
+            // =====================================================
+            // RENDER SEARCH RESULTS
+            // =====================================================
+
             function renderSearchResults(results) {
 
                 searchResultsList.innerHTML = '';
 
 
-                if (results.length === 0) {
+                if (!results || results.length === 0) {
 
                     searchResultsList.innerHTML = `
                         <div class="p-4 text-center text-xs text-on-surface-variant italic">
@@ -689,6 +753,7 @@
                             </div>
 
                         `;
+
 
                         searchResultsList.appendChild(el);
 
@@ -998,7 +1063,9 @@
             }
 
 
+            // =====================================================
             // CLOSE DROPDOWNS
+            // =====================================================
 
             document.addEventListener(
                 'click',
@@ -1033,12 +1100,16 @@
             );
 
 
+            // =====================================================
             // INITIAL NOTIFICATION FETCH
+            // =====================================================
 
             fetchNotifications();
 
 
+            // =====================================================
             // POLL EVERY 30 SECONDS
+            // =====================================================
 
             setInterval(
                 fetchNotifications,
@@ -1052,3 +1123,4 @@
 </body>
 
 </html>
+```

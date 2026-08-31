@@ -1,0 +1,1140 @@
+
+
+{% extends "admin_pages/base.html" %}
+
+{% block title %}
+Driver Profile - SaaradhiGo Admin
+{% endblock %}
+
+{% block content %}
+
+<div class="p-8 space-y-8">
+
+    <!-- HEADER -->
+    <div class="flex items-center justify-between">
+
+        <div>
+            <div class="flex items-center gap-2 mb-3">
+                <a
+                    href="javascript:history.back()"
+                    class="flex items-center gap-1 text-xs text-on-surface-variant hover:text-primary transition-colors">
+
+                    <span class="material-symbols-outlined text-base">
+                        arrow_back
+                    </span>
+                    Back
+                </a>
+
+                <span class="text-on-surface-variant/40">/</span>
+
+                <span class="text-xs text-on-surface-variant">
+                    Driver Profile
+                </span>
+            </div>
+
+            <p class="text-xs uppercase tracking-widest text-primary font-bold mb-2">
+                Driver Management
+            </p>
+
+            <h1 class="font-headline text-3xl font-extrabold text-on-surface">
+                Driver Profile
+            </h1>
+        </div>
+
+        <div class="px-4 py-2 bg-surface-container-low border border-outline-variant/20 rounded-lg">
+            <p class="text-[10px] uppercase tracking-widest text-on-surface-variant">
+                Driver ID
+            </p>
+
+            <p class="text-sm font-bold text-primary mt-1">
+                #{{ driver_id }}
+            </p>
+        </div>
+
+    </div>
+
+
+    <!-- DRIVER MAIN CARD -->
+    <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl overflow-hidden">
+
+        <div class="p-6">
+
+            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+
+                <div class="flex items-center gap-5">
+
+                    <div class="w-20 h-20 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+
+                        <span class="material-symbols-outlined text-4xl">
+                            person
+                        </span>
+
+                    </div>
+
+                    <div>
+
+                        <h2 class="font-headline text-2xl font-bold text-on-surface">
+                            {{ driver_name }}
+                        </h2>
+
+                        <div class="flex flex-wrap items-center gap-x-5 gap-y-2 mt-2">
+
+                            <div class="flex items-center gap-1.5">
+
+                                <span class="material-symbols-outlined text-base text-on-surface-variant">
+                                    phone
+                                </span>
+
+                                <span class="text-sm text-on-surface-variant">
+                                    {{ phone_number }}
+                                </span>
+
+                            </div>
+
+                            <div class="flex items-center gap-1.5">
+
+                                <span class="material-symbols-outlined text-base text-on-surface-variant">
+                                    mail
+                                </span>
+
+                                <span class="text-sm text-on-surface-variant">
+                                    {{ email }}
+                                </span>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+                <!-- STATUS + ADMIN ACTION -->
+                <div class="flex flex-wrap items-center gap-3">
+
+                    {% if approved %}
+
+                    <span class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 text-xs font-bold uppercase tracking-wider">
+
+                        <span class="w-2 h-2 rounded-full bg-green-400"></span>
+                        Approved
+
+                    </span>
+
+                    {% else %}
+
+                    <span class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 text-xs font-bold uppercase tracking-wider">
+
+                        <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+                        Not Approved
+
+                    </span>
+
+                    {% endif %}
+
+
+                    {% if is_blocked %}
+
+                    <span class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 text-xs font-bold uppercase tracking-wider">
+
+                        <span class="w-2 h-2 rounded-full bg-red-400"></span>
+                        Blocked
+
+                    </span>
+
+                    {% elif driver_status == "online" %}
+
+                    <span class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-green-500/10 text-green-400 border border-green-500/20 text-xs font-bold uppercase tracking-wider">
+
+                        <span class="w-2 h-2 rounded-full bg-green-400"></span>
+                        Online
+
+                    </span>
+
+                    {% elif driver_status == "on ride" %}
+
+                    <span class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 text-xs font-bold uppercase tracking-wider">
+
+                        <span class="w-2 h-2 rounded-full bg-blue-400"></span>
+                        On Ride
+
+                    </span>
+
+                    {% else %}
+
+                    <span class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-container text-on-surface-variant border border-outline-variant/20 text-xs font-bold uppercase tracking-wider">
+
+                        <span class="w-2 h-2 rounded-full bg-on-surface-variant"></span>
+                        {{ driver_status|title }}
+
+                    </span>
+
+                    {% endif %}
+
+
+                    {% if is_blocked %}
+
+                    <form
+                        method="POST"
+                        onsubmit="return confirm('Are you sure you want to unblock this driver?');">
+
+                        {% csrf_token %}
+
+                        <input
+                            type="hidden"
+                            name="action"
+                            value="unblock">
+
+                        <button
+                            type="submit"
+                            class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-green-500/10 text-green-400 border border-green-500/30 hover:bg-green-500/20 transition-colors text-xs font-bold uppercase tracking-wider">
+
+                            <span class="material-symbols-outlined text-base">
+                                lock_open
+                            </span>
+
+                            Unblock Driver
+
+                        </button>
+
+                    </form>
+
+                    {% else %}
+
+                    <form
+                        method="POST"
+                        onsubmit="return confirm('Are you sure you want to block this driver?');">
+
+                        {% csrf_token %}
+
+                        <input
+                            type="hidden"
+                            name="action"
+                            value="block">
+
+                        <button
+                            type="submit"
+                            class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors text-xs font-bold uppercase tracking-wider">
+
+                            <span class="material-symbols-outlined text-base">
+                                block
+                            </span>
+
+                            Block Driver
+
+                        </button>
+
+                    </form>
+
+                    {% endif %}
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- DRIVER DETAILS -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+
+        <!-- DRIVER INFORMATION -->
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl overflow-hidden">
+
+            <div class="px-6 py-4 border-b border-outline-variant/15 flex items-center gap-3">
+
+                <div class="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+
+                    <span class="material-symbols-outlined">
+                        badge
+                    </span>
+
+                </div>
+
+                <div>
+
+                    <h2 class="font-headline font-bold text-sm text-on-surface">
+                        Driver Information
+                    </h2>
+
+                    <p class="text-[11px] text-on-surface-variant">
+                        Personal and account details
+                    </p>
+
+                </div>
+
+            </div>
+
+
+            <div class="p-6 space-y-5">
+
+                <div class="flex justify-between gap-4">
+
+                    <span class="text-xs text-on-surface-variant">
+                        Full Name
+                    </span>
+
+                    <span class="text-sm font-semibold text-on-surface text-right">
+                        {{ driver_name }}
+                    </span>
+
+                </div>
+
+                <div class="flex justify-between gap-4">
+
+                    <span class="text-xs text-on-surface-variant">
+                        Phone Number
+                    </span>
+
+                    <span class="text-sm font-semibold text-on-surface text-right">
+                        {{ phone_number }}
+                    </span>
+
+                </div>
+
+                <div class="flex justify-between gap-4">
+
+                    <span class="text-xs text-on-surface-variant">
+                        Email
+                    </span>
+
+                    <span class="text-sm font-semibold text-on-surface text-right break-all">
+                        {{ email }}
+                    </span>
+
+                </div>
+
+                <div class="flex justify-between gap-4">
+
+                    <span class="text-xs text-on-surface-variant">
+                        Driver ID
+                    </span>
+
+                    <span class="text-sm font-semibold text-primary text-right">
+                        #{{ driver_id }}
+                    </span>
+
+                </div>
+
+                <div class="flex justify-between gap-4">
+
+                    <span class="text-xs text-on-surface-variant">
+                        Document Status
+                    </span>
+
+                    <span class="text-sm font-semibold text-on-surface text-right">
+                        {{ doc_status|title }}
+                    </span>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- VEHICLE INFORMATION -->
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl overflow-hidden">
+
+            <div class="px-6 py-4 border-b border-outline-variant/15 flex items-center gap-3">
+
+                <div class="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+
+                    <span class="material-symbols-outlined">
+                        directions_car
+                    </span>
+
+                </div>
+
+                <div>
+
+                    <h2 class="font-headline font-bold text-sm text-on-surface">
+                        Vehicle Information
+                    </h2>
+
+                    <p class="text-[11px] text-on-surface-variant">
+                        Currently assigned vehicle
+                    </p>
+
+                </div>
+
+            </div>
+
+
+            <div class="p-6">
+
+                {% if vehicle %}
+
+                <div class="space-y-5">
+
+                    <div class="flex justify-between gap-4">
+
+                        <span class="text-xs text-on-surface-variant">
+                            Vehicle Number
+                        </span>
+
+                        <span class="text-sm font-bold text-primary text-right">
+                            {{ vehicle_number|default:"—" }}
+                        </span>
+
+                    </div>
+
+                    <div class="flex justify-between gap-4">
+
+                        <span class="text-xs text-on-surface-variant">
+                            Vehicle Type
+                        </span>
+
+                        <span class="text-sm font-semibold text-on-surface text-right">
+                            {{ vehicle_type|default:"—" }}
+                        </span>
+
+                    </div>
+
+                    <div class="flex justify-between gap-4">
+
+                        <span class="text-xs text-on-surface-variant">
+                            Brand
+                        </span>
+
+                        <span class="text-sm font-semibold text-on-surface text-right">
+                            {{ vehicle_brand|default:"—" }}
+                        </span>
+
+                    </div>
+
+                    <div class="flex justify-between gap-4">
+
+                        <span class="text-xs text-on-surface-variant">
+                            Model
+                        </span>
+
+                        <span class="text-sm font-semibold text-on-surface text-right">
+                            {{ vehicle_model|default:"—" }}
+                        </span>
+
+                    </div>
+
+                    <div class="flex justify-between gap-4">
+
+                        <span class="text-xs text-on-surface-variant">
+                            Color
+                        </span>
+
+                        <span class="text-sm font-semibold text-on-surface text-right">
+                            {{ vehicle_color|default:"—" }}
+                        </span>
+
+                    </div>
+
+                    <div class="flex justify-between gap-4">
+
+                        <span class="text-xs text-on-surface-variant">
+                            Year
+                        </span>
+
+                        <span class="text-sm font-semibold text-on-surface text-right">
+                            {{ vehicle_year|default:"—" }}
+                        </span>
+
+                    </div>
+
+                    <div class="flex justify-between gap-4">
+
+                        <span class="text-xs text-on-surface-variant">
+                            Capacity
+                        </span>
+
+                        <span class="text-sm font-semibold text-on-surface text-right">
+                            {{ vehicle_capacity|default:"—" }}
+                            {% if vehicle_capacity %}
+                            passengers
+                            {% endif %}
+                        </span>
+
+                    </div>
+
+                    <div class="flex justify-between gap-4">
+
+                        <span class="text-xs text-on-surface-variant">
+                            Vehicle Status
+                        </span>
+
+                        {% if vehicle_status == "active" %}
+
+                        <span class="text-sm font-bold text-green-400">
+                            Active
+                        </span>
+
+                        {% elif vehicle_status == "inactive" %}
+
+                        <span class="text-sm font-bold text-amber-400">
+                            Inactive
+                        </span>
+
+                        {% elif vehicle_status == "under_maintenance" %}
+
+                        <span class="text-sm font-bold text-red-400">
+                            Under Maintenance
+                        </span>
+
+                        {% else %}
+
+                        <span class="text-sm font-semibold text-on-surface">
+                            {{ vehicle_status|default:"—"|title }}
+                        </span>
+
+                        {% endif %}
+
+                    </div>
+
+                    <div class="flex justify-between gap-4">
+
+                        <span class="text-xs text-on-surface-variant">
+                            Vehicle ID
+                        </span>
+
+                        <span class="text-sm font-semibold text-primary">
+                            #{{ vehicle.id }}
+                        </span>
+
+                    </div>
+
+                    <div class="flex justify-between gap-4">
+
+                        <span class="text-xs text-on-surface-variant">
+                            RC Document
+                        </span>
+
+                        {% if rc_available %}
+
+                        <span class="inline-flex items-center gap-1 text-sm font-semibold text-green-400">
+
+                            <span class="material-symbols-outlined text-base">
+                                check_circle
+                            </span>
+
+                            Uploaded
+
+                        </span>
+
+                        {% else %}
+
+                        <span class="inline-flex items-center gap-1 text-sm font-semibold text-amber-400">
+
+                            <span class="material-symbols-outlined text-base">
+                                warning
+                            </span>
+
+                            Not Uploaded
+
+                        </span>
+
+                        {% endif %}
+
+                    </div>
+
+
+                    <div class="mt-4 p-4 rounded-lg bg-surface-container border border-outline-variant/10">
+
+                        <div class="flex items-center gap-3">
+
+                            <div class="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+
+                                <span class="material-symbols-outlined text-2xl">
+                                    directions_car
+                                </span>
+
+                            </div>
+
+                            <div>
+
+                                <p class="text-sm font-semibold text-on-surface">
+
+                                    {% if vehicle_brand or vehicle_model %}
+                                    {{ vehicle_brand|default:"" }} {{ vehicle_model|default:"" }}
+                                    {% else %}
+                                    Assigned Vehicle
+                                    {% endif %}
+
+                                </p>
+
+                                <p class="text-xs text-on-surface-variant mt-1">
+                                    {{ vehicle_number|default:"Vehicle number unavailable" }}
+                                </p>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+                {% else %}
+
+                <div class="py-8 text-center">
+
+                    <div class="w-12 h-12 mx-auto rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant">
+
+                        <span class="material-symbols-outlined">
+                            no_crash
+                        </span>
+
+                    </div>
+
+                    <p class="mt-4 text-sm font-semibold text-on-surface">
+                        No active vehicle
+                    </p>
+
+                    <p class="mt-1 text-xs text-on-surface-variant">
+                        This driver currently has no assigned vehicle.
+                    </p>
+
+                </div>
+
+                {% endif %}
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- DRIVER PERFORMANCE -->
+    <div>
+
+        <div class="mb-4">
+
+            <h2 class="font-headline text-xl font-bold text-on-surface">
+                Driver Performance
+            </h2>
+
+            <p class="text-xs text-on-surface-variant mt-1">
+                Overall trip and revenue statistics
+            </p>
+
+        </div>
+
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+
+
+            <!-- TOTAL -->
+            <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-5">
+
+                <div class="flex items-center justify-between">
+
+                    <div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+
+                        <span class="material-symbols-outlined">
+                            route
+                        </span>
+
+                    </div>
+
+                    <span class="text-[10px] uppercase tracking-wider text-on-surface-variant">
+                        Total
+                    </span>
+
+                </div>
+
+                <p class="text-2xl font-bold text-on-surface mt-4">
+                    {{ total_trips }}
+                </p>
+
+                <p class="text-xs text-on-surface-variant mt-1">
+                    Total Trips
+                </p>
+
+            </div>
+
+
+            <!-- COMPLETED -->
+            <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-5">
+
+                <div class="w-10 h-10 rounded-lg bg-green-500/10 flex items-center justify-center text-green-400">
+
+                    <span class="material-symbols-outlined">
+                        check_circle
+                    </span>
+
+                </div>
+
+                <p class="text-2xl font-bold text-green-400 mt-4">
+                    {{ completed_trips }}
+                </p>
+
+                <p class="text-xs text-on-surface-variant mt-1">
+                    Completed Trips
+                </p>
+
+            </div>
+
+
+            <!-- CANCELLED -->
+            <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-5">
+
+                <div class="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center text-red-400">
+
+                    <span class="material-symbols-outlined">
+                        cancel
+                    </span>
+
+                </div>
+
+                <p class="text-2xl font-bold text-red-400 mt-4">
+                    {{ cancelled_trips }}
+                </p>
+
+                <p class="text-xs text-on-surface-variant mt-1">
+                    Cancelled Trips
+                </p>
+
+            </div>
+
+
+            <!-- ACTIVE -->
+            <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-5">
+
+                <div class="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400">
+
+                    <span class="material-symbols-outlined">
+                        directions_car
+                    </span>
+
+                </div>
+
+                <p class="text-2xl font-bold text-blue-400 mt-4">
+                    {{ active_trips }}
+                </p>
+
+                <p class="text-xs text-on-surface-variant mt-1">
+                    Active Trips
+                </p>
+
+            </div>
+
+
+            <!-- RATING -->
+            <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-5">
+
+                <div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+
+                    <span class="material-symbols-outlined">
+                        star
+                    </span>
+
+                </div>
+
+                <p class="text-2xl font-bold text-primary mt-4">
+                    {{ rating }}
+                </p>
+
+                <p class="text-xs text-on-surface-variant mt-1">
+                    Driver Rating
+                </p>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- REVENUE + DISTANCE -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+
+        <!-- REVENUE -->
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-6">
+
+            <div class="flex items-center gap-4">
+
+                <div class="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
+
+                    <span class="material-symbols-outlined text-2xl">
+                        payments
+                    </span>
+
+                </div>
+
+                <div>
+
+                    <p class="text-xs uppercase tracking-wider text-on-surface-variant">
+                        Total Revenue
+                    </p>
+
+                    <p class="text-3xl font-headline font-extrabold text-primary mt-1">
+                        ₹{{ total_revenue|floatformat:2 }}
+                    </p>
+
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- DISTANCE -->
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-6">
+
+            <div class="flex items-center gap-4">
+
+                <div class="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
+
+                    <span class="material-symbols-outlined text-2xl">
+                        distance
+                    </span>
+
+                </div>
+
+                <div>
+
+                    <p class="text-xs uppercase tracking-wider text-on-surface-variant">
+                        Total Distance
+                    </p>
+
+                    <p class="text-3xl font-headline font-extrabold text-primary mt-1">
+
+                        {{ total_distance|floatformat:2 }}
+
+                        <span class="text-base font-medium text-on-surface-variant">
+                            km
+                        </span>
+
+                    </p>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- TRIP HISTORY -->
+    <section>
+
+        <div class="flex items-center justify-between mb-4">
+
+            <div>
+
+                <h2 class="font-headline text-xl font-bold text-on-surface">
+                    Trip History
+                </h2>
+
+                <p class="text-xs text-on-surface-variant mt-1">
+                    Recent trips completed or requested by this driver
+                </p>
+
+            </div>
+
+            {% if trips %}
+
+            <span class="text-xs bg-primary/10 text-primary px-3 py-1 rounded-full font-semibold">
+                {{ trips|length }} shown
+            </span>
+
+            {% endif %}
+
+        </div>
+
+
+        {% if trips %}
+
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl overflow-hidden">
+
+
+            <!-- TABLE HEADER -->
+            <div class="hidden md:grid grid-cols-6 gap-4 px-5 py-4 bg-surface-container border-b border-outline-variant/15">
+
+                <div class="text-[10px] uppercase tracking-wider text-on-surface-variant font-bold">
+                    Trip
+                </div>
+
+                <div class="text-[10px] uppercase tracking-wider text-on-surface-variant font-bold">
+                    Rider
+                </div>
+
+                <div class="text-[10px] uppercase tracking-wider text-on-surface-variant font-bold">
+                    Status
+                </div>
+
+                <div class="text-[10px] uppercase tracking-wider text-on-surface-variant font-bold">
+                    Fare
+                </div>
+
+                <div class="text-[10px] uppercase tracking-wider text-on-surface-variant font-bold">
+                    Distance
+                </div>
+
+                <div class="text-[10px] uppercase tracking-wider text-on-surface-variant font-bold">
+                    Requested
+                </div>
+
+            </div>
+
+
+            <!-- TABLE ROWS -->
+            {% for trip in trips %}
+
+            <div class="grid grid-cols-1 md:grid-cols-6 gap-3 md:gap-4 px-5 py-5 border-b border-outline-variant/10 last:border-b-0 hover:bg-surface-container-highest/40 transition-colors">
+
+
+                <!-- TRIP -->
+                <div>
+
+                    <p class="text-sm font-semibold text-primary">
+                        #{{ trip.id }}
+                    </p>
+
+                </div>
+
+
+                <!-- RIDER -->
+                <div>
+
+                    <p class="text-sm text-on-surface">
+
+                        {% if trip.user_id.full_name %}
+                        {{ trip.user_id.full_name }}
+
+                        {% elif trip.user_id.phone_number %}
+                        {{ trip.user_id.phone_number }}
+
+                        {% else %}
+                        —
+                        {% endif %}
+
+                    </p>
+
+                    <p class="md:hidden text-[10px] text-on-surface-variant mt-1">
+                        Rider
+                    </p>
+
+                </div>
+
+
+                <!-- STATUS -->
+                <div>
+
+                    {% if trip.status_id.status_code == "completed" %}
+
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-500/10 text-green-400 text-[10px] font-bold uppercase">
+
+                        <span class="w-1.5 h-1.5 rounded-full bg-green-400"></span>
+
+                        Completed
+
+                    </span>
+
+                    {% elif trip.status_id.status_code == "cancelled" %}
+
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-500/10 text-red-400 text-[10px] font-bold uppercase">
+
+                        <span class="w-1.5 h-1.5 rounded-full bg-red-400"></span>
+
+                        Cancelled
+
+                    </span>
+
+                    {% elif trip.status_id.status_code in "requested accepted reached in_progress" %}
+
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-400 text-[10px] font-bold uppercase">
+
+                        <span class="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+
+                        {{ trip.status_id.status_code|title }}
+
+                    </span>
+
+                    {% else %}
+
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 text-primary text-[10px] font-bold uppercase">
+
+                        {{ trip.status_id.status_code|default:"Unknown"|title }}
+
+                    </span>
+
+                    {% endif %}
+
+                </div>
+
+
+                <!-- FARE -->
+                <div>
+
+                    {% if trip.final_fare is not None %}
+
+                    <p class="text-sm font-semibold text-on-surface">
+                        ₹{{ trip.final_fare|floatformat:2 }}
+                    </p>
+
+                    {% elif trip.estimated_fare is not None %}
+
+                    <p class="text-sm font-semibold text-on-surface">
+                        ₹{{ trip.estimated_fare|floatformat:2 }}
+                    </p>
+
+                    {% else %}
+
+                    <p class="text-sm text-on-surface-variant">
+                        —
+                    </p>
+
+                    {% endif %}
+
+                    <p class="md:hidden text-[10px] text-on-surface-variant mt-1">
+                        Fare
+                    </p>
+
+                </div>
+
+
+                <!-- DISTANCE -->
+                <div>
+
+                    {% if trip.actual_distance_km is not None %}
+
+                    <p class="text-sm text-on-surface">
+                        {{ trip.actual_distance_km|floatformat:2 }} km
+                    </p>
+
+                    {% elif trip.estimated_distance_km is not None %}
+
+                    <p class="text-sm text-on-surface">
+                        {{ trip.estimated_distance_km|floatformat:2 }} km
+                    </p>
+
+                    {% else %}
+
+                    <p class="text-sm text-on-surface-variant">
+                        —
+                    </p>
+
+                    {% endif %}
+
+                    <p class="md:hidden text-[10px] text-on-surface-variant mt-1">
+                        Distance
+                    </p>
+
+                </div>
+
+
+                <!-- REQUESTED -->
+                <div>
+
+                    {% if trip.requested_at %}
+
+                    <p class="text-sm text-on-surface">
+                        {{ trip.requested_at|date:"d M Y" }}
+                    </p>
+
+                    <p class="text-xs text-on-surface-variant mt-0.5">
+                        {{ trip.requested_at|date:"h:i A" }}
+                    </p>
+
+                    {% else %}
+
+                    <p class="text-sm text-on-surface-variant">
+                        —
+                    </p>
+
+                    {% endif %}
+
+                    <p class="md:hidden text-[10px] text-on-surface-variant mt-1">
+                        Requested
+                    </p>
+
+                </div>
+
+            </div>
+
+            {% endfor %}
+
+        </div>
+
+
+        {% else %}
+
+        <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-12 text-center">
+
+            <div class="w-14 h-14 mx-auto rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant">
+
+                <span class="material-symbols-outlined text-2xl">
+                    route
+                </span>
+
+            </div>
+
+            <p class="mt-4 text-sm font-semibold text-on-surface">
+                No trips found
+            </p>
+
+            <p class="mt-1 text-xs text-on-surface-variant">
+                This driver does not have any trip history.
+            </p>
+
+        </div>
+
+        {% endif %}
+
+    </section>
+
+
+    <!-- DRIVER VERIFICATION -->
+    <div class="bg-surface-container-low border border-outline-variant/20 rounded-xl p-6">
+
+        <div class="flex items-center justify-between gap-4">
+
+            <div class="flex items-center gap-4">
+
+                <div class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
+
+                    <span class="material-symbols-outlined">
+                        verified_user
+                    </span>
+
+                </div>
+
+                <div>
+
+                    <p class="text-sm font-bold text-on-surface">
+                        Driver Verification
+                    </p>
+
+                    <p class="text-xs text-on-surface-variant mt-1">
+                        Current approval and document status
+                    </p>
+
+                </div>
+
+            </div>
+
+            <div class="text-right">
+
+                <p class="text-xs text-on-surface-variant">
+                    Documents
+                </p>
+
+                <p class="text-sm font-bold text-on-surface mt-1">
+                    {{ doc_status|title }}
+                </p>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}
+```

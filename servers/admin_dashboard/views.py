@@ -21,6 +21,7 @@ from django.contrib.admin.views.decorators import staff_member_required
 from servers.payments.models import Payment
 import json
 import logging
+logger = logging.getLogger(__name__)
 def admin_required(view_func):
     """
     Decorator for admin dashboard views.

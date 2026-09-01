@@ -29,12 +29,73 @@ data-only: insert a new RateCard with a future effective_from and the
 resolver will pick it up at that timestamp.
 """
 
+import json
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
 from servers.driver.models import VehicleType
+
+
+class PlatformSettings(models.Model):
+    """Runtime config stored in the database so operators can change it
+    without restarting the web process.
+
+    This avoids downtime caused by editing env vars and rolling a new app
+    container just to tweak business settings like the platform commission.
+    """
+
+    SETTING_TYPES = [
+        ('decimal', 'Decimal'),
+        ('integer', 'Integer'),
+        ('string', 'String'),
+        ('boolean', 'Boolean'),
+        ('json', 'JSON'),
+    ]
+
+    key = models.CharField(
+        max_length=256,
+        unique=True,
+        db_index=True,
+        help_text='Stable setting key, e.g. "PLATFORM_COMMISSION_PERCENT".',
+    )
+    value = models.TextField(help_text='Serialized value; typed by setting_type.')
+    setting_type = models.CharField(max_length=20, choices=SETTING_TYPES, default='string')
+    description = models.TextField(blank=True, default='')
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='platform_settings_updates',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = 'Platform Settings'
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return f'{self.key} = {self.value}'
+
+    def get_value(self):
+        if self.setting_type == 'decimal':
+            return Decimal(self.value)
+        if self.setting_type == 'integer':
+            return int(self.value)
+        if self.setting_type == 'boolean':
+            return self.value.lower() in {'true', '1', 'yes', 'y'}
+        if self.setting_type == 'json':
+            return json.loads(self.value)
+        return self.value
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        from django.core.cache import cache
+        cache.delete(f'platform_setting:{self.key}')
 
 
 class ServiceZone(models.Model):

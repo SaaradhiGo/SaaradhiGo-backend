@@ -34,6 +34,37 @@ def test_healthz_ok(api_client):
     assert 'version' in body
 
 
+@pytest.mark.django_db
+def test_platform_commission_uses_db_setting_without_restart():
+    from decimal import Decimal
+
+    from servers.pricing.models import PlatformSettings
+    from servers.pricing.services import commission_percent_for_trip
+
+    settings = __import__('django.conf').conf.settings
+    original = getattr(settings, 'PLATFORM_COMMISSION_PERCENT', Decimal('18'))
+    settings.PLATFORM_COMMISSION_PERCENT = Decimal('18')
+
+    PlatformSettings.objects.update_or_create(
+        key='PLATFORM_COMMISSION_PERCENT',
+        defaults={
+            'value': '24.50',
+            'setting_type': 'decimal',
+            'description': 'Runtime override for platform commission.',
+        },
+    )
+
+    class _DummyTrip:
+        requested_vehicle_type = None
+        requested_at = None
+        pickup_lat = 17.385
+        pickup_long = 78.486
+        zone = None
+
+    assert commission_percent_for_trip(_DummyTrip()) == Decimal('24.50')
+    settings.PLATFORM_COMMISSION_PERCENT = original
+
+
 # -------------------------------------------------------------------------
 # Service area (Hyderabad polygon)
 # -------------------------------------------------------------------------

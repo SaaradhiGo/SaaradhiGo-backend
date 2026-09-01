@@ -21,11 +21,13 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Optional, Tuple
 
+from django.conf import settings
+from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
 from shapely.geometry import Point, Polygon, shape as shapely_shape
 
-from servers.pricing.models import RateCard, ServiceZone
+from servers.pricing.models import PlatformSettings, RateCard, ServiceZone
 
 logger = logging.getLogger(__name__)
 
@@ -200,16 +202,40 @@ def rate_card_for_trip(at=None, trip=None):
     return get_active_rate_card(zone, vt, at=at or trip.requested_at)
 
 
+def get_platform_setting(key: str, default, *, cast=None, cache_ttl=300):
+    """Read a runtime setting from the database, with a Redis cache bustable on save."""
+    cache_key = f'platform_setting:{key}'
+    if cast is None:
+        cast = lambda value: value
+
+    cached = cache.get(cache_key)
+    if cached is not None:
+        try:
+            return cast(cached)
+        except (TypeError, ValueError, ArithmeticError):
+            pass
+
+    try:
+        setting = PlatformSettings.objects.filter(key=key).first()
+        if setting is None:
+            return default
+        value = setting.get_value()
+        cache.set(cache_key, value, timeout=cache_ttl)
+        return cast(value)
+    except Exception:  # noqa: BLE001
+        return default
+
+
 def commission_percent_for_trip(trip) -> Decimal:
     """Platform commission % for a trip.
 
     Order of authority:
       1. RateCard.commission_percent for the trip's zone + vehicle type,
          effective at the time the trip was requested
-      2. settings.PLATFORM_COMMISSION_PERCENT (last-resort fallback)
+      2. PlatformSettings.PLATFORM_COMMISSION_PERCENT (database-backed, restart-free)
+      3. settings.PLATFORM_COMMISSION_PERCENT fallback
+      4. default of 18%
     """
-    from django.conf import settings
-
     try:
         card = rate_card_for_trip(trip=trip)
         if card is not None and card.commission_percent is not None:
@@ -217,9 +243,14 @@ def commission_percent_for_trip(trip) -> Decimal:
     except Exception as exc:  # noqa: BLE001
         logger.warning('commission lookup failed for trip %s: %s', getattr(trip, 'id', '?'), exc)
 
-    fallback = getattr(settings, 'PLATFORM_COMMISSION_PERCENT', Decimal('18'))
+    setting_value = get_platform_setting(
+        'PLATFORM_COMMISSION_PERCENT',
+        getattr(settings, 'PLATFORM_COMMISSION_PERCENT', Decimal('18')),
+        cast=lambda v: Decimal(str(v)),
+        cache_ttl=60,
+    )
     try:
-        return Decimal(str(fallback))
+        return Decimal(str(setting_value))
     except (ValueError, ArithmeticError):
         return Decimal('18')
 

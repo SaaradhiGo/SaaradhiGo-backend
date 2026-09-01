@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from servers.pricing.models import RateCard, ServiceZone
+from servers.pricing.models import PlatformSettings, RateCard, ServiceZone
 
 
 @admin.register(ServiceZone)
@@ -42,4 +42,16 @@ class RateCardAdmin(admin.ModelAdmin):
         ('Commercials', {'fields': ('commission_percent', 'gst_percent')}),
         ('Validity window', {'fields': ('effective_from', 'effective_to')}),
         ('Audit', {'fields': ('created_at', 'updated_at')}),
+    )
+
+
+@admin.register(PlatformSettings)
+class PlatformSettingsAdmin(admin.ModelAdmin):
+    list_display = ('key', 'setting_type', 'value', 'updated_at', 'updated_by')
+    list_filter = ('setting_type',)
+    search_fields = ('key', 'description', 'value')
+    readonly_fields = ('created_at', 'updated_at')
+    fieldsets = (
+        ('Setting', {'fields': ('key', 'value', 'setting_type', 'description')}),
+        ('Audit', {'fields': ('updated_by', 'created_at', 'updated_at')}),
     )

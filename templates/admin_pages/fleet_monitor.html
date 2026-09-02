@@ -545,7 +545,7 @@ font-family: 'Manrope', sans-serif;
     }
 
     function updateDriverMarker(data) {
-        const driver_id = data.driver_id;
+        const driver_id = String(data.driver_id);
         const lat = parseFloat(data.lat);
         const lng = parseFloat(data.lng);
         const driverName = data.driver_name || `Driver ${driver_id}`;

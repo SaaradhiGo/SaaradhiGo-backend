@@ -78,9 +78,20 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                         </div>
                         <div class="flex flex-wrap gap-1.5 text-[9px] text-on-surface-variant font-medium">
                             {% if d.license_doc %}
-                            <span
-                                class="bg-surface-container-low px-1.5 py-0.5 rounded {% if d.license_doc %}text-emerald-400{% else %}text-rose-400{% endif %}">License</span>
-                            {% else %}
+                            <span class="bg-surface-container-low px-1.5 py-0.5 rounded text-emerald-400">License Front</span>
+                            {% endif %}
+                            {% if d.license_doc_back %}
+                            <span class="bg-surface-container-low px-1.5 py-0.5 rounded text-emerald-400">License Back</span>
+                            {% endif %}
+                            {% for vehicle in d.vehicle_set.all %}
+                                {% if vehicle.rc_doc %}
+                                <span class="bg-surface-container-low px-1.5 py-0.5 rounded text-emerald-400">RC</span>
+                                {% endif %}
+                                {% if vehicle.vehicle_pic %}
+                                <span class="bg-surface-container-low px-1.5 py-0.5 rounded text-emerald-400">Vehicle Photo</span>
+                                {% endif %}
+                            {% endfor %}
+                            {% if not d.license_doc and not d.license_doc_back and not d.vehicle_set.all %}
                             <span class="italic text-on-surface-variant/50">No documents</span>
                             {% endif %}
                         </div>
@@ -182,59 +193,94 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                 <div class="p-8 space-y-8">
                     <h4 class="font-label text-xs font-bold uppercase tracking-widest text-on-surface-variant">Uploaded
                         Documents</h4>
-                    {% if selected_driver.license_doc %}
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {% if selected_driver.license_doc %}
                         <div class="bg-surface-container rounded-xl p-4 space-y-4 border border-outline-variant/5">
                             <div class="flex justify-between items-center">
                                 <div class="flex items-center gap-3">
-                                        <span class="material-symbols-outlined text-primary">
-                                            badge
-                                        </span>
-                                        <span class="font-bold text-sm">{{ selected_driver.license_doc }}</span>
-                                    </div>
-                                    <span class="text-xs px-2.5 py-0.5 rounded-full font-semibold border
-                                        {% if selected_driver.doc_status == 'approved' %}border-emerald-500/20 bg-emerald-500/10 text-emerald-400
-                                        {% elif selected_driver.doc_status == 'rejected' %}border-rose-500/20 bg-rose-500/10 text-rose-400
-                                        {% else %}border-primary/20 bg-primary/10 text-primary{% endif %}">
-                                        {{ selected_driver.doc_status }}
-                                    </span>
+                                    <span class="material-symbols-outlined text-primary">badge</span>
+                                    <span class="font-bold text-sm">Driving License (Front)</span>
+                                </div>
+                                <span class="text-xs px-2.5 py-0.5 rounded-full font-semibold border
+                                    {% if selected_driver.doc_status == 'approved' %}border-emerald-500/20 bg-emerald-500/10 text-emerald-400
+                                    {% elif selected_driver.doc_status == 'rejected' %}border-rose-500/20 bg-rose-500/10 text-rose-400
+                                    {% else %}border-primary/20 bg-primary/10 text-primary{% endif %}">
+                                    {{ selected_driver.doc_status }}
+                                </span>
                             </div>
-
-                            <!-- Premium document visual representation -->
                             <div
                                 class="aspect-[16/10] bg-surface-container-highest rounded-lg flex flex-col items-center justify-center overflow-hidden border border-outline-variant/20 relative group p-4">
-                                {% if selected_driver.license_doc %}
-                                    <div class="flex flex-col items-center justify-center p-6">
-                                        <span class="material-symbols-outlined text-4xl text-on-surface-variant/40 mb-2">badge</span>
-                                        <a href="{{ selected_driver.license_doc.url }}" class="text-sm text-primary underline" target="_blank" rel="noopener">Open / Download document</a>
-                                    </div>
-                                {% else %}
-                                    <span class="material-symbols-outlined text-4xl text-on-surface-variant/40 mb-2">
-                                        badge
-                                    </span>
-                                    <span class="text-xs text-on-surface-variant/70">Document Image File</span>
-                                {% endif %}
+                                <span class="material-symbols-outlined text-4xl text-on-surface-variant/40 mb-2">badge</span>
+                                <a href="{{ selected_driver.license_doc.url }}" class="text-sm text-primary underline" target="_blank" rel="noopener">Open / Download document</a>
                             </div>
-
                             <div class="grid grid-cols-2 gap-4 text-[11px] border-t border-outline-variant/5 pt-3">
                                 <div>
                                     <p class="text-on-surface-variant">Uploaded At</p>
                                     <p class="font-semibold text-on-surface">{{ selected_driver.uploaded_timestamp|date:"d M Y H:i" }}</p>
                                 </div>
-                                <!-- <div>
-                                    <p class="text-on-surface-variant">Notes</p>
-                                    <p class="font-semibold text-on-surface">{% if doc.notes %}{{ doc.notes }}{% else
-                                        %}<span class="text-on-surface-variant/40 italic">None</span>{% endif %}</p>
-                                </div> -->
+                                <div>
+                                    <p class="text-on-surface-variant">Expiry</p>
+                                    <p class="font-semibold text-on-surface">{{ selected_driver.license_expiry|date:"d M Y"|default:"Not provided" }}</p>
+                                </div>
                             </div>
                         </div>
-                        {% else %}
-                        <div
-                            class="col-span-2 text-center p-12 bg-surface-container rounded-xl text-on-surface-variant text-sm italic">
-                            No documents uploaded for this driver.
+                        {% endif %}
+
+                        {% if selected_driver.license_doc_back %}
+                        <div class="bg-surface-container rounded-xl p-4 space-y-4 border border-outline-variant/5">
+                            <div class="flex items-center gap-3">
+                                <span class="material-symbols-outlined text-primary">badge</span>
+                                <span class="font-bold text-sm">Driving License (Back)</span>
+                            </div>
+                            <div class="aspect-[16/10] bg-surface-container-highest rounded-lg flex flex-col items-center justify-center overflow-hidden border border-outline-variant/20 p-4">
+                                <span class="material-symbols-outlined text-4xl text-on-surface-variant/40 mb-2">badge</span>
+                                <a href="{{ selected_driver.license_doc_back.url }}" class="text-sm text-primary underline" target="_blank" rel="noopener">Open / Download document</a>
+                            </div>
                         </div>
                         {% endif %}
+
+                        {% for vehicle in selected_driver.vehicle_set.all %}
+                        <div class="md:col-span-2 bg-surface-container rounded-xl p-4 space-y-4 border border-outline-variant/5">
+                            <div class="flex flex-wrap items-center justify-between gap-3">
+                                <div class="flex items-center gap-3">
+                                    <span class="material-symbols-outlined text-primary">directions_car</span>
+                                    <div>
+                                        <p class="font-bold text-sm">Vehicle {{ forloop.counter }}: {{ vehicle.vehicle_number }}</p>
+                                        <p class="text-xs text-on-surface-variant">{{ vehicle.brand }} {{ vehicle.model }}{% if vehicle.vehicle_type_id %} · {{ vehicle.vehicle_type_id.type }}{% endif %}</p>
+                                    </div>
+                                </div>
+                                <span class="text-xs px-2.5 py-0.5 rounded-full font-semibold border border-primary/20 bg-primary/10 text-primary">{{ vehicle.status }}</span>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                {% if vehicle.rc_doc %}
+                                <div class="aspect-[16/10] bg-surface-container-highest rounded-lg flex flex-col items-center justify-center overflow-hidden border border-outline-variant/20 p-4">
+                                    <span class="material-symbols-outlined text-4xl text-on-surface-variant/40 mb-2">description</span>
+                                    <p class="text-xs font-bold mb-1">Registration Certificate</p>
+                                    <a href="{{ vehicle.rc_doc.url }}" class="text-sm text-primary underline" target="_blank" rel="noopener">Open / Download</a>
+                                </div>
+                                {% endif %}
+                                {% if vehicle.vehicle_pic %}
+                                <div class="aspect-[16/10] bg-surface-container-highest rounded-lg overflow-hidden border border-outline-variant/20">
+                                    <img src="{{ vehicle.vehicle_pic.url }}" alt="Vehicle {{ vehicle.vehicle_number }}" class="w-full h-full object-cover">
+                                </div>
+                                {% endif %}
+                                <div class="text-xs space-y-2 p-3 border border-outline-variant/10 rounded-lg">
+                                    <p class="font-bold text-sm">Vehicle Details</p>
+                                    <p><span class="text-on-surface-variant">Registration:</span> {{ vehicle.vehicle_number }}</p>
+                                    <p><span class="text-on-surface-variant">Insurance:</span> {{ vehicle.insurance_expiry|date:"d M Y"|default:"Not provided" }}</p>
+                                    <p><span class="text-on-surface-variant">Permit:</span> {{ vehicle.permit_expiry|date:"d M Y"|default:"Not provided" }}</p>
+                                    <p><span class="text-on-surface-variant">Fitness:</span> {{ vehicle.fitness_expiry|date:"d M Y"|default:"Not provided" }}</p>
+                                    <p><span class="text-on-surface-variant">PUC:</span> {{ vehicle.puc_expiry|date:"d M Y"|default:"Not provided" }}</p>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
                     </div>
+                    {% if not selected_driver.license_doc and not selected_driver.license_doc_back and not selected_driver.vehicle_set.all %}
+                    <div class="text-center p-12 bg-surface-container rounded-xl text-on-surface-variant text-sm italic">
+                        No documents uploaded for this driver.
+                    </div>
+                    {% endif %}
                 </div>
             </div>
             {% else %}

@@ -4,6 +4,7 @@ from django.utils import timezone
 from django.contrib.auth import authenticate, login as auth_login, logout as auth_logout
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render,get_object_or_404
+from django.utils.dateparse import parse_datetime
 # from servers.driver.admin_utils import list_drivers_admin
 from servers.support.models import SupportTicket
 from django.core.paginator import Paginator
@@ -11,7 +12,7 @@ from django.db import models, transaction as db_transaction
 from django.db.models.functions import Coalesce
 from django.db.models import (Avg,Count, Q,Sum,F,Max,Value,DecimalField,)
 from servers.driver.models import Driver, WithdrawalRequest,VehicleType,Vehicle
-from servers.ride.models import FarePricing, Trip
+from servers.ride.models import FarePricing, Trip, PromoCode, PromoRedemption
 from servers.pricing.services import commission_percent_for_trip
 from servers.pricing.models import ServiceZone, RateCard
 from decimal import Decimal, InvalidOperation
@@ -19,6 +20,13 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_POST,require_http_methods
 from django.contrib.admin.views.decorators import staff_member_required
 from servers.payments.models import Payment
+from servers.rider.models import (
+    Rider, FavoritePlace, Wallet, WalletTransaction, Notification,
+    NotificationPreference,
+)
+from servers.ride.models import Receipt
+from servers.sos.models import SOSEvent, SOSEventUpdate
+from django.contrib.auth import get_user_model
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -1335,6 +1343,328 @@ def ride(request):
         'admin_pages/ride.html',
         context
     )
+
+@admin_required
+def riders(request: HttpRequest) -> HttpResponse:
+    """Rider operations page with account, ride, payment and safety history."""
+    User = get_user_model()
+    query = (request.GET.get("q") or "").strip()
+    selected_id = request.GET.get("rider")
+    action_message = None
+    action_error = None
+    rider_users = User.objects.filter(role="rider").select_related("rider")
+    if query:
+        rider_users = rider_users.filter(
+            Q(full_name__icontains=query)
+            | Q(phone_number__icontains=query)
+            | Q(email__icontains=query)
+        )
+    rider_users = rider_users.order_by("-created_at")
+    total_riders = User.objects.filter(role="rider").count()
+    flagged_riders = Rider.objects.filter(flagged_for_review=True).count()
+    active_riders = User.objects.filter(
+        role="rider", trips__status_id__status_code__in=[
+            "requested", "accepted", "reached", "in_progress"
+        ]
+    ).distinct().count()
+    today = timezone.localdate()
+    rides_today = Trip.objects.filter(
+        user_id__role="rider", requested_at__date=today
+    ).count()
+
+    selected_user = None
+    if selected_id:
+        selected_user = rider_users.filter(id=selected_id).first()
+    if selected_user is None:
+        selected_user = rider_users.first()
+
+    if request.method == "POST" and selected_user:
+        action = request.POST.get("action")
+        driver_id = request.POST.get("driver_id")
+        if action == "block_driver" and driver_id:
+            driver = Driver.objects.filter(id=driver_id).first()
+            if driver:
+                driver.status = "blocked"
+                driver.save(update_fields=["status"])
+                action_message = f"Driver #{driver.id} was blocked."
+            else:
+                action_error = "Driver could not be found."
+
+    trips = []
+    payments = []
+    receipts = []
+    wallet = None
+    wallet_transactions = []
+    sos_events = []
+    notifications = []
+    favorite_places = []
+    support_tickets = []
+    notification_preferences = None
+    active_trip = None
+    open_sos = 0
+    rider_trip_count = 0
+    completed_trip_count = 0
+    cancelled_trip_count = 0
+    latest_trip = None
+    if selected_user:
+        trip_queryset = Trip.objects.filter(user_id=selected_user).select_related(
+            "driver_id__user_id", "status_id", "vehicle_id"
+        ).order_by("-requested_at")
+        active_trip = trip_queryset.filter(
+            status_id__status_code__in=["requested", "accepted", "reached", "in_progress"]
+        ).first()
+        rider_trip_count = trip_queryset.count()
+        completed_trip_count = trip_queryset.filter(
+            status_id__status_code="completed"
+        ).count()
+        cancelled_trip_count = trip_queryset.filter(
+            status_id__status_code="cancelled"
+        ).count()
+        latest_trip = trip_queryset.first()
+        trips = trip_queryset[:25]
+        payments = Payment.objects.filter(user_id=selected_user).select_related(
+            "trip_id"
+        ).order_by("-created_at")[:15]
+        receipts = Receipt.objects.filter(user_id=selected_user).select_related(
+            "trip_id"
+        ).order_by("-issued_at")[:15]
+        wallet = Wallet.objects.filter(
+            user_id=selected_user, scope=Wallet.SCOPE_RIDER
+        ).first()
+        wallet_transactions = WalletTransaction.objects.filter(
+            user_id=selected_user
+        ).order_by("-created_at")[:15]
+        sos_events = SOSEvent.objects.filter(
+            user=selected_user
+        ).select_related("trip").order_by("-created_at")[:15]
+        open_sos = SOSEvent.objects.filter(user=selected_user, status="open").count()
+        notifications = Notification.objects.filter(
+            user_id=selected_user
+        ).order_by("-created_at")[:10]
+        favorite_places = FavoritePlace.objects.filter(
+            user_id=selected_user
+        ).order_by("id")
+        support_tickets = SupportTicket.objects.filter(
+            user_id=selected_user
+        ).select_related("trip_id").order_by("-created_at")[:10]
+        preferences = NotificationPreference.objects.filter(
+            user_id=selected_user
+        ).first()
+        if preferences:
+            notification_preferences = {
+                field: getattr(preferences, field)
+                for field in (
+                    "transactional", "ride_event", "payment", "payout",
+                    "sos", "kyc", "system", "marketing", "promo",
+                    "push_enabled", "email_enabled", "sms_enabled",
+                )
+            }
+
+    return render(request, "admin_pages/riders.html", {
+        "riders": rider_users[:100],
+        "selected_rider": selected_user,
+        "trips": trips,
+        "payments": payments,
+        "receipts": receipts,
+        "wallet": wallet,
+        "wallet_transactions": wallet_transactions,
+        "sos_events": sos_events,
+        "notifications": notifications,
+        "favorite_places": favorite_places,
+        "support_tickets": support_tickets,
+        "notification_preferences": notification_preferences,
+        "total_riders": total_riders,
+        "flagged_riders": flagged_riders,
+        "active_riders": active_riders,
+        "rides_today": rides_today,
+        "search": query,
+        "active_trip": active_trip,
+        "open_sos": open_sos,
+        "action_message": action_message,
+        "action_error": action_error,
+        "rider_trip_count": rider_trip_count,
+        "completed_trip_count": completed_trip_count,
+        "cancelled_trip_count": cancelled_trip_count,
+        "latest_trip": latest_trip,
+    })
+
+@admin_required
+@require_http_methods(["GET", "POST"])
+def promo_codes(request: HttpRequest) -> HttpResponse:
+    """Admin list and creation flow for rider promo campaigns."""
+    query = (request.GET.get("q") or "").strip()
+    status_filter = (request.GET.get("status") or "all").lower()
+
+    if request.method == "POST":
+        code = (request.POST.get("code") or "").strip()
+        description = (request.POST.get("description") or "").strip()
+        discount_type = (request.POST.get("discount_type") or "").strip()
+        discount_value = request.POST.get("discount_value")
+        max_discount_amount = request.POST.get("max_discount_amount")
+        min_fare = request.POST.get("min_fare")
+        zone_id = request.POST.get("zone_id")
+        valid_from_raw = request.POST.get("valid_from")
+        valid_to_raw = request.POST.get("valid_to")
+        max_total_redemptions = request.POST.get("max_total_redemptions")
+        max_per_user_redemptions = request.POST.get("max_per_user_redemptions")
+        is_active = request.POST.get("is_active") in {"on", "true", "True", "1"}
+
+        if not code:
+            return HttpResponse("Promo code is required.", status=400)
+        if discount_type not in {"percent", "flat"}:
+            return HttpResponse("Discount type is invalid.", status=400)
+
+        try:
+            discount_value_dec = Decimal(str(discount_value or "0"))
+            min_fare_dec = Decimal(str(min_fare or "0"))
+            max_discount_amount_dec = (
+                Decimal(str(max_discount_amount)) if max_discount_amount not in (None, "") else None
+            )
+        except InvalidOperation:
+            return HttpResponse("Discount or fare values must be numeric.", status=400)
+
+        valid_from = parse_datetime(valid_from_raw) if valid_from_raw else None
+        valid_to = parse_datetime(valid_to_raw) if valid_to_raw else None
+        if valid_from is None or valid_to is None:
+            return HttpResponse("Valid from and valid to are required.", status=400)
+        if valid_to <= valid_from:
+            return HttpResponse("Valid to must be after valid from.", status=400)
+
+        try:
+            max_total_redemptions_int = (
+                int(max_total_redemptions) if max_total_redemptions not in (None, "") else None
+            )
+            max_per_user_redemptions_int = (
+                int(max_per_user_redemptions) if max_per_user_redemptions not in (None, "") else 1
+            )
+        except (TypeError, ValueError):
+            return HttpResponse("Usage limit values must be integers.", status=400)
+
+        zone = None
+        if zone_id not in (None, "", "0"):
+            zone = ServiceZone.objects.filter(id=zone_id).first()
+            if zone is None:
+                return HttpResponse("Selected zone could not be found.", status=400)
+
+        if PromoCode.objects.filter(code__iexact=code).exists():
+            return HttpResponse("A promo code with that code already exists.", status=400)
+
+        PromoCode.objects.create(
+            code=code,
+            description=description,
+            discount_type=discount_type,
+            discount_value=discount_value_dec,
+            max_discount_amount=max_discount_amount_dec,
+            min_fare=min_fare_dec,
+            zone=zone,
+            valid_from=valid_from,
+            valid_to=valid_to,
+            max_total_redemptions=max_total_redemptions_int,
+            max_per_user_redemptions=max_per_user_redemptions_int,
+            is_active=is_active,
+        )
+        return redirect("promo_codes")
+
+    promos = PromoCode.objects.annotate(
+        used_count=Count("redemptions", distinct=True)
+    ).select_related("zone").order_by("-valid_from")
+    if query:
+        promos = promos.filter(Q(code__icontains=query) | Q(description__icontains=query))
+    now = timezone.now()
+    if status_filter == "active":
+        promos = promos.filter(is_active=True, valid_from__lte=now, valid_to__gt=now)
+    elif status_filter == "expired":
+        promos = promos.filter(valid_to__lte=now)
+    elif status_filter == "inactive":
+        promos = promos.filter(is_active=False)
+    return render(request, "admin_pages/promo_codes.html", {
+        "promos": promos[:100],
+        "search": query,
+        "status_filter": status_filter,
+        "now": now,
+        "total_promos": PromoCode.objects.count(),
+        "active_promos": PromoCode.objects.filter(
+            is_active=True, valid_from__lte=now, valid_to__gt=now
+        ).count(),
+        "total_redemptions": PromoRedemption.objects.count(),
+        "zones": ServiceZone.objects.filter(is_active=True).order_by("name"),
+    })
+
+@admin_required
+@require_http_methods(["GET", "POST"])
+def emergency_dashboard(request: HttpRequest) -> HttpResponse:
+    """Emergency queue with audited admin status transitions."""
+    status_filter = (request.GET.get("status") or "all").lower()
+    valid_statuses = {choice[0] for choice in SOSEvent.STATUS_CHOICES}
+    create_error = ""
+    if request.method == "POST":
+        if request.POST.get("action") == "create_sos":
+            initiated_by = request.POST.get("initiated_by")
+            event_type = request.POST.get("event_type") or "panic"
+            user_label = (request.POST.get("user_label") or "Admin reported user").strip()[:255]
+            note = (request.POST.get("note") or "").strip()[:10000]
+            trip_id = (request.POST.get("trip_id") or "").strip()
+            latitude = (request.POST.get("latitude") or "").strip() or None
+            longitude = (request.POST.get("longitude") or "").strip() or None
+            if initiated_by not in {"rider", "driver"}:
+                create_error = "Select whether the SOS was raised for a rider or driver."
+            elif event_type not in dict(SOSEvent.EVENT_TYPE_CHOICES):
+                create_error = "Select a valid emergency type."
+            else:
+                trip = None
+                try:
+                    if trip_id:
+                        trip = Trip.objects.get(id=trip_id)
+                    SOSEvent.objects.create(
+                        user=request.user,
+                        user_label=user_label,
+                        initiated_by=initiated_by,
+                        trip=trip,
+                        event_type=event_type,
+                        latitude=latitude,
+                        longitude=longitude,
+                        note=note,
+                        ip_address=(request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
+                                    or request.META.get("REMOTE_ADDR")),
+                        user_agent=(request.META.get("HTTP_USER_AGENT") or "")[:512],
+                    )
+                    return redirect("emergency_dashboard")
+                except (Trip.DoesNotExist, ValueError, TypeError):
+                    create_error = "Enter a valid trip ID, latitude, or longitude."
+        event_id = request.POST.get("event_id")
+        target = request.POST.get("status")
+        if not create_error and target in {"acknowledged", "resolved", "false_alarm"}:
+            event = SOSEvent.objects.filter(id=event_id).first()
+            if event and event.status != target:
+                event.status = target
+                event.save(update_fields=["status"])
+                SOSEventUpdate.objects.create(
+                    event=event,
+                    actor=request.user,
+                    actor_label=str(request.user),
+                    new_status=target,
+                    note=(request.POST.get("note") or "")[:10000],
+                )
+        status_filter = request.POST.get("filter_status") or "all"
+    events = SOSEvent.objects.select_related(
+        "user", "trip", "trip__driver_id", "trip__driver_id__user_id"
+    ).order_by("-created_at")
+    if status_filter in valid_statuses:
+        events = events.filter(status=status_filter)
+    events = list(events[:100])
+    for event in events:
+        if event.user_id is None:
+            event.user = request.user
+    return render(request, "admin_pages/emergency.html", {
+        "events": events,
+        "status_filter": status_filter,
+        "open_count": SOSEvent.objects.filter(status="open").count(),
+        "acknowledged_count": SOSEvent.objects.filter(status="acknowledged").count(),
+        "resolved_count": SOSEvent.objects.filter(status="resolved").count(),
+        "total_count": SOSEvent.objects.count(),
+        "create_error": create_error,
+        "event_type_choices": SOSEvent.EVENT_TYPE_CHOICES,
+    })
 @admin_required
 def transaction_dashboard(request):
     from decimal import Decimal

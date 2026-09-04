@@ -1,0 +1,86 @@
+{% extends "admin_pages/base.html" %}
+
+{% block title %}Promo Codes | SaaradhiGo Admin{% endblock %}
+
+{% block content %}
+<div class="p-6 lg:p-8 space-y-6">
+    <div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <div><p class="text-primary text-xs font-bold uppercase tracking-[0.24em]">Rider incentives</p><h1 class="font-headline text-3xl font-black mt-2">Promo Codes</h1><p class="text-sm text-on-surface-variant mt-1">Monitor campaign validity, limits and rider usage.</p></div>
+        <form method="get" class="flex flex-wrap gap-2 w-full md:w-auto"><input name="q" value="{{ search }}" placeholder="Search code or description" class="w-full md:w-64 bg-surface-container-high border border-outline-variant/30 rounded-lg px-4 py-3 text-sm focus:border-primary focus:ring-0"><select name="status" class="bg-surface-container-high border border-outline-variant/30 rounded-lg px-3 py-3 text-sm focus:border-primary focus:ring-0"><option value="all" {% if status_filter == 'all' %}selected{% endif %}>All statuses</option><option value="active" {% if status_filter == 'active' %}selected{% endif %}>Active</option><option value="expired" {% if status_filter == 'expired' %}selected{% endif %}>Expired</option><option value="inactive" {% if status_filter == 'inactive' %}selected{% endif %}>Inactive</option></select><button class="bg-primary text-on-primary font-bold rounded-lg px-5 py-3 text-sm">Filter</button></form>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3"><div class="bg-surface-container rounded-lg border border-outline-variant/15 p-4"><p class="text-xs text-on-surface-variant uppercase tracking-widest">Total codes</p><p class="text-2xl font-black text-primary mt-2">{{ total_promos }}</p></div><div class="bg-surface-container rounded-lg border border-outline-variant/15 p-4"><p class="text-xs text-on-surface-variant uppercase tracking-widest">Currently active</p><p class="text-2xl font-black mt-2">{{ active_promos }}</p></div><div class="bg-surface-container rounded-lg border border-outline-variant/15 p-4"><p class="text-xs text-on-surface-variant uppercase tracking-widest">Total redemptions</p><p class="text-2xl font-black mt-2">{{ total_redemptions }}</p></div></div>
+
+    <section class="bg-surface-container rounded-lg border border-outline-variant/15 p-5">
+        <div class="flex items-center justify-between mb-4">
+            <div>
+                <p class="text-xs uppercase tracking-[0.22em] text-on-surface-variant">Create promo</p>
+                <h2 class="font-headline text-xl font-bold mt-1">Add a new rider offer</h2>
+            </div>
+        </div>
+        <form method="post" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {% csrf_token %}
+            <div class="space-y-1">
+                <label class="text-xs uppercase tracking-widest text-on-surface-variant">Code</label>
+                <input name="code" required class="w-full bg-surface-container-high border border-outline-variant/30 rounded-lg px-4 py-3 text-sm focus:border-primary focus:ring-0" placeholder="WELCOME10">
+            </div>
+            <div class="space-y-1">
+                <label class="text-xs uppercase tracking-widest text-on-surface-variant">Description</label>
+                <input name="description" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-lg px-4 py-3 text-sm focus:border-primary focus:ring-0" placeholder="New rider welcome offer">
+            </div>
+            <div class="space-y-1">
+                <label class="text-xs uppercase tracking-widest text-on-surface-variant">Discount type</label>
+                <select name="discount_type" required class="w-full bg-surface-container-high border border-outline-variant/30 rounded-lg px-4 py-3 text-sm focus:border-primary focus:ring-0">
+                    <option value="percent">Percentage off</option>
+                    <option value="flat">Flat amount off</option>
+                </select>
+            </div>
+            <div class="space-y-1">
+                <label class="text-xs uppercase tracking-widest text-on-surface-variant">Discount value</label>
+                <input name="discount_value" required type="number" step="0.01" min="0" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-lg px-4 py-3 text-sm focus:border-primary focus:ring-0" value="10">
+            </div>
+            <div class="space-y-1">
+                <label class="text-xs uppercase tracking-widest text-on-surface-variant">Max discount amount</label>
+                <input name="max_discount_amount" type="number" step="0.01" min="0" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-lg px-4 py-3 text-sm focus:border-primary focus:ring-0" placeholder="50.00">
+            </div>
+            <div class="space-y-1">
+                <label class="text-xs uppercase tracking-widest text-on-surface-variant">Minimum fare</label>
+                <input name="min_fare" type="number" step="0.01" min="0" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-lg px-4 py-3 text-sm focus:border-primary focus:ring-0" value="0">
+            </div>
+            <div class="space-y-1">
+                <label class="text-xs uppercase tracking-widest text-on-surface-variant">Valid from</label>
+                <input name="valid_from" type="datetime-local" required class="w-full bg-surface-container-high border border-outline-variant/30 rounded-lg px-4 py-3 text-sm focus:border-primary focus:ring-0">
+            </div>
+            <div class="space-y-1">
+                <label class="text-xs uppercase tracking-widest text-on-surface-variant">Valid to</label>
+                <input name="valid_to" type="datetime-local" required class="w-full bg-surface-container-high border border-outline-variant/30 rounded-lg px-4 py-3 text-sm focus:border-primary focus:ring-0">
+            </div>
+            <div class="space-y-1">
+                <label class="text-xs uppercase tracking-widest text-on-surface-variant">Zone</label>
+                <select name="zone_id" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-lg px-4 py-3 text-sm focus:border-primary focus:ring-0">
+                    <option value="">All zones</option>
+                    {% for zone in zones %}
+                        <option value="{{ zone.id }}">{{ zone.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="space-y-1">
+                <label class="text-xs uppercase tracking-widest text-on-surface-variant">Per rider limit</label>
+                <input name="max_per_user_redemptions" type="number" min="1" value="1" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-lg px-4 py-3 text-sm focus:border-primary focus:ring-0">
+            </div>
+            <div class="space-y-1">
+                <label class="text-xs uppercase tracking-widest text-on-surface-variant">Total redemption cap</label>
+                <input name="max_total_redemptions" type="number" min="1" class="w-full bg-surface-container-high border border-outline-variant/30 rounded-lg px-4 py-3 text-sm focus:border-primary focus:ring-0" placeholder="100">
+            </div>
+            <div class="md:col-span-2 flex items-center justify-between gap-3 pt-2">
+                <label class="inline-flex items-center gap-2 text-sm text-on-surface-variant">
+                    <input type="checkbox" name="is_active" checked class="rounded border-outline-variant text-primary focus:ring-primary">
+                    Active immediately
+                </label>
+                <button class="bg-primary text-on-primary font-bold rounded-lg px-5 py-3 text-sm">Create promo code</button>
+            </div>
+        </form>
+    </section>
+
+    <section class="bg-surface-container rounded-lg border border-outline-variant/15 overflow-hidden"><div class="overflow-x-auto"><table class="w-full text-left text-sm"><thead class="text-[10px] uppercase tracking-widest text-on-surface-variant"><tr><th class="p-4">Code</th><th class="p-4">Discount</th><th class="p-4">Validity</th><th class="p-4">Scope</th><th class="p-4">Usage</th><th class="p-4">Status</th></tr></thead><tbody class="divide-y divide-outline-variant/10">{% for promo in promos %}<tr class="hover:bg-surface-container-high"><td class="p-4"><p class="font-black text-primary tracking-wider">{{ promo.code }}</p><p class="text-xs text-on-surface-variant mt-1">{{ promo.description|default:"No description" }}</p></td><td class="p-4 font-bold">{% if promo.discount_type == "percent" %}{{ promo.discount_value }}%{% else %}₹{{ promo.discount_value }}{% endif %}{% if promo.max_discount_amount %}<span class="block text-[11px] text-on-surface-variant">Cap ₹{{ promo.max_discount_amount }}</span>{% endif %}<span class="block text-[11px] text-on-surface-variant">Min fare ₹{{ promo.min_fare }}</span></td><td class="p-4 text-xs">{{ promo.valid_from|date:"d M Y H:i" }}<br><span class="text-on-surface-variant">to {{ promo.valid_to|date:"d M Y H:i" }}</span></td><td class="p-4 text-xs">{% if promo.zone %}{{ promo.zone.name }}{% else %}All zones{% endif %}</td><td class="p-4">{{ promo.used_count }}{% if promo.max_total_redemptions %}<span class="text-xs text-on-surface-variant"> / {{ promo.max_total_redemptions }}</span>{% endif %}</td><td class="p-4 text-xs font-bold">{% if not promo.is_active %}<span class="text-on-surface-variant">Inactive</span>{% elif promo.valid_to <= now %}<span class="text-error">Expired</span>{% else %}<span class="text-primary">Active</span>{% endif %}</td></tr>{% empty %}<tr><td colspan="6" class="p-10 text-center text-on-surface-variant">No promo codes found.</td></tr>{% endfor %}</tbody></table></div></section>
+</div>
+{% endblock %}

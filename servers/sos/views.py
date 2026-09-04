@@ -18,6 +18,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
+from django.db.models import Q
 
 from base.utils import success_response, error_response
 from base.permissions import IsAdmin
@@ -56,23 +57,41 @@ def raise_sos(request):
         lat, lng:   decimal   optional — caller's coords
         accuracy_m: float     optional — GPS accuracy
         note:       string    optional — free-text
-        initiated_by: string  rider/driver (default: rider)
+        initiated_by: string  ignored; derived from the authenticated user's role
     """
     from servers.ride.models import Trip
 
     data = request.data if hasattr(request, 'data') else {}
     event_type = (data.get('event_type') or 'panic')[:32]
-    initiated_by = (data.get('initiated_by') or 'rider')[:10]
+    initiated_by = getattr(request.user, 'role', '')
     if initiated_by not in ('rider', 'driver'):
-        initiated_by = 'rider'
+        return error_response(
+            code='INVALID_ROLE',
+            message='Only riders and drivers can raise SOS events',
+            field='role',
+            issue=f'Authenticated user role={initiated_by!r}',
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     trip = None
     trip_id = data.get('trip_id')
     if trip_id:
         try:
-            trip = Trip.objects.get(id=trip_id)
-        except Trip.DoesNotExist:
+            trip = Trip.objects.filter(
+                Q(user_id=request.user) |
+                Q(driver_id__user_id=request.user),
+                id=trip_id,
+            ).first()
+        except (TypeError, ValueError):
             trip = None
+        if trip is None:
+            return error_response(
+                code='TRIP_NOT_FOUND',
+                message='Trip not found for the authenticated user',
+                field='trip_id',
+                issue=f'No trip {trip_id!r} belongs to user {request.user.id}',
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
     try:
         with transaction.atomic():

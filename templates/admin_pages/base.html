@@ -281,6 +281,27 @@
 
 
             <!-- RIDE -->
+            <a href="{% url 'promo_codes' %}" class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'promo_codes' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}">
+                <span class="material-symbols-outlined w-6 text-center">local_offer</span>
+                <span class="font-label text-sm">Promo Codes</span>
+            </a>
+
+            <!-- EMERGENCY -->
+            <a href="{% url 'emergency_dashboard' %}" class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 {% if request.resolver_match.url_name == 'emergency_dashboard' %}text-error bg-[#201f1f] font-bold border-l-2 border-error pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}">
+                <span class="material-symbols-outlined w-6 text-center">emergency</span>
+                <span class="font-label text-sm">SOS / Emergency</span>
+            </a>
+
+            <!-- RIDE -->
+            <a
+                href="{% url 'riders' %}"
+                class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
+                {% if request.resolver_match.url_name == 'riders' %}text-primary bg-[#201f1f] font-bold border-l-2 border-primary pl-3{% else %}text-[#e5e2e1]/60 hover:text-[#e5e2e1] hover:bg-[#201f1f]{% endif %}">
+                <span class="material-symbols-outlined w-6 text-center">group</span>
+                <span class="font-label text-sm">Riders</span>
+            </a>
+
+            <!-- RIDE -->
             <a
                 class="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200
                 {% if request.resolver_match.url_name == 'ride' %}

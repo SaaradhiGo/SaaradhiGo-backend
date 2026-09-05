@@ -219,7 +219,7 @@ def test_quote_fare_uses_rate_card_when_zone_known():
         distance_km=Decimal('10'), duration_min=Decimal('20'),
         vehicle_type='hatchback',
         pickup_lat=HYD_CENTRE_LAT, pickup_lon=HYD_CENTRE_LON,
-        at=timezone.now(),
+        at=timezone.now().replace(hour=12, minute=0, second=0, microsecond=0),
     )
     assert fare['source'] == 'db'
     assert fare['zone_code'] == 'IN-TG-HYD'

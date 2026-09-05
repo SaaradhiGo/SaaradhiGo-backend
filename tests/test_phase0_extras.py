@@ -392,7 +392,7 @@ def test_quote_fare_in_vja_uses_local_rate(auth_client_rider):
         distance_km=Decimal('5'), duration_min=Decimal('10'),
         vehicle_type='auto',
         pickup_lat=16.51, pickup_lon=80.63,
-        at=timezone.now(),
+        at=timezone.now().replace(hour=12, minute=0, second=0, microsecond=0),
     )
     assert fare['source'] == 'db'
     assert fare['zone_code'] == 'IN-AP-VJA'

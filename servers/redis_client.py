@@ -732,6 +732,7 @@ def get_all_active_drivers():
         # legacy `drivers:geo` key, which nothing writes to any more — the
         # ops live map would have shown an empty city.
         result = []
+        seen_driver_ids = set()
         for key in redis_client.scan_iter(match=f'{GEO_KEY_PREFIX}*', count=100):
             members = redis_client.zrange(key, 0, -1)
             if not members:
@@ -744,8 +745,14 @@ def get_all_active_drivers():
                     # member format: driver:{driver_id}:{vehicle_type}
                     parts = member.split(':')
                     if len(parts) >= 3:
+                        driver_id = parts[1]
+                        if driver_id in seen_driver_ids:
+                            continue
+                        if not redis_client.exists(f'{HEARTBEAT_PREFIX}{driver_id}'):
+                            continue
+                        seen_driver_ids.add(driver_id)
                         result.append({
-                            'driver_id': parts[1],
+                                'driver_id': driver_id,
                             'vehicle_type': parts[2],
                             'lng': pos[0],
                             'lat': pos[1],

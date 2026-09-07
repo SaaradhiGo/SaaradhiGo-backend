@@ -1,0 +1,1486 @@
+{% extends "admin_pages/base.html" %}
+{% comment %}
+
+{% block title %}Riders | SaaradhiGo{% endblock %}
+
+{% block content %}
+<div class="space-y-6 p-8">
+    <div>
+        <h1 class="font-headline text-3xl font-extrabold text-on-surface">Riders</h1>
+        <p class="mt-1 text-sm text-on-surface-variant">Search riders and open their complete profile.</p>
+    </div>
+
+    <form method="get" class="flex max-w-3xl gap-3">
+        <input name="q" value="{{ search|default:'' }}" placeholder="Search by name, phone, or email" class="min-w-0 flex-1 rounded-lg bg-surface-container-highest px-4 py-3 text-sm text-on-surface outline-none ring-1 ring-outline-variant/40 focus:ring-primary">
+        <button type="submit" class="rounded-lg bg-primary px-5 py-3 text-sm font-bold text-on-primary">Search</button>
+    </form>
+
+    <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div class="rounded-lg bg-surface-container p-4"><b class="text-2xl text-primary">{{ total_riders|default:0 }}</b><p class="text-xs text-on-surface-variant">Total riders</p></div>
+        <div class="rounded-lg bg-surface-container p-4"><b class="text-2xl text-primary">{{ active_riders|default:0 }}</b><p class="text-xs text-on-surface-variant">Active riders</p></div>
+        <div class="rounded-lg bg-surface-container p-4"><b class="text-2xl text-primary">{{ flagged_riders|default:0 }}</b><p class="text-xs text-on-surface-variant">Flagged</p></div>
+        <div class="rounded-lg bg-surface-container p-4"><b class="text-2xl text-primary">{{ rides_today|default:0 }}</b><p class="text-xs text-on-surface-variant">Rides today</p></div>
+    </div>
+
+    <div class="overflow-x-auto rounded-lg bg-surface-container">
+        <table class="w-full min-w-[680px] text-left text-sm">
+            <thead class="border-b border-outline-variant/30 text-xs uppercase text-on-surface-variant"><tr><th class="px-5 py-4">Rider</th><th class="px-5 py-4">Phone</th><th class="px-5 py-4">Email</th><th class="px-5 py-4">Status</th><th class="px-5 py-4">Joined</th></tr></thead>
+            <tbody class="divide-y divide-outline-variant/20">
+                {% for rider in riders %}
+                <tr class="hover:bg-surface-container-high">
+                    <td class="px-5 py-4 font-semibold"><a class="text-primary hover:underline" href="?rider={{ rider.id }}&page={{ page_obj.number }}{% if search %}&q={{ search|urlencode }}{% endif %}">{{ rider.full_name|default:rider.phone_number }}</a></td>
+                    <td class="px-5 py-4">{{ rider.phone_number|default:'-' }}</td><td class="px-5 py-4">{{ rider.email|default:'-' }}</td>
+                    <td class="px-5 py-4">{% if rider.is_active %}<span class="text-emerald-300">Active</span>{% else %}<span class="text-error">Inactive</span>{% endif %}</td>
+                    <td class="px-5 py-4">{{ rider.created_at|date:'d M Y'|default:'-' }}</td>
+                </tr>
+                {% empty %}<tr><td colspan="5" class="px-5 py-8 text-center text-on-surface-variant">No riders found.</td></tr>{% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if paginator.num_pages > 1 %}
+    <div class="flex items-center justify-between text-sm"><span class="text-on-surface-variant">Page {{ page_obj.number }} of {{ paginator.num_pages }}</span><div class="flex gap-2">
+        {% if page_obj.has_previous %}<a class="rounded-lg border border-outline-variant px-4 py-2 hover:border-primary" href="?page={{ page_obj.previous_page_number }}{% if search %}&q={{ search|urlencode }}{% endif %}">Previous</a>{% endif %}
+        {% if page_obj.has_next %}<a class="rounded-lg border border-outline-variant px-4 py-2 hover:border-primary" href="?page={{ page_obj.next_page_number }}{% if search %}&q={{ search|urlencode }}{% endif %}">Next</a>{% endif %}
+    </div></div>
+    {% endif %}
+
+    {% if selected_rider %}
+    <section class="rounded-lg bg-surface-container p-6" aria-labelledby="rider-profile">
+        <p class="text-xs uppercase tracking-widest text-primary">Complete profile</p>
+        <h2 id="rider-profile" class="mt-1 text-2xl font-bold">{{ selected_rider.full_name|default:selected_rider.phone_number }}</h2>
+        <dl class="mt-6 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <div><dt class="text-xs text-on-surface-variant">Phone</dt><dd>{{ selected_rider.phone_number|default:'-' }}</dd></div><div><dt class="text-xs text-on-surface-variant">Email</dt><dd>{{ selected_rider.email|default:'-' }}</dd></div>
+            <div><dt class="text-xs text-on-surface-variant">Gender</dt><dd>{{ selected_rider.get_gender_display|default:'-' }}</dd></div><div><dt class="text-xs text-on-surface-variant">Date of birth</dt><dd>{{ selected_rider.dob|date:'d M Y'|default:'-' }}</dd></div>
+            <div class="sm:col-span-2"><dt class="text-xs text-on-surface-variant">Address</dt><dd>{{ selected_rider.house_no|default:'' }} {{ selected_rider.street|default:'' }}{% if selected_rider.city %}, {{ selected_rider.city }}{% endif %}{% if selected_rider.zip_code %} - {{ selected_rider.zip_code }}{% endif %}</dd></div>
+            <div><dt class="text-xs text-on-surface-variant">Emergency contact</dt><dd>{{ selected_rider.emergency_contact|default:'-' }}</dd></div><div><dt class="text-xs text-on-surface-variant">Account</dt><dd>{% if selected_rider.is_active %}Active{% else %}Inactive{% endif %}</dd></div>
+        </dl>
+        <div class="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-5"><div class="rounded-lg bg-surface-container-high p-3"><b class="text-xl text-primary">{{ rider_trip_count }}</b><p class="text-xs text-on-surface-variant">Total trips</p></div><div class="rounded-lg bg-surface-container-high p-3"><b class="text-xl text-primary">{{ completed_trip_count }}</b><p class="text-xs text-on-surface-variant">Completed</p></div><div class="rounded-lg bg-surface-container-high p-3"><b class="text-xl text-primary">{{ cancelled_trip_count }}</b><p class="text-xs text-on-surface-variant">Cancelled</p></div><div class="rounded-lg bg-surface-container-high p-3"><b class="text-xl text-primary">{{ selected_rider.rider.rating|default:'-' }}</b><p class="text-xs text-on-surface-variant">Rating</p></div><div class="rounded-lg bg-surface-container-high p-3"><b class="text-xl text-primary">{{ wallet.balance|default:'0.00' }}</b><p class="text-xs text-on-surface-variant">Wallet</p></div></div>
+        <div class="mt-6 grid gap-6 text-sm lg:grid-cols-2"><div><h3 class="mb-2 font-bold">Recent trips</h3>{% for trip in trips|slice:':5' %}<div class="flex justify-between border-b border-outline-variant/20 py-2"><span>#{{ trip.id }}</span><span>{{ trip.status_id.status_code|default:'-' }}</span></div>{% empty %}<p class="text-on-surface-variant">No trips found.</p>{% endfor %}</div><div><h3 class="mb-2 font-bold">Wallet transactions</h3>{% for transaction in wallet_transactions|slice:':5' %}<div class="flex justify-between border-b border-outline-variant/20 py-2"><span>{{ transaction.txn_type|title }}</span><span>{{ transaction.amount }}</span></div>{% empty %}<p class="text-on-surface-variant">No transactions found.</p>{% endfor %}</div><div><h3 class="mb-2 font-bold">Safety events</h3>{% for event in sos_events|slice:':5' %}<div class="flex justify-between border-b border-outline-variant/20 py-2"><span>{{ event.created_at|date:'d M Y' }}</span><span>{{ event.status|title }}</span></div>{% empty %}<p class="text-on-surface-variant">No SOS events found.</p>{% endfor %}</div><div><h3 class="mb-2 font-bold">Support tickets</h3>{% for ticket in support_tickets|slice:':5' %}<div class="flex justify-between border-b border-outline-variant/20 py-2"><span>#{{ ticket.id }}</span><span>{{ ticket.status|default:'-'|title }}</span></div>{% empty %}<p class="text-on-surface-variant">No support tickets found.</p>{% endfor %}</div></div>
+    </section>
+    {% endif %}
+</div>
+{% endblock %}
+{% endcomment %}
+
+{% block title %}
+Rider Operations
+{% endblock %}
+
+{% block extra_css %}
+.riders-page {
+    background: #131313;
+    color: #e5e2e1;
+}
+.riders-page .bg-white { background: #201f1f !important; }
+.riders-page .bg-gray-50 { background: #131313 !important; }
+.riders-page .bg-gray-100 { background: #2a2a2a !important; }
+.riders-page .bg-blue-50 { background: rgba(242, 202, 80, 0.12) !important; }
+.riders-page .bg-blue-100 { background: rgba(242, 202, 80, 0.16) !important; }
+.riders-page .bg-blue-600 { background: #f2ca50 !important; }
+.riders-page .hover\\:bg-blue-700:hover { background: #d4af37 !important; }
+.riders-page .hover\\:bg-gray-50:hover { background: #2a2a2a !important; }
+.riders-page .text-gray-900 { color: #e5e2e1 !important; }
+.riders-page .text-gray-700 { color: #e5e2e1 !important; }
+.riders-page .text-gray-600 { color: #d0c5af !important; }
+.riders-page .text-gray-500 { color: #d0c5af !important; }
+.riders-page .text-gray-400 { color: #99907c !important; }
+.riders-page .text-blue-600,
+.riders-page .text-blue-700 { color: #f2ca50 !important; }
+.riders-page .text-white { color: #3c2f00 !important; }
+.riders-page .border-blue-600 { border-color: #f2ca50 !important; }
+.riders-page input { background: #2a2a2a; color: #e5e2e1; border-color: #4d4635; }
+.riders-page input::placeholder { color: #99907c; }
+.riders-page .border-green-200 { border-color: rgba(52, 211, 153, 0.25); }
+.riders-page .bg-green-50 { background: rgba(52, 211, 153, 0.08); }
+.riders-page .text-green-700 { color: #6ee7b7; }
+.riders-page .border-red-200 { border-color: rgba(251, 113, 133, 0.25); }
+.riders-page .bg-red-50 { background: rgba(251, 113, 133, 0.08); }
+.riders-page .text-red-700 { color: #fda4af; }
+{% endblock %}
+
+{% block content %}
+
+<div class="riders-page min-h-screen p-6">
+
+    <!-- ===================================================== -->
+    <!-- HEADER -->
+    <!-- ===================================================== -->
+
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between mb-6">
+
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">
+                Rider Operations
+            </h1>
+
+            <p class="text-sm text-gray-500 mt-1">
+                Manage riders, rides, payments, wallet and safety history.
+            </p>
+        </div>
+
+    </div>
+
+
+    <!-- ===================================================== -->
+    <!-- MESSAGES -->
+    <!-- ===================================================== -->
+
+    {% if action_message %}
+    <div class="mb-5 rounded-lg bg-green-50 border border-green-200 p-4 text-green-700">
+        {{ action_message }}
+    </div>
+    {% endif %}
+
+    {% if action_error %}
+    <div class="mb-5 rounded-lg bg-red-50 border border-red-200 p-4 text-red-700">
+        {{ action_error }}
+    </div>
+    {% endif %}
+
+
+    <!-- ===================================================== -->
+    <!-- STATISTICS -->
+    <!-- ===================================================== -->
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-6">
+
+        <div class="bg-white rounded-xl shadow-sm border p-5">
+            <p class="text-sm text-gray-500">
+                Total Riders
+            </p>
+
+            <h2 class="text-3xl font-bold mt-2">
+                {{ total_riders }}
+            </h2>
+        </div>
+
+
+        <div class="bg-white rounded-xl shadow-sm border p-5">
+            <p class="text-sm text-gray-500">
+                Active Riders
+            </p>
+
+            <h2 class="text-3xl font-bold mt-2">
+                {{ active_riders }}
+            </h2>
+        </div>
+
+
+        <div class="bg-white rounded-xl shadow-sm border p-5">
+            <p class="text-sm text-gray-500">
+                Flagged Riders
+            </p>
+
+            <h2 class="text-3xl font-bold mt-2">
+                {{ flagged_riders }}
+            </h2>
+        </div>
+
+
+        <div class="bg-white rounded-xl shadow-sm border p-5">
+            <p class="text-sm text-gray-500">
+                Rides Today
+            </p>
+
+            <h2 class="text-3xl font-bold mt-2">
+                {{ rides_today }}
+            </h2>
+        </div>
+
+    </div>
+
+
+    <!-- ===================================================== -->
+    <!-- SEARCH -->
+    <!-- ===================================================== -->
+
+    <div class="bg-white rounded-xl shadow-sm border p-5 mb-6">
+
+        <form method="GET"
+              action="{% url 'riders' %}"
+              class="flex flex-col md:flex-row gap-3">
+
+            <div class="flex-1">
+
+                <input
+                    type="text"
+                    name="q"
+                    value="{{ search }}"
+                    placeholder="Search rider by name, phone or email..."
+                    class="w-full px-4 py-3 border rounded-lg
+                           focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+
+            </div>
+
+            <button
+                type="submit"
+                class="px-6 py-3 bg-blue-600 text-white rounded-lg
+                       hover:bg-blue-700">
+
+                Search
+
+            </button>
+
+            {% if search %}
+
+            <a
+                href="{% url 'riders' %}"
+                class="px-6 py-3 bg-gray-100 text-gray-700
+                       rounded-lg hover:bg-gray-200 text-center">
+
+                Clear
+
+            </a>
+
+            {% endif %}
+
+        </form>
+
+    </div>
+
+
+    <!-- ===================================================== -->
+    <!-- MAIN GRID -->
+    <!-- ===================================================== -->
+
+    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+
+
+        <!-- ================================================= -->
+        <!-- RIDER LIST -->
+        <!-- ================================================= -->
+
+        <div class="xl:col-span-1">
+
+            <div class="bg-white rounded-xl shadow-sm border overflow-hidden">
+
+                <div class="px-5 py-4 border-b">
+
+                    <h2 class="font-semibold text-gray-900">
+                        Riders
+                    </h2>
+
+                    <p class="text-xs text-gray-500 mt-1">
+                        {{ page_obj.paginator.count }} rider{{ page_obj.paginator.count|pluralize }}
+                    </p>
+
+                </div>
+
+
+                <div class="divide-y">
+
+                    {% for rider in riders %}
+
+                    <div
+                        class="
+                        p-4
+                        hover:bg-gray-50
+                        {% if selected_rider.id == rider.id %}
+                        bg-blue-50 border-l-4 border-blue-600
+                        {% endif %}
+                        "
+                    >
+
+                        <div class="flex items-center justify-between gap-3">
+
+                            <div class="min-w-0">
+
+                                <h3 class="font-semibold text-gray-900 truncate">
+
+                                    {% if rider.full_name %}
+                                        {{ rider.full_name }}
+                                    {% else %}
+                                        Rider #{{ rider.id }}
+                                    {% endif %}
+
+                                </h3>
+
+                                <p class="text-sm text-gray-500 truncate">
+                                    {{ rider.phone_number|default:"No phone" }}
+                                </p>
+
+                                <p class="text-xs text-gray-400 truncate">
+                                    {{ rider.email|default:"No email" }}
+                                </p>
+
+                            </div>
+
+
+                            <!-- VIEW PROFILE -->
+
+                            <a
+                                href="?rider={{ rider.id }}{% if search %}&q={{ search|urlencode }}{% endif %}"
+                                class="
+                                flex-shrink-0
+                                px-3 py-2
+                                text-sm
+                                bg-blue-600
+                                text-white
+                                rounded-lg
+                                hover:bg-blue-700
+                                "
+                            >
+                                View
+                            </a>
+
+                        </div>
+
+                    </div>
+
+                    {% empty %}
+
+                    <div class="p-8 text-center text-gray-500">
+
+                        <p class="font-medium">
+                            No riders found
+                        </p>
+
+                        {% if search %}
+                        <p class="text-sm mt-1">
+                            Try another name, phone number or email.
+                        </p>
+                        {% endif %}
+
+                    </div>
+
+                    {% endfor %}
+
+                </div>
+
+
+                <!-- ================================================= -->
+                <!-- PAGINATION -->
+                <!-- ================================================= -->
+
+                {% if page_obj.paginator.num_pages > 1 %}
+
+                <div class="px-4 py-4 border-t">
+
+                    <div class="flex items-center justify-between">
+
+                        <!-- Previous -->
+
+                        {% if page_obj.has_previous %}
+
+                        <a
+                            href="?page={{ page_obj.previous_page_number }}{% if search %}&q={{ search|urlencode }}{% endif %}"
+                            class="
+                            px-3 py-2
+                            border rounded-lg
+                            text-sm
+                            hover:bg-gray-50
+                            "
+                        >
+                            ← Previous
+                        </a>
+
+                        {% else %}
+
+                        <span
+                            class="
+                            px-3 py-2
+                            border rounded-lg
+                            text-sm
+                            text-gray-300
+                            "
+                        >
+                            ← Previous
+                        </span>
+
+                        {% endif %}
+
+
+                        <!-- Page -->
+
+                        <span class="text-sm text-gray-600">
+
+                            Page
+                            <strong>
+                                {{ page_obj.number }}
+                            </strong>
+                            of
+                            <strong>
+                                {{ page_obj.paginator.num_pages }}
+                            </strong>
+
+                        </span>
+
+
+                        <!-- Next -->
+
+                        {% if page_obj.has_next %}
+
+                        <a
+                            href="?page={{ page_obj.next_page_number }}{% if search %}&q={{ search|urlencode }}{% endif %}"
+                            class="
+                            px-3 py-2
+                            border rounded-lg
+                            text-sm
+                            hover:bg-gray-50
+                            "
+                        >
+                            Next →
+                        </a>
+
+                        {% else %}
+
+                        <span
+                            class="
+                            px-3 py-2
+                            border rounded-lg
+                            text-sm
+                            text-gray-300
+                            "
+                        >
+                            Next →
+                        </span>
+
+                        {% endif %}
+
+                    </div>
+
+                </div>
+
+                {% endif %}
+
+            </div>
+
+        </div>
+
+
+        <!-- ================================================= -->
+        <!-- COMPLETE RIDER PROFILE -->
+        <!-- ================================================= -->
+
+        <div class="xl:col-span-2">
+
+            {% if selected_rider %}
+
+            <!-- PROFILE CARD -->
+
+            <div class="bg-white rounded-xl shadow-sm border mb-6">
+
+                <div class="p-6">
+
+                    <div class="flex flex-col md:flex-row
+                                md:items-center
+                                md:justify-between gap-5">
+
+
+                        <div class="flex items-center gap-4">
+
+                            <!-- Avatar -->
+
+                            <div
+                                class="
+                                w-16 h-16
+                                rounded-full
+                                bg-blue-100
+                                flex items-center justify-center
+                                text-blue-700
+                                text-2xl
+                                font-bold
+                                "
+                            >
+
+                                {% if selected_rider.full_name %}
+                                    {{ selected_rider.full_name|first|upper }}
+                                {% else %}
+                                    R
+                                {% endif %}
+
+                            </div>
+
+
+                            <div>
+
+                                <h2 class="text-xl font-bold text-gray-900">
+
+                                    {% if selected_rider.full_name %}
+                                        {{ selected_rider.full_name }}
+                                    {% else %}
+                                        Rider #{{ selected_rider.id }}
+                                    {% endif %}
+
+                                </h2>
+
+                                <p class="text-sm text-gray-500">
+                                    Rider ID: #{{ selected_rider.id }}
+                                </p>
+
+                                <p class="text-sm text-gray-500">
+                                    {{ selected_rider.phone_number|default:"No phone number" }}
+                                </p>
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- ACTIONS -->
+
+                        <div class="flex gap-2">
+
+                            {% if selected_rider.rider %}
+
+                                {% if selected_rider.rider.status == "blocked" %}
+
+                                <form method="POST">
+
+                                    {% csrf_token %}
+
+                                    <input
+                                        type="hidden"
+                                        name="action"
+                                        value="unblock_rider"
+                                    >
+
+                                    <button
+                                        type="submit"
+                                        class="
+                                        px-4 py-2
+                                        bg-green-600
+                                        text-white
+                                        rounded-lg
+                                        hover:bg-green-700
+                                        "
+                                    >
+                                        Unblock Rider
+                                    </button>
+
+                                </form>
+
+                                {% else %}
+
+                                <form method="POST"
+                                      onsubmit="return confirm('Block this rider?');">
+
+                                    {% csrf_token %}
+
+                                    <input
+                                        type="hidden"
+                                        name="action"
+                                        value="block_rider"
+                                    >
+
+                                    <button
+                                        type="submit"
+                                        class="
+                                        px-4 py-2
+                                        bg-red-600
+                                        text-white
+                                        rounded-lg
+                                        hover:bg-red-700
+                                        "
+                                    >
+                                        Block Rider
+                                    </button>
+
+                                </form>
+
+                                {% endif %}
+
+                            {% endif %}
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+                <!-- PROFILE DETAILS -->
+
+                <div class="border-t grid grid-cols-1 md:grid-cols-2">
+
+                    <div class="p-5 border-b md:border-r">
+
+                        <p class="text-xs text-gray-500 uppercase">
+                            Full Name
+                        </p>
+
+                        <p class="font-medium mt-1">
+                            {{ selected_rider.full_name|default:"Not provided" }}
+                        </p>
+
+                    </div>
+
+
+                    <div class="p-5 border-b">
+
+                        <p class="text-xs text-gray-500 uppercase">
+                            Phone
+                        </p>
+
+                        <p class="font-medium mt-1">
+                            {{ selected_rider.phone_number|default:"Not provided" }}
+                        </p>
+
+                    </div>
+
+
+                    <div class="p-5 border-b md:border-r">
+
+                        <p class="text-xs text-gray-500 uppercase">
+                            Email
+                        </p>
+
+                        <p class="font-medium mt-1 break-all">
+                            {{ selected_rider.email|default:"Not provided" }}
+                        </p>
+
+                    </div>
+
+                    <div class="p-5 border-b">
+                        <p class="text-xs text-gray-500 uppercase">Gender</p>
+                        <p class="font-medium mt-1">{{ selected_rider.get_gender_display|default:"Not provided" }}</p>
+                    </div>
+
+                    <div class="p-5 border-b md:border-r">
+                        <p class="text-xs text-gray-500 uppercase">Date of Birth</p>
+                        <p class="font-medium mt-1">{{ selected_rider.dob|date:"d M Y"|default:"Not provided" }}</p>
+                    </div>
+
+
+                    <div class="p-5 border-b">
+
+                        <p class="text-xs text-gray-500 uppercase">
+                            Account Created
+                        </p>
+
+                        <p class="font-medium mt-1">
+                            {{ selected_rider.created_at|date:"d M Y, h:i A" }}
+                        </p>
+
+                    </div>
+
+
+                    <div class="p-5 md:border-r">
+
+                        <p class="text-xs text-gray-500 uppercase">
+                            Role
+                        </p>
+
+                        <p class="font-medium mt-1">
+                            {{ selected_rider.role|title }}
+                        </p>
+
+                    </div>
+
+
+                    <div class="p-5">
+
+                        <p class="text-xs text-gray-500 uppercase">
+                            Rider Status
+                        </p>
+
+                        <p class="mt-1">
+
+                            {% if selected_rider.rider.status == "blocked" %}
+
+                            <span class="px-2 py-1 rounded-full
+                                         bg-red-100 text-red-700 text-xs">
+                                Blocked
+                            </span>
+
+                            {% else %}
+
+                            <span class="px-2 py-1 rounded-full
+                                         bg-green-100 text-green-700 text-xs">
+                                Active
+                            </span>
+
+                            {% endif %}
+
+                        </p>
+
+                    </div>
+
+                    <div class="p-5 border-t md:border-r">
+                        <p class="text-xs text-gray-500 uppercase">Address</p>
+                        <p class="font-medium mt-1">{{ selected_rider.house_no|default:"" }} {{ selected_rider.street|default:"" }}{% if selected_rider.city %}, {{ selected_rider.city }}{% endif %}{% if selected_rider.zip_code %} - {{ selected_rider.zip_code }}{% endif %}</p>
+                    </div>
+
+                    <div class="p-5 border-t">
+                        <p class="text-xs text-gray-500 uppercase">Emergency Contact</p>
+                        <p class="font-medium mt-1">{{ selected_rider.emergency_contact|default:"Not provided" }}</p>
+                    </div>
+
+                    <div class="p-5 border-t md:border-r">
+                        <p class="text-xs text-gray-500 uppercase">Rider Rating</p>
+                        <p class="font-medium mt-1">{{ selected_rider.rider.rating|default:"-" }} ({{ selected_rider.rider.rating_count|default:0 }} ratings)</p>
+                    </div>
+
+                    <div class="p-5 border-t">
+                        <p class="text-xs text-gray-500 uppercase">Review Status</p>
+                        <p class="font-medium mt-1">{% if selected_rider.rider.flagged_for_review %}Flagged for review{% else %}Clear{% endif %}</p>
+                    </div>
+
+                    {% if selected_rider.rider.review_notes %}
+                    <div class="p-5 border-t md:col-span-2">
+                        <p class="text-xs text-gray-500 uppercase">Review Notes</p>
+                        <p class="font-medium mt-1 whitespace-pre-line">{{ selected_rider.rider.review_notes }}</p>
+                    </div>
+                    {% endif %}
+
+                </div>
+
+            </div>
+
+
+            <!-- ================================================= -->
+            <!-- RIDER STATISTICS -->
+            <!-- ================================================= -->
+
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+
+                <div class="bg-white rounded-xl border p-5">
+
+                    <p class="text-xs text-gray-500">
+                        Total Rides
+                    </p>
+
+                    <p class="text-2xl font-bold mt-2">
+                        {{ rider_trip_count }}
+                    </p>
+
+                </div>
+
+
+                <div class="bg-white rounded-xl border p-5">
+
+                    <p class="text-xs text-gray-500">
+                        Completed
+                    </p>
+
+                    <p class="text-2xl font-bold text-green-600 mt-2">
+                        {{ completed_trip_count }}
+                    </p>
+
+                </div>
+
+
+                <div class="bg-white rounded-xl border p-5">
+
+                    <p class="text-xs text-gray-500">
+                        Cancelled
+                    </p>
+
+                    <p class="text-2xl font-bold text-red-600 mt-2">
+                        {{ cancelled_trip_count }}
+                    </p>
+
+                </div>
+
+
+                <div class="bg-white rounded-xl border p-5">
+
+                    <p class="text-xs text-gray-500">
+                        Open SOS
+                    </p>
+
+                    <p class="text-2xl font-bold text-orange-600 mt-2">
+                        {{ open_sos }}
+                    </p>
+
+                </div>
+
+            </div>
+
+
+            <!-- ================================================= -->
+            <!-- ACTIVE RIDE -->
+            <!-- ================================================= -->
+
+            {% if active_trip %}
+
+            <div class="bg-blue-50 border border-blue-200
+                        rounded-xl p-5 mb-6">
+
+                <div class="flex justify-between items-center">
+
+                    <div>
+
+                        <p class="text-xs uppercase text-blue-600 font-semibold">
+                            Active Ride
+                        </p>
+
+                        <h3 class="font-bold text-gray-900 mt-1">
+                            Trip #{{ active_trip.id }}
+                        </h3>
+
+                    </div>
+
+                    <span
+                        class="px-3 py-1 rounded-full
+                               bg-blue-100 text-blue-700 text-sm"
+                    >
+                        {{ active_trip.status_id.status_code|title }}
+                    </span>
+
+                </div>
+
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+
+                    <div>
+                        <p class="text-xs text-gray-500">
+                            Driver
+                        </p>
+
+                        <p class="font-medium">
+                            {{ active_trip.driver_id.user_id.full_name|default:"Not assigned" }}
+                        </p>
+                    </div>
+
+
+                    <div>
+                        <p class="text-xs text-gray-500">
+                            Requested
+                        </p>
+
+                        <p class="font-medium">
+                            {{ active_trip.requested_at|date:"d M Y, h:i A" }}
+                        </p>
+                    </div>
+
+
+                    <div>
+                        <p class="text-xs text-gray-500">
+                            Vehicle
+                        </p>
+
+                        <p class="font-medium">
+                            {{ active_trip.vehicle_id|default:"Not assigned" }}
+                        </p>
+                    </div>
+
+                </div>
+
+            </div>
+
+            {% endif %}
+
+
+            <!-- ================================================= -->
+            <!-- TRIP HISTORY -->
+            <!-- ================================================= -->
+
+            <div class="bg-white rounded-xl border mb-6 overflow-hidden">
+
+                <div class="p-5 border-b">
+
+                    <h2 class="font-semibold">
+                        Ride History
+                    </h2>
+
+                </div>
+
+
+                <div class="overflow-x-auto">
+
+                    <table class="w-full text-sm">
+
+                        <thead class="bg-gray-50">
+
+                            <tr>
+
+                                <th class="text-left px-5 py-3">
+                                    Trip
+                                </th>
+
+                                <th class="text-left px-5 py-3">
+                                    Driver
+                                </th>
+
+                                <th class="text-left px-5 py-3">
+                                    Status
+                                </th>
+
+                                <th class="text-left px-5 py-3">
+                                    Date
+                                </th>
+
+                                <th class="text-left px-5 py-3">
+                                    Fare / Route
+                                </th>
+
+                            </tr>
+
+                        </thead>
+
+
+                        <tbody class="divide-y">
+
+                            {% for trip in trips %}
+
+                            <tr class="hover:bg-gray-50">
+
+                                <td class="px-5 py-4 font-medium">
+                                    #{{ trip.id }}
+                                </td>
+
+                                <td class="px-5 py-4">
+
+                                    {{ trip.driver_id.user_id.full_name|default:"Not assigned" }}
+
+                                </td>
+
+                                <td class="px-5 py-4">
+
+                                    {% if trip.status_id.status_code == "completed" %}
+
+                                    <span class="px-2 py-1 rounded-full
+                                                 bg-green-100 text-green-700">
+                                        Completed
+                                    </span>
+
+                                    {% elif trip.status_id.status_code == "cancelled" %}
+
+                                    <span class="px-2 py-1 rounded-full
+                                                 bg-red-100 text-red-700">
+                                        Cancelled
+                                    </span>
+
+                                    {% else %}
+
+                                    <span class="px-2 py-1 rounded-full
+                                                 bg-blue-100 text-blue-700">
+                                        {{ trip.status_id.status_code|title }}
+                                    </span>
+
+                                    {% endif %}
+
+                                </td>
+
+                                <td class="px-5 py-4 text-gray-500">
+                                    {{ trip.requested_at|date:"d M Y, h:i A" }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    ₹{{ trip.final_fare|default:trip.estimated_fare|default:"-" }}
+                                    <span class="block text-xs text-gray-500">{{ trip.pickup_address|default:"-" }} -&gt; {{ trip.destination_address|default:"-" }}</span>
+                                </td>
+
+                            </tr>
+
+                            {% empty %}
+
+                            <tr>
+
+                                <td colspan="5"
+                                    class="px-5 py-8 text-center text-gray-500">
+
+                                    No rides found.
+
+                                </td>
+
+                            </tr>
+
+                            {% endfor %}
+
+                        </tbody>
+
+                    </table>
+
+                </div>
+
+            </div>
+
+
+            <!-- ================================================= -->
+            <!-- PAYMENT HISTORY -->
+            <!-- ================================================= -->
+
+            <div class="bg-white rounded-xl border mb-6 overflow-hidden">
+
+                <div class="p-5 border-b">
+
+                    <h2 class="font-semibold">
+                        Payment History
+                    </h2>
+
+                </div>
+
+
+                <div class="overflow-x-auto">
+
+                    <table class="w-full text-sm">
+
+                        <thead class="bg-gray-50">
+
+                            <tr>
+
+                                <th class="text-left px-5 py-3">
+                                    Payment
+                                </th>
+
+                                <th class="text-left px-5 py-3">
+                                    Trip
+                                </th>
+
+                                <th class="text-left px-5 py-3">
+                                    Date
+                                </th>
+
+                                <th class="text-left px-5 py-3">
+                                    Amount / Status
+                                </th>
+
+                            </tr>
+
+                        </thead>
+
+
+                        <tbody class="divide-y">
+
+                            {% for payment in payments %}
+
+                            <tr>
+
+                                <td class="px-5 py-4 font-medium">
+                                    #{{ payment.id }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    {{ payment.trip_id.id|default:"-" }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    {{ payment.created_at|date:"d M Y, h:i A" }}
+                                </td>
+
+                                <td class="px-5 py-4">
+                                    ₹{{ payment.amount|default:"-" }} / {{ payment.status|title }} / {{ payment.method|title }}
+                                </td>
+
+                            </tr>
+
+                            {% empty %}
+
+                            <tr>
+
+                                <td colspan="4"
+                                    class="px-5 py-8 text-center text-gray-500">
+
+                                    No payments found.
+
+                                </td>
+
+                            </tr>
+
+                            {% endfor %}
+
+                        </tbody>
+
+                    </table>
+
+                </div>
+
+            </div>
+
+
+            {% comment %}
+            <!-- ================================================= -->
+            <!-- WALLET ACTIVITY AND RECEIPTS -->
+            <!-- ================================================= -->
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+
+                <div class="bg-white rounded-xl border overflow-hidden">
+                    <div class="p-5 border-b">
+                        <h2 class="font-semibold">Wallet Transactions</h2>
+                    </div>
+                    <div class="divide-y">
+                        {% for transaction in wallet_transactions %}
+                        <div class="p-4 flex items-center justify-between gap-3">
+                            <div>
+                                <p class="font-medium">{{ transaction.txn_type|title }} - {{ transaction.status|title }}</p>
+                                <p class="text-xs text-gray-500">{{ transaction.created_at|date:"d M Y, h:i A" }}{% if transaction.purpose %} / {{ transaction.purpose }}{% endif %}</p>
+                            </div>
+                            <span class="font-semibold">₹{{ transaction.amount }}</span>
+                        </div>
+                        {% empty %}
+                        <p class="p-5 text-gray-500">No wallet transactions found.</p>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl border overflow-hidden">
+                    <div class="p-5 border-b">
+                        <h2 class="font-semibold">Receipts</h2>
+                    </div>
+                    <div class="divide-y">
+                        {% for receipt in receipts %}
+                        <div class="p-4">
+                            <div class="flex items-center justify-between gap-3">
+                                <p class="font-medium">{{ receipt.receipt_number }}</p>
+                                <span class="font-semibold">₹{{ receipt.total_fare }}</span>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-1">Trip #{{ receipt.trip_id.id }} / {{ receipt.payment_status|title }} / {{ receipt.issued_at|date:"d M Y, h:i A" }}</p>
+                        </div>
+                        {% empty %}
+                        <p class="p-5 text-gray-500">No receipts found.</p>
+                        {% endfor %}
+                    </div>
+                </div>
+
+            </div>
+
+
+            {% if notification_preferences %}
+            <div class="bg-white rounded-xl border mb-6">
+                <div class="p-5 border-b">
+                    <h2 class="font-semibold">Notification and KYC Preferences</h2>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 p-5 text-sm">
+                    <div><span class="text-gray-500">KYC updates</span><p class="font-medium">{% if notification_preferences.kyc %}Enabled{% else %}Disabled{% endif %}</p></div>
+                    <div><span class="text-gray-500">Ride events</span><p class="font-medium">{% if notification_preferences.ride_event %}Enabled{% else %}Disabled{% endif %}</p></div>
+                    <div><span class="text-gray-500">Payments</span><p class="font-medium">{% if notification_preferences.payment %}Enabled{% else %}Disabled{% endif %}</p></div>
+                    <div><span class="text-gray-500">Push / Email / SMS</span><p class="font-medium">{% if notification_preferences.push_enabled %}Push{% else %}No push{% endif %} / {% if notification_preferences.email_enabled %}Email{% else %}No email{% endif %} / {% if notification_preferences.sms_enabled %}SMS{% else %}No SMS{% endif %}</p></div>
+                </div>
+            </div>
+            {% endif %}
+
+
+            <!-- ================================================= -->
+            <!-- WALLET -->
+            <!-- ================================================= -->
+
+            <div class="bg-white rounded-xl border mb-6">
+
+                <div class="p-5 border-b">
+
+                    <h2 class="font-semibold">
+                        Rider Wallet
+                    </h2>
+
+                </div>
+
+
+                <div class="p-5">
+
+                    {% if wallet %}
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+
+                        <div>
+
+                            <p class="text-xs text-gray-500">
+                                Balance
+                            </p>
+
+                            <p class="text-2xl font-bold mt-1">
+                                ₹{{ wallet.balance|default:"0" }}
+                            </p>
+
+                        </div>
+
+                        <div>
+
+                            <p class="text-xs text-gray-500">
+                                Wallet ID
+                            </p>
+
+                            <p class="font-medium mt-1">
+                                #{{ wallet.id }}
+                            </p>
+
+                        </div>
+
+                        <div>
+
+                            <p class="text-xs text-gray-500">
+                                Scope
+                            </p>
+
+                            <p class="font-medium mt-1">
+                                Rider
+                            </p>
+
+                        </div>
+
+                    </div>
+
+                    {% else %}
+
+                    <p class="text-gray-500">
+                        No rider wallet found.
+                    </p>
+
+                    {% endif %}
+
+                </div>
+
+            </div>
+
+
+            <!-- ================================================= -->
+            <!-- SOS -->
+            <!-- ================================================= -->
+
+            <div class="bg-white rounded-xl border mb-6 overflow-hidden">
+
+                <div class="p-5 border-b">
+
+                    <div class="flex justify-between">
+
+                        <h2 class="font-semibold">
+                            SOS & Safety History
+                        </h2>
+
+                        <span class="text-sm text-red-600">
+                            Open: {{ open_sos }}
+                        </span>
+
+                    </div>
+
+                </div>
+
+
+                <div class="divide-y">
+
+                    {% for sos in sos_events %}
+
+                    <div class="p-5">
+
+                        <div class="flex justify-between">
+
+                            <div>
+
+                                <p class="font-medium">
+                                    SOS #{{ sos.id }}
+                                </p>
+
+                                <p class="text-sm text-gray-500">
+                                    Trip:
+                                    {{ sos.trip.id|default:"-" }}
+                                </p>
+
+                            </div>
+
+
+                            <span class="text-sm">
+
+                                {{ sos.status|title }}
+
+                            </span>
+
+                        </div>
+
+
+                        <p class="text-xs text-gray-400 mt-2">
+                            {{ sos.created_at|date:"d M Y, h:i A" }}
+                        </p>
+
+                    </div>
+
+                    {% empty %}
+
+                    <div class="p-8 text-center text-gray-500">
+
+                        No SOS events found.
+
+                    </div>
+
+                    {% endfor %}
+
+                </div>
+
+            </div>
+
+
+            <!-- ================================================= -->
+            <!-- FAVORITE PLACES -->
+            <!-- ================================================= -->
+
+            <div class="bg-white rounded-xl border mb-6">
+
+                <div class="p-5 border-b">
+
+                    <h2 class="font-semibold">
+                        Favorite Places
+                    </h2>
+
+                </div>
+
+
+                <div class="p-5">
+
+                    {% if favorite_places %}
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+
+                        {% for place in favorite_places %}
+
+                        <div class="border rounded-lg p-4">
+
+                            <p class="font-medium">
+                                {{ place.address_text|default:"Favorite Place" }}
+                            </p>
+
+                            <p class="text-sm text-gray-500 mt-1">
+                                {{ place.latitude }}, {{ place.longitude }}
+                            </p>
+
+                        </div>
+
+                        {% endfor %}
+
+                    </div>
+
+                    {% else %}
+
+                    <p class="text-gray-500">
+                        No favorite places saved.
+                    </p>
+
+                    {% endif %}
+
+                </div>
+
+            </div>
+
+
+            <!-- ================================================= -->
+            <!-- SUPPORT TICKETS -->
+            <!-- ================================================= -->
+
+            <div class="bg-white rounded-xl border mb-6">
+
+                <div class="p-5 border-b">
+
+                    <h2 class="font-semibold">
+                        Support Tickets
+                    </h2>
+
+                </div>
+
+
+                <div class="divide-y">
+
+                    {% for ticket in support_tickets %}
+
+                    <div class="p-5">
+
+                        <div class="flex justify-between">
+
+                            <div>
+
+                                <p class="font-medium">
+                                    Ticket #{{ ticket.id }}
+                                </p>
+
+                                <p class="text-sm text-gray-500">
+                                    Trip:
+                                    {{ ticket.trip_id.id|default:"-" }}
+                                </p>
+
+                            </div>
+
+                            <span class="text-sm">
+                                {{ ticket.status|title }}
+                            </span>
+
+                        </div>
+
+                        <p class="text-xs text-gray-400 mt-2">
+                            {{ ticket.created_at|date:"d M Y, h:i A" }}
+                        </p>
+
+                    </div>
+
+                    {% empty %}
+
+                    <div class="p-8 text-center text-gray-500">
+
+                        No support tickets found.
+
+                    </div>
+
+                    {% endfor %}
+
+                </div>
+
+            </div>
+
+
+            <!-- ================================================= -->
+            <!-- NOTIFICATIONS -->
+            <!-- ================================================= -->
+
+            <div class="bg-white rounded-xl border mb-6">
+
+                <div class="p-5 border-b">
+
+                    <h2 class="font-semibold">
+                        Recent Notifications
+                    </h2>
+
+                </div>
+
+
+                <div class="divide-y">
+
+                    {% for notification in notifications %}
+
+                    <div class="p-5">
+
+                        <p class="font-medium">
+                            {{ notification.title|default:"Notification" }}
+                        </p>
+
+                        <p class="text-sm text-gray-500 mt-1">
+                            {{ notification.message|default:"" }}
+                        </p>
+
+                        <p class="text-xs text-gray-400 mt-2">
+                            {{ notification.created_at|date:"d M Y, h:i A" }}
+                        </p>
+
+                    </div>
+
+                    {% empty %}
+
+                    <div class="p-8 text-center text-gray-500">
+
+                        No notifications found.
+
+                    </div>
+
+                    {% endfor %}
+
+                </div>
+
+            </div>
+
+
+            {% endcomment %}
+
+            {% else %}
+
+            <!-- NO RIDER -->
+
+            <div class="bg-white rounded-xl border p-12 text-center">
+
+                <h2 class="text-xl font-semibold text-gray-700">
+                    No rider selected
+                </h2>
+
+                <p class="text-gray-500 mt-2">
+                    Select a rider from the list to view the complete profile.
+                </p>
+
+            </div>
+
+            {% endif %}
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}

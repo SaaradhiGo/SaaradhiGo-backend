@@ -729,8 +729,10 @@
 
                         const icon =
                             item.type === 'driver'
-                                ? 'person'
-                                : 'payments';
+                                ? 'directions_car'
+                                : item.type === 'rider'
+                                    ? 'group'
+                                    : 'payments';
 
 
                         const el =

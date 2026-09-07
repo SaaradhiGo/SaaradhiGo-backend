@@ -10,6 +10,7 @@ from .views import (
     executive_revenue,
     fare_surge,
     global_search,
+    global_search_api,
     login,
     payment_dashboard,
     predictive_heatmaps,
@@ -41,6 +42,7 @@ urlpatterns = [
 
     # Global Search
     path("search/", global_search, name="global_search"),
+    path("api/search/", global_search_api, name="global_search_api"),
 
     # Driver Profile
     path("driver/<int:driver_id>/", driver_profile, name="driver_profile"),

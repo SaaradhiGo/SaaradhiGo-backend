@@ -1344,51 +1344,138 @@ def ride(request):
         context
     )
 
+
+
 @admin_required
 def riders(request: HttpRequest) -> HttpResponse:
     """Rider operations page with account, ride, payment and safety history."""
+
     User = get_user_model()
+
     query = (request.GET.get("q") or "").strip()
     selected_id = request.GET.get("rider")
+
     action_message = None
     action_error = None
-    rider_users = User.objects.filter(role="rider").select_related("rider")
+
+    # ---------------------------------------------------------
+    # RIDER LIST
+    # ---------------------------------------------------------
+
+    rider_users = (
+        User.objects
+        .filter(role="rider")
+        .select_related("rider")
+    )
+
+    # Search by name / phone / email
     if query:
         rider_users = rider_users.filter(
             Q(full_name__icontains=query)
             | Q(phone_number__icontains=query)
             | Q(email__icontains=query)
         )
+
     rider_users = rider_users.order_by("-created_at")
+
+    # ---------------------------------------------------------
+    # PAGINATION
+    # ---------------------------------------------------------
+
+    paginator = Paginator(rider_users, 10)
+
+    page_number = request.GET.get("page")
+    page_obj = paginator.get_page(page_number)
+
+    # ---------------------------------------------------------
+    # DASHBOARD COUNTS
+    # ---------------------------------------------------------
+
     total_riders = User.objects.filter(role="rider").count()
-    flagged_riders = Rider.objects.filter(flagged_for_review=True).count()
-    active_riders = User.objects.filter(
-        role="rider", trips__status_id__status_code__in=[
-            "requested", "accepted", "reached", "in_progress"
-        ]
-    ).distinct().count()
-    today = timezone.localdate()
-    rides_today = Trip.objects.filter(
-        user_id__role="rider", requested_at__date=today
+
+    flagged_riders = Rider.objects.filter(
+        flagged_for_review=True
     ).count()
 
+    active_riders = User.objects.filter(
+        role="rider",
+        trips__status_id__status_code__in=[
+            "requested",
+            "accepted",
+            "reached",
+            "in_progress",
+        ],
+    ).distinct().count()
+
+    today = timezone.localdate()
+
+    rides_today = Trip.objects.filter(
+        user_id__role="rider",
+        requested_at__date=today,
+    ).count()
+
+    # ---------------------------------------------------------
+    # SELECTED RIDER
+    # ---------------------------------------------------------
+
     selected_user = None
+
     if selected_id:
-        selected_user = rider_users.filter(id=selected_id).first()
-    if selected_user is None:
-        selected_user = rider_users.first()
+        selected_user = (
+            User.objects
+            .filter(
+                id=selected_id,
+                role="rider",
+            )
+            .select_related("rider")
+            .first()
+        )
+
+    # ---------------------------------------------------------
+    # ACTIONS
+    # ---------------------------------------------------------
 
     if request.method == "POST" and selected_user:
+
         action = request.POST.get("action")
-        driver_id = request.POST.get("driver_id")
-        if action == "block_driver" and driver_id:
-            driver = Driver.objects.filter(id=driver_id).first()
-            if driver:
-                driver.status = "blocked"
-                driver.save(update_fields=["status"])
-                action_message = f"Driver #{driver.id} was blocked."
-            else:
-                action_error = "Driver could not be found."
+
+        # Example: block rider
+        if action == "block_rider":
+
+            try:
+                rider = selected_user.rider
+
+                # Change this field if your actual Rider model
+                # uses another status field.
+                rider.status = "blocked"
+                rider.save(update_fields=["status"])
+
+                action_message = (
+                    f"Rider #{selected_user.id} was blocked successfully."
+                )
+
+            except Rider.DoesNotExist:
+                action_error = "Rider profile could not be found."
+
+        # Example: unblock rider
+        elif action == "unblock_rider":
+
+            try:
+                rider = selected_user.rider
+
+                rider.status = "active"
+                rider.save(update_fields=["status"])
+
+                action_message = (
+                    f"Rider #{selected_user.id} was unblocked successfully."
+                )
+
+            except Rider.DoesNotExist:
+                action_error = "Rider profile could not be found."
+
+    # ---------------------------------------------------------
+    # DEFAULT VALUES
+    # ---------------------------------------------------------
 
     trips = []
     payments = []
@@ -1400,94 +1487,201 @@ def riders(request: HttpRequest) -> HttpResponse:
     favorite_places = []
     support_tickets = []
     notification_preferences = None
+
     active_trip = None
     open_sos = 0
+
     rider_trip_count = 0
     completed_trip_count = 0
     cancelled_trip_count = 0
+
     latest_trip = None
+
+    # ---------------------------------------------------------
+    # SELECTED RIDER DETAILS
+    # ---------------------------------------------------------
+
     if selected_user:
-        trip_queryset = Trip.objects.filter(user_id=selected_user).select_related(
-            "driver_id__user_id", "status_id", "vehicle_id"
-        ).order_by("-requested_at")
+
+        trip_queryset = (
+            Trip.objects
+            .filter(user_id=selected_user)
+            .select_related(
+                "driver_id__user_id",
+                "status_id",
+                "vehicle_id",
+            )
+            .order_by("-requested_at")
+        )
+
+        # Active ride
         active_trip = trip_queryset.filter(
-            status_id__status_code__in=["requested", "accepted", "reached", "in_progress"]
+            status_id__status_code__in=[
+                "requested",
+                "accepted",
+                "reached",
+                "in_progress",
+            ]
         ).first()
+
         rider_trip_count = trip_queryset.count()
+
         completed_trip_count = trip_queryset.filter(
             status_id__status_code="completed"
         ).count()
+
         cancelled_trip_count = trip_queryset.filter(
             status_id__status_code="cancelled"
         ).count()
+
         latest_trip = trip_queryset.first()
+
         trips = trip_queryset[:25]
-        payments = Payment.objects.filter(user_id=selected_user).select_related(
-            "trip_id"
-        ).order_by("-created_at")[:15]
-        receipts = Receipt.objects.filter(user_id=selected_user).select_related(
-            "trip_id"
-        ).order_by("-issued_at")[:15]
-        wallet = Wallet.objects.filter(
-            user_id=selected_user, scope=Wallet.SCOPE_RIDER
-        ).first()
-        wallet_transactions = WalletTransaction.objects.filter(
-            user_id=selected_user
-        ).order_by("-created_at")[:15]
-        sos_events = SOSEvent.objects.filter(
-            user=selected_user
-        ).select_related("trip").order_by("-created_at")[:15]
-        open_sos = SOSEvent.objects.filter(user=selected_user, status="open").count()
-        notifications = Notification.objects.filter(
-            user_id=selected_user
-        ).order_by("-created_at")[:10]
-        favorite_places = FavoritePlace.objects.filter(
-            user_id=selected_user
-        ).order_by("id")
-        support_tickets = SupportTicket.objects.filter(
-            user_id=selected_user
-        ).select_related("trip_id").order_by("-created_at")[:10]
-        preferences = NotificationPreference.objects.filter(
-            user_id=selected_user
-        ).first()
+
+        # Payments
+        payments = (
+            Payment.objects
+            .filter(user_id=selected_user)
+            .select_related("trip_id")
+            .order_by("-created_at")[:15]
+        )
+
+        # Receipts
+        receipts = (
+            Receipt.objects
+            .filter(user_id=selected_user)
+            .select_related("trip_id")
+            .order_by("-issued_at")[:15]
+        )
+
+        # Wallet
+        wallet = (
+            Wallet.objects
+            .filter(
+                user_id=selected_user,
+                scope=Wallet.SCOPE_RIDER,
+            )
+            .first()
+        )
+
+        # Wallet transactions
+        wallet_transactions = (
+            WalletTransaction.objects
+            .filter(user_id=selected_user)
+            .order_by("-created_at")[:15]
+        )
+
+        # SOS
+        sos_events = (
+            SOSEvent.objects
+            .filter(user=selected_user)
+            .select_related("trip")
+            .order_by("-created_at")[:15]
+        )
+
+        open_sos = SOSEvent.objects.filter(
+            user=selected_user,
+            status="open",
+        ).count()
+
+        # Notifications
+        notifications = (
+            Notification.objects
+            .filter(user_id=selected_user)
+            .order_by("-created_at")[:10]
+        )
+
+        # Favorite places
+        favorite_places = (
+            FavoritePlace.objects
+            .filter(user_id=selected_user)
+            .order_by("id")
+        )
+
+        # Support tickets
+        support_tickets = (
+            SupportTicket.objects
+            .filter(user_id=selected_user)
+            .select_related("trip_id")
+            .order_by("-created_at")[:10]
+        )
+
+        # Notification preferences
+        preferences = (
+            NotificationPreference.objects
+            .filter(user_id=selected_user)
+            .first()
+        )
+
         if preferences:
             notification_preferences = {
                 field: getattr(preferences, field)
                 for field in (
-                    "transactional", "ride_event", "payment", "payout",
-                    "sos", "kyc", "system", "marketing", "promo",
-                    "push_enabled", "email_enabled", "sms_enabled",
+                    "transactional",
+                    "ride_event",
+                    "payment",
+                    "payout",
+                    "sos",
+                    "kyc",
+                    "system",
+                    "marketing",
+                    "promo",
+                    "push_enabled",
+                    "email_enabled",
+                    "sms_enabled",
                 )
             }
 
-    return render(request, "admin_pages/riders.html", {
-        "riders": rider_users[:100],
-        "selected_rider": selected_user,
-        "trips": trips,
-        "payments": payments,
-        "receipts": receipts,
-        "wallet": wallet,
-        "wallet_transactions": wallet_transactions,
-        "sos_events": sos_events,
-        "notifications": notifications,
-        "favorite_places": favorite_places,
-        "support_tickets": support_tickets,
-        "notification_preferences": notification_preferences,
-        "total_riders": total_riders,
-        "flagged_riders": flagged_riders,
-        "active_riders": active_riders,
-        "rides_today": rides_today,
-        "search": query,
-        "active_trip": active_trip,
-        "open_sos": open_sos,
-        "action_message": action_message,
-        "action_error": action_error,
-        "rider_trip_count": rider_trip_count,
-        "completed_trip_count": completed_trip_count,
-        "cancelled_trip_count": cancelled_trip_count,
-        "latest_trip": latest_trip,
-    })
+    # ---------------------------------------------------------
+    # CONTEXT
+    # ---------------------------------------------------------
 
+    return render(
+        request,
+        "admin_pages/riders.html",
+        {
+            # Pagination
+            "page_obj": page_obj,
+            "paginator": paginator,
+
+            # Rider list
+            "riders": page_obj.object_list,
+            "selected_rider": selected_user,
+
+            # Rider details
+            "trips": trips,
+            "payments": payments,
+            "receipts": receipts,
+            "wallet": wallet,
+            "wallet_transactions": wallet_transactions,
+            "sos_events": sos_events,
+            "notifications": notifications,
+            "favorite_places": favorite_places,
+            "support_tickets": support_tickets,
+            "notification_preferences": notification_preferences,
+
+            # Statistics
+            "total_riders": total_riders,
+            "flagged_riders": flagged_riders,
+            "active_riders": active_riders,
+            "rides_today": rides_today,
+
+            # Search
+            "search": query,
+
+            # Ride information
+            "active_trip": active_trip,
+            "open_sos": open_sos,
+            "rider_trip_count": rider_trip_count,
+            "completed_trip_count": completed_trip_count,
+            "cancelled_trip_count": cancelled_trip_count,
+            "latest_trip": latest_trip,
+
+            # Messages
+            "action_message": action_message,
+            "action_error": action_error,
+        },
+    )
 @admin_required
 @require_http_methods(["GET", "POST"])
 def promo_codes(request: HttpRequest) -> HttpResponse:
@@ -2134,6 +2328,45 @@ def global_search(request: HttpRequest) -> HttpResponse:
         "admin_pages/global_search.html",
         context,
     )
+
+
+@admin_required
+def global_search_api(request: HttpRequest) -> JsonResponse:
+    """Return compact results for the admin header search dropdown."""
+    User = get_user_model()
+    query = (request.GET.get("q") or "").strip()
+    results = []
+    if not query:
+        return JsonResponse({"status": "ok", "results": []})
+
+    users = User.objects.filter(role="rider").filter(
+        Q(full_name__icontains=query)
+        | Q(phone_number__icontains=query)
+        | Q(email__icontains=query)
+    ).order_by("id")[:10]
+    for user in users:
+        results.append({
+            "type": "rider",
+            "title": user.full_name or user.phone_number,
+            "subtitle": f"Rider · {user.phone_number}",
+            "url": f"/riders/?rider={user.id}",
+        })
+
+    drivers = Driver.objects.select_related("user_id").filter(
+        Q(user_id__full_name__icontains=query)
+        | Q(user_id__phone_number__icontains=query)
+    ).order_by("id")[:10]
+    for driver in drivers:
+        results.append({
+            "type": "driver",
+            "title": driver.user_id.full_name or driver.user_id.phone_number,
+            "subtitle": f"Driver · ID {driver.id}",
+            "url": f"/driver/{driver.id}/",
+        })
+
+    return JsonResponse({"status": "ok", "results": results[:20]})
+
+
 @admin_required
 @require_http_methods(["GET", "POST"])
 def driver_profile(request: HttpRequest, driver_id: int) -> HttpResponse:

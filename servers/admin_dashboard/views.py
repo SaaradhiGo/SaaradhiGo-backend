@@ -6,7 +6,7 @@ from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render,get_object_or_404
 from django.utils.dateparse import parse_datetime
 # from servers.driver.admin_utils import list_drivers_admin
-from servers.support.models import SupportTicket
+from servers.support.models import SupportTicket,SupportMessage
 from django.core.paginator import Paginator
 from django.db import models, transaction as db_transaction
 from django.db.models.functions import Coalesce
@@ -24,7 +24,6 @@ from servers.rider.models import (
     Rider, FavoritePlace, Wallet, WalletTransaction, Notification,
     NotificationPreference,
 )
-from servers.support.models import SupportTicket, SupportMessage
 from servers.ride.models import Receipt
 from servers.sos.models import SOSEvent, SOSEventUpdate
 from django.contrib import messages

@@ -752,11 +752,64 @@ def get_all_active_drivers():
                             continue
                         seen_driver_ids.add(driver_id)
                         result.append({
-                                'driver_id': driver_id,
+                            'driver_id': driver_id,
                             'vehicle_type': parts[2],
                             'lng': pos[0],
                             'lat': pos[1],
                         })
+        if not result:
+            return []
+
+        # Batch-enrich active drivers with DB/vehicle details for ops dashboard
+        try:
+            from servers.driver.models import Driver
+            numeric_ids = [int(item['driver_id']) for item in result if str(item['driver_id']).isdigit()]
+            if numeric_ids:
+                drivers_qs = Driver.objects.filter(id__in=numeric_ids).select_related(
+                    'user_id', 'active_vehicle'
+                )
+                driver_map = {d.id: d for d in drivers_qs}
+                for item in result:
+                    did = int(item['driver_id']) if str(item['driver_id']).isdigit() else None
+                    driver = driver_map.get(did)
+                    if driver:
+                        u = driver.user_id
+                        v = driver.active_vehicle
+                        active_trip_id = get_driver_active_trip(did) if did else None
+                        item.update({
+                            'driver_name': str(u.full_name or u.phone_number or f'Driver {driver.id}') if u else f'Driver {driver.id}',
+                            'phone_number': str(u.phone_number or '') if u else '',
+                            'ratings': str(driver.ratings or '0.00'),
+                            'vehicle_model': str(v.model if v else ''),
+                            'vehicle_number': str(v.vehicle_number if v else ''),
+                            'status': 'busy' if active_trip_id else 'online',
+                            'active_trip_id': active_trip_id,
+                        })
+                    else:
+                        item.setdefault('driver_name', f"Driver {item['driver_id']}")
+                        item.setdefault('phone_number', '')
+                        item.setdefault('ratings', '0.00')
+                        item.setdefault('vehicle_model', '')
+                        item.setdefault('vehicle_number', '')
+                        item.setdefault('status', 'online')
+            else:
+                for item in result:
+                    item.setdefault('driver_name', f"Driver {item['driver_id']}")
+                    item.setdefault('phone_number', '')
+                    item.setdefault('ratings', '0.00')
+                    item.setdefault('vehicle_model', '')
+                    item.setdefault('vehicle_number', '')
+                    item.setdefault('status', 'online')
+        except Exception as enrich_err:
+            logger.warning(f"Failed to enrich active drivers with DB details: {enrich_err}")
+            for item in result:
+                item.setdefault('driver_name', f"Driver {item['driver_id']}")
+                item.setdefault('phone_number', '')
+                item.setdefault('ratings', '0.00')
+                item.setdefault('vehicle_model', '')
+                item.setdefault('vehicle_number', '')
+                item.setdefault('status', 'online')
+
         return result
     except Exception as e:
         logger.error(f"Failed to get active drivers: {e}")

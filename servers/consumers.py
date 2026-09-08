@@ -143,14 +143,6 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
                         'lat': lat,
                         'driver_id': self.driver_id,
                     })
-                
-                # Stream location update to admin dashboard group
-                await self.channel_layer.group_send('admin_dashboard', {
-                    'type': 'driver_location_update',
-                    'lng': lng,
-                    'lat': lat,
-                    'driver_id': self.driver_id,
-                })
             else:
                 await self.send(text_data=json.dumps({
                     'type': 'error',

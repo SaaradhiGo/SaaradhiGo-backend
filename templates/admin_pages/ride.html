@@ -1,3 +1,4 @@
+
 {% extends 'admin_pages/base.html' %}
 
 {% block title %}Ride Management | SaaradhiGo{% endblock %}
@@ -78,7 +79,7 @@
     <!-- Rides -->
     <div class="bg-surface-container rounded-xl border border-outline-variant/15 overflow-hidden">
 
-        <!-- Table Header -->
+        <!-- Header + Search -->
         <div class="p-6 border-b border-outline-variant/15">
 
             <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
@@ -93,21 +94,40 @@
                     </p>
                 </div>
 
-                <!-- Search -->
-                <div class="relative w-full lg:w-80">
+
+                <!-- Server-side Search -->
+                <form method="get" class="relative w-full lg:w-96">
+
+                    {% if selected_status %}
+                        <input
+                            type="hidden"
+                            name="status"
+                            value="{{ selected_status }}"
+                        >
+                    {% endif %}
 
                     <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant/50">
                         search
                     </span>
 
                     <input
-                        id="ride-search"
                         type="text"
-                        placeholder="Search ride, rider or driver..."
-                        class="w-full bg-surface-container-highest border border-outline-variant/20 rounded-lg pl-10 pr-4 py-2.5 text-sm"
+                        name="search"
+                        value="{{ search_query }}"
+                        placeholder="Search ride, rider, driver or vehicle..."
+                        class="w-full bg-surface-container-highest border border-outline-variant/20 rounded-lg pl-10 pr-20 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
                     >
 
-                </div>
+                    {% if search_query %}
+                        <a
+                            href="{% url 'ride' %}{% if selected_status %}?status={{ selected_status }}{% endif %}"
+                            class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-on-surface-variant hover:text-primary"
+                        >
+                            Clear
+                        </a>
+                    {% endif %}
+
+                </form>
 
             </div>
 
@@ -115,63 +135,86 @@
             <!-- Filters -->
             <div class="flex flex-wrap gap-2 mt-5">
 
-                <a href="{% url 'ride' %}"
-                   class="px-4 py-2 rounded-lg text-xs font-bold
-                   {% if not selected_status %}
-                       bg-primary text-on-primary
-                   {% else %}
-                       bg-surface-container-highest text-on-surface-variant
-                   {% endif %}">
+                <!-- ALL -->
+                <a
+                    href="{% url 'ride' %}{% if search_query %}?search={{ search_query|urlencode }}{% endif %}"
+                    class="px-4 py-2 rounded-lg text-xs font-bold
+                    {% if not selected_status %}
+                        bg-primary text-on-primary
+                    {% else %}
+                        bg-surface-container-highest text-on-surface-variant
+                    {% endif %}"
+                >
                     All {{ total_rides }}
                 </a>
 
-                <a href="{% url 'ride' %}?status=requested"
-                   class="px-4 py-2 rounded-lg text-xs font-bold
-                   {% if selected_status == 'requested' %}
-                       bg-yellow-400/15 text-yellow-400
-                   {% else %}
-                       bg-surface-container-highest text-on-surface-variant
-                   {% endif %}">
+
+                <!-- REQUESTED -->
+                <a
+                    href="{% url 'ride' %}?status=requested{% if search_query %}&search={{ search_query|urlencode }}{% endif %}"
+                    class="px-4 py-2 rounded-lg text-xs font-bold
+                    {% if selected_status == 'requested' %}
+                        bg-yellow-400/15 text-yellow-400
+                    {% else %}
+                        bg-surface-container-highest text-on-surface-variant
+                    {% endif %}"
+                >
                     Requested {{ requested_count }}
                 </a>
 
-                <a href="{% url 'ride' %}?status=accepted"
-                   class="px-4 py-2 rounded-lg text-xs font-bold
-                   {% if selected_status == 'accepted' %}
-                       bg-primary/15 text-primary
-                   {% else %}
-                       bg-surface-container-highest text-on-surface-variant
-                   {% endif %}">
+
+                <!-- ACCEPTED -->
+                <a
+                    href="{% url 'ride' %}?status=accepted{% if search_query %}&search={{ search_query|urlencode }}{% endif %}"
+                    class="px-4 py-2 rounded-lg text-xs font-bold
+                    {% if selected_status == 'accepted' %}
+                        bg-primary/15 text-primary
+                    {% else %}
+                        bg-surface-container-highest text-on-surface-variant
+                    {% endif %}"
+                >
                     Accepted {{ accepted_count }}
                 </a>
 
-                <a href="{% url 'ride' %}?status=in_progress"
-                   class="px-4 py-2 rounded-lg text-xs font-bold
-                   {% if selected_status == 'in_progress' %}
-                       bg-blue-400/15 text-blue-400
-                   {% else %}
-                       bg-surface-container-highest text-on-surface-variant
-                   {% endif %}">
+
+                <!-- IN PROGRESS -->
+                <a
+                    href="{% url 'ride' %}?status=in_progress{% if search_query %}&search={{ search_query|urlencode }}{% endif %}"
+                    class="px-4 py-2 rounded-lg text-xs font-bold
+                    {% if selected_status == 'in_progress' %}
+                        bg-blue-400/15 text-blue-400
+                    {% else %}
+                        bg-surface-container-highest text-on-surface-variant
+                    {% endif %}"
+                >
                     In Progress {{ in_progress_count }}
                 </a>
 
-                <a href="{% url 'ride' %}?status=completed"
-                   class="px-4 py-2 rounded-lg text-xs font-bold
-                   {% if selected_status == 'completed' %}
-                       bg-emerald-400/15 text-emerald-400
-                   {% else %}
-                       bg-surface-container-highest text-on-surface-variant
-                   {% endif %}">
+
+                <!-- COMPLETED -->
+                <a
+                    href="{% url 'ride' %}?status=completed{% if search_query %}&search={{ search_query|urlencode }}{% endif %}"
+                    class="px-4 py-2 rounded-lg text-xs font-bold
+                    {% if selected_status == 'completed' %}
+                        bg-emerald-400/15 text-emerald-400
+                    {% else %}
+                        bg-surface-container-highest text-on-surface-variant
+                    {% endif %}"
+                >
                     Completed {{ completed_count }}
                 </a>
 
-                <a href="{% url 'ride' %}?status=cancelled"
-                   class="px-4 py-2 rounded-lg text-xs font-bold
-                   {% if selected_status == 'cancelled' %}
-                       bg-red-400/15 text-red-400
-                   {% else %}
-                       bg-surface-container-highest text-on-surface-variant
-                   {% endif %}">
+
+                <!-- CANCELLED -->
+                <a
+                    href="{% url 'ride' %}?status=cancelled{% if search_query %}&search={{ search_query|urlencode }}{% endif %}"
+                    class="px-4 py-2 rounded-lg text-xs font-bold
+                    {% if selected_status == 'cancelled' %}
+                        bg-red-400/15 text-red-400
+                    {% else %}
+                        bg-surface-container-highest text-on-surface-variant
+                    {% endif %}"
+                >
                     Cancelled {{ cancelled_count }}
                 </a>
 
@@ -222,14 +265,11 @@
                 </thead>
 
 
-                <tbody id="ride-table-body">
+                <tbody>
 
                     {% for trip in trips %}
 
-                    <tr
-                        class="ride-row border-b border-outline-variant/10 hover:bg-surface-container-highest/40"
-                        data-search="{{ trip.id }} {{ trip.user_id }} {{ trip.driver_id.user_id }} {{ trip.vehicle_id.vehicle_number }}"
-                    >
+                    <tr class="border-b border-outline-variant/10 hover:bg-surface-container-highest/40">
 
                         <!-- Ride ID -->
                         <td class="px-6 py-4">
@@ -366,6 +406,12 @@
                                     Accepted
                                 </span>
 
+                            {% elif trip.status_id.status_code == 'reached' %}
+
+                                <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-purple-400/10 text-purple-400">
+                                    Reached
+                                </span>
+
                             {% elif trip.status_id.status_code == 'in_progress' %}
 
                                 <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-blue-400/10 text-blue-400">
@@ -442,9 +488,15 @@
                                 No rides found
                             </p>
 
-                            <p class="text-xs text-on-surface-variant mt-1">
-                                No ride records are available.
-                            </p>
+                            {% if search_query %}
+                                <p class="text-xs text-on-surface-variant mt-1">
+                                    No rides match "{{ search_query }}".
+                                </p>
+                            {% else %}
+                                <p class="text-xs text-on-surface-variant mt-1">
+                                    No ride records are available.
+                                </p>
+                            {% endif %}
 
                         </td>
 
@@ -459,16 +511,113 @@
         </div>
 
 
-        <!-- Footer -->
+        <!-- Footer + Pagination -->
         <div class="px-6 py-4 border-t border-outline-variant/10">
 
-            <p class="text-xs text-on-surface-variant">
-                Showing
-                <span class="font-semibold text-on-surface">
-                    {{ trips|length }}
-                </span>
-                ride{{ trips|length|pluralize }}
-            </p>
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+
+                <!-- Showing -->
+                <p class="text-xs text-on-surface-variant">
+
+                    Showing
+
+                    <span class="font-semibold text-on-surface">
+                        {{ page_obj.start_index|default:"0" }}
+                    </span>
+
+                    –
+
+                    <span class="font-semibold text-on-surface">
+                        {{ page_obj.end_index|default:"0" }}
+                    </span>
+
+                    of
+
+                    <span class="font-semibold text-on-surface">
+                        {{ page_obj.paginator.count }}
+                    </span>
+
+                    ride{{ page_obj.paginator.count|pluralize }}
+
+                </p>
+
+
+                <!-- Pagination -->
+                {% if page_obj.paginator.num_pages > 1 %}
+
+                <div class="flex items-center gap-1">
+
+                    <!-- Previous -->
+                    {% if page_obj.has_previous %}
+
+                        <a
+                            href="?page={{ page_obj.previous_page_number }}{% if selected_status %}&status={{ selected_status }}{% endif %}{% if search_query %}&search={{ search_query|urlencode }}{% endif %}"
+                            class="px-3 py-2 rounded-lg bg-surface-container-highest text-xs font-bold hover:bg-primary/15 hover:text-primary"
+                        >
+                            ←
+                        </a>
+
+                    {% else %}
+
+                        <span class="px-3 py-2 rounded-lg bg-surface-container-highest/50 text-xs text-on-surface-variant/30">
+                            ←
+                        </span>
+
+                    {% endif %}
+
+
+                    <!-- Page Numbers -->
+                    {% for num in page_obj.paginator.page_range %}
+
+                        {% if num == page_obj.number %}
+
+                            <span class="px-3 py-2 rounded-lg bg-primary text-on-primary text-xs font-bold">
+                                {{ num }}
+                            </span>
+
+                        {% elif num == 1 or num == page_obj.paginator.num_pages or num >= page_obj.number|add:"-2" and num <= page_obj.number|add:"2" %}
+
+                            <a
+                                href="?page={{ num }}{% if selected_status %}&status={{ selected_status }}{% endif %}{% if search_query %}&search={{ search_query|urlencode }}{% endif %}"
+                                class="px-3 py-2 rounded-lg bg-surface-container-highest text-xs font-bold hover:bg-primary/15 hover:text-primary"
+                            >
+                                {{ num }}
+                            </a>
+
+                        {% elif num == page_obj.number|add:"-3" or num == page_obj.number|add:"3" %}
+
+                            <span class="px-2 text-xs text-on-surface-variant">
+                                …
+                            </span>
+
+                        {% endif %}
+
+                    {% endfor %}
+
+
+                    <!-- Next -->
+                    {% if page_obj.has_next %}
+
+                        <a
+                            href="?page={{ page_obj.next_page_number }}{% if selected_status %}&status={{ selected_status }}{% endif %}{% if search_query %}&search={{ search_query|urlencode }}{% endif %}"
+                            class="px-3 py-2 rounded-lg bg-surface-container-highest text-xs font-bold hover:bg-primary/15 hover:text-primary"
+                        >
+                            →
+                        </a>
+
+                    {% else %}
+
+                        <span class="px-3 py-2 rounded-lg bg-surface-container-highest/50 text-xs text-on-surface-variant/30">
+                            →
+                        </span>
+
+                    {% endif %}
+
+                </div>
+
+                {% endif %}
+
+            </div>
 
         </div>
 
@@ -476,31 +625,5 @@
 
 </div>
 
-
-<!-- Search -->
-<script>
-document.addEventListener("DOMContentLoaded", function () {
-
-    const input = document.getElementById("ride-search");
-    const rows = document.querySelectorAll(".ride-row");
-
-    input.addEventListener("input", function () {
-
-        const query = this.value.toLowerCase().trim();
-
-        rows.forEach(function (row) {
-
-            const text = row
-                .getAttribute("data-search")
-                .toLowerCase();
-
-            row.style.display = text.includes(query) ? "" : "none";
-
-        });
-
-    });
-
-});
-</script>
-
 {% endblock %}
+

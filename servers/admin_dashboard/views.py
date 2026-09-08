@@ -1606,7 +1606,7 @@ def update_global_config(request):
             "error": str(e),
         }, status=500)
 @admin_required
-def ride(request):
+def ride(request: HttpRequest) -> HttpResponse:
     """
     Ride Management page.
 
@@ -1617,23 +1617,24 @@ def ride(request):
     - In Progress
     - Completed
     - Cancelled
-    - Ride statistics
-    - Rider/Driver/Vehicle relationships
+    - Search by ride/rider/driver/vehicle
+    - Status filtering
     - Pagination
     """
 
     # ---------------------------------------------------------
-    # STATUS FILTER
+    # SEARCH + STATUS FILTER
     # ---------------------------------------------------------
 
-    selected_status = request.GET.get('status', '').strip().lower()
+    search_query = request.GET.get("search", "").strip()
+    selected_status = request.GET.get("status", "").strip().lower()
 
     valid_statuses = {
-        'requested',
-        'accepted',
-        'in_progress',
-        'completed',
-        'cancelled',
+        "requested",
+        "accepted",
+        "in_progress",
+        "completed",
+        "cancelled",
     }
 
     # ---------------------------------------------------------
@@ -1643,18 +1644,49 @@ def ride(request):
     trips = (
         Trip.objects
         .select_related(
-            'user_id',
-            'driver_id',
-            'vehicle_id',
-            'requested_vehicle_type',
-            'status_id',
-            'zone',
+            "user_id",
+            "driver_id",
+            "driver_id__user_id",
+            "vehicle_id",
+            "requested_vehicle_type",
+            "status_id",
+            "zone",
         )
-        .order_by('-requested_at')
+        .order_by("-requested_at")
     )
 
     # ---------------------------------------------------------
-    # APPLY STATUS FILTER
+    # SEARCH
+    # ---------------------------------------------------------
+
+    if search_query:
+        search_filter = Q(id__icontains=search_query)
+
+        # Rider
+        search_filter |= Q(
+            user_id__full_name__icontains=search_query
+        )
+        search_filter |= Q(
+            user_id__phone_number__icontains=search_query
+        )
+
+        # Driver
+        search_filter |= Q(
+            driver_id__user_id__full_name__icontains=search_query
+        )
+        search_filter |= Q(
+            driver_id__user_id__phone_number__icontains=search_query
+        )
+
+        # Vehicle
+        search_filter |= Q(
+            vehicle_id__vehicle_number__icontains=search_query
+        )
+
+        trips = trips.filter(search_filter).distinct()
+
+    # ---------------------------------------------------------
+    # STATUS FILTER
     # ---------------------------------------------------------
 
     if selected_status in valid_statuses:
@@ -1668,8 +1700,7 @@ def ride(request):
 
     paginator = Paginator(trips, 10)
 
-    page_number = request.GET.get('page')
-
+    page_number = request.GET.get("page")
     page_obj = paginator.get_page(page_number)
 
     # ---------------------------------------------------------
@@ -1683,33 +1714,31 @@ def ride(request):
     # ---------------------------------------------------------
 
     requested_count = Trip.objects.filter(
-        status_id__status_code='requested'
+        status_id__status_code="requested"
     ).count()
 
     accepted_count = Trip.objects.filter(
-        status_id__status_code='accepted'
+        status_id__status_code="accepted"
     ).count()
 
     reached_count = Trip.objects.filter(
-        status_id__status_code='reached'
+        status_id__status_code="reached"
     ).count()
 
     in_progress_count = Trip.objects.filter(
-        status_id__status_code='in_progress'
+        status_id__status_code="in_progress"
     ).count()
 
     completed_count = Trip.objects.filter(
-        status_id__status_code='completed'
+        status_id__status_code="completed"
     ).count()
 
     cancelled_count = Trip.objects.filter(
-        status_id__status_code='cancelled'
+        status_id__status_code="cancelled"
     ).count()
 
     # ---------------------------------------------------------
     # ACTIVE RIDES
-    #
-    # requested + accepted + reached + in_progress
     # ---------------------------------------------------------
 
     active_rides = (
@@ -1720,36 +1749,33 @@ def ride(request):
     )
 
     # ---------------------------------------------------------
-    # TEMPLATE CONTEXT
+    # CONTEXT
     # ---------------------------------------------------------
 
     context = {
-        # Paginated rides
-        'trips': page_obj.object_list,
-        'page_obj': page_obj,
+        "trips": page_obj.object_list,
+        "page_obj": page_obj,
 
-        # Main statistics
-        'total_rides': total_rides,
-        'active_rides': active_rides,
-        'completed_rides': completed_count,
-        'cancelled_rides': cancelled_count,
+        "total_rides": total_rides,
+        "active_rides": active_rides,
+        "completed_rides": completed_count,
+        "cancelled_rides": cancelled_count,
 
-        # Individual status counts
-        'requested_count': requested_count,
-        'accepted_count': accepted_count,
-        'reached_count': reached_count,
-        'in_progress_count': in_progress_count,
-        'completed_count': completed_count,
-        'cancelled_count': cancelled_count,
+        "requested_count": requested_count,
+        "accepted_count": accepted_count,
+        "reached_count": reached_count,
+        "in_progress_count": in_progress_count,
+        "completed_count": completed_count,
+        "cancelled_count": cancelled_count,
 
-        # Current filter
-        'selected_status': selected_status,
+        "selected_status": selected_status,
+        "search_query": search_query,
     }
 
     return render(
         request,
-        'admin_pages/ride.html',
-        context
+        "admin_pages/ride.html",
+        context,
     )
 @admin_required
 def riders(request: HttpRequest) -> HttpResponse:

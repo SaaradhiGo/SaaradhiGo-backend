@@ -24,8 +24,10 @@ from servers.rider.models import (
     Rider, FavoritePlace, Wallet, WalletTransaction, Notification,
     NotificationPreference,
 )
+from servers.support.models import SupportTicket, SupportMessage
 from servers.ride.models import Receipt
 from servers.sos.models import SOSEvent, SOSEventUpdate
+from django.contrib import messages
 from django.contrib.auth import get_user_model
 import json
 import logging
@@ -131,53 +133,426 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
     return render(request, "admin_pages/driver_onboarding.html",{"pending_reviews_count":pending.count(),"approved_count":approved.count(),"drivers":drivers,"selected_driver":selected_driver,"page_number":page_number,"status_filter":status})
 @admin_required
 def dispute_support(request: HttpRequest) -> HttpResponse:
-    tickets_qs = SupportTicket.objects.all().order_by('-created_at')
-    open_count = tickets_qs.filter(status='OPEN').count()
-    urgent_issue_types = {'safety', 'account', 'app_bug'}
-    urgent_count = tickets_qs.filter(status='OPEN', issue_type__in=urgent_issue_types).count()
-    total_count = tickets_qs.count()
-    ticket_list = []
-    for ticket in tickets_qs:
-        ticket.priority = 'URGENT' if ticket.issue_type in urgent_issue_types else 'NORMAL'
-        ticket.rider_name = (
-            getattr(ticket.user_id, 'full_name', None)
-            or getattr(ticket.user_id, 'phone_number', None)
-            or 'Unknown rider'
+
+    # =========================================================
+    # ADMIN ACTIONS
+    # =========================================================
+
+    if request.method == "POST":
+
+        ticket_id = request.POST.get("ticket_id")
+        action = request.POST.get("action")
+
+        ticket = get_object_or_404(
+            SupportTicket,
+            id=ticket_id
         )
-        ticket.driver = None
-        # Provide human-friendly labels for templates
-        try:
-            ticket.status_display = ticket.get_status_display()
-        except Exception:
-            ticket.status_display = ticket.status
-        try:
-            ticket.issue_type_display = ticket.get_issue_type_display()
-        except Exception:
-            ticket.issue_type_display = ticket.issue_type
-        ticket_list.append(ticket)
-    # Pagination
-    paginator = Paginator(ticket_list, 5)
-    page_number = request.GET.get('page')
-    page_obj = paginator.get_page(page_number)
-    # Selected ticket details
-    selected_ticket_id = request.GET.get('selected_ticket')
-    selected_ticket = None
-    if selected_ticket_id:
-        selected_ticket = next(
-            (ticket for ticket in ticket_list if str(ticket.id) == str(selected_ticket_id)),
-            None,
+
+        # Keep current filters after POST
+        search = request.POST.get("search", "")
+        page = request.POST.get("page", "1")
+
+        # -----------------------------------------------------
+        # REPLY
+        # -----------------------------------------------------
+
+        if action == "reply":
+
+            reply = request.POST.get("reply", "").strip()
+
+            if not reply:
+
+                messages.error(
+                    request,
+                    "Please enter a reply."
+                )
+
+            elif ticket.status == "CLOSED":
+
+                messages.error(
+                    request,
+                    "This ticket is already closed."
+                )
+
+            else:
+
+                SupportMessage.objects.create(
+                    ticket=ticket,
+                    author=request.user,
+                    author_role="support",
+                    body=reply,
+                )
+
+                # OPEN -> IN_PROGRESS
+                if ticket.status == "OPEN":
+
+                    ticket.status = "IN_PROGRESS"
+
+                    ticket.save(
+                        update_fields=["status"]
+                    )
+
+                messages.success(
+                    request,
+                    "Reply sent successfully."
+                )
+
+            return redirect(
+                f"{request.path}"
+                f"?selected_ticket={ticket.id}"
+                f"&page={page}"
+                f"&search={search}"
+            )
+
+        # -----------------------------------------------------
+        # CLOSE
+        # -----------------------------------------------------
+
+        elif action == "close":
+
+            if ticket.status != "CLOSED":
+
+                ticket.status = "CLOSED"
+                ticket.resolved_at = timezone.now()
+
+                ticket.save(
+                    update_fields=[
+                        "status",
+                        "resolved_at",
+                        "updated_at",
+                    ]
+                )
+
+                messages.success(
+                    request,
+                    "Ticket closed successfully."
+                )
+
+            return redirect(
+                f"{request.path}"
+                f"?selected_ticket={ticket.id}"
+                f"&page={page}"
+                f"&search={search}"
+            )
+
+        # -----------------------------------------------------
+        # REOPEN
+        # -----------------------------------------------------
+
+        elif action == "reopen":
+
+            if ticket.status == "CLOSED":
+
+                ticket.status = "OPEN"
+                ticket.resolved_at = None
+
+                ticket.save(
+                    update_fields=[
+                        "status",
+                        "resolved_at",
+                        "updated_at",
+                    ]
+                )
+
+                messages.success(
+                    request,
+                    "Ticket reopened successfully."
+                )
+
+            return redirect(
+                f"{request.path}"
+                f"?selected_ticket={ticket.id}"
+                f"&page={page}"
+                f"&search={search}"
+            )
+
+    # =========================================================
+    # TICKET QUERYSET
+    # =========================================================
+
+    tickets_qs = (
+        SupportTicket.objects
+        .all()
+        .order_by("-created_at")
+    )
+
+    # =========================================================
+    # SEARCH
+    # =========================================================
+
+    search = request.GET.get(
+        "search",
+        ""
+    ).strip()
+
+    if search:
+
+        search_filter = (
+            Q(description__icontains=search)
+            |
+            Q(issue_type__icontains=search)
         )
-    if not selected_ticket and page_obj.object_list:
-        selected_ticket = page_obj.object_list[0]
-    context = {
-        'page_obj': page_obj,
-        'tickets': page_obj.object_list,
-        'selected_ticket': selected_ticket,
-        'open_count': open_count,
-        'urgent_count': urgent_count,
-        'total_count': total_count,
+
+        # Search by numeric ticket ID
+        if search.isdigit():
+
+            search_filter |= Q(
+                id=int(search)
+            )
+
+        # Search rider information if available
+        try:
+
+            search_filter |= Q(
+                user_id__full_name__icontains=search
+            )
+
+        except Exception:
+
+            pass
+
+        try:
+
+            search_filter |= Q(
+                user_id__phone_number__icontains=search
+            )
+
+        except Exception:
+
+            pass
+
+        tickets_qs = tickets_qs.filter(
+            search_filter
+        )
+
+    # =========================================================
+    # STATUS COUNTS
+    # =========================================================
+
+    all_tickets = SupportTicket.objects.all()
+
+    open_count = all_tickets.filter(
+        status="OPEN"
+    ).count()
+
+    in_progress_count = all_tickets.filter(
+        status="IN_PROGRESS"
+    ).count()
+
+    waiting_count = all_tickets.filter(
+        status="WAITING_USER"
+    ).count()
+
+    closed_count = all_tickets.filter(
+        status="CLOSED"
+    ).count()
+
+    total_count = all_tickets.count()
+
+    # =========================================================
+    # URGENT TICKETS
+    # =========================================================
+
+    urgent_issue_types = {
+        "safety",
+        "account",
+        "app_bug",
     }
-    return render(request, "admin_pages/dispute_support.html", context)
+
+    urgent_count = all_tickets.filter(
+        status__in=[
+            "OPEN",
+            "IN_PROGRESS",
+            "WAITING_USER",
+        ],
+        issue_type__in=urgent_issue_types,
+    ).count()
+
+    # =========================================================
+    # PREPARE TICKETS
+    # =========================================================
+
+    for ticket in tickets_qs:
+
+        # Priority
+        ticket.priority = (
+            "URGENT"
+            if ticket.issue_type in urgent_issue_types
+            else "NORMAL"
+        )
+
+        # Rider name
+        ticket.rider_name = (
+            getattr(
+                ticket.user_id,
+                "full_name",
+                None
+            )
+            or
+            getattr(
+                ticket.user_id,
+                "phone_number",
+                None
+            )
+            or
+            "Unknown rider"
+        )
+
+        # Driver
+        ticket.driver = None
+
+        # Status display
+        try:
+
+            ticket.status_display = (
+                ticket.get_status_display()
+            )
+
+        except Exception:
+
+            ticket.status_display = ticket.status
+
+        # Issue display
+        try:
+
+            ticket.issue_type_display = (
+                ticket.get_issue_type_display()
+            )
+
+        except Exception:
+
+            ticket.issue_type_display = (
+                ticket.issue_type
+            )
+
+    # =========================================================
+    # PAGINATION
+    # =========================================================
+
+    paginator = Paginator(
+        tickets_qs,
+        5
+    )
+
+    page_number = request.GET.get(
+        "page"
+    )
+
+    page_obj = paginator.get_page(
+        page_number
+    )
+
+    tickets = page_obj.object_list
+
+    # =========================================================
+    # SELECTED TICKET
+    # =========================================================
+
+    selected_ticket_id = request.GET.get(
+        "selected_ticket"
+    )
+
+    selected_ticket = None
+
+    if selected_ticket_id:
+
+        selected_ticket = (
+            SupportTicket.objects
+            .filter(
+                id=selected_ticket_id
+            )
+            .first()
+        )
+
+        if selected_ticket:
+
+            selected_ticket.priority = (
+                "URGENT"
+                if selected_ticket.issue_type
+                in urgent_issue_types
+                else "NORMAL"
+            )
+
+            selected_ticket.rider_name = (
+                getattr(
+                    selected_ticket.user_id,
+                    "full_name",
+                    None
+                )
+                or
+                getattr(
+                    selected_ticket.user_id,
+                    "phone_number",
+                    None
+                )
+                or
+                "Unknown rider"
+            )
+
+            selected_ticket.driver = None
+
+            try:
+
+                selected_ticket.status_display = (
+                    selected_ticket.get_status_display()
+                )
+
+            except Exception:
+
+                selected_ticket.status_display = (
+                    selected_ticket.status
+                )
+
+            try:
+
+                selected_ticket.issue_type_display = (
+                    selected_ticket.get_issue_type_display()
+                )
+
+            except Exception:
+
+                selected_ticket.issue_type_display = (
+                    selected_ticket.issue_type
+                )
+
+    # =========================================================
+    # DEFAULT SELECTED TICKET
+    # =========================================================
+
+    if not selected_ticket and tickets:
+
+        selected_ticket = tickets[0]
+
+    # =========================================================
+    # CONTEXT
+    # =========================================================
+
+    context = {
+
+        "page_obj": page_obj,
+
+        "tickets": tickets,
+
+        "selected_ticket": selected_ticket,
+
+        "search": search,
+
+        # Counts
+        "open_count": open_count,
+        "in_progress_count": in_progress_count,
+        "waiting_count": waiting_count,
+        "closed_count": closed_count,
+        "urgent_count": urgent_count,
+        "total_count": total_count,
+    }
+
+    return render(
+        request,
+        "admin_pages/dispute_support.html",
+        context
+    )
+
+
 @admin_required
 def payment_dashboard(request: HttpRequest) -> HttpResponse:
     total_gross_revenue = FarePricing.objects.aggregate(total_revenue=models.Sum('total_fare'))['total_revenue'] or 0
@@ -1235,8 +1610,7 @@ def update_global_config(request):
 def ride(request):
     """
     Ride Management page.
-    Uses the existing Trip model only.
-    No database/model changes are required.
+
     Supports:
     - All rides
     - Requested
@@ -1246,11 +1620,15 @@ def ride(request):
     - Cancelled
     - Ride statistics
     - Rider/Driver/Vehicle relationships
+    - Pagination
     """
+
     # ---------------------------------------------------------
     # STATUS FILTER
     # ---------------------------------------------------------
+
     selected_status = request.GET.get('status', '').strip().lower()
+
     valid_statuses = {
         'requested',
         'accepted',
@@ -1258,9 +1636,11 @@ def ride(request):
         'completed',
         'cancelled',
     }
+
     # ---------------------------------------------------------
     # BASE QUERYSET
     # ---------------------------------------------------------
+
     trips = (
         Trip.objects
         .select_related(
@@ -1273,61 +1653,88 @@ def ride(request):
         )
         .order_by('-requested_at')
     )
+
     # ---------------------------------------------------------
     # APPLY STATUS FILTER
     # ---------------------------------------------------------
+
     if selected_status in valid_statuses:
         trips = trips.filter(
             status_id__status_code=selected_status
         )
+
+    # ---------------------------------------------------------
+    # PAGINATION
+    # ---------------------------------------------------------
+
+    paginator = Paginator(trips, 10)
+
+    page_number = request.GET.get('page')
+
+    page_obj = paginator.get_page(page_number)
+
     # ---------------------------------------------------------
     # TOTAL RIDES
     # ---------------------------------------------------------
+
     total_rides = Trip.objects.count()
+
     # ---------------------------------------------------------
     # STATUS COUNTS
     # ---------------------------------------------------------
+
     requested_count = Trip.objects.filter(
         status_id__status_code='requested'
     ).count()
+
     accepted_count = Trip.objects.filter(
         status_id__status_code='accepted'
     ).count()
+
     reached_count = Trip.objects.filter(
         status_id__status_code='reached'
     ).count()
+
     in_progress_count = Trip.objects.filter(
         status_id__status_code='in_progress'
     ).count()
+
     completed_count = Trip.objects.filter(
         status_id__status_code='completed'
     ).count()
+
     cancelled_count = Trip.objects.filter(
         status_id__status_code='cancelled'
     ).count()
+
     # ---------------------------------------------------------
     # ACTIVE RIDES
     #
-    # A ride is considered active when it is:
-    # requested, accepted, reached or in progress.
+    # requested + accepted + reached + in_progress
     # ---------------------------------------------------------
+
     active_rides = (
         requested_count
         + accepted_count
         + reached_count
         + in_progress_count
     )
+
     # ---------------------------------------------------------
     # TEMPLATE CONTEXT
     # ---------------------------------------------------------
+
     context = {
-        # Ride records
-        'trips': trips,
+        # Paginated rides
+        'trips': page_obj.object_list,
+        'page_obj': page_obj,
+
         # Main statistics
         'total_rides': total_rides,
         'active_rides': active_rides,
         'completed_rides': completed_count,
         'cancelled_rides': cancelled_count,
+
         # Individual status counts
         'requested_count': requested_count,
         'accepted_count': accepted_count,
@@ -1335,17 +1742,16 @@ def ride(request):
         'in_progress_count': in_progress_count,
         'completed_count': completed_count,
         'cancelled_count': cancelled_count,
+
         # Current filter
         'selected_status': selected_status,
     }
+
     return render(
         request,
         'admin_pages/ride.html',
         context
     )
-
-
-
 @admin_required
 def riders(request: HttpRequest) -> HttpResponse:
     """Rider operations page with account, ride, payment and safety history."""

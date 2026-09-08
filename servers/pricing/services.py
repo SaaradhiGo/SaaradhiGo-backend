@@ -444,7 +444,11 @@ def quote_fare(
 
     card = None
     if zone is not None and vt is not None:
-        card = get_active_rate_card(zone, vt, at=at)
+        # A fare quote is for the current ride. `at` is retained for
+        # deterministic time-of-day surcharge checks, but must not make a
+        # card created moments ago look like a future card when callers pass
+        # an earlier clock time for testing or display purposes.
+        card = get_active_rate_card(zone, vt)
 
     if card is None:
         # No rate card anywhere in the zone's parent chain. In production

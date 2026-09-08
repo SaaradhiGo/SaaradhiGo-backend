@@ -2626,7 +2626,129 @@ def transaction_dashboard(request):
     )
 @admin_required
 def predictive_heatmaps(request: HttpRequest) -> HttpResponse:
-    return render(request, "admin_pages/predictive_heatmaps.html")
+    """
+    Predictive Heatmaps / Demand Intelligence dashboard.
+    Builds live dashboard data from drivers and trips.
+    """
+
+    now = timezone.now()
+
+    # ---------------------------------------------------------
+    # 1. ACTIVE DRIVERS
+    # ---------------------------------------------------------
+    active_drivers = Driver.objects.filter(
+        status="online"
+    ).count()
+
+    # ---------------------------------------------------------
+    # 2. PENDING / UNMET RIDES
+    # ---------------------------------------------------------
+    pending_rides = Trip.objects.filter(
+        status_id__status_code="requested"
+    ).count()
+
+    # ---------------------------------------------------------
+    # 3. NETWORK STATUS
+    # ---------------------------------------------------------
+    if active_drivers == 0:
+        network_status = "OFFLINE"
+    elif pending_rides > active_drivers * 2:
+        network_status = "CRITICAL"
+    elif pending_rides > active_drivers:
+        network_status = "HIGH DEMAND"
+    else:
+        network_status = "OPTIMAL"
+
+    # ---------------------------------------------------------
+    # 4. SUPPLY / DEMAND RATIO
+    # ---------------------------------------------------------
+    total_demand = active_drivers + pending_rides
+
+    if total_demand > 0:
+        supply_ratio = round(
+            (active_drivers / total_demand) * 100
+        )
+    else:
+        supply_ratio = 100
+
+    supply_ratio = min(max(supply_ratio, 0), 100)
+    deficit_pct = 100 - supply_ratio
+
+    # ---------------------------------------------------------
+    # 5. PREDICTED DEMAND ZONES
+    # ---------------------------------------------------------
+    demand_zones = []
+
+    # Build zones from currently requested rides.
+    zones = list(
+        Trip.objects
+        .filter(status_id__status_code__in=["requested"])
+        .filter(zone__isnull=False)
+        .values("zone__name")
+        .annotate(request_count=Count("id"))
+        .order_by("-request_count")[:10]
+    )
+    max_zone_requests = max(
+        (zone["request_count"] for zone in zones),
+        default=0,
+    )
+
+    for index, zone in enumerate(zones):
+        request_count = zone["request_count"]
+
+        # Simple prediction logic.
+        if active_drivers == 0:
+            predicted_surge = 3.0
+        else:
+            demand_supply = request_count / max(active_drivers, 1)
+
+            if demand_supply >= 3:
+                predicted_surge = 3.0
+            elif demand_supply >= 2:
+                predicted_surge = 2.5
+            elif demand_supply >= 1:
+                predicted_surge = 2.0
+            else:
+                predicted_surge = 1.2
+
+        demand_zones.append({
+            "id": index + 1,
+            "zone_name": zone["zone__name"],
+            "request_count": request_count,
+            "demand_width": round(
+                (request_count / max_zone_requests) * 100
+            ) if max_zone_requests else 0,
+            "reason": f"{request_count} active ride requests",
+            "predicted_surge": predicted_surge,
+            "predicted_at_time": (
+                now + timedelta(minutes=45)
+            ).strftime("%H:%M"),
+        })
+
+    # ---------------------------------------------------------
+    # 6. DISPATCH LOGS
+    # ---------------------------------------------------------
+    # If you already have a dispatch log model, query it here.
+    dispatch_logs = []
+
+    # ---------------------------------------------------------
+    # 7. RENDER DASHBOARD
+    # ---------------------------------------------------------
+    context = {
+        "network_status": network_status,
+        "active_drivers": active_drivers,
+        "pending_rides": pending_rides,
+        "supply_ratio": supply_ratio,
+        "deficit_pct": deficit_pct,
+        "demand_zones": demand_zones,
+        "dispatch_logs": dispatch_logs,
+    }
+
+    return render(
+        request,
+        "admin_pages/predictive_heatmaps.html",
+        context,
+    )
 def admin_logout(request: HttpRequest) -> HttpResponse:
     auth_logout(request)
     return redirect("login")

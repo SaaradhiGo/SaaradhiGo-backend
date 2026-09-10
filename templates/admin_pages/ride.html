@@ -269,13 +269,13 @@
 
                     {% for trip in trips %}
 
-                    <tr class="border-b border-outline-variant/10 hover:bg-surface-container-highest/40">
+                    <tr class="border-b border-outline-variant/10 hover:bg-surface-container-highest/40 cursor-pointer" onclick="window.location.href='{% url 'ride_detail' trip.id %}'">
 
                         <!-- Ride ID -->
                         <td class="px-6 py-4">
-                            <span class="font-mono text-sm text-primary font-bold">
+                            <a href="{% url 'ride_detail' trip.id %}" class="font-mono text-sm text-primary font-bold hover:underline">
                                 #{{ trip.id }}
-                            </span>
+                            </a>
                         </td>
 
 

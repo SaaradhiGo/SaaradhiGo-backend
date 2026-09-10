@@ -12,7 +12,13 @@ from django.db import models, transaction as db_transaction
 from django.db.models.functions import Coalesce
 from django.db.models import (Avg,Count, Q,Sum,F,Max,Value,DecimalField,)
 from servers.driver.models import Driver, WithdrawalRequest,VehicleType,Vehicle
-from servers.ride.models import FarePricing, Trip, PromoCode, PromoRedemption
+from servers.ride.models import (
+    ChatMessage,
+    FarePricing,
+    Trip,
+    PromoCode,
+    PromoRedemption,
+)
 from servers.pricing.services import commission_percent_for_trip
 from servers.pricing.models import ServiceZone, RateCard
 from decimal import Decimal, InvalidOperation
@@ -1777,6 +1783,66 @@ def ride(request: HttpRequest) -> HttpResponse:
         "admin_pages/ride.html",
         context,
     )
+
+
+@admin_required
+def ride_detail(request: HttpRequest, trip_id: int) -> HttpResponse:
+    """Render the complete operations view for one trip."""
+    trip = get_object_or_404(
+        Trip.objects.select_related(
+            "user_id",
+            "driver_id",
+            "driver_id__user_id",
+            "vehicle_id",
+            "requested_vehicle_type",
+            "status_id",
+            "zone",
+        ),
+        id=trip_id,
+    )
+
+    fare = trip.fare_pricing.order_by("-id").first()
+    promo = (
+        PromoRedemption.objects
+        .filter(trip=trip)
+        .select_related("promo")
+        .first()
+    )
+    receipts = Receipt.objects.filter(trip_id=trip).order_by("-version")
+    latest_receipt = receipts.first()
+    commission_rate = commission_percent_for_trip(trip)
+    fare_total = fare.total_fare if fare else (trip.final_fare or trip.estimated_fare or Decimal("0"))
+    commission_amount = (
+        fare_total * Decimal(str(commission_rate or "0")) / Decimal("100")
+    ).quantize(Decimal("0.01"))
+
+    timeline = [
+        ("Requested", trip.requested_at),
+        ("Accepted", trip.accepted_at),
+        ("Driver arrived", trip.reached_at),
+        ("OTP verified", getattr(trip, "otp_verified_at", None)),
+        ("Started", trip.started_at),
+        ("Completed", trip.completed_at),
+        ("Cancelled", trip.cancelled_at),
+    ]
+
+    context = {
+        "trip": trip,
+        "fare": fare,
+        "promo": promo,
+        "receipts": receipts,
+        "latest_receipt": latest_receipt,
+        "chat_messages": ChatMessage.objects.filter(trip=trip).select_related("sender"),
+        "timeline": timeline,
+        "commission_rate": commission_rate,
+        "commission_amount": commission_amount,
+        "driver_net": (fare_total - commission_amount).quantize(Decimal("0.01")),
+        "gst_amount": latest_receipt.gst_amount if latest_receipt else None,
+        "has_route_trail": False,
+    }
+    return render(request, "admin_pages/ride_detail.html", context)
+
+
 @admin_required
 def riders(request: HttpRequest) -> HttpResponse:
     """Rider operations page with account, ride, payment and safety history."""

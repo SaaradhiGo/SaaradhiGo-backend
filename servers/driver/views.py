@@ -1,5 +1,6 @@
 import logging
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 from base.utils import success_response, error_response
 from servers.redis_client import add_driver_location,remove_driver
 from rest_framework.decorators import api_view, permission_classes, parser_classes
@@ -500,6 +501,14 @@ def create_vehicle(request):
             year=data.get('year'),
             capacity=data.get('capacity', 1),
             rc_doc=data.get('rc_doc'),
+            permit_doc=data.get('permit_doc'),
+            insurance_doc=data.get('insurance_doc'),
+            fitness_doc=data.get('fitness_doc'),
+            puc_doc=data.get('puc_doc'),
+            insurance_expiry=data.get('insurance_expiry'),
+            permit_expiry=data.get('permit_expiry'),
+            fitness_expiry=data.get('fitness_expiry'),
+            puc_expiry=data.get('puc_expiry'),
             vehicle_pic=data.get('vehicle_pic'),
         )
         vehicle.full_clean()
@@ -536,6 +545,7 @@ def update_vehicle(request, vehicle_id):
     from .serializers import VehicleSerializer
 
     driver = request.user.driver
+    was_rejected = driver.doc_status == "rejected"
     try:
         vehicle = Vehicle.objects.get(id=vehicle_id, driver_id=driver)
     except Vehicle.DoesNotExist:
@@ -547,7 +557,7 @@ def update_vehicle(request, vehicle_id):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    for field_name in ('rc_doc', 'vehicle_pic'):
+    for field_name in ('rc_doc', 'permit_doc', 'insurance_doc', 'fitness_doc', 'puc_doc', 'vehicle_pic'):
         field_provided, field_value, field_error = resolve_file_input(
             request, field_name, kind=field_name
         )
@@ -562,7 +572,7 @@ def update_vehicle(request, vehicle_id):
         if field_provided:
             setattr(vehicle, field_name, field_value)
 
-    allowed_fields = ['brand', 'model', 'color', 'year', 'capacity', 'vehicle_number']
+    allowed_fields = ['brand', 'model', 'color', 'year', 'capacity', 'vehicle_number', 'insurance_expiry', 'permit_expiry','fitness_expiry','puc_expiry',]
     for field in allowed_fields:
         if field in request.data:
             setattr(vehicle, field, request.data[field])
@@ -570,6 +580,19 @@ def update_vehicle(request, vehicle_id):
     try:
         vehicle.full_clean()
         vehicle.save()
+        if was_rejected:
+            driver.doc_status = "pending"
+            driver.approved = False
+            driver.doc_rejection_reason = None
+            driver.doc_status_updated_at = timezone.now()
+
+            driver.save(update_fields=[
+                "doc_status",
+                "approved",
+                "doc_rejection_reason",
+                "doc_status_updated_at",
+            ])
+
     except ValidationError as e:
         return error_response(
             code='VALIDATION_ERROR',
@@ -623,7 +646,7 @@ def update_driver_profile(request):
     """
     driver = request.user.driver
     update_data = {}
-
+    was_rejected = driver.doc_status == "rejected"
     license_provided, license_value, license_error = resolve_file_input(
         request, 'license_doc', kind='license_doc'
     )
@@ -692,7 +715,21 @@ def update_driver_profile(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    
     serializer.save()
+    if was_rejected:
+        driver.doc_status = "pending"
+        driver.approved = False
+        driver.doc_rejection_reason = None
+        driver.doc_status_updated_at = timezone.now()
+
+        driver.save(update_fields=[
+            "doc_status",
+            "approved",
+            "doc_rejection_reason",
+            "doc_status_updated_at",
+        ])
+
     return success_response(serializer.data, status.HTTP_200_OK)
 @api_view(['GET'])
 @permission_classes([IsDriver])

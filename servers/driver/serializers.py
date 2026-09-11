@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import Vehicle, VehicleType, Driver, WithdrawalRequest, DriverBankAccount, IncentiveQuest
 from servers.auth_user.serializers import UserModelSerializer
 from base.serializer_fields import S3UploadKeyField
+from django.utils import timezone
 
 
 class VehicleTypeSerializer(serializers.ModelSerializer):
@@ -19,8 +20,9 @@ class VehicleSerializer(serializers.ModelSerializer):
         model = Vehicle
         fields = [
             'id', 'vehicle_number', 'brand', 'model', 'color', 'year',
-            'capacity', 'vehicle_pic', 'rc_doc', 'status',
-            'vehicle_type', 'vehicle_type_id_val',
+            'capacity', 'vehicle_pic', 'rc_doc', 'permit_doc',
+            'insurance_doc','fitness_doc','puc_doc','insurance_expiry','permit_expiry',
+            'fitness_expiry','puc_expiry','status','vehicle_type', 'vehicle_type_id_val',
         ]
         read_only_fields = ['id', 'status']
 class DriverProfileSerializer(serializers.ModelSerializer):
@@ -59,7 +61,15 @@ class VehicleCreateSerializer(serializers.Serializer):
     year = serializers.IntegerField(required=False, default=None)
     capacity = serializers.IntegerField(required=False, default=1)
     rc_doc = S3UploadKeyField(kind="rc_doc", required=False, allow_null=True)
-    vehicle_pic = S3UploadKeyField(kind="vehicle_pic", required=False, allow_null=True)
+    permit_doc = S3UploadKeyField(kind="permit_doc",required=False,allow_null=True)
+    insurance_doc = S3UploadKeyField(kind="insurance_doc",required=False, allow_null=True)
+    fitness_doc = S3UploadKeyField(kind="fitness_doc",required=False, allow_null=True)
+    puc_doc = S3UploadKeyField(kind="puc_doc",required=False,allow_null=True)
+    insurance_expiry = serializers.DateField(required=False,allow_null=True)
+    permit_expiry = serializers.DateField(required=False,allow_null=True)
+    fitness_expiry = serializers.DateField(required=False,allow_null=True)
+    puc_expiry = serializers.DateField(required=False,allow_null=True)
+    vehicle_pic = S3UploadKeyField(kind="vehicle_pic",required=False,allow_null=True)
 
     def validate_vehicle_type(self, value):
         try:

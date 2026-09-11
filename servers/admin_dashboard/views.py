@@ -108,35 +108,593 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     return render(request, 'admin_pages/fleet_monitor.html', {"kpis": kpis})
 @admin_required
 def driver_onboarding(request: HttpRequest) -> HttpResponse:
-    page_number=request.GET.get("page",1)
-    status=request.GET.get('status',"ALL")
-    selected_driver_id=request.GET.get('selected_driver',None)
-    selected_driver=None
-    
+    status = request.GET.get("status", "ALL")
+    search = request.GET.get("search", "").strip()
+    selected_driver_id = request.GET.get("selected_driver")
+    page_number = request.GET.get("page", 1)
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+        driver_id = request.POST.get("driver_id")
+        rejection_reason = (request.POST.get("rejection_reason") or request.POST.get("custom_reason") or "").strip()
+
+        if not driver_id:
+            messages.error(request, "No driver selected.")
+            return redirect(request.path)
+
+        driver = get_object_or_404(Driver, id=driver_id)
+        driver_label = (
+            getattr(driver.user_id, "full_name", None)
+            or getattr(driver.user_id, "phone_number", None)
+            or f"Driver #{driver.id}"
+        )
+
+        if action == "approve":
+            before_snapshot = {
+                "doc_status": driver.doc_status,
+                "approved": driver.approved,
+            }
+            driver.doc_status = "approved"
+            driver.approved = True
+            driver.doc_status_updated_at = timezone.now()
+            driver.doc_rejection_reason = None
+            driver.save(
+                update_fields=[
+                    "doc_status",
+                    "approved",
+                    "doc_status_updated_at",
+                    "doc_rejection_reason",
+                ]
+            )
+
+            # Record audit action
+            try:
+                from servers.admin_audit.services import record_admin_action
+                record_admin_action(
+                    request,
+                    action="kyc_approved",
+                    target_type="driver",
+                    target_id=driver.id,
+                    before=before_snapshot,
+                    after={"doc_status": "approved", "approved": True},
+                    reason="Approved via Driver Onboarding console",
+                )
+            except Exception as e:
+                logger.error(f"Audit log failed for driver approve: {e}")
+
+            # Send transactional notification
+            try:
+                from servers.rider.models import Notification
+                Notification.objects.create(
+                    user_id=driver.user_id,
+                    title="KYC & Vehicle Approved 🎉",
+                    message="Congratulations! Your KYC documents and vehicle compliance have been verified and approved. You are now authorized to accept rides.",
+                    notif_type="ride_event",
+                    data={"type": "kyc_approved", "driver_id": driver.id},
+                )
+            except Exception as e:
+                logger.error(f"Failed to send approval notification to driver {driver.id}: {e}")
+
+            messages.success(request, f"{driver_label} has been approved successfully.")
+
+        elif action in ["reject", "request_reupload"]:
+            if not rejection_reason:
+                rejection_reason = "Document verification failed. Please check your uploaded Driving License and Vehicle Compliance documents."
+
+            before_snapshot = {
+                "doc_status": driver.doc_status,
+                "approved": driver.approved,
+                "doc_rejection_reason": driver.doc_rejection_reason,
+            }
+            driver.doc_status = "rejected"
+            driver.approved = False
+            driver.doc_status_updated_at = timezone.now()
+            driver.doc_rejection_reason = rejection_reason
+            driver.save(
+                update_fields=[
+                    "doc_status",
+                    "approved",
+                    "doc_status_updated_at",
+                    "doc_rejection_reason",
+                ]
+            )
+
+            # Record audit action
+            try:
+                from servers.admin_audit.services import record_admin_action
+                record_admin_action(
+                    request,
+                    action="kyc_rejected",
+                    target_type="driver",
+                    target_id=driver.id,
+                    before=before_snapshot,
+                    after={"doc_status": "rejected", "approved": False, "doc_rejection_reason": rejection_reason},
+                    reason=rejection_reason,
+                )
+            except Exception as e:
+                logger.error(f"Audit log failed for driver rejection: {e}")
+
+            # Send transactional notification with reason
+            try:
+                from servers.rider.models import Notification
+                Notification.objects.create(
+                    user_id=driver.user_id,
+                    title="KYC Verification Action Required ⚠️",
+                    message=f"Document verification update: {rejection_reason}. Please open the SaaradhiGo Driver app to re-upload your valid documents.",
+                    notif_type="ride_event",
+                    data={"type": "kyc_rejected", "reason": rejection_reason, "driver_id": driver.id},
+                )
+            except Exception as e:
+                logger.error(f"Failed to send rejection notification to driver {driver.id}: {e}")
+
+            messages.warning(request, f"{driver_label} rejected. Reason recorded and notification dispatched.")
+
+        else:
+            messages.error(request, "Invalid action requested.")
+
+        return redirect(
+            f"{request.path}"
+            f"?selected_driver={driver.id}"
+            f"&status={status}"
+            f"&page={page_number}"
+            f"&search={search}"
+        )
+
+    # Base drivers query
+    drivers_qs = (
+        Driver.objects
+        .select_related(
+            "user_id",
+            "active_vehicle",
+            "active_vehicle__vehicle_type_id",
+        )
+        .prefetch_related("vehicle_set", "vehicle_set__vehicle_type_id")
+        .all()
+        .order_by("-id")
+    )
+
+    if search:
+        drivers_qs = drivers_qs.filter(
+            Q(user_id__full_name__icontains=search)
+            | Q(user_id__phone_number__icontains=search)
+            | Q(vehicle_set__vehicle_number__icontains=search)
+            | Q(id__iexact=search.replace("#", ""))
+        ).distinct()
+
+    if status == "APPROVED":
+        drivers_qs = drivers_qs.filter(doc_status="approved")
+    elif status == "PENDING":
+        drivers_qs = drivers_qs.filter(doc_status="pending")
+    elif status == "REJECTED":
+        drivers_qs = drivers_qs.filter(doc_status="rejected")
+
+    all_drivers = Driver.objects.all()
+    pending_reviews_count = all_drivers.filter(doc_status="pending").count()
+    approved_count = all_drivers.filter(doc_status="approved").count()
+    rejected_count = all_drivers.filter(doc_status="rejected").count()
+    total_count = all_drivers.count()
+
+    paginator = Paginator(drivers_qs, 10)
+    page_obj = paginator.get_page(page_number)
+    drivers = page_obj.object_list
+
+    selected_driver = None
     if selected_driver_id:
-        selected_driver=Driver.objects.get(id=selected_driver_id)
-    approved=Driver.objects.filter(doc_status='approved')
-    pending=Driver.objects.filter(doc_status='pending')
-    if status=="APPROVED":
-        drivers=approved
-    elif status=="REJECTED":
-        drivers=Driver.objects.filter(doc_status='rejected')
-    elif status=="PENDING":
-        drivers=pending
-    else:
-        drivers=Driver.objects.all()
-    if request.method=="POST":
-        action=request.POST.get('action',None)
-        if action=="approve":
-            selected_driver.doc_status='approved'
-            selected_driver.approved=True
-            selected_driver.save()
-        elif action=="reject":
-            selected_driver.doc_status='rejected'
-            selected_driver.save()
-        selected_driver.doc_status_updated_at=timezone.now()
-    return render(request, "admin_pages/driver_onboarding.html",{"pending_reviews_count":pending.count(),"approved_count":approved.count(),"drivers":drivers,"selected_driver":selected_driver,"page_number":page_number,"status_filter":status})
+        selected_driver = (
+            Driver.objects
+            .select_related(
+                "user_id",
+                "active_vehicle",
+                "active_vehicle__vehicle_type_id",
+            )
+            .prefetch_related("vehicle_set", "vehicle_set__vehicle_type_id")
+            .filter(id=selected_driver_id)
+            .first()
+        )
+
+    if not selected_driver and drivers:
+        selected_driver = drivers[0]
+
+    # Evaluate compliance checklist for selected driver
+    compliance_data = None
+    if selected_driver:
+        today = timezone.localdate()
+        soon = today + timedelta(days=30)
+
+        vehicle = selected_driver.active_vehicle or selected_driver.vehicle_set.first()
+
+        def build_doc_item(label, doc_field, expiry_field=None, is_mandatory=True):
+            has_file = bool(doc_field)
+            file_url = doc_field.url if has_file else None
+            status_code = "missing"
+            status_label = "Missing"
+            status_color = "rose"
+
+            if has_file:
+                status_code = "valid"
+                status_label = "Uploaded"
+                status_color = "emerald"
+
+                if expiry_field:
+                    if expiry_field < today:
+                        status_code = "expired"
+                        status_label = f"Expired ({expiry_field.strftime('%d %b %Y')})"
+                        status_color = "rose"
+                    elif expiry_field <= soon:
+                        status_code = "expiring_soon"
+                        status_label = f"Expiring ({expiry_field.strftime('%d %b %Y')})"
+                        status_color = "amber"
+                    else:
+                        status_label = f"Valid till {expiry_field.strftime('%d %b %Y')}"
+
+            is_passed = (status_code in ["valid", "expiring_soon"]) if is_mandatory else True
+            if not has_file and is_mandatory:
+                is_passed = False
+
+            return {
+                "label": label,
+                "has_file": has_file,
+                "file_url": file_url,
+                "expiry_date": expiry_field,
+                "status_code": status_code,
+                "status_label": status_label,
+                "status_color": status_color,
+                "is_mandatory": is_mandatory,
+                "is_passed": is_passed,
+            }
+
+        license_front = build_doc_item("Driving License (Front)", selected_driver.license_doc, selected_driver.license_expiry, True)
+        license_back = build_doc_item("Driving License (Back)", selected_driver.license_doc_back, None, False)
+
+        rc_item = build_doc_item("Registration Certificate (RC)", getattr(vehicle, "rc_doc", None), None, True)
+        insurance_item = build_doc_item("Commercial Insurance Policy", getattr(vehicle, "insurance_doc", None), getattr(vehicle, "insurance_expiry", None), True)
+        permit_item = build_doc_item("Commercial Vehicle Permit", getattr(vehicle, "permit_doc", None), getattr(vehicle, "permit_expiry", None), True)
+        fitness_item = build_doc_item("Fitness Certificate (FC)", getattr(vehicle, "fitness_doc", None), getattr(vehicle, "fitness_expiry", None), True)
+        puc_item = build_doc_item("Pollution Under Control (PUC)", getattr(vehicle, "puc_doc", None), getattr(vehicle, "puc_expiry", None), True)
+
+        all_checks = [license_front, rc_item, insurance_item, permit_item, fitness_item, puc_item]
+        passed_count = sum(1 for c in all_checks if c["is_passed"])
+        total_mandatory = len(all_checks)
+        compliance_pct = int((passed_count / total_mandatory) * 100) if total_mandatory > 0 else 0
+
+        compliance_data = {
+            "vehicle": vehicle,
+            "license_front": license_front,
+            "license_back": license_back,
+            "rc_doc": rc_item,
+            "insurance_doc": insurance_item,
+            "permit_doc": permit_item,
+            "fitness_doc": fitness_item,
+            "puc_doc": puc_item,
+            "passed_count": passed_count,
+            "total_mandatory": total_mandatory,
+            "compliance_pct": compliance_pct,
+            "is_fully_compliant": passed_count == total_mandatory,
+        }
+
+    context = {
+        "page_obj": page_obj,
+        "drivers": drivers,
+        "selected_driver": selected_driver,
+        "compliance": compliance_data,
+        "search": search,
+        "status_filter": status,
+        "pending_reviews_count": pending_reviews_count,
+        "approved_count": approved_count,
+        "rejected_count": rejected_count,
+        "total_count": total_count,
+    }
+
+    return render(
+        request,
+        "admin_pages/driver_onboarding.html",
+        context,
+    )
 @admin_required
+def payment_dashboard(request: HttpRequest) -> HttpResponse:
+    total_gross_revenue = FarePricing.objects.aggregate(total_revenue=models.Sum('total_fare'))['total_revenue'] or 0
+    completed_count = WithdrawalRequest.objects.filter(status='completed').count()
+    cancelled_count = WithdrawalRequest.objects.filter(status='failed').count()
+    recent_transactions = WithdrawalRequest.objects.select_related('driver','driver__user_id','driver__active_vehicle','driver__active_vehicle__vehicle_type_id').order_by('-requested_at')
+    paginator = Paginator(recent_transactions, 20)
+    page_number = request.GET.get('page', 1)
+    page_obj = paginator.get_page(page_number)
+    print(page_obj)
+    return render(request, "admin_pages/payment_dashboard.html",{"total_payments": total_gross_revenue, "completed_count": completed_count, "cancelled_count": cancelled_count, "page_obj": page_obj})
+@admin_required
+def executive_revenue(request: HttpRequest) -> HttpResponse:
+    tz = timezone.get_current_timezone()
+    start_date = (request.GET.get("start_date") or "").strip()
+    end_date = (request.GET.get("end_date") or "").strip()
+    # ---------------------------------------------------------
+    # DATE PARSER
+    # ---------------------------------------------------------
+    def parse_date(value: str):
+        if not value:
+            return None
+        try:
+            return datetime.strptime(value, "%Y-%m-%d").date()
+        except ValueError:
+            return None
+    start_day = parse_date(start_date)
+    end_day = parse_date(end_date)
+    # ---------------------------------------------------------
+    # 1. BASE QUERY - COMPLETED TRIPS
+    # ---------------------------------------------------------
+    trip_qs = Trip.objects.filter(
+        status_id__status_code="completed"
+    )
+    if start_day:
+        start_dt = timezone.make_aware(
+            datetime.combine(start_day, time.min),
+            tz
+        )
+        trip_qs = trip_qs.filter(
+            completed_at__gte=start_dt
+        )
+    if end_day:
+        end_dt = timezone.make_aware(
+            datetime.combine(
+                end_day + timedelta(days=1),
+                time.min
+            ),
+            tz
+        )
+        trip_qs = trip_qs.filter(
+            completed_at__lt=end_dt
+        )
+    completed_trips = trip_qs.select_related(
+        "requested_vehicle_type",
+        "vehicle_id__vehicle_type_id",
+    )
+    # ---------------------------------------------------------
+    # 2. TOTAL RIDES
+    # ---------------------------------------------------------
+    total_rides = completed_trips.count()
+    # ---------------------------------------------------------
+    # 3. CALCULATE REVENUE PER TRIP
+    #
+    # Priority:
+    #     1. final_fare
+    #     2. estimated_fare
+    #     3. 0
+    # ---------------------------------------------------------
+    trip_revenues = []
+    for trip in completed_trips:
+        # Use final fare when available
+        fare = trip.final_fare
+        # Fall back to estimated fare
+        if fare is None:
+            fare = trip.estimated_fare
+        # If both are empty, use zero
+        fare = Decimal(str(fare or "0.00"))
+        # -----------------------------------------------------
+        # VEHICLE CLASS
+        #
+        # Prefer requested vehicle type.
+        # Fall back to actual vehicle type.
+        # -----------------------------------------------------
+        vehicle_type = trip.requested_vehicle_type
+        if not vehicle_type and trip.vehicle_id:
+            vehicle_type = trip.vehicle_id.vehicle_type_id
+        if vehicle_type:
+            vehicle_name = (
+                getattr(vehicle_type, "type", None)
+                or "Unknown"
+            )
+        else:
+            vehicle_name = "Unknown"
+        trip_revenues.append({
+            "trip": trip,
+            "trip_id": trip.pk,
+            "vehicle": vehicle_name,
+            "fare": fare,
+            "completed_at": trip.completed_at,
+        })
+    # ---------------------------------------------------------
+    # 4. GROSS BOOKING VALUE
+    # ---------------------------------------------------------
+    gbv = sum(
+        item["fare"]
+        for item in trip_revenues
+    )
+    gbv = Decimal(str(gbv or "0.00"))
+    # ---------------------------------------------------------
+    # 5. PLATFORM REVENUE
+    # ---------------------------------------------------------
+    platform_revenue = Decimal("0.00")
+    total_commission_rate = Decimal("0.00")
+    for item in trip_revenues:
+        trip = item["trip"]
+        fare = item["fare"]
+    # Get commission rate from the trip's RateCard
+        commission_rate = commission_percent_for_trip(trip)
+        commission_rate = Decimal(
+            str(commission_rate or "0.00"))
+    # Calculate platform commission for this trip
+        commission = (fare * commission_rate / Decimal("100")).quantize(Decimal("0.01"))
+        platform_revenue += commission
+        total_commission_rate += (commission_rate * fare )
+# Weighted average take rate across completed trips
+    if gbv > 0:
+        take_rate = (
+            total_commission_rate / gbv
+        ).quantize(
+            Decimal("0.1")
+        )
+    else:
+        take_rate = Decimal("0.0")
+    
+    # ---------------------------------------------------------
+    # 6. TOTAL / UTILIZED DRIVERS
+    # ---------------------------------------------------------
+    total_drivers = Driver.objects.count()
+    if total_rides:
+        utilized_drivers = (
+            completed_trips
+            .exclude(driver_id__isnull=True)
+            .values_list("driver_id", flat=True)
+            .distinct()
+            .count()
+        )
+    else:
+        utilized_drivers = 0
+    fleet_utilization = round(
+        (
+            utilized_drivers / total_drivers * 100
+        )
+        if total_drivers
+        else 0,
+        1,
+    )
+    # ---------------------------------------------------------
+    # 7. REVENUE BY VEHICLE CLASS
+    # ---------------------------------------------------------
+    bucketed = {}
+    for item in trip_revenues:
+        vehicle_name = item["vehicle"]
+        fare = item["fare"]
+        bucketed[vehicle_name] = (
+            bucketed.get(
+                vehicle_name,
+                Decimal("0.00")
+            )
+            + fare
+        )
+    # ---------------------------------------------------------
+    # 8. FORMAT VEHICLE CLASS BREAKDOWN
+    # ---------------------------------------------------------
+    aggregated_breakdown = []
+    for name, revenue in sorted(
+        bucketed.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    ):
+        if gbv > 0:
+            pct = round(
+                (revenue / gbv * 100),
+                1,
+            )
+        else:
+            pct = 0
+        aggregated_breakdown.append({
+            "name": name,
+            "revenue": revenue,
+            "pct": pct,
+        })
+    # ---------------------------------------------------------
+    # 9. MONTHLY REVENUE
+    #
+    # IMPORTANT:
+    # Uses the SAME final_fare -> estimated_fare fallback
+    # as GBV and vehicle-class revenue.
+    # ---------------------------------------------------------
+    monthly_data = {}
+    for item in trip_revenues:
+        completed_at = item["completed_at"]
+        if not completed_at:
+            continue
+        month_key = completed_at.strftime("%Y-%m")
+        month_name = completed_at.strftime("%b %Y")
+        fare = item["fare"]
+        if month_key not in monthly_data:
+            monthly_data[month_key] = {
+                "month": month_name,
+                "revenue": Decimal("0.00"),
+                "rides": 0,
+            }
+        monthly_data[month_key]["revenue"] += fare
+        monthly_data[month_key]["rides"] += 1
+    monthly_revenue = sorted(
+        monthly_data.values(),
+        key=lambda x: x["month"],
+    )
+    # ---------------------------------------------------------
+    # 10. MONTH-OVER-MONTH GROWTH
+    # ---------------------------------------------------------
+    growth_trajectory = []
+    previous_revenue = None
+    for item in monthly_revenue:
+        current_revenue = item["revenue"]
+        if (
+            previous_revenue is not None
+            and previous_revenue > 0
+        ):
+            growth = (
+                (
+                    current_revenue
+                    - previous_revenue
+                )
+                / previous_revenue
+            ) * 100
+            growth = round(growth, 1)
+        else:
+            growth = 0
+        growth_trajectory.append({
+            "month": item["month"],
+            "revenue": current_revenue,
+            "rides": item["rides"],
+            "growth": growth,
+        })
+        previous_revenue = current_revenue
+    # ---------------------------------------------------------
+    # 11. CURRENT MONTH GROWTH
+    # ---------------------------------------------------------
+    revenue_growth = 0
+    if len(monthly_revenue) >= 2:
+        current = monthly_revenue[-1]["revenue"]
+        previous = monthly_revenue[-2]["revenue"]
+        if previous > 0:
+            revenue_growth = round(
+                (
+                    (
+                        current
+                        - previous
+                    )
+                    / previous
+                ) * 100,
+                1,
+            )
+    # ---------------------------------------------------------
+    # 12. BAR CHART DATA
+    # ---------------------------------------------------------
+    max_monthly_revenue = max(
+        (
+            item["revenue"]
+            for item in monthly_revenue
+        ),
+        default=Decimal("0.00"),
+    )
+    for item in monthly_revenue:
+        if max_monthly_revenue > 0:
+            item["height"] = round(
+                (
+                    item["revenue"]
+                    / max_monthly_revenue
+                ) * 100,
+                1,
+            )
+        else:
+            item["height"] = 0
+    # ---------------------------------------------------------
+    # 13. CONTEXT
+    # ---------------------------------------------------------
+    context = {
+        "start_date": start_date,
+        "end_date": end_date,
+        "gbv": gbv,
+        "platform_revenue": platform_revenue,
+        "take_rate": take_rate,
+        "total_rides": total_rides,
+        "total_drivers": total_drivers,
+        "utilized_drivers": utilized_drivers,
+        "fleet_utilization": fleet_utilization,
+        "class_breakdown": aggregated_breakdown,
+        "monthly_revenue": monthly_revenue,
+        "growth_trajectory": growth_trajectory,
+        "revenue_growth": revenue_growth,
+    }
+    return render(request,"admin_pages/executive_revenue.html",context,)
 def dispute_support(request: HttpRequest) -> HttpResponse:
 
     # =========================================================
@@ -556,313 +1114,6 @@ def dispute_support(request: HttpRequest) -> HttpResponse:
         "admin_pages/dispute_support.html",
         context
     )
-
-
-@admin_required
-def payment_dashboard(request: HttpRequest) -> HttpResponse:
-    total_gross_revenue = FarePricing.objects.aggregate(total_revenue=models.Sum('total_fare'))['total_revenue'] or 0
-    completed_count = WithdrawalRequest.objects.filter(status='completed').count()
-    cancelled_count = WithdrawalRequest.objects.filter(status='failed').count()
-    recent_transactions = WithdrawalRequest.objects.select_related('driver','driver__user_id','driver__active_vehicle','driver__active_vehicle__vehicle_type_id').order_by('-requested_at')
-    paginator = Paginator(recent_transactions, 20)
-    page_number = request.GET.get('page', 1)
-    page_obj = paginator.get_page(page_number)
-    print(page_obj)
-    return render(request, "admin_pages/payment_dashboard.html",{"total_payments": total_gross_revenue, "completed_count": completed_count, "cancelled_count": cancelled_count, "page_obj": page_obj})
-@admin_required
-def executive_revenue(request: HttpRequest) -> HttpResponse:
-    tz = timezone.get_current_timezone()
-    start_date = (request.GET.get("start_date") or "").strip()
-    end_date = (request.GET.get("end_date") or "").strip()
-    # ---------------------------------------------------------
-    # DATE PARSER
-    # ---------------------------------------------------------
-    def parse_date(value: str):
-        if not value:
-            return None
-        try:
-            return datetime.strptime(value, "%Y-%m-%d").date()
-        except ValueError:
-            return None
-    start_day = parse_date(start_date)
-    end_day = parse_date(end_date)
-    # ---------------------------------------------------------
-    # 1. BASE QUERY - COMPLETED TRIPS
-    # ---------------------------------------------------------
-    trip_qs = Trip.objects.filter(
-        status_id__status_code="completed"
-    )
-    if start_day:
-        start_dt = timezone.make_aware(
-            datetime.combine(start_day, time.min),
-            tz
-        )
-        trip_qs = trip_qs.filter(
-            completed_at__gte=start_dt
-        )
-    if end_day:
-        end_dt = timezone.make_aware(
-            datetime.combine(
-                end_day + timedelta(days=1),
-                time.min
-            ),
-            tz
-        )
-        trip_qs = trip_qs.filter(
-            completed_at__lt=end_dt
-        )
-    completed_trips = trip_qs.select_related(
-        "requested_vehicle_type",
-        "vehicle_id__vehicle_type_id",
-    )
-    # ---------------------------------------------------------
-    # 2. TOTAL RIDES
-    # ---------------------------------------------------------
-    total_rides = completed_trips.count()
-    # ---------------------------------------------------------
-    # 3. CALCULATE REVENUE PER TRIP
-    #
-    # Priority:
-    #     1. final_fare
-    #     2. estimated_fare
-    #     3. 0
-    # ---------------------------------------------------------
-    trip_revenues = []
-    for trip in completed_trips:
-        # Use final fare when available
-        fare = trip.final_fare
-        # Fall back to estimated fare
-        if fare is None:
-            fare = trip.estimated_fare
-        # If both are empty, use zero
-        fare = Decimal(str(fare or "0.00"))
-        # -----------------------------------------------------
-        # VEHICLE CLASS
-        #
-        # Prefer requested vehicle type.
-        # Fall back to actual vehicle type.
-        # -----------------------------------------------------
-        vehicle_type = trip.requested_vehicle_type
-        if not vehicle_type and trip.vehicle_id:
-            vehicle_type = trip.vehicle_id.vehicle_type_id
-        if vehicle_type:
-            vehicle_name = (
-                getattr(vehicle_type, "type", None)
-                or "Unknown"
-            )
-        else:
-            vehicle_name = "Unknown"
-        trip_revenues.append({
-            "trip": trip,
-            "trip_id": trip.pk,
-            "vehicle": vehicle_name,
-            "fare": fare,
-            "completed_at": trip.completed_at,
-        })
-    # ---------------------------------------------------------
-    # 4. GROSS BOOKING VALUE
-    # ---------------------------------------------------------
-    gbv = sum(
-        item["fare"]
-        for item in trip_revenues
-    )
-    gbv = Decimal(str(gbv or "0.00"))
-    # ---------------------------------------------------------
-    # 5. PLATFORM REVENUE
-    # ---------------------------------------------------------
-    platform_revenue = Decimal("0.00")
-    total_commission_rate = Decimal("0.00")
-    for item in trip_revenues:
-        trip = item["trip"]
-        fare = item["fare"]
-    # Get commission rate from the trip's RateCard
-        commission_rate = commission_percent_for_trip(trip)
-        commission_rate = Decimal(
-            str(commission_rate or "0.00"))
-    # Calculate platform commission for this trip
-        commission = (fare * commission_rate / Decimal("100")).quantize(Decimal("0.01"))
-        platform_revenue += commission
-        total_commission_rate += (commission_rate * fare )
-# Weighted average take rate across completed trips
-    if gbv > 0:
-        take_rate = (
-            total_commission_rate / gbv
-        ).quantize(
-            Decimal("0.1")
-        )
-    else:
-        take_rate = Decimal("0.0")
-    
-    # ---------------------------------------------------------
-    # 6. TOTAL / UTILIZED DRIVERS
-    # ---------------------------------------------------------
-    total_drivers = Driver.objects.count()
-    if total_rides:
-        utilized_drivers = (
-            completed_trips
-            .exclude(driver_id__isnull=True)
-            .values_list("driver_id", flat=True)
-            .distinct()
-            .count()
-        )
-    else:
-        utilized_drivers = 0
-    fleet_utilization = round(
-        (
-            utilized_drivers / total_drivers * 100
-        )
-        if total_drivers
-        else 0,
-        1,
-    )
-    # ---------------------------------------------------------
-    # 7. REVENUE BY VEHICLE CLASS
-    # ---------------------------------------------------------
-    bucketed = {}
-    for item in trip_revenues:
-        vehicle_name = item["vehicle"]
-        fare = item["fare"]
-        bucketed[vehicle_name] = (
-            bucketed.get(
-                vehicle_name,
-                Decimal("0.00")
-            )
-            + fare
-        )
-    # ---------------------------------------------------------
-    # 8. FORMAT VEHICLE CLASS BREAKDOWN
-    # ---------------------------------------------------------
-    aggregated_breakdown = []
-    for name, revenue in sorted(
-        bucketed.items(),
-        key=lambda item: item[1],
-        reverse=True,
-    ):
-        if gbv > 0:
-            pct = round(
-                (revenue / gbv * 100),
-                1,
-            )
-        else:
-            pct = 0
-        aggregated_breakdown.append({
-            "name": name,
-            "revenue": revenue,
-            "pct": pct,
-        })
-    # ---------------------------------------------------------
-    # 9. MONTHLY REVENUE
-    #
-    # IMPORTANT:
-    # Uses the SAME final_fare -> estimated_fare fallback
-    # as GBV and vehicle-class revenue.
-    # ---------------------------------------------------------
-    monthly_data = {}
-    for item in trip_revenues:
-        completed_at = item["completed_at"]
-        if not completed_at:
-            continue
-        month_key = completed_at.strftime("%Y-%m")
-        month_name = completed_at.strftime("%b %Y")
-        fare = item["fare"]
-        if month_key not in monthly_data:
-            monthly_data[month_key] = {
-                "month": month_name,
-                "revenue": Decimal("0.00"),
-                "rides": 0,
-            }
-        monthly_data[month_key]["revenue"] += fare
-        monthly_data[month_key]["rides"] += 1
-    monthly_revenue = sorted(
-        monthly_data.values(),
-        key=lambda x: x["month"],
-    )
-    # ---------------------------------------------------------
-    # 10. MONTH-OVER-MONTH GROWTH
-    # ---------------------------------------------------------
-    growth_trajectory = []
-    previous_revenue = None
-    for item in monthly_revenue:
-        current_revenue = item["revenue"]
-        if (
-            previous_revenue is not None
-            and previous_revenue > 0
-        ):
-            growth = (
-                (
-                    current_revenue
-                    - previous_revenue
-                )
-                / previous_revenue
-            ) * 100
-            growth = round(growth, 1)
-        else:
-            growth = 0
-        growth_trajectory.append({
-            "month": item["month"],
-            "revenue": current_revenue,
-            "rides": item["rides"],
-            "growth": growth,
-        })
-        previous_revenue = current_revenue
-    # ---------------------------------------------------------
-    # 11. CURRENT MONTH GROWTH
-    # ---------------------------------------------------------
-    revenue_growth = 0
-    if len(monthly_revenue) >= 2:
-        current = monthly_revenue[-1]["revenue"]
-        previous = monthly_revenue[-2]["revenue"]
-        if previous > 0:
-            revenue_growth = round(
-                (
-                    (
-                        current
-                        - previous
-                    )
-                    / previous
-                ) * 100,
-                1,
-            )
-    # ---------------------------------------------------------
-    # 12. BAR CHART DATA
-    # ---------------------------------------------------------
-    max_monthly_revenue = max(
-        (
-            item["revenue"]
-            for item in monthly_revenue
-        ),
-        default=Decimal("0.00"),
-    )
-    for item in monthly_revenue:
-        if max_monthly_revenue > 0:
-            item["height"] = round(
-                (
-                    item["revenue"]
-                    / max_monthly_revenue
-                ) * 100,
-                1,
-            )
-        else:
-            item["height"] = 0
-    # ---------------------------------------------------------
-    # 13. CONTEXT
-    # ---------------------------------------------------------
-    context = {
-        "start_date": start_date,
-        "end_date": end_date,
-        "gbv": gbv,
-        "platform_revenue": platform_revenue,
-        "take_rate": take_rate,
-        "total_rides": total_rides,
-        "total_drivers": total_drivers,
-        "utilized_drivers": utilized_drivers,
-        "fleet_utilization": fleet_utilization,
-        "class_breakdown": aggregated_breakdown,
-        "monthly_revenue": monthly_revenue,
-        "growth_trajectory": growth_trajectory,
-        "revenue_growth": revenue_growth,
-    }
-    return render(request,"admin_pages/executive_revenue.html",context,)
 @admin_required
 def driver_loyalty(request: HttpRequest) -> HttpResponse:
     # ==========================================================
@@ -2947,7 +3198,6 @@ def global_search(request: HttpRequest) -> HttpResponse:
         "admin_pages/global_search.html",
         context,
     )
-
 
 @admin_required
 def global_search_api(request: HttpRequest) -> JsonResponse:

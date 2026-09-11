@@ -111,7 +111,6 @@ class KYCApprovalSerializer(serializers.ModelSerializer):
         fields = ['approved', 'status']
 
     def validate(self, attrs):
-        from django.utils import timezone
         approved = attrs.get('approved')
         if approved is not True:
             return attrs  # Rejection / status-only updates don't need docs.

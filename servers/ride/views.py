@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
@@ -358,6 +359,8 @@ def driver_history(request):
         ?page=1         - Page number
         ?page_size=10   - Items per page (max 50)
         ?status=completed - Filter by status (optional)
+        ?start_date=YYYY-MM-DD - Filter trips requested from this day (inclusive) (optional)
+        ?end_date=YYYY-MM-DD   - Filter trips requested up to this day (inclusive) (optional)
     """
     try:
         driver = request.user.driver
@@ -380,6 +383,38 @@ def driver_history(request):
     status_filter = request.query_params.get('status')
     if status_filter:
         trips = trips.filter(status_id__status_code=status_filter)
+
+    # Optional date range filter (inclusive calendar days, matched on
+    # requested_at — the field this endpoint orders by). Accepts either
+    # a bare 'YYYY-MM-DD' or a full ISO-8601 datetime; invalid values
+    # are ignored so a typo in one param never breaks the listing.
+    from django.utils import timezone
+
+    current_tz = timezone.get_current_timezone()
+    start_date = (request.query_params.get('start_date') or '').strip()
+    end_date = (request.query_params.get('end_date') or '').strip()
+    if start_date:
+        try:
+            start_day = datetime.strptime(start_date, '%Y-%m-%d').date()
+        except ValueError:
+            try:
+                start_day = datetime.fromisoformat(start_date.replace('Z', '+00:00')).date()
+            except (ValueError, TypeError):
+                start_day = None
+        if start_day:
+            trips = trips.filter(requested_at__gte=timezone.make_aware(
+                datetime.combine(start_day, time.min), current_tz))
+    if end_date:
+        try:
+            end_day = datetime.strptime(end_date, '%Y-%m-%d').date()
+        except ValueError:
+            try:
+                end_day = datetime.fromisoformat(end_date.replace('Z', '+00:00')).date()
+            except (ValueError, TypeError):
+                end_day = None
+        if end_day:
+            trips = trips.filter(requested_at__lt=timezone.make_aware(
+                datetime.combine(end_day + timedelta(days=1), time.min), current_tz))
 
     paginator = TripPagination()
     page = paginator.paginate_queryset(trips, request)

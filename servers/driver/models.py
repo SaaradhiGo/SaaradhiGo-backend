@@ -39,6 +39,7 @@ class Driver(models.Model):
     upi_id=models.CharField(max_length=256,blank=True,null=True,help_text='UPI ID for UPI payouts')
     uploaded_timestamp=models.DateTimeField(null=True,blank=True)
     doc_status_updated_at=models.DateTimeField(null=True,blank=True)
+    doc_rejection_reason=models.TextField(blank=True,null=True)
     # If set in the future, the driver is locked out of going online
     # (and out of accepting new trips) until this timestamp. Used by:
     #   - MVA 2020 12h/24h fatigue cap (servers.driver.services)
@@ -53,8 +54,13 @@ class VehicleType(models.Model):
     def __str__(self):
         return self.type
 class Vehicle(models.Model):
-    driver_id=models.ForeignKey(Driver,on_delete=models.CASCADE)
-    rc_doc=models.FileField(
+
+    driver_id = models.ForeignKey(
+        Driver,
+        on_delete=models.CASCADE
+    )
+
+    rc_doc = models.FileField(
         blank=True,
         max_length=512,
         null=True,
@@ -62,14 +68,81 @@ class Vehicle(models.Model):
         upload_to=PrefixedUUIDPath('rc_docs'),
         validators=[validate_document_file, validate_file_size],
     )
-    vehicle_type_id=models.ForeignKey(VehicleType,on_delete=models.CASCADE,related_name='vehicles')
-    brand=models.CharField(max_length=100,blank=True,null=True)
-    model=models.CharField(max_length=100,blank=True,null=True)
-    color=models.CharField(max_length=50,blank=True,null=True)
-    year=models.IntegerField(blank=True,null=True)
-    vehicle_number=models.CharField(max_length=20)
-    capacity=models.IntegerField(default=1)
-    vehicle_pic=models.FileField(
+
+    permit_doc = models.FileField(
+        blank=True,
+        max_length=512,
+        null=True,
+        storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('permit_docs'),
+        validators=[validate_document_file, validate_file_size],
+    )
+
+    insurance_doc = models.FileField(
+        blank=True,
+        max_length=512,
+        null=True,
+        storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('insurance_docs'),
+        validators=[validate_document_file, validate_file_size],
+    )
+
+    fitness_doc = models.FileField(
+        blank=True,
+        max_length=512,
+        null=True,
+        storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('fitness_docs'),
+        validators=[validate_document_file, validate_file_size],
+    )
+
+    puc_doc = models.FileField(
+        blank=True,
+        max_length=512,
+        null=True,
+        storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('puc_docs'),
+        validators=[validate_document_file, validate_file_size],
+    )
+
+    vehicle_type_id = models.ForeignKey(
+        VehicleType,
+        on_delete=models.CASCADE,
+        related_name='vehicles'
+    )
+
+    brand = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True
+    )
+
+    model = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True
+    )
+
+    color = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True
+    )
+
+    year = models.IntegerField(
+        blank=True,
+        null=True
+    )
+
+    vehicle_number = models.CharField(
+        max_length=20
+    )
+
+    capacity = models.IntegerField(
+        default=1
+    )
+
+    vehicle_pic = models.FileField(
         blank=True,
         max_length=512,
         null=True,
@@ -77,19 +150,36 @@ class Vehicle(models.Model):
         upload_to=PrefixedUUIDPath('vehicle_pics'),
         validators=[validate_image_file, validate_file_size],
     )
-    status=models.CharField(max_length=20,choices=[
-        ('active','Active'),('inactive','Inactive'),
-        ('under_maintenance','Under Maintenance')
-    ],default='active')
-    # MVA 2020 mandates the platform verify and enforce these. Daily
-    # Celery sweeper (servers.driver.tasks.block_expired_driver_credentials)
-    # blocks any driver whose active vehicle has any expired credential.
-    # Nullable so legacy rows continue to work; new vehicles should be
-    # required to supply them via the admin UI.
-    insurance_expiry = models.DateField(blank=True, null=True)
-    permit_expiry = models.DateField(blank=True, null=True)
-    fitness_expiry = models.DateField(blank=True, null=True)
-    puc_expiry = models.DateField(blank=True, null=True)
+
+    status = models.CharField(
+        max_length=20,
+        choices=[
+            ('active', 'Active'),
+            ('inactive', 'Inactive'),
+            ('under_maintenance', 'Under Maintenance')
+        ],
+        default='active'
+    )
+
+    insurance_expiry = models.DateField(
+        blank=True,
+        null=True
+    )
+
+    permit_expiry = models.DateField(
+        blank=True,
+        null=True
+    )
+
+    fitness_expiry = models.DateField(
+        blank=True,
+        null=True
+    )
+
+    puc_expiry = models.DateField(
+        blank=True,
+        null=True
+    )
 
     def __str__(self) -> str:
         return f'{self.vehicle_number} - {self.driver_id}'

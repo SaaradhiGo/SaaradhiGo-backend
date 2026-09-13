@@ -107,6 +107,30 @@ UPLOAD_KINDS = {
         "types": ALLOWED_DOCUMENT_TYPES,
         "file_validator": validate_document_file,
     },
+        "permit_doc": {
+        "prefix": "permit_docs",
+        "visibility": "private",
+        "types": ALLOWED_DOCUMENT_TYPES,
+        "file_validator": validate_document_file,
+    },
+    "insurance_doc": {
+        "prefix": "insurance_docs",
+        "visibility": "private",
+        "types": ALLOWED_DOCUMENT_TYPES,
+        "file_validator": validate_document_file,
+    },
+    "fitness_doc": {
+        "prefix": "fitness_docs",
+        "visibility": "private",
+        "types": ALLOWED_DOCUMENT_TYPES,
+        "file_validator": validate_document_file,
+    },
+    "puc_doc": {
+        "prefix": "puc_docs",
+        "visibility": "private",
+        "types": ALLOWED_DOCUMENT_TYPES,
+        "file_validator": validate_document_file,
+    },
 }
 
 

@@ -1,203 +1,1284 @@
+
 {% extends 'admin_pages/base.html' %}
-{% block title %}SaaradhiGo Admin | Dispute &amp; Support Center{% endblock %}
+
+{% block title %}
+SaaradhiGo Admin | Dispute & Support Center
+{% endblock %}
 
 {% block extra_css %}
-.custom-scrollbar::-webkit-scrollbar { width: 4px; }
-.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-.custom-scrollbar::-webkit-scrollbar-thumb { background: #4d4635; border-radius: 10px; }
-.metallic-gradient { background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%); }
+
+.custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #4d4635;
+    border-radius: 10px;
+}
+
+.metallic-gradient {
+    background: linear-gradient(
+        135deg,
+        #f2ca50 0%,
+        #d4af37 100%
+    );
+}
+
 {% endblock %}
 
-{% block main_class %}min-h-screen bg-surface overflow-y-auto{% endblock %}
+
+{% block main_class %}
+min-h-screen bg-surface overflow-y-auto
+{% endblock %}
+
 
 {% block content %}
+
 <div class="p-8 pb-12">
-    <header class="mb-12">
-        <div class="flex items-end justify-between mb-8">
+
+    <!-- HEADER -->
+
+    <header class="mb-10">
+
+        <div class="flex flex-col xl:flex-row
+                    xl:items-end xl:justify-between gap-6">
+
             <div>
-                <span class="text-on-surface-variant font-label text-sm uppercase tracking-[0.2em] mb-2 block">Support
-                    Dashboard</span>
-                <h1 class="font-headline font-bold text-4xl text-on-surface tracking-tight">Dispute <span
-                        class="text-primary italic">Resolution</span></h1>
+
+                <span
+                    class="text-on-surface-variant font-label
+                           text-sm uppercase tracking-[0.2em]
+                           mb-2 block"
+                >
+                    Support Dashboard
+                </span>
+
+                <h1
+                    class="font-headline font-bold text-4xl
+                           text-on-surface tracking-tight"
+                >
+                    Dispute
+                    <span class="text-primary italic">
+                        Resolution
+                    </span>
+                </h1>
+
             </div>
-            <div class="flex gap-4">
+
+
+            <!-- STATUS COUNTS -->
+
+            <div
+                class="grid grid-cols-2 md:grid-cols-5
+                       gap-3"
+            >
+
+                <!-- Open -->
+
                 <div
-                    class="bg-surface-container border border-outline-variant/15 p-4 rounded-lg flex items-center gap-6">
-                    <div class="text-center">
-                        <p class="text-on-surface-variant text-[10px] uppercase font-bold tracking-widest">Open Tickets
-                        </p>
-                        <p class="text-2xl font-headline font-extrabold text-primary">{{ open_count }}</p>
-                    </div>
-                    <div class="h-8 w-px bg-outline-variant/20"></div>
-                    <div class="text-center">
-                        <p class="text-on-surface-variant text-[10px] uppercase font-bold tracking-widest font-medium">
-                            Urgent Tickets</p>
-                        <p class="text-2xl font-headline font-extrabold text-on-surface text-primary">{{ urgent_count }}
-                        </p>
-                    </div>
+                    class="bg-surface-container border
+                           border-outline-variant/15
+                           px-5 py-3 rounded-lg text-center"
+                >
+
+                    <p class="text-on-surface-variant text-[9px]
+                              uppercase font-bold tracking-widest">
+                        Open
+                    </p>
+
+                    <p class="text-xl font-headline font-extrabold
+                              text-primary">
+                        {{ open_count }}
+                    </p>
+
                 </div>
+
+
+                <!-- In Progress -->
+
+                <div
+                    class="bg-surface-container border
+                           border-outline-variant/15
+                           px-5 py-3 rounded-lg text-center"
+                >
+
+                    <p class="text-on-surface-variant text-[9px]
+                              uppercase font-bold tracking-widest">
+                        Progress
+                    </p>
+
+                    <p class="text-xl font-headline font-extrabold
+                              text-blue-400">
+                        {{ in_progress_count }}
+                    </p>
+
+                </div>
+
+
+                <!-- Waiting -->
+
+                <div
+                    class="bg-surface-container border
+                           border-outline-variant/15
+                           px-5 py-3 rounded-lg text-center"
+                >
+
+                    <p class="text-on-surface-variant text-[9px]
+                              uppercase font-bold tracking-widest">
+                        Waiting
+                    </p>
+
+                    <p class="text-xl font-headline font-extrabold
+                              text-amber-400">
+                        {{ waiting_count }}
+                    </p>
+
+                </div>
+
+
+                <!-- Closed -->
+
+                <div
+                    class="bg-surface-container border
+                           border-outline-variant/15
+                           px-5 py-3 rounded-lg text-center"
+                >
+
+                    <p class="text-on-surface-variant text-[9px]
+                              uppercase font-bold tracking-widest">
+                        Closed
+                    </p>
+
+                    <p class="text-xl font-headline font-extrabold
+                              text-green-400">
+                        {{ closed_count }}
+                    </p>
+
+                </div>
+
+
+                <!-- Urgent -->
+
+                <div
+                    class="bg-surface-container border
+                           border-primary/20
+                           px-5 py-3 rounded-lg text-center"
+                >
+
+                    <p class="text-on-surface-variant text-[9px]
+                              uppercase font-bold tracking-widest">
+                        Urgent
+                    </p>
+
+                    <p class="text-xl font-headline font-extrabold
+                              text-primary">
+                        {{ urgent_count }}
+                    </p>
+
+                </div>
+
             </div>
+
         </div>
 
-        <!-- Ticket Queue Container -->
-        <div class="grid grid-cols-12 gap-8 items-start">
-            <!-- Left: Ticket List -->
-            <section class="col-span-12 lg:col-span-5 flex flex-col gap-4">
-                <div class="flex items-center justify-between px-2">
-                    <h3 class="font-headline font-bold text-lg text-on-surface">Queue <span
-                            class="text-on-surface-variant font-normal text-sm ml-2">({{ total_count }} Total)</span>
-                    </h3>
-                </div>
 
-                <div class="space-y-3 custom-scrollbar overflow-y-auto max-h-[calc(100vh-280px)] pr-2">
-                    {% for ticket in tickets %}
-                    <a href="?selected_ticket={{ ticket.id }}&page={{ page_obj.number }}" class="block">
-                        <div
-                            class="p-5 rounded-xl cursor-pointer transition-all hover:translate-x-1 shadow-lg group
-                        {% if selected_ticket and selected_ticket.id == ticket.id %}bg-surface-container-high border-l-4 border-primary shadow-lg ring-1 ring-primary/10{% else %}bg-surface-container-low{% endif %}">
-                            <div class="flex justify-between items-start mb-2">
-                                <span class="text-[10px] font-bold px-2 py-1 rounded flex items-center gap-1
-                                {% if ticket.priority == 'URGENT' %}bg-primary/10 text-primary
-                                {% elif ticket.priority == 'HIGH' %}bg-amber-500/10 text-amber-500
-                                {% elif ticket.priority == 'MEDIUM' %}bg-blue-500/10 text-blue-500
-                                {% else %}bg-slate-500/10 text-slate-500{% endif %}">
-                                    <span class="w-1 h-1 rounded-full 
-                                    {% if ticket.priority == 'URGENT' %}bg-primary
-                                    {% elif ticket.priority == 'HIGH' %}bg-amber-500
-                                    {% elif ticket.priority == 'MEDIUM' %}bg-blue-500
-                                    {% else %}bg-slate-500{% endif %}"></span>
-                                    {{ ticket.priority }}
-                                </span>
-                                <span class="text-on-surface-variant text-[10px] font-medium">{{ ticket.created_at|timesince }} ago</span>
-                            </div>
-                            <h4
-                                class="font-headline font-bold text-on-surface mb-1 group-hover:text-primary transition-colors">
-                                Ticket from {{ ticket.rider_name }}</h4>
-                            <p class="text-on-surface-variant text-xs line-clamp-1 mb-3 italic">"{{ ticket.description|truncatewords:8 }}"</p>
-                            <div class="flex items-center justify-between">
-                                <div class="flex items-center gap-2">
-                                    <div
-                                        class="w-6 h-6 rounded-full bg-surface-bright flex items-center justify-center border border-outline-variant/30">
-                                        <span class="material-symbols-outlined text-xs">payments</span>
-                                    </div>
-                                    <span
-                                        class="text-[10px] text-on-surface/70 font-bold uppercase tracking-widest">Dispute</span>
-                                </div>
-                                <span
-                                    class="text-[10px] text-on-surface-variant uppercase font-bold tracking-widest">ID:
-                                    #T-{{ ticket.id }}</span>
-                            </div>
-                        </div>
-                    </a>
-                    {% empty %}
-                    <div class="text-center p-8 bg-surface-container rounded-xl text-on-surface-variant text-sm italic">
-                        No tickets in queue.
-                    </div>
-                    {% endfor %}
-                </div>
+        <!-- SEARCH -->
 
-                <!-- Pagination Controls -->
-                {% if page_obj.has_other_pages %}
-                <div class="flex items-center justify-between pt-4 border-t border-outline-variant/10 text-xs">
-                    <div>
-                        {% if page_obj.has_previous %}
-                        <a href="?selected_ticket={{ selected_ticket.id }}&page={{ page_obj.previous_page_number }}"
-                            class="px-3 py-1.5 bg-surface-container hover:bg-surface-container-high rounded text-on-surface transition-colors">Previous</a>
-                        {% endif %}
-                    </div>
-                    <span class="text-on-surface-variant">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages
-                        }}</span>
-                    <div>
-                        {% if page_obj.has_next %}
-                        <a href="?selected_ticket={{ selected_ticket.id }}&page={{ page_obj.next_page_number }}"
-                            class="px-3 py-1.5 bg-surface-container hover:bg-surface-container-high rounded text-on-surface transition-colors">Next</a>
-                        {% endif %}
-                    </div>
-                </div>
+        <form
+            method="GET"
+            class="mt-8"
+        >
+
+            <div
+                class="relative max-w-2xl"
+            >
+
+                <span
+                    class="material-symbols-outlined
+                           absolute left-4 top-1/2
+                           -translate-y-1/2
+                           text-on-surface-variant"
+                >
+                    search
+                </span>
+
+                <input
+                    type="text"
+                    name="search"
+                    value="{{ search }}"
+                    placeholder="Search ticket ID, rider, phone, issue..."
+                    class="w-full bg-surface-container
+                           border border-outline-variant/20
+                           rounded-xl py-3 pl-12 pr-24
+                           text-sm text-on-surface
+                           placeholder:text-on-surface-variant/50
+                           focus:outline-none
+                           focus:ring-2 focus:ring-primary/40"
+                >
+
+                <button
+                    type="submit"
+                    class="absolute right-2 top-1/2
+                           -translate-y-1/2
+                           metallic-gradient
+                           px-5 py-2 rounded-lg
+                           text-xs font-bold"
+                >
+                    Search
+                </button>
+
+            </div>
+
+        </form>
+
+    </header>
+
+
+    <!-- MAIN GRID -->
+
+    <div
+        class="grid grid-cols-12 gap-8 items-start"
+    >
+
+
+        <!-- ================================================= -->
+        <!-- LEFT : QUEUE -->
+        <!-- ================================================= -->
+
+        <section
+            class="col-span-12 lg:col-span-5
+                   flex flex-col gap-4"
+        >
+
+            <div
+                class="flex items-center justify-between px-2"
+            >
+
+                <h3
+                    class="font-headline font-bold text-lg
+                           text-on-surface"
+                >
+
+                    Queue
+
+                    <span
+                        class="text-on-surface-variant
+                               font-normal text-sm ml-2"
+                    >
+                        ({{ total_count }} Total)
+                    </span>
+
+                </h3>
+
+
+                {% if search %}
+
+                <a
+                    href="?selected_ticket={{ selected_ticket.id|default:'' }}"
+                    class="text-xs text-primary
+                           hover:underline"
+                >
+                    Clear Search
+                </a>
+
                 {% endif %}
-            </section>
 
-            <!-- Right: Detailed Ticket View -->
-            <section class="col-span-12 lg:col-span-7">
-                {% if selected_ticket %}
-                <div
-                    class="bg-surface-container-high rounded-2xl overflow-hidden shadow-2xl flex flex-col border border-outline-variant/10">
-                    <div class="p-8 border-b border-outline-variant/15 flex justify-between items-start">
-                        <div>
-                            <div class="flex items-center gap-3 mb-2">
-                                <span class="text-primary font-headline font-bold text-xl">#T-{{ selected_ticket.id }}</span>
-                                <span
-                                    class="bg-primary/20 text-primary text-[10px] font-extrabold px-3 py-1 rounded-full uppercase tracking-widest">{{ selected_ticket.status }}</span>
-                            </div>
-                            <h2 class="font-headline font-extrabold text-2xl text-on-surface mb-4">Fare/Service Dispute
-                                Investigation</h2>
-                            <div class="flex gap-6">
-                                <div class="flex flex-col">
-                                    <span
-                                        class="text-[10px] text-on-surface-variant uppercase font-bold tracking-widest mb-1">Rider</span>
-                                    <span class="font-medium text-sm text-on-surface">{{ selected_ticket.rider_name }}</span>
-                                </div>
-                                <div class="flex flex-col">
-                                    <span
-                                        class="text-[10px] text-on-surface-variant uppercase font-bold tracking-widest mb-1">Driver</span>
-                                    <span class="font-medium text-sm text-on-surface">{% if selected_ticket.driver %}{{ selected_ticket.driver.name }}{% else %}<span
-                                            class="text-on-surface-variant/40 italic">None</span>{% endif %}</span>
-                                </div>
-                                <div class="flex flex-col">
-                                    <span
-                                        class="text-[10px] text-on-surface-variant uppercase font-bold tracking-widest mb-1">Trip
-                                        Est/Total</span>
-                                    <span class="font-headline font-bold text-primary text-sm">
-                                        {% if selected_ticket.driver and selected_ticket.driver.rides.exists %}
-                                        ₹{{ selected_ticket.driver.rides.first.fare }}
-                                        {% else %}
-                                        ₹0.00
-                                        {% endif %}
-                                    </span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+            </div>
+
+
+            <!-- TICKET LIST -->
+
+            <div
+                class="space-y-3 custom-scrollbar
+                       overflow-y-auto
+                       max-h-[calc(100vh-380px)]
+                       pr-2"
+            >
+
+                {% for ticket in tickets %}
+
+                <a
+                    href="?selected_ticket={{ ticket.id }}&page={{ page_obj.number }}{% if search %}&search={{ search|urlencode }}{% endif %}"
+                    class="block"
+                >
 
                     <div
-                        class="p-8 space-y-6 custom-scrollbar overflow-y-auto h-[350px] bg-surface-container-highest/20">
-                        <div class="flex gap-4 max-w-[85%]">
-                            <div
-                                class="w-8 h-8 rounded-full bg-surface-bright flex-shrink-0 flex items-center justify-center border border-outline-variant/30">
-                                <span class="material-symbols-outlined text-sm">person</span>
-                            </div>
-                            <div class="bg-surface-container rounded-r-xl rounded-bl-xl p-4">
-                                <p class="text-sm text-on-surface/90 leading-relaxed italic">"{{ selected_ticket.description }}"</p>
-                                <span class="text-[9px] text-on-surface-variant mt-2 block font-medium">{{ selected_ticket.rider_name }} • {{ selected_ticket.created_at|date:"d M Y H:i" }}</span>
-                            </div>
+                        class="p-5 rounded-xl cursor-pointer
+                               transition-all hover:translate-x-1
+                               shadow-lg group
+
+                               {% if selected_ticket and selected_ticket.id == ticket.id %}
+
+                               bg-surface-container-high
+                               border-l-4 border-primary
+                               ring-1 ring-primary/10
+
+                               {% else %}
+
+                               bg-surface-container-low
+
+                               {% endif %}"
+                    >
+
+                        <!-- TOP -->
+
+                        <div
+                            class="flex justify-between
+                                   items-start mb-2"
+                        >
+
+                            <span
+                                class="text-[10px] font-bold
+                                       px-2 py-1 rounded
+                                       flex items-center gap-1
+
+                                       {% if ticket.priority == 'URGENT' %}
+                                       bg-primary/10 text-primary
+                                       {% else %}
+                                       bg-slate-500/10 text-slate-500
+                                       {% endif %}"
+                            >
+
+                                <span
+                                    class="w-1 h-1 rounded-full
+
+                                           {% if ticket.priority == 'URGENT' %}
+                                           bg-primary
+                                           {% else %}
+                                           bg-slate-500
+                                           {% endif %}"
+                                ></span>
+
+                                {{ ticket.priority }}
+
+                            </span>
+
+
+                            <span
+                                class="text-on-surface-variant
+                                       text-[10px] font-medium"
+                            >
+                                {{ ticket.created_at|timesince }} ago
+                            </span>
+
                         </div>
+
+
+                        <!-- RIDER -->
+
+                        <h4
+                            class="font-headline font-bold
+                                   text-on-surface mb-1
+                                   group-hover:text-primary
+                                   transition-colors"
+                        >
+                            Ticket from {{ ticket.rider_name }}
+                        </h4>
+
+
+                        <!-- DESCRIPTION -->
+
+                        <p
+                            class="text-on-surface-variant
+                                   text-xs line-clamp-1
+                                   mb-3 italic"
+                        >
+                            "{{ ticket.description|truncatewords:8 }}"
+                        </p>
+
+
+                        <!-- BOTTOM -->
+
+                        <div
+                            class="flex items-center
+                                   justify-between"
+                        >
+
+                            <div
+                                class="flex items-center gap-2"
+                            >
+
+                                <div
+                                    class="w-6 h-6 rounded-full
+                                           bg-surface-bright
+                                           flex items-center
+                                           justify-center
+                                           border border-outline-variant/30"
+                                >
+
+                                    <span
+                                        class="material-symbols-outlined
+                                               text-xs"
+                                    >
+                                        support_agent
+                                    </span>
+
+                                </div>
+
+                                <span
+                                    class="text-[10px]
+                                           text-on-surface/70
+                                           font-bold uppercase
+                                           tracking-widest"
+                                >
+                                    {{ ticket.issue_type_display }}
+                                </span>
+
+                            </div>
+
+
+                            <!-- STATUS -->
+
+                            <span
+                                class="text-[9px] font-bold
+                                       uppercase tracking-widest
+
+                                       {% if ticket.status == 'OPEN' %}
+                                       text-primary
+
+                                       {% elif ticket.status == 'IN_PROGRESS' %}
+                                       text-blue-400
+
+                                       {% elif ticket.status == 'WAITING_USER' %}
+                                       text-amber-400
+
+                                       {% elif ticket.status == 'CLOSED' %}
+                                       text-green-400
+
+                                       {% else %}
+                                       text-on-surface-variant
+                                       {% endif %}"
+                            >
+                                {{ ticket.status_display }}
+                            </span>
+
+                        </div>
+
+
+                        <!-- ID -->
+
+                        <div class="mt-3 text-right">
+
+                            <span
+                                class="text-[10px]
+                                       text-on-surface-variant
+                                       uppercase font-bold
+                                       tracking-widest"
+                            >
+                                ID: #T-{{ ticket.id }}
+                            </span>
+
+                        </div>
+
                     </div>
 
-                    <div class="p-6 bg-surface-container border-t border-outline-variant/15">
-                        <div class="flex gap-4">
-                            <button
-                                onclick="alert('Refund initiated for ₹' + '{% if selected_ticket.driver and selected_ticket.driver.rides.exists %}{{ selected_ticket.driver.rides.first.fare }}{% else %}0.00{% endif %}')"
-                                class="flex-1 metallic-gradient text-on-primary py-4 rounded-xl font-headline font-extrabold text-sm flex items-center justify-center gap-2 hover:brightness-110 transition-all">
-                                <span class="material-symbols-outlined font-normal">payments</span> Issue Full Refund
-                            </button>
-                        </div>
-                    </div>
-                </div>
-                {% else %}
+                </a>
+
+                {% empty %}
+
                 <div
-                    class="bg-surface-container-high rounded-2xl p-16 text-center text-on-surface-variant border border-outline-variant/10">
-                    <span class="material-symbols-outlined text-6xl text-primary/30 mb-4">support_agent</span>
-                    <p class="text-lg font-bold">Select a support ticket from the queue to investigate details.</p>
+                    class="text-center p-10
+                           bg-surface-container rounded-xl
+                           text-on-surface-variant text-sm italic"
+                >
+
+                    <span
+                        class="material-symbols-outlined
+                               text-4xl text-primary/30 mb-3"
+                    >
+                        search_off
+                    </span>
+
+                    <p>
+                        No tickets found.
+                    </p>
+
                 </div>
+
+                {% endfor %}
+
+            </div>
+
+
+            <!-- ================================================= -->
+            <!-- PAGINATION -->
+            <!-- ================================================= -->
+
+            {% if page_obj.paginator.num_pages > 1 %}
+
+            <div
+                class="flex items-center justify-between
+                       pt-4 border-t
+                       border-outline-variant/10"
+            >
+
+                <!-- PREVIOUS -->
+
+                {% if page_obj.has_previous %}
+
+                <a
+                    href="?page={{ page_obj.previous_page_number }}{% if selected_ticket %}&selected_ticket={{ selected_ticket.id }}{% endif %}{% if search %}&search={{ search|urlencode }}{% endif %}"
+                    class="px-4 py-2
+                           bg-surface-container
+                           hover:bg-surface-container-high
+                           rounded-lg text-xs
+                           text-on-surface transition-colors"
+                >
+                    ← Previous
+                </a>
+
+                {% else %}
+
+                <span
+                    class="px-4 py-2 rounded-lg text-xs
+                           text-on-surface-variant/30
+                           bg-surface-container/50"
+                >
+                    ← Previous
+                </span>
+
                 {% endif %}
-            </section>
-        </div>
-    </header>
+
+
+                <!-- PAGE NUMBERS -->
+
+                <div
+                    class="flex items-center gap-1"
+                >
+
+                    {% for num in page_obj.paginator.page_range %}
+
+                        {% if page_obj.number == num %}
+
+                        <span
+                            class="w-8 h-8 flex items-center
+                                   justify-center rounded-lg
+                                   metallic-gradient
+                                   text-xs font-bold"
+                        >
+                            {{ num }}
+                        </span>
+
+                        {% else %}
+
+                        <a
+                            href="?page={{ num }}{% if selected_ticket %}&selected_ticket={{ selected_ticket.id }}{% endif %}{% if search %}&search={{ search|urlencode }}{% endif %}"
+                            class="w-8 h-8 flex items-center
+                                   justify-center rounded-lg
+                                   bg-surface-container
+                                   hover:bg-surface-container-high
+                                   text-xs text-on-surface"
+                        >
+                            {{ num }}
+                        </a>
+
+                        {% endif %}
+
+                    {% endfor %}
+
+                </div>
+
+
+                <!-- NEXT -->
+
+                {% if page_obj.has_next %}
+
+                <a
+                    href="?page={{ page_obj.next_page_number }}{% if selected_ticket %}&selected_ticket={{ selected_ticket.id }}{% endif %}{% if search %}&search={{ search|urlencode }}{% endif %}"
+                    class="px-4 py-2
+                           bg-surface-container
+                           hover:bg-surface-container-high
+                           rounded-lg text-xs
+                           text-on-surface transition-colors"
+                >
+                    Next →
+                </a>
+
+                {% else %}
+
+                <span
+                    class="px-4 py-2 rounded-lg text-xs
+                           text-on-surface-variant/30
+                           bg-surface-container/50"
+                >
+                    Next →
+                </span>
+
+                {% endif %}
+
+            </div>
+
+            {% endif %}
+
+        </section>
+
+
+        <!-- ================================================= -->
+        <!-- RIGHT : DETAILS -->
+        <!-- ================================================= -->
+
+        <section
+            class="col-span-12 lg:col-span-7"
+        >
+
+            {% if selected_ticket %}
+
+            <div
+                class="bg-surface-container-high
+                       rounded-2xl overflow-hidden
+                       shadow-2xl flex flex-col
+                       border border-outline-variant/10"
+            >
+
+                <!-- TICKET HEADER -->
+
+                <div
+                    class="p-8 border-b
+                           border-outline-variant/15"
+                >
+
+                    <div
+                        class="flex items-center gap-3 mb-3"
+                    >
+
+                        <span
+                            class="text-primary
+                                   font-headline font-bold
+                                   text-xl"
+                        >
+                            #T-{{ selected_ticket.id }}
+                        </span>
+
+
+                        <span
+                            class="text-[10px]
+                                   font-extrabold px-3 py-1
+                                   rounded-full uppercase
+                                   tracking-widest
+
+                                   {% if selected_ticket.status == 'OPEN' %}
+                                   bg-primary/20 text-primary
+
+                                   {% elif selected_ticket.status == 'IN_PROGRESS' %}
+                                   bg-blue-500/20 text-blue-400
+
+                                   {% elif selected_ticket.status == 'WAITING_USER' %}
+                                   bg-amber-500/20 text-amber-400
+
+                                   {% elif selected_ticket.status == 'CLOSED' %}
+                                   bg-green-500/20 text-green-400
+                                   {% endif %}"
+                        >
+                            {{ selected_ticket.status_display }}
+                        </span>
+
+                    </div>
+
+
+                    <h2
+                        class="font-headline font-extrabold
+                               text-2xl text-on-surface mb-5"
+                    >
+                        {{ selected_ticket.issue_type_display }}
+                    </h2>
+
+
+                    <!-- INFO -->
+
+                    <div
+                        class="flex gap-8 flex-wrap"
+                    >
+
+                        <div class="flex flex-col">
+
+                            <span
+                                class="text-[10px]
+                                       text-on-surface-variant
+                                       uppercase font-bold
+                                       tracking-widest mb-1"
+                            >
+                                Rider
+                            </span>
+
+                            <span
+                                class="font-medium text-sm
+                                       text-on-surface"
+                            >
+                                {{ selected_ticket.rider_name }}
+                            </span>
+
+                        </div>
+
+
+                        <div class="flex flex-col">
+
+                            <span
+                                class="text-[10px]
+                                       text-on-surface-variant
+                                       uppercase font-bold
+                                       tracking-widest mb-1"
+                            >
+                                Driver
+                            </span>
+
+                            <span
+                                class="font-medium text-sm
+                                       text-on-surface"
+                            >
+
+                                {% if selected_ticket.driver %}
+
+                                    {{ selected_ticket.driver.name }}
+
+                                {% else %}
+
+                                    <span
+                                        class="text-on-surface-variant/40 italic"
+                                    >
+                                        None
+                                    </span>
+
+                                {% endif %}
+
+                            </span>
+
+                        </div>
+
+
+                        <div class="flex flex-col">
+
+                            <span
+                                class="text-[10px]
+                                       text-on-surface-variant
+                                       uppercase font-bold
+                                       tracking-widest mb-1"
+                            >
+                                Created
+                            </span>
+
+                            <span
+                                class="font-medium text-sm
+                                       text-on-surface"
+                            >
+                                {{ selected_ticket.created_at|date:"d M Y H:i" }}
+                            </span>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+                <!-- CONVERSATION -->
+
+                <div
+                    class="p-8 space-y-6
+                           custom-scrollbar overflow-y-auto
+                           h-[350px]
+                           bg-surface-container-highest/20"
+                >
+
+                    <!-- ORIGINAL -->
+
+                    <div class="flex gap-4 max-w-[85%]">
+
+                        <div
+                            class="w-8 h-8 rounded-full
+                                   bg-surface-bright
+                                   flex-shrink-0 flex
+                                   items-center justify-center
+                                   border border-outline-variant/30"
+                        >
+
+                            <span
+                                class="material-symbols-outlined text-sm"
+                            >
+                                person
+                            </span>
+
+                        </div>
+
+
+                        <div
+                            class="bg-surface-container
+                                   rounded-r-xl rounded-bl-xl p-4"
+                        >
+
+                            <p
+                                class="text-sm text-on-surface/90
+                                       leading-relaxed
+                                       whitespace-pre-line"
+                            >
+                                {{ selected_ticket.description }}
+                            </p>
+
+                            <span
+                                class="text-[9px]
+                                       text-on-surface-variant
+                                       mt-2 block"
+                            >
+                                {{ selected_ticket.rider_name }}
+                                •
+                                {{ selected_ticket.created_at|date:"d M Y H:i" }}
+                            </span>
+
+                        </div>
+
+                    </div>
+
+
+                    <!-- MESSAGES -->
+
+                    {% for message in selected_ticket.messages.all %}
+
+                        {% if message.author_role == "support" %}
+
+                        <div
+                            class="flex gap-4 max-w-[85%]
+                                   ml-auto flex-row-reverse"
+                        >
+
+                            <div
+                                class="w-8 h-8 rounded-full
+                                       bg-primary/20
+                                       flex-shrink-0 flex
+                                       items-center justify-center
+                                       border border-primary/30"
+                            >
+
+                                <span
+                                    class="material-symbols-outlined
+                                           text-sm text-primary"
+                                >
+                                    support_agent
+                                </span>
+
+                            </div>
+
+
+                            <div
+                                class="bg-primary/10
+                                       border border-primary/20
+                                       rounded-l-xl rounded-br-xl
+                                       p-4"
+                            >
+
+                                <p
+                                    class="text-sm
+                                           text-on-surface/90
+                                           leading-relaxed
+                                           whitespace-pre-line"
+                                >
+                                    {{ message.body }}
+                                </p>
+
+                                <span
+                                    class="text-[9px]
+                                           text-on-surface-variant
+                                           mt-2 block"
+                                >
+                                    Support
+                                    •
+                                    {{ message.created_at|date:"d M Y H:i" }}
+                                </span>
+
+                            </div>
+
+                        </div>
+
+
+                        {% elif message.author_role == "user" %}
+
+                        <div
+                            class="flex gap-4 max-w-[85%]"
+                        >
+
+                            <div
+                                class="w-8 h-8 rounded-full
+                                       bg-surface-bright
+                                       flex-shrink-0 flex
+                                       items-center justify-center
+                                       border border-outline-variant/30"
+                            >
+
+                                <span
+                                    class="material-symbols-outlined text-sm"
+                                >
+                                    person
+                                </span>
+
+                            </div>
+
+
+                            <div
+                                class="bg-surface-container
+                                       rounded-r-xl rounded-bl-xl
+                                       p-4"
+                            >
+
+                                <p
+                                    class="text-sm
+                                           text-on-surface/90
+                                           leading-relaxed
+                                           whitespace-pre-line"
+                                >
+                                    {{ message.body }}
+                                </p>
+
+                                <span
+                                    class="text-[9px]
+                                           text-on-surface-variant
+                                           mt-2 block"
+                                >
+                                    {{ selected_ticket.rider_name }}
+                                    •
+                                    {{ message.created_at|date:"d M Y H:i" }}
+                                </span>
+
+                            </div>
+
+                        </div>
+
+
+                        {% elif message.author_role == "system" %}
+
+                        <div class="flex justify-center">
+
+                            <div
+                                class="px-4 py-2 rounded-full
+                                       bg-surface-container
+                                       border border-outline-variant/10"
+                            >
+
+                                <span
+                                    class="text-[9px]
+                                           text-on-surface-variant
+                                           uppercase font-bold
+                                           tracking-widest"
+                                >
+                                    {{ message.body }}
+                                </span>
+
+                            </div>
+
+                        </div>
+
+                        {% endif %}
+
+                    {% empty %}
+
+                    <div
+                        class="text-center text-xs
+                               text-on-surface-variant
+                               italic py-4"
+                    >
+                        No additional messages yet.
+                    </div>
+
+                    {% endfor %}
+
+                </div>
+
+
+                <!-- ACTION AREA -->
+
+                <div
+                    class="p-6 bg-surface-container
+                           border-t border-outline-variant/15"
+                >
+
+                    {% if selected_ticket.status != "CLOSED" %}
+
+                    <!-- REPLY -->
+
+                    <form
+                        method="POST"
+                        class="space-y-3"
+                    >
+
+                        {% csrf_token %}
+
+                        <input
+                            type="hidden"
+                            name="ticket_id"
+                            value="{{ selected_ticket.id }}"
+                        >
+
+                        <input
+                            type="hidden"
+                            name="action"
+                            value="reply"
+                        >
+
+                        <input
+                            type="hidden"
+                            name="page"
+                            value="{{ page_obj.number }}"
+                        >
+
+                        <input
+                            type="hidden"
+                            name="search"
+                            value="{{ search }}"
+                        >
+
+                        <label
+                            class="text-[10px]
+                                   text-on-surface-variant
+                                   uppercase font-bold
+                                   tracking-widest block"
+                        >
+                            Reply to Rider
+                        </label>
+
+                        <textarea
+                            name="reply"
+                            rows="3"
+                            required
+                            placeholder="Type your reply to the rider..."
+                            class="w-full
+                                   bg-surface-container-highest
+                                   border border-outline-variant/20
+                                   rounded-xl p-4 text-sm
+                                   text-on-surface
+                                   placeholder:text-on-surface-variant/50
+                                   focus:outline-none
+                                   focus:ring-2
+                                   focus:ring-primary/40
+                                   resize-none"
+                        ></textarea>
+
+                        <button
+                            type="submit"
+                            class="w-full metallic-gradient
+                                   text-on-primary py-3 rounded-xl
+                                   font-headline font-extrabold
+                                   text-sm flex items-center
+                                   justify-center gap-2
+                                   hover:brightness-110
+                                   transition-all"
+                        >
+
+                            <span
+                                class="material-symbols-outlined"
+                            >
+                                send
+                            </span>
+
+                            Send Reply
+
+                        </button>
+
+                    </form>
+
+
+                    <!-- CLOSE -->
+
+                    <form
+                        method="POST"
+                        class="mt-3"
+                        onsubmit="return confirm(
+                            'Are you sure you want to close this ticket?'
+                        );"
+                    >
+
+                        {% csrf_token %}
+
+                        <input
+                            type="hidden"
+                            name="ticket_id"
+                            value="{{ selected_ticket.id }}"
+                        >
+
+                        <input
+                            type="hidden"
+                            name="action"
+                            value="close"
+                        >
+
+                        <input
+                            type="hidden"
+                            name="page"
+                            value="{{ page_obj.number }}"
+                        >
+
+                        <input
+                            type="hidden"
+                            name="search"
+                            value="{{ search }}"
+                        >
+
+                        <button
+                            type="submit"
+                            class="w-full border
+                                   border-red-500/30
+                                   text-red-400
+                                   hover:bg-red-500/10
+                                   py-3 rounded-xl
+                                   font-headline font-bold
+                                   text-sm flex items-center
+                                   justify-center gap-2
+                                   transition-all"
+                        >
+
+                            <span
+                                class="material-symbols-outlined"
+                            >
+                                check_circle
+                            </span>
+
+                            Close Ticket
+
+                        </button>
+
+                    </form>
+
+
+                    {% else %}
+
+                    <!-- CLOSED -->
+
+                    <div
+                        class="flex items-center
+                               justify-center gap-2
+                               py-3 rounded-xl
+                               bg-green-500/10
+                               border border-green-500/20
+                               text-green-400"
+                    >
+
+                        <span
+                            class="material-symbols-outlined"
+                        >
+                            check_circle
+                        </span>
+
+                        <span
+                            class="font-bold text-sm"
+                        >
+                            Ticket Closed
+                        </span>
+
+                    </div>
+
+
+                    <!-- REOPEN -->
+
+                    <form
+                        method="POST"
+                        class="mt-3"
+                    >
+
+                        {% csrf_token %}
+
+                        <input
+                            type="hidden"
+                            name="ticket_id"
+                            value="{{ selected_ticket.id }}"
+                        >
+
+                        <input
+                            type="hidden"
+                            name="action"
+                            value="reopen"
+                        >
+
+                        <input
+                            type="hidden"
+                            name="page"
+                            value="{{ page_obj.number }}"
+                        >
+
+                        <input
+                            type="hidden"
+                            name="search"
+                            value="{{ search }}"
+                        >
+
+                        <button
+                            type="submit"
+                            class="w-full metallic-gradient
+                                   text-on-primary py-3
+                                   rounded-xl
+                                   font-headline font-bold
+                                   text-sm flex items-center
+                                   justify-center gap-2
+                                   transition-all"
+                        >
+
+                            <span
+                                class="material-symbols-outlined"
+                            >
+                                refresh
+                            </span>
+
+                            Reopen Ticket
+
+                        </button>
+
+                    </form>
+
+
+                    {% if selected_ticket.resolved_at %}
+
+                    <p
+                        class="text-center text-[10px]
+                               text-on-surface-variant mt-2"
+                    >
+                        Resolved on
+                        {{ selected_ticket.resolved_at|date:"d M Y H:i" }}
+                    </p>
+
+                    {% endif %}
+
+                    {% endif %}
+
+                </div>
+
+            </div>
+
+
+            {% else %}
+
+            <!-- NO TICKET -->
+
+            <div
+                class="bg-surface-container-high
+                       rounded-2xl p-16 text-center
+                       text-on-surface-variant
+                       border border-outline-variant/10"
+            >
+
+                <span
+                    class="material-symbols-outlined
+                           text-6xl text-primary/30 mb-4"
+                >
+                    support_agent
+                </span>
+
+                <p class="text-lg font-bold">
+                    {% if search %}
+                        No support tickets match your search.
+                    {% else %}
+                        Select a support ticket from the queue
+                        to investigate details.
+                    {% endif %}
+                </p>
+
+            </div>
+
+            {% endif %}
+
+        </section>
+
+    </div>
+
 </div>
+
 {% endblock %}
-{% block extra_body %}
-<button
-    class="fixed bottom-8 right-8 w-16 h-16 rounded-full metallic-gradient text-on-primary shadow-[0_20px_40px_rgba(212,175,55,0.3)] flex items-center justify-center hover:scale-110 active:scale-90 transition-all z-50">
-    <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">add</span>
-</button>
-{% endblock %}
+

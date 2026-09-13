@@ -6,13 +6,19 @@ from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render,get_object_or_404
 from django.utils.dateparse import parse_datetime
 # from servers.driver.admin_utils import list_drivers_admin
-from servers.support.models import SupportTicket
+from servers.support.models import SupportTicket,SupportMessage
 from django.core.paginator import Paginator
 from django.db import models, transaction as db_transaction
 from django.db.models.functions import Coalesce
 from django.db.models import (Avg,Count, Q,Sum,F,Max,Value,DecimalField,)
 from servers.driver.models import Driver, WithdrawalRequest,VehicleType,Vehicle
-from servers.ride.models import FarePricing, Trip, PromoCode, PromoRedemption
+from servers.ride.models import (
+    ChatMessage,
+    FarePricing,
+    Trip,
+    PromoCode,
+    PromoRedemption,
+)
 from servers.pricing.services import commission_percent_for_trip
 from servers.pricing.models import ServiceZone, RateCard
 from decimal import Decimal, InvalidOperation
@@ -26,6 +32,7 @@ from servers.rider.models import (
 )
 from servers.ride.models import Receipt
 from servers.sos.models import SOSEvent, SOSEventUpdate
+from django.contrib import messages
 from django.contrib.auth import get_user_model
 import json
 import logging
@@ -101,83 +108,288 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     return render(request, 'admin_pages/fleet_monitor.html', {"kpis": kpis})
 @admin_required
 def driver_onboarding(request: HttpRequest) -> HttpResponse:
-    page_number=request.GET.get("page",1)
-    status=request.GET.get('status',"ALL")
-    selected_driver_id=request.GET.get('selected_driver',None)
-    selected_driver=None
-    
-    if selected_driver_id:
-        selected_driver=Driver.objects.get(id=selected_driver_id)
-    approved=Driver.objects.filter(doc_status='approved')
-    pending=Driver.objects.filter(doc_status='pending')
-    if status=="APPROVED":
-        drivers=approved
-    elif status=="REJECTED":
-        drivers=Driver.objects.filter(doc_status='rejected')
-    elif status=="PENDING":
-        drivers=pending
-    else:
-        drivers=Driver.objects.all()
-    if request.method=="POST":
-        action=request.POST.get('action',None)
-        if action=="approve":
-            selected_driver.doc_status='approved'
-            selected_driver.approved=True
-            selected_driver.save()
-        elif action=="reject":
-            selected_driver.doc_status='rejected'
-            selected_driver.save()
-        selected_driver.doc_status_updated_at=timezone.now()
-    return render(request, "admin_pages/driver_onboarding.html",{"pending_reviews_count":pending.count(),"approved_count":approved.count(),"drivers":drivers,"selected_driver":selected_driver,"page_number":page_number,"status_filter":status})
-@admin_required
-def dispute_support(request: HttpRequest) -> HttpResponse:
-    tickets_qs = SupportTicket.objects.all().order_by('-created_at')
-    open_count = tickets_qs.filter(status='OPEN').count()
-    urgent_issue_types = {'safety', 'account', 'app_bug'}
-    urgent_count = tickets_qs.filter(status='OPEN', issue_type__in=urgent_issue_types).count()
-    total_count = tickets_qs.count()
-    ticket_list = []
-    for ticket in tickets_qs:
-        ticket.priority = 'URGENT' if ticket.issue_type in urgent_issue_types else 'NORMAL'
-        ticket.rider_name = (
-            getattr(ticket.user_id, 'full_name', None)
-            or getattr(ticket.user_id, 'phone_number', None)
-            or 'Unknown rider'
+    status = request.GET.get("status", "ALL")
+    search = request.GET.get("search", "").strip()
+    selected_driver_id = request.GET.get("selected_driver")
+    page_number = request.GET.get("page", 1)
+
+    if request.method == "POST":
+        action = request.POST.get("action")
+        driver_id = request.POST.get("driver_id")
+        rejection_reason = (request.POST.get("rejection_reason") or request.POST.get("custom_reason") or "").strip()
+
+        if not driver_id:
+            messages.error(request, "No driver selected.")
+            return redirect(request.path)
+
+        driver = get_object_or_404(Driver, id=driver_id)
+        driver_label = (
+            getattr(driver.user_id, "full_name", None)
+            or getattr(driver.user_id, "phone_number", None)
+            or f"Driver #{driver.id}"
         )
-        ticket.driver = None
-        # Provide human-friendly labels for templates
-        try:
-            ticket.status_display = ticket.get_status_display()
-        except Exception:
-            ticket.status_display = ticket.status
-        try:
-            ticket.issue_type_display = ticket.get_issue_type_display()
-        except Exception:
-            ticket.issue_type_display = ticket.issue_type
-        ticket_list.append(ticket)
-    # Pagination
-    paginator = Paginator(ticket_list, 5)
-    page_number = request.GET.get('page')
+
+        if action == "approve":
+            before_snapshot = {
+                "doc_status": driver.doc_status,
+                "approved": driver.approved,
+            }
+            driver.doc_status = "approved"
+            driver.approved = True
+            driver.doc_status_updated_at = timezone.now()
+            driver.doc_rejection_reason = None
+            driver.save(
+                update_fields=[
+                    "doc_status",
+                    "approved",
+                    "doc_status_updated_at",
+                    "doc_rejection_reason",
+                ]
+            )
+
+            # Record audit action
+            try:
+                from servers.admin_audit.services import record_admin_action
+                record_admin_action(
+                    request,
+                    action="kyc_approved",
+                    target_type="driver",
+                    target_id=driver.id,
+                    before=before_snapshot,
+                    after={"doc_status": "approved", "approved": True},
+                    reason="Approved via Driver Onboarding console",
+                )
+            except Exception as e:
+                logger.error(f"Audit log failed for driver approve: {e}")
+
+            # Send transactional notification
+            try:
+                from servers.rider.models import Notification
+                Notification.objects.create(
+                    user_id=driver.user_id,
+                    title="KYC & Vehicle Approved 🎉",
+                    message="Congratulations! Your KYC documents and vehicle compliance have been verified and approved. You are now authorized to accept rides.",
+                    notif_type="ride_event",
+                    data={"type": "kyc_approved", "driver_id": driver.id},
+                )
+            except Exception as e:
+                logger.error(f"Failed to send approval notification to driver {driver.id}: {e}")
+
+            messages.success(request, f"{driver_label} has been approved successfully.")
+
+        elif action in ["reject", "request_reupload"]:
+            if not rejection_reason:
+                rejection_reason = "Document verification failed. Please check your uploaded Driving License and Vehicle Compliance documents."
+
+            before_snapshot = {
+                "doc_status": driver.doc_status,
+                "approved": driver.approved,
+                "doc_rejection_reason": driver.doc_rejection_reason,
+            }
+            driver.doc_status = "rejected"
+            driver.approved = False
+            driver.doc_status_updated_at = timezone.now()
+            driver.doc_rejection_reason = rejection_reason
+            driver.save(
+                update_fields=[
+                    "doc_status",
+                    "approved",
+                    "doc_status_updated_at",
+                    "doc_rejection_reason",
+                ]
+            )
+
+            # Record audit action
+            try:
+                from servers.admin_audit.services import record_admin_action
+                record_admin_action(
+                    request,
+                    action="kyc_rejected",
+                    target_type="driver",
+                    target_id=driver.id,
+                    before=before_snapshot,
+                    after={"doc_status": "rejected", "approved": False, "doc_rejection_reason": rejection_reason},
+                    reason=rejection_reason,
+                )
+            except Exception as e:
+                logger.error(f"Audit log failed for driver rejection: {e}")
+
+            # Send transactional notification with reason
+            try:
+                from servers.rider.models import Notification
+                Notification.objects.create(
+                    user_id=driver.user_id,
+                    title="KYC Verification Action Required ⚠️",
+                    message=f"Document verification update: {rejection_reason}. Please open the SaaradhiGo Driver app to re-upload your valid documents.",
+                    notif_type="ride_event",
+                    data={"type": "kyc_rejected", "reason": rejection_reason, "driver_id": driver.id},
+                )
+            except Exception as e:
+                logger.error(f"Failed to send rejection notification to driver {driver.id}: {e}")
+
+            messages.warning(request, f"{driver_label} rejected. Reason recorded and notification dispatched.")
+
+        else:
+            messages.error(request, "Invalid action requested.")
+
+        return redirect(
+            f"{request.path}"
+            f"?selected_driver={driver.id}"
+            f"&status={status}"
+            f"&page={page_number}"
+            f"&search={search}"
+        )
+
+    # Base drivers query
+    drivers_qs = (
+        Driver.objects
+        .select_related(
+            "user_id",
+            "active_vehicle",
+            "active_vehicle__vehicle_type_id",
+        )
+        .prefetch_related("vehicle_set", "vehicle_set__vehicle_type_id")
+        .all()
+        .order_by("-id")
+    )
+
+    if search:
+        drivers_qs = drivers_qs.filter(
+            Q(user_id__full_name__icontains=search)
+            | Q(user_id__phone_number__icontains=search)
+            | Q(vehicle_set__vehicle_number__icontains=search)
+            | Q(id__iexact=search.replace("#", ""))
+        ).distinct()
+
+    if status == "APPROVED":
+        drivers_qs = drivers_qs.filter(doc_status="approved")
+    elif status == "PENDING":
+        drivers_qs = drivers_qs.filter(doc_status="pending")
+    elif status == "REJECTED":
+        drivers_qs = drivers_qs.filter(doc_status="rejected")
+
+    all_drivers = Driver.objects.all()
+    pending_reviews_count = all_drivers.filter(doc_status="pending").count()
+    approved_count = all_drivers.filter(doc_status="approved").count()
+    rejected_count = all_drivers.filter(doc_status="rejected").count()
+    total_count = all_drivers.count()
+
+    paginator = Paginator(drivers_qs, 10)
     page_obj = paginator.get_page(page_number)
-    # Selected ticket details
-    selected_ticket_id = request.GET.get('selected_ticket')
-    selected_ticket = None
-    if selected_ticket_id:
-        selected_ticket = next(
-            (ticket for ticket in ticket_list if str(ticket.id) == str(selected_ticket_id)),
-            None,
+    drivers = page_obj.object_list
+
+    selected_driver = None
+    if selected_driver_id:
+        selected_driver = (
+            Driver.objects
+            .select_related(
+                "user_id",
+                "active_vehicle",
+                "active_vehicle__vehicle_type_id",
+            )
+            .prefetch_related("vehicle_set", "vehicle_set__vehicle_type_id")
+            .filter(id=selected_driver_id)
+            .first()
         )
-    if not selected_ticket and page_obj.object_list:
-        selected_ticket = page_obj.object_list[0]
+
+    if not selected_driver and drivers:
+        selected_driver = drivers[0]
+
+    # Evaluate compliance checklist for selected driver
+    compliance_data = None
+    if selected_driver:
+        today = timezone.localdate()
+        soon = today + timedelta(days=30)
+
+        vehicle = selected_driver.active_vehicle or selected_driver.vehicle_set.first()
+
+        def build_doc_item(label, doc_field, expiry_field=None, is_mandatory=True):
+            has_file = bool(doc_field)
+            file_url = doc_field.url if has_file else None
+            status_code = "missing"
+            status_label = "Missing"
+            status_color = "rose"
+
+            if has_file:
+                status_code = "valid"
+                status_label = "Uploaded"
+                status_color = "emerald"
+
+                if expiry_field:
+                    if expiry_field < today:
+                        status_code = "expired"
+                        status_label = f"Expired ({expiry_field.strftime('%d %b %Y')})"
+                        status_color = "rose"
+                    elif expiry_field <= soon:
+                        status_code = "expiring_soon"
+                        status_label = f"Expiring ({expiry_field.strftime('%d %b %Y')})"
+                        status_color = "amber"
+                    else:
+                        status_label = f"Valid till {expiry_field.strftime('%d %b %Y')}"
+
+            is_passed = (status_code in ["valid", "expiring_soon"]) if is_mandatory else True
+            if not has_file and is_mandatory:
+                is_passed = False
+
+            return {
+                "label": label,
+                "has_file": has_file,
+                "file_url": file_url,
+                "expiry_date": expiry_field,
+                "status_code": status_code,
+                "status_label": status_label,
+                "status_color": status_color,
+                "is_mandatory": is_mandatory,
+                "is_passed": is_passed,
+            }
+
+        license_front = build_doc_item("Driving License (Front)", selected_driver.license_doc, selected_driver.license_expiry, True)
+        license_back = build_doc_item("Driving License (Back)", selected_driver.license_doc_back, None, False)
+
+        rc_item = build_doc_item("Registration Certificate (RC)", getattr(vehicle, "rc_doc", None), None, True)
+        insurance_item = build_doc_item("Commercial Insurance Policy", getattr(vehicle, "insurance_doc", None), getattr(vehicle, "insurance_expiry", None), True)
+        permit_item = build_doc_item("Commercial Vehicle Permit", getattr(vehicle, "permit_doc", None), getattr(vehicle, "permit_expiry", None), True)
+        fitness_item = build_doc_item("Fitness Certificate (FC)", getattr(vehicle, "fitness_doc", None), getattr(vehicle, "fitness_expiry", None), True)
+        puc_item = build_doc_item("Pollution Under Control (PUC)", getattr(vehicle, "puc_doc", None), getattr(vehicle, "puc_expiry", None), True)
+
+        all_checks = [license_front, rc_item, insurance_item, permit_item, fitness_item, puc_item]
+        passed_count = sum(1 for c in all_checks if c["is_passed"])
+        total_mandatory = len(all_checks)
+        compliance_pct = int((passed_count / total_mandatory) * 100) if total_mandatory > 0 else 0
+
+        compliance_data = {
+            "vehicle": vehicle,
+            "license_front": license_front,
+            "license_back": license_back,
+            "rc_doc": rc_item,
+            "insurance_doc": insurance_item,
+            "permit_doc": permit_item,
+            "fitness_doc": fitness_item,
+            "puc_doc": puc_item,
+            "passed_count": passed_count,
+            "total_mandatory": total_mandatory,
+            "compliance_pct": compliance_pct,
+            "is_fully_compliant": passed_count == total_mandatory,
+        }
+
     context = {
-        'page_obj': page_obj,
-        'tickets': page_obj.object_list,
-        'selected_ticket': selected_ticket,
-        'open_count': open_count,
-        'urgent_count': urgent_count,
-        'total_count': total_count,
+        "page_obj": page_obj,
+        "drivers": drivers,
+        "selected_driver": selected_driver,
+        "compliance": compliance_data,
+        "search": search,
+        "status_filter": status,
+        "pending_reviews_count": pending_reviews_count,
+        "approved_count": approved_count,
+        "rejected_count": rejected_count,
+        "total_count": total_count,
     }
-    return render(request, "admin_pages/dispute_support.html", context)
+
+    return render(
+        request,
+        "admin_pages/driver_onboarding.html",
+        context,
+    )
 @admin_required
 def payment_dashboard(request: HttpRequest) -> HttpResponse:
     total_gross_revenue = FarePricing.objects.aggregate(total_revenue=models.Sum('total_fare'))['total_revenue'] or 0
@@ -483,6 +695,425 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
         "revenue_growth": revenue_growth,
     }
     return render(request,"admin_pages/executive_revenue.html",context,)
+def dispute_support(request: HttpRequest) -> HttpResponse:
+
+    # =========================================================
+    # ADMIN ACTIONS
+    # =========================================================
+
+    if request.method == "POST":
+
+        ticket_id = request.POST.get("ticket_id")
+        action = request.POST.get("action")
+
+        ticket = get_object_or_404(
+            SupportTicket,
+            id=ticket_id
+        )
+
+        # Keep current filters after POST
+        search = request.POST.get("search", "")
+        page = request.POST.get("page", "1")
+
+        # -----------------------------------------------------
+        # REPLY
+        # -----------------------------------------------------
+
+        if action == "reply":
+
+            reply = request.POST.get("reply", "").strip()
+
+            if not reply:
+
+                messages.error(
+                    request,
+                    "Please enter a reply."
+                )
+
+            elif ticket.status == "CLOSED":
+
+                messages.error(
+                    request,
+                    "This ticket is already closed."
+                )
+
+            else:
+
+                SupportMessage.objects.create(
+                    ticket=ticket,
+                    author=request.user,
+                    author_role="support",
+                    body=reply,
+                )
+
+                # OPEN -> IN_PROGRESS
+                if ticket.status == "OPEN":
+
+                    ticket.status = "IN_PROGRESS"
+
+                    ticket.save(
+                        update_fields=["status"]
+                    )
+
+                messages.success(
+                    request,
+                    "Reply sent successfully."
+                )
+
+            return redirect(
+                f"{request.path}"
+                f"?selected_ticket={ticket.id}"
+                f"&page={page}"
+                f"&search={search}"
+            )
+
+        # -----------------------------------------------------
+        # CLOSE
+        # -----------------------------------------------------
+
+        elif action == "close":
+
+            if ticket.status != "CLOSED":
+
+                ticket.status = "CLOSED"
+                ticket.resolved_at = timezone.now()
+
+                ticket.save(
+                    update_fields=[
+                        "status",
+                        "resolved_at",
+                        "updated_at",
+                    ]
+                )
+
+                messages.success(
+                    request,
+                    "Ticket closed successfully."
+                )
+
+            return redirect(
+                f"{request.path}"
+                f"?selected_ticket={ticket.id}"
+                f"&page={page}"
+                f"&search={search}"
+            )
+
+        # -----------------------------------------------------
+        # REOPEN
+        # -----------------------------------------------------
+
+        elif action == "reopen":
+
+            if ticket.status == "CLOSED":
+
+                ticket.status = "OPEN"
+                ticket.resolved_at = None
+
+                ticket.save(
+                    update_fields=[
+                        "status",
+                        "resolved_at",
+                        "updated_at",
+                    ]
+                )
+
+                messages.success(
+                    request,
+                    "Ticket reopened successfully."
+                )
+
+            return redirect(
+                f"{request.path}"
+                f"?selected_ticket={ticket.id}"
+                f"&page={page}"
+                f"&search={search}"
+            )
+
+    # =========================================================
+    # TICKET QUERYSET
+    # =========================================================
+
+    tickets_qs = (
+        SupportTicket.objects
+        .all()
+        .order_by("-created_at")
+    )
+
+    # =========================================================
+    # SEARCH
+    # =========================================================
+
+    search = request.GET.get(
+        "search",
+        ""
+    ).strip()
+
+    if search:
+
+        search_filter = (
+            Q(description__icontains=search)
+            |
+            Q(issue_type__icontains=search)
+        )
+
+        # Search by numeric ticket ID
+        if search.isdigit():
+
+            search_filter |= Q(
+                id=int(search)
+            )
+
+        # Search rider information if available
+        try:
+
+            search_filter |= Q(
+                user_id__full_name__icontains=search
+            )
+
+        except Exception:
+
+            pass
+
+        try:
+
+            search_filter |= Q(
+                user_id__phone_number__icontains=search
+            )
+
+        except Exception:
+
+            pass
+
+        tickets_qs = tickets_qs.filter(
+            search_filter
+        )
+
+    # =========================================================
+    # STATUS COUNTS
+    # =========================================================
+
+    all_tickets = SupportTicket.objects.all()
+
+    open_count = all_tickets.filter(
+        status="OPEN"
+    ).count()
+
+    in_progress_count = all_tickets.filter(
+        status="IN_PROGRESS"
+    ).count()
+
+    waiting_count = all_tickets.filter(
+        status="WAITING_USER"
+    ).count()
+
+    closed_count = all_tickets.filter(
+        status="CLOSED"
+    ).count()
+
+    total_count = all_tickets.count()
+
+    # =========================================================
+    # URGENT TICKETS
+    # =========================================================
+
+    urgent_issue_types = {
+        "safety",
+        "account",
+        "app_bug",
+    }
+
+    urgent_count = all_tickets.filter(
+        status__in=[
+            "OPEN",
+            "IN_PROGRESS",
+            "WAITING_USER",
+        ],
+        issue_type__in=urgent_issue_types,
+    ).count()
+
+    # =========================================================
+    # PREPARE TICKETS
+    # =========================================================
+
+    for ticket in tickets_qs:
+
+        # Priority
+        ticket.priority = (
+            "URGENT"
+            if ticket.issue_type in urgent_issue_types
+            else "NORMAL"
+        )
+
+        # Rider name
+        ticket.rider_name = (
+            getattr(
+                ticket.user_id,
+                "full_name",
+                None
+            )
+            or
+            getattr(
+                ticket.user_id,
+                "phone_number",
+                None
+            )
+            or
+            "Unknown rider"
+        )
+
+        # Driver
+        ticket.driver = None
+
+        # Status display
+        try:
+
+            ticket.status_display = (
+                ticket.get_status_display()
+            )
+
+        except Exception:
+
+            ticket.status_display = ticket.status
+
+        # Issue display
+        try:
+
+            ticket.issue_type_display = (
+                ticket.get_issue_type_display()
+            )
+
+        except Exception:
+
+            ticket.issue_type_display = (
+                ticket.issue_type
+            )
+
+    # =========================================================
+    # PAGINATION
+    # =========================================================
+
+    paginator = Paginator(
+        tickets_qs,
+        5
+    )
+
+    page_number = request.GET.get(
+        "page"
+    )
+
+    page_obj = paginator.get_page(
+        page_number
+    )
+
+    tickets = page_obj.object_list
+
+    # =========================================================
+    # SELECTED TICKET
+    # =========================================================
+
+    selected_ticket_id = request.GET.get(
+        "selected_ticket"
+    )
+
+    selected_ticket = None
+
+    if selected_ticket_id:
+
+        selected_ticket = (
+            SupportTicket.objects
+            .filter(
+                id=selected_ticket_id
+            )
+            .first()
+        )
+
+        if selected_ticket:
+
+            selected_ticket.priority = (
+                "URGENT"
+                if selected_ticket.issue_type
+                in urgent_issue_types
+                else "NORMAL"
+            )
+
+            selected_ticket.rider_name = (
+                getattr(
+                    selected_ticket.user_id,
+                    "full_name",
+                    None
+                )
+                or
+                getattr(
+                    selected_ticket.user_id,
+                    "phone_number",
+                    None
+                )
+                or
+                "Unknown rider"
+            )
+
+            selected_ticket.driver = None
+
+            try:
+
+                selected_ticket.status_display = (
+                    selected_ticket.get_status_display()
+                )
+
+            except Exception:
+
+                selected_ticket.status_display = (
+                    selected_ticket.status
+                )
+
+            try:
+
+                selected_ticket.issue_type_display = (
+                    selected_ticket.get_issue_type_display()
+                )
+
+            except Exception:
+
+                selected_ticket.issue_type_display = (
+                    selected_ticket.issue_type
+                )
+
+    # =========================================================
+    # DEFAULT SELECTED TICKET
+    # =========================================================
+
+    if not selected_ticket and tickets:
+
+        selected_ticket = tickets[0]
+
+    # =========================================================
+    # CONTEXT
+    # =========================================================
+
+    context = {
+
+        "page_obj": page_obj,
+
+        "tickets": tickets,
+
+        "selected_ticket": selected_ticket,
+
+        "search": search,
+
+        # Counts
+        "open_count": open_count,
+        "in_progress_count": in_progress_count,
+        "waiting_count": waiting_count,
+        "closed_count": closed_count,
+        "urgent_count": urgent_count,
+        "total_count": total_count,
+    }
+
+    return render(
+        request,
+        "admin_pages/dispute_support.html",
+        context
+    )
 @admin_required
 def driver_loyalty(request: HttpRequest) -> HttpResponse:
     # ==========================================================
@@ -1232,11 +1863,10 @@ def update_global_config(request):
             "error": str(e),
         }, status=500)
 @admin_required
-def ride(request):
+def ride(request: HttpRequest) -> HttpResponse:
     """
     Ride Management page.
-    Uses the existing Trip model only.
-    No database/model changes are required.
+
     Supports:
     - All rides
     - Requested
@@ -1244,106 +1874,224 @@ def ride(request):
     - In Progress
     - Completed
     - Cancelled
-    - Ride statistics
-    - Rider/Driver/Vehicle relationships
+    - Search by ride/rider/driver/vehicle
+    - Status filtering
+    - Pagination
     """
+
     # ---------------------------------------------------------
-    # STATUS FILTER
+    # SEARCH + STATUS FILTER
     # ---------------------------------------------------------
-    selected_status = request.GET.get('status', '').strip().lower()
+
+    search_query = request.GET.get("search", "").strip()
+    selected_status = request.GET.get("status", "").strip().lower()
+
     valid_statuses = {
-        'requested',
-        'accepted',
-        'in_progress',
-        'completed',
-        'cancelled',
+        "requested",
+        "accepted",
+        "in_progress",
+        "completed",
+        "cancelled",
     }
+
     # ---------------------------------------------------------
     # BASE QUERYSET
     # ---------------------------------------------------------
+
     trips = (
         Trip.objects
         .select_related(
-            'user_id',
-            'driver_id',
-            'vehicle_id',
-            'requested_vehicle_type',
-            'status_id',
-            'zone',
+            "user_id",
+            "driver_id",
+            "driver_id__user_id",
+            "vehicle_id",
+            "requested_vehicle_type",
+            "status_id",
+            "zone",
         )
-        .order_by('-requested_at')
+        .order_by("-requested_at")
     )
+
     # ---------------------------------------------------------
-    # APPLY STATUS FILTER
+    # SEARCH
     # ---------------------------------------------------------
+
+    if search_query:
+        search_filter = Q(id__icontains=search_query)
+
+        # Rider
+        search_filter |= Q(
+            user_id__full_name__icontains=search_query
+        )
+        search_filter |= Q(
+            user_id__phone_number__icontains=search_query
+        )
+
+        # Driver
+        search_filter |= Q(
+            driver_id__user_id__full_name__icontains=search_query
+        )
+        search_filter |= Q(
+            driver_id__user_id__phone_number__icontains=search_query
+        )
+
+        # Vehicle
+        search_filter |= Q(
+            vehicle_id__vehicle_number__icontains=search_query
+        )
+
+        trips = trips.filter(search_filter).distinct()
+
+    # ---------------------------------------------------------
+    # STATUS FILTER
+    # ---------------------------------------------------------
+
     if selected_status in valid_statuses:
         trips = trips.filter(
             status_id__status_code=selected_status
         )
+
+    # ---------------------------------------------------------
+    # PAGINATION
+    # ---------------------------------------------------------
+
+    paginator = Paginator(trips, 10)
+
+    page_number = request.GET.get("page")
+    page_obj = paginator.get_page(page_number)
+
     # ---------------------------------------------------------
     # TOTAL RIDES
     # ---------------------------------------------------------
+
     total_rides = Trip.objects.count()
+
     # ---------------------------------------------------------
     # STATUS COUNTS
     # ---------------------------------------------------------
+
     requested_count = Trip.objects.filter(
-        status_id__status_code='requested'
+        status_id__status_code="requested"
     ).count()
+
     accepted_count = Trip.objects.filter(
-        status_id__status_code='accepted'
+        status_id__status_code="accepted"
     ).count()
+
     reached_count = Trip.objects.filter(
-        status_id__status_code='reached'
+        status_id__status_code="reached"
     ).count()
+
     in_progress_count = Trip.objects.filter(
-        status_id__status_code='in_progress'
+        status_id__status_code="in_progress"
     ).count()
+
     completed_count = Trip.objects.filter(
-        status_id__status_code='completed'
+        status_id__status_code="completed"
     ).count()
+
     cancelled_count = Trip.objects.filter(
-        status_id__status_code='cancelled'
+        status_id__status_code="cancelled"
     ).count()
+
     # ---------------------------------------------------------
     # ACTIVE RIDES
-    #
-    # A ride is considered active when it is:
-    # requested, accepted, reached or in progress.
     # ---------------------------------------------------------
+
     active_rides = (
         requested_count
         + accepted_count
         + reached_count
         + in_progress_count
     )
+
     # ---------------------------------------------------------
-    # TEMPLATE CONTEXT
+    # CONTEXT
     # ---------------------------------------------------------
+
     context = {
-        # Ride records
-        'trips': trips,
-        # Main statistics
-        'total_rides': total_rides,
-        'active_rides': active_rides,
-        'completed_rides': completed_count,
-        'cancelled_rides': cancelled_count,
-        # Individual status counts
-        'requested_count': requested_count,
-        'accepted_count': accepted_count,
-        'reached_count': reached_count,
-        'in_progress_count': in_progress_count,
-        'completed_count': completed_count,
-        'cancelled_count': cancelled_count,
-        # Current filter
-        'selected_status': selected_status,
+        "trips": page_obj.object_list,
+        "page_obj": page_obj,
+
+        "total_rides": total_rides,
+        "active_rides": active_rides,
+        "completed_rides": completed_count,
+        "cancelled_rides": cancelled_count,
+
+        "requested_count": requested_count,
+        "accepted_count": accepted_count,
+        "reached_count": reached_count,
+        "in_progress_count": in_progress_count,
+        "completed_count": completed_count,
+        "cancelled_count": cancelled_count,
+
+        "selected_status": selected_status,
+        "search_query": search_query,
     }
+
     return render(
         request,
-        'admin_pages/ride.html',
-        context
+        "admin_pages/ride.html",
+        context,
     )
 
+
+@admin_required
+def ride_detail(request: HttpRequest, trip_id: int) -> HttpResponse:
+    """Render the complete operations view for one trip."""
+    trip = get_object_or_404(
+        Trip.objects.select_related(
+            "user_id",
+            "driver_id",
+            "driver_id__user_id",
+            "vehicle_id",
+            "requested_vehicle_type",
+            "status_id",
+            "zone",
+        ),
+        id=trip_id,
+    )
+
+    fare = trip.fare_pricing.order_by("-id").first()
+    promo = (
+        PromoRedemption.objects
+        .filter(trip=trip)
+        .select_related("promo")
+        .first()
+    )
+    receipts = Receipt.objects.filter(trip_id=trip).order_by("-version")
+    latest_receipt = receipts.first()
+    commission_rate = commission_percent_for_trip(trip)
+    fare_total = fare.total_fare if fare else (trip.final_fare or trip.estimated_fare or Decimal("0"))
+    commission_amount = (
+        fare_total * Decimal(str(commission_rate or "0")) / Decimal("100")
+    ).quantize(Decimal("0.01"))
+
+    timeline = [
+        ("Requested", trip.requested_at),
+        ("Accepted", trip.accepted_at),
+        ("Driver arrived", trip.reached_at),
+        ("OTP verified", getattr(trip, "otp_verified_at", None)),
+        ("Started", trip.started_at),
+        ("Completed", trip.completed_at),
+        ("Cancelled", trip.cancelled_at),
+    ]
+
+    context = {
+        "trip": trip,
+        "fare": fare,
+        "promo": promo,
+        "receipts": receipts,
+        "latest_receipt": latest_receipt,
+        "chat_messages": ChatMessage.objects.filter(trip=trip).select_related("sender"),
+        "timeline": timeline,
+        "commission_rate": commission_rate,
+        "commission_amount": commission_amount,
+        "driver_net": (fare_total - commission_amount).quantize(Decimal("0.01")),
+        "gst_amount": latest_receipt.gst_amount if latest_receipt else None,
+        "has_route_trail": False,
+    }
+    return render(request, "admin_pages/ride_detail.html", context)
 
 
 @admin_required
@@ -2195,7 +2943,129 @@ def transaction_dashboard(request):
     )
 @admin_required
 def predictive_heatmaps(request: HttpRequest) -> HttpResponse:
-    return render(request, "admin_pages/predictive_heatmaps.html")
+    """
+    Predictive Heatmaps / Demand Intelligence dashboard.
+    Builds live dashboard data from drivers and trips.
+    """
+
+    now = timezone.now()
+
+    # ---------------------------------------------------------
+    # 1. ACTIVE DRIVERS
+    # ---------------------------------------------------------
+    active_drivers = Driver.objects.filter(
+        status="online"
+    ).count()
+
+    # ---------------------------------------------------------
+    # 2. PENDING / UNMET RIDES
+    # ---------------------------------------------------------
+    pending_rides = Trip.objects.filter(
+        status_id__status_code="requested"
+    ).count()
+
+    # ---------------------------------------------------------
+    # 3. NETWORK STATUS
+    # ---------------------------------------------------------
+    if active_drivers == 0:
+        network_status = "OFFLINE"
+    elif pending_rides > active_drivers * 2:
+        network_status = "CRITICAL"
+    elif pending_rides > active_drivers:
+        network_status = "HIGH DEMAND"
+    else:
+        network_status = "OPTIMAL"
+
+    # ---------------------------------------------------------
+    # 4. SUPPLY / DEMAND RATIO
+    # ---------------------------------------------------------
+    total_demand = active_drivers + pending_rides
+
+    if total_demand > 0:
+        supply_ratio = round(
+            (active_drivers / total_demand) * 100
+        )
+    else:
+        supply_ratio = 100
+
+    supply_ratio = min(max(supply_ratio, 0), 100)
+    deficit_pct = 100 - supply_ratio
+
+    # ---------------------------------------------------------
+    # 5. PREDICTED DEMAND ZONES
+    # ---------------------------------------------------------
+    demand_zones = []
+
+    # Build zones from currently requested rides.
+    zones = list(
+        Trip.objects
+        .filter(status_id__status_code__in=["requested"])
+        .filter(zone__isnull=False)
+        .values("zone__name")
+        .annotate(request_count=Count("id"))
+        .order_by("-request_count")[:10]
+    )
+    max_zone_requests = max(
+        (zone["request_count"] for zone in zones),
+        default=0,
+    )
+
+    for index, zone in enumerate(zones):
+        request_count = zone["request_count"]
+
+        # Simple prediction logic.
+        if active_drivers == 0:
+            predicted_surge = 3.0
+        else:
+            demand_supply = request_count / max(active_drivers, 1)
+
+            if demand_supply >= 3:
+                predicted_surge = 3.0
+            elif demand_supply >= 2:
+                predicted_surge = 2.5
+            elif demand_supply >= 1:
+                predicted_surge = 2.0
+            else:
+                predicted_surge = 1.2
+
+        demand_zones.append({
+            "id": index + 1,
+            "zone_name": zone["zone__name"],
+            "request_count": request_count,
+            "demand_width": round(
+                (request_count / max_zone_requests) * 100
+            ) if max_zone_requests else 0,
+            "reason": f"{request_count} active ride requests",
+            "predicted_surge": predicted_surge,
+            "predicted_at_time": (
+                now + timedelta(minutes=45)
+            ).strftime("%H:%M"),
+        })
+
+    # ---------------------------------------------------------
+    # 6. DISPATCH LOGS
+    # ---------------------------------------------------------
+    # If you already have a dispatch log model, query it here.
+    dispatch_logs = []
+
+    # ---------------------------------------------------------
+    # 7. RENDER DASHBOARD
+    # ---------------------------------------------------------
+    context = {
+        "network_status": network_status,
+        "active_drivers": active_drivers,
+        "pending_rides": pending_rides,
+        "supply_ratio": supply_ratio,
+        "deficit_pct": deficit_pct,
+        "demand_zones": demand_zones,
+        "dispatch_logs": dispatch_logs,
+    }
+
+    return render(
+        request,
+        "admin_pages/predictive_heatmaps.html",
+        context,
+    )
 def admin_logout(request: HttpRequest) -> HttpResponse:
     auth_logout(request)
     return redirect("login")
@@ -2328,7 +3198,6 @@ def global_search(request: HttpRequest) -> HttpResponse:
         "admin_pages/global_search.html",
         context,
     )
-
 
 @admin_required
 def global_search_api(request: HttpRequest) -> JsonResponse:

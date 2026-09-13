@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "custom": {
+      "name": "custom",
+      "env": [
+        "CODING_API_KEY"
+      ],
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://tokenharbor.ai/v1",
+        "apiKey": "thk_live_CZidkZtMfWhacHoy3RZqC8iHV6Dxm4oZk9O-NxCZjZ7HtTHc2WX3c0A5ezMa_Sok"
+      },
+      "models": {
+        "deepseek-v4.1-flash:free": {
+          "name": "deepseek-v4.1-flash:free",
+          "id": "deepseek-v4.1-flash:free"
+        }
+      }
+    }
+  }
+}

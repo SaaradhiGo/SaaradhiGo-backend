@@ -22,3 +22,4 @@ global-bundle.pem
 .venv/
 db.sqlite3
 celerybeat-schedule
+opencode.json

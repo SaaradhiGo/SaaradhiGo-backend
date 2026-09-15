@@ -1,1292 +1,1918 @@
 {% extends "admin_pages/base.html" %}
 
 {% block title %}
-Driver Onboarding & Fleet Compliance - SaaradhiGo Admin
+Driver Onboarding & Vehicle Fleet Compliance - SaaradhiGo Admin
 {% endblock %}
 
 {% block extra_css %}
+
 <style>
-    /* Custom scrollbar for driver queue */
-    .custom-scrollbar::-webkit-scrollbar {
+
+    .onboarding-scroll::-webkit-scrollbar {
         width: 6px;
     }
-    .custom-scrollbar::-webkit-scrollbar-track {
-        background: #181818;
+
+    .onboarding-scroll::-webkit-scrollbar-track {
+        background: #171717;
     }
-    .custom-scrollbar::-webkit-scrollbar-thumb {
-        background: #2e2e2e;
-        border-radius: 4px;
+
+    .onboarding-scroll::-webkit-scrollbar-thumb {
+        background: #4a4a4a;
+        border-radius: 10px;
     }
-    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-        background: #444;
+
+    .status-pill {
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: .06em;
     }
+
+    .compliance-card {
+        transition: all .2s ease;
+    }
+
+    .compliance-card:hover {
+        transform: translateY(-1px);
+    }
+
+    .document-link {
+        text-decoration: none;
+    }
+
+    .disabled-approval {
+        cursor: not-allowed;
+        opacity: .55;
+    }
+
 </style>
+
 {% endblock %}
 
-{% block content %}
-<div class="min-h-screen bg-background text-on-background flex flex-col">
 
-    <!-- TOP HEADER -->
-    <div class="px-8 py-6 border-b border-outline-variant/20 bg-surface-container-lowest/60 backdrop-blur-sm sticky top-0 z-30">
+{% block content %}
+
+<div class="min-h-screen bg-background text-on-background">
+
+    <!-- ===================================================== -->
+    <!-- HEADER -->
+    <!-- ===================================================== -->
+
+    <div class="px-6 lg:px-8 py-7 border-b border-outline-variant/20">
+
         <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
+
             <div>
-                <div class="flex items-center gap-2 mb-1">
-                    <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-primary/10 text-primary border border-primary/20">
-                        <span class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
+
+                <div class="flex items-center gap-2 mb-2">
+
+                    <span class="material-symbols-outlined text-primary">
+                        verified
+                    </span>
+
+                    <span class="text-xs font-bold tracking-widest text-primary">
+                        SUPPORT ADMIN PORTAL
+                    </span>
+
+                    <span class="text-outline">
+                        •
+                    </span>
+
+                    <span class="text-xs font-bold text-emerald-400">
                         MVA 2020 COMPLIANT
                     </span>
-                    <span class="text-xs text-on-surface-variant/60">• Ops Console</span>
+
+                    <span class="text-outline">
+                        •
+                    </span>
+
+                    <span class="text-xs text-on-surface-variant">
+                        Ops Console
+                    </span>
+
                 </div>
-                <h1 class="text-2xl font-black tracking-tight text-on-surface">
+
+                <h1 class="text-2xl lg:text-3xl font-black tracking-tight">
                     Driver Onboarding & Vehicle Fleet Compliance
                 </h1>
-                <p class="text-xs text-on-surface-variant mt-0.5">
-                    Review driver KYC credentials, vehicle fitness, commercial insurance, permits, and pollution certificates.
+
+                <p class="mt-2 text-sm text-on-surface-variant">
+                    Review driver KYC credentials, vehicle fitness,
+                    commercial insurance, permits, and pollution certificates.
                 </p>
+
             </div>
 
-            <!-- KPI COUNTERS -->
-            <div class="flex items-center gap-3 flex-wrap">
-                <div class="px-4 py-2.5 rounded-xl bg-surface-container border border-amber-500/20 shadow-sm flex items-center gap-3">
-                    <div class="w-9 h-9 rounded-lg bg-amber-400/10 flex items-center justify-center text-amber-400">
-                        <span class="material-symbols-outlined text-lg">pending_actions</span>
-                    </div>
-                    <div>
-                        <p class="text-[10px] uppercase font-bold tracking-wider text-on-surface-variant">Pending Review</p>
-                        <p class="text-lg font-black text-amber-400 leading-none mt-0.5">{{ pending_reviews_count }}</p>
-                    </div>
-                </div>
-
-                <div class="px-4 py-2.5 rounded-xl bg-surface-container border border-emerald-500/20 shadow-sm flex items-center gap-3">
-                    <div class="w-9 h-9 rounded-lg bg-emerald-400/10 flex items-center justify-center text-emerald-400">
-                        <span class="material-symbols-outlined text-lg">verified_user</span>
-                    </div>
-                    <div>
-                        <p class="text-[10px] uppercase font-bold tracking-wider text-on-surface-variant">Approved</p>
-                        <p class="text-lg font-black text-emerald-400 leading-none mt-0.5">{{ approved_count }}</p>
-                    </div>
-                </div>
-
-                <div class="px-4 py-2.5 rounded-xl bg-surface-container border border-rose-500/20 shadow-sm flex items-center gap-3">
-                    <div class="w-9 h-9 rounded-lg bg-rose-400/10 flex items-center justify-center text-rose-400">
-                        <span class="material-symbols-outlined text-lg">gpp_bad</span>
-                    </div>
-                    <div>
-                        <p class="text-[10px] uppercase font-bold tracking-wider text-on-surface-variant">Rejected</p>
-                        <p class="text-lg font-black text-rose-400 leading-none mt-0.5">{{ rejected_count }}</p>
-                    </div>
-                </div>
-
-                <div class="px-4 py-2.5 rounded-xl bg-surface-container border border-outline-variant/20 shadow-sm flex items-center gap-3">
-                    <div class="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary">
-                        <span class="material-symbols-outlined text-lg">groups</span>
-                    </div>
-                    <div>
-                        <p class="text-[10px] uppercase font-bold tracking-wider text-on-surface-variant">Total Drivers</p>
-                        <p class="text-lg font-black text-primary leading-none mt-0.5">{{ total_count }}</p>
-                    </div>
-                </div>
-            </div>
         </div>
+
     </div>
 
-    <!-- FLASH MESSAGES -->
+
+    <!-- ===================================================== -->
+    <!-- MESSAGES -->
+    <!-- ===================================================== -->
+
     {% if messages %}
-    <div class="px-8 pt-4">
-        {% for message in messages %}
-        <div class="px-4 py-3 rounded-xl mb-2 flex items-center justify-between gap-3 text-sm font-semibold border
-            {% if message.tags == 'error' or 'error' in message.tags %}
-                bg-rose-500/10 border-rose-500/30 text-rose-300
-            {% elif message.tags == 'warning' or 'warning' in message.tags %}
-                bg-amber-500/10 border-amber-500/30 text-amber-300
-            {% else %}
-                bg-emerald-500/10 border-emerald-500/30 text-emerald-300
-            {% endif %}">
-            <div class="flex items-center gap-2">
-                <span class="material-symbols-outlined text-base">
-                    {% if message.tags == 'error' or 'error' in message.tags %}error{% elif message.tags == 'warning' or 'warning' in message.tags %}warning{% else %}check_circle{% endif %}
-                </span>
-                <span>{{ message }}</span>
-            </div>
-            <button type="button" onclick="this.parentElement.remove()" class="text-xs opacity-70 hover:opacity-100">✕</button>
+
+        <div class="px-6 lg:px-8 pt-5">
+
+            {% for message in messages %}
+
+                <div class="mb-3 rounded-xl border px-4 py-3 text-sm
+                    {% if message.tags == 'success' %}
+                        bg-emerald-500/10 border-emerald-500/30 text-emerald-300
+                    {% elif message.tags == 'error' %}
+                        bg-red-500/10 border-red-500/30 text-red-300
+                    {% else %}
+                        bg-amber-500/10 border-amber-500/30 text-amber-300
+                    {% endif %}
+                ">
+
+                    {{ message }}
+
+                </div>
+
+            {% endfor %}
+
         </div>
-        {% endfor %}
-    </div>
+
     {% endif %}
 
-    <!-- MAIN TWO-COLUMN SPLIT -->
-    <div class="grid grid-cols-1 xl:grid-cols-[400px_1fr] flex-1 overflow-hidden">
 
-        <!-- LEFT SIDEBAR: DRIVER LIST & FILTERS -->
-        <aside class="border-r border-outline-variant/20 bg-surface-container-lowest flex flex-col h-[calc(100vh-135px)]">
+    <div class="p-6 lg:p-8">
 
-            <!-- SEARCH FORM -->
-            <div class="p-4 border-b border-outline-variant/20">
-                <form method="GET" class="relative">
-                    <span class="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-on-surface-variant text-lg">
+
+        <!-- ================================================= -->
+        <!-- STATISTICS -->
+        <!-- ================================================= -->
+
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-7">
+
+            <!-- Pending -->
+
+            <div class="rounded-2xl border border-outline-variant/20
+                        bg-surface-container-low p-5">
+
+                <div class="flex items-center justify-between">
+
+                    <span class="material-symbols-outlined text-amber-400">
+                        pending_actions
+                    </span>
+
+                    <span class="text-xs text-on-surface-variant">
+                        Pending Review
+                    </span>
+
+                </div>
+
+                <div class="mt-3 text-3xl font-black">
+                    {{ pending_count }}
+                </div>
+
+            </div>
+
+
+            <!-- Approved -->
+
+            <div class="rounded-2xl border border-outline-variant/20
+                        bg-surface-container-low p-5">
+
+                <div class="flex items-center justify-between">
+
+                    <span class="material-symbols-outlined text-emerald-400">
+                        verified_user
+                    </span>
+
+                    <span class="text-xs text-on-surface-variant">
+                        Approved
+                    </span>
+
+                </div>
+
+                <div class="mt-3 text-3xl font-black">
+                    {{ approved_count }}
+                </div>
+
+            </div>
+
+
+            <!-- Rejected -->
+
+            <div class="rounded-2xl border border-outline-variant/20
+                        bg-surface-container-low p-5">
+
+                <div class="flex items-center justify-between">
+
+                    <span class="material-symbols-outlined text-red-400">
+                        gpp_bad
+                    </span>
+
+                    <span class="text-xs text-on-surface-variant">
+                        Rejected
+                    </span>
+
+                </div>
+
+                <div class="mt-3 text-3xl font-black">
+                    {{ rejected_count }}
+                </div>
+
+            </div>
+
+
+            <!-- Total -->
+
+            <div class="rounded-2xl border border-outline-variant/20
+                        bg-surface-container-low p-5">
+
+                <div class="flex items-center justify-between">
+
+                    <span class="material-symbols-outlined text-primary">
+                        groups
+                    </span>
+
+                    <span class="text-xs text-on-surface-variant">
+                        Total Drivers
+                    </span>
+
+                </div>
+
+                <div class="mt-3 text-3xl font-black">
+                    {{ total_drivers }}
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <!-- ================================================= -->
+        <!-- SEARCH + FILTER -->
+        <!-- ================================================= -->
+
+        <div class="flex flex-col lg:flex-row gap-4 mb-6">
+
+            <form
+                method="get"
+                class="flex-1"
+            >
+
+                <input
+                    type="hidden"
+                    name="status"
+                    value="{{ status }}"
+                >
+
+                <div class="relative">
+
+                    <span class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-on-surface-variant">
                         search
                     </span>
+
                     <input
                         type="text"
                         name="search"
                         value="{{ search }}"
-                        placeholder="Search name, phone, vehicle #, ID..."
-                        class="w-full pl-10 pr-10 py-2.5 rounded-xl bg-surface-container border border-outline-variant/30 text-xs text-on-surface placeholder:text-on-surface-variant/50 outline-none focus:border-primary transition-all"
+                        placeholder="Search driver name, phone, or ID..."
+                        class="w-full rounded-xl border border-outline-variant/30
+                               bg-surface-container-low pl-12 pr-4 py-3
+                               text-sm outline-none
+                               focus:border-primary"
                     >
-                    {% if search %}
-                    <a href="?status={{ status_filter }}" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-on-surface-variant hover:text-primary">
-                        ✕
-                    </a>
-                    {% endif %}
-                    <input type="hidden" name="status" value="{{ status_filter }}">
-                    <button type="submit" class="hidden">Search</button>
-                </form>
-            </div>
 
-            <!-- STATUS FILTER TABS -->
-            <div class="px-4 py-3 border-b border-outline-variant/20 bg-surface-container/30">
-                <div class="grid grid-cols-4 gap-1.5 p-1 rounded-xl bg-surface-container border border-outline-variant/20">
-                    <a
-                        href="?status=ALL{% if search %}&search={{ search|urlencode }}{% endif %}"
-                        class="py-1.5 px-2 rounded-lg text-center text-[11px] font-bold transition-all
-                        {% if status_filter == 'ALL' %}
-                            bg-primary text-black shadow-sm
-                        {% else %}
-                            text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high
-                        {% endif %}">
-                        All
-                    </a>
-                    <a
-                        href="?status=PENDING{% if search %}&search={{ search|urlencode }}{% endif %}"
-                        class="py-1.5 px-2 rounded-lg text-center text-[11px] font-bold transition-all
-                        {% if status_filter == 'PENDING' %}
-                            bg-amber-400 text-black shadow-sm
-                        {% else %}
-                            text-on-surface-variant hover:text-amber-400 hover:bg-surface-container-high
-                        {% endif %}">
-                        Pending
-                    </a>
-                    <a
-                        href="?status=APPROVED{% if search %}&search={{ search|urlencode }}{% endif %}"
-                        class="py-1.5 px-2 rounded-lg text-center text-[11px] font-bold transition-all
-                        {% if status_filter == 'APPROVED' %}
-                            bg-emerald-400 text-black shadow-sm
-                        {% else %}
-                            text-on-surface-variant hover:text-emerald-400 hover:bg-surface-container-high
-                        {% endif %}">
-                        Approved
-                    </a>
-                    <a
-                        href="?status=REJECTED{% if search %}&search={{ search|urlencode }}{% endif %}"
-                        class="py-1.5 px-2 rounded-lg text-center text-[11px] font-bold transition-all
-                        {% if status_filter == 'REJECTED' %}
-                            bg-rose-400 text-black shadow-sm
-                        {% else %}
-                            text-on-surface-variant hover:text-rose-400 hover:bg-surface-container-high
-                        {% endif %}">
-                        Rejected
-                    </a>
                 </div>
-            </div>
 
-            <!-- DRIVERS LIST -->
-            <div class="flex-1 overflow-y-auto p-3 space-y-2.5 custom-scrollbar">
-                {% for driver in drivers %}
+            </form>
+
+
+            <div class="flex gap-2 overflow-x-auto">
+
                 <a
-                    href="?selected_driver={{ driver.id }}&status={{ status_filter }}{% if search %}&search={{ search|urlencode }}{% endif %}&page={{ page_obj.number }}"
-                    class="block rounded-xl border p-3.5 transition-all
-                    {% if selected_driver and selected_driver.id == driver.id %}
-                        border-primary bg-primary/10 shadow-[0_0_15px_rgba(242,202,80,0.15)] ring-1 ring-primary/40
+                    href="?status=ALL{% if search %}&search={{ search|urlencode }}{% endif %}"
+                    class="px-4 py-2.5 rounded-xl text-sm font-bold whitespace-nowrap
+                    {% if status == 'ALL' %}
+                        bg-primary text-black
                     {% else %}
-                        border-outline-variant/20 bg-surface-container/60 hover:bg-surface-container hover:border-outline-variant/40
-                    {% endif %}">
-
-                    <div class="flex items-start justify-between gap-3">
-                        <div class="flex items-center gap-3 min-w-0">
-                            <div class="w-10 h-10 rounded-full bg-primary/20 text-primary border border-primary/30 flex items-center justify-center font-bold text-sm flex-shrink-0">
-                                {{ driver.user_id.full_name|default:driver.user_id.phone_number|first|upper }}
-                            </div>
-
-                            <div class="min-w-0">
-                                <p class="font-bold text-sm text-on-surface truncate">
-                                    {{ driver.user_id.full_name|default:driver.user_id.phone_number }}
-                                </p>
-                                <p class="text-[11px] text-on-surface-variant font-mono">
-                                    Driver #{{ driver.id }}
-                                </p>
-                            </div>
-                        </div>
-
-                        <!-- STATUS BADGE -->
-                        {% if driver.doc_status == "approved" %}
-                        <span class="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                            APPROVED
-                        </span>
-                        {% elif driver.doc_status == "rejected" %}
-                        <span class="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                            REJECTED
-                        </span>
-                        {% else %}
-                        <span class="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                            PENDING
-                        </span>
-                        {% endif %}
-                    </div>
-
-                    <!-- META INFO -->
-                    <div class="mt-3 pt-2.5 border-t border-outline-variant/10 grid grid-cols-2 gap-2 text-[11px] text-on-surface-variant">
-                        <div class="flex items-center gap-1.5 truncate">
-                            <span class="material-symbols-outlined text-sm text-on-surface-variant/70">call</span>
-                            <span class="truncate">{{ driver.user_id.phone_number }}</span>
-                        </div>
-
-                        <div class="flex items-center gap-1.5 truncate">
-                            <span class="material-symbols-outlined text-sm text-on-surface-variant/70">directions_car</span>
-                            <span class="font-mono truncate font-semibold text-on-surface">{{ driver.display_vehicle.vehicle_number|default:"No Vehicle" }}</span>
-                        </div>
-                    </div>
-
-                    <div class="mt-2 flex items-center justify-between text-[10px] text-on-surface-variant/70">
-                        <span>Rating: <strong class="text-primary">{{ driver.ratings|default:"0.00" }} ★</strong></span>
-                        {% if driver.uploaded_timestamp %}
-                        <span>Submitted {{ driver.uploaded_timestamp|date:"d M Y" }}</span>
-                        {% elif driver.doc_status_updated_at %}
-                        <span>Updated {{ driver.doc_status_updated_at|date:"d M Y" }}</span>
-                        {% endif %}
-                    </div>
+                        bg-surface-container-low border border-outline-variant/20
+                    {% endif %}"
+                >
+                    All
                 </a>
-                {% empty %}
-                <div class="py-16 text-center text-on-surface-variant">
-                    <span class="material-symbols-outlined text-4xl mb-2 opacity-50">person_search</span>
-                    <p class="text-sm font-bold text-on-surface">No drivers found</p>
-                    <p class="text-xs text-on-surface-variant mt-1">Try clearing your filters or search query.</p>
-                </div>
-                {% endfor %}
+
+
+                <a
+                    href="?status=PENDING{% if search %}&search={{ search|urlencode }}{% endif %}"
+                    class="px-4 py-2.5 rounded-xl text-sm font-bold whitespace-nowrap
+                    {% if status == 'PENDING' %}
+                        bg-primary text-black
+                    {% else %}
+                        bg-surface-container-low border border-outline-variant/20
+                    {% endif %}"
+                >
+                    Pending
+                </a>
+
+
+                <a
+                    href="?status=APPROVED{% if search %}&search={{ search|urlencode }}{% endif %}"
+                    class="px-4 py-2.5 rounded-xl text-sm font-bold whitespace-nowrap
+                    {% if status == 'APPROVED' %}
+                        bg-primary text-black
+                    {% else %}
+                        bg-surface-container-low border border-outline-variant/20
+                    {% endif %}"
+                >
+                    Approved
+                </a>
+
+
+                <a
+                    href="?status=REJECTED{% if search %}&search={{ search|urlencode }}{% endif %}"
+                    class="px-4 py-2.5 rounded-xl text-sm font-bold whitespace-nowrap
+                    {% if status == 'REJECTED' %}
+                        bg-primary text-black
+                    {% else %}
+                        bg-surface-container-low border border-outline-variant/20
+                    {% endif %}"
+                >
+                    Rejected
+                </a>
+
             </div>
 
-            <!-- PAGINATION BAR -->
-            {% if page_obj.paginator.num_pages > 1 %}
-            <div class="p-3 border-t border-outline-variant/20 bg-surface-container/40 flex items-center justify-between text-xs">
-                <span class="text-on-surface-variant text-[11px]">
-                    Page <strong>{{ page_obj.number }}</strong> of <strong>{{ page_obj.paginator.num_pages }}</strong> ({{ page_obj.paginator.count }})
-                </span>
+        </div>
 
-                <div class="flex items-center gap-1">
-                    {% if page_obj.has_previous %}
-                    <a
-                        href="?page={{ page_obj.previous_page_number }}&status={{ status_filter }}{% if search %}&search={{ search|urlencode }}{% endif %}{% if selected_driver %}&selected_driver={{ selected_driver.id }}{% endif %}"
-                        class="p-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 text-on-surface"
-                        title="Previous Page">
-                        <span class="material-symbols-outlined text-base">chevron_left</span>
-                    </a>
-                    {% endif %}
 
-                    {% if page_obj.has_next %}
-                    <a
-                        href="?page={{ page_obj.next_page_number }}&status={{ status_filter }}{% if search %}&search={{ search|urlencode }}{% endif %}{% if selected_driver %}&selected_driver={{ selected_driver.id }}{% endif %}"
-                        class="p-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 text-on-surface"
-                        title="Next Page">
-                        <span class="material-symbols-outlined text-base">chevron_right</span>
-                    </a>
-                    {% endif %}
-                </div>
-            </div>
-            {% endif %}
-        </aside>
+        <!-- ================================================= -->
+        <!-- MAIN GRID -->
+        <!-- ================================================= -->
 
-        <!-- RIGHT MAIN PANEL: KYC & VEHICLE FLEET DOSSIER -->
-        <main class="overflow-y-auto h-[calc(100vh-135px)] p-6 space-y-6 custom-scrollbar bg-background">
-            {% if selected_driver %}
+        <div class="grid grid-cols-1 xl:grid-cols-12 gap-6">
 
-            <!-- 1. DRIVER DOSSIER HEADER -->
-            <div class="bg-surface-container-low border border-outline-variant/20 rounded-2xl p-6 shadow-md">
-                <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
 
-                    <!-- DRIVER INFO -->
-                    <div class="flex items-center gap-5">
-                        {% if compliance.avatar_url %}
-                        <img
-                            src="{{ compliance.avatar_url }}"
-                            alt="Avatar"
-                            class="w-16 h-16 rounded-2xl object-cover border-2 border-primary/40 shadow-sm"
-                        >
-                        {% else %}
-                        <div class="w-16 h-16 rounded-2xl bg-primary/20 text-primary border border-primary/30 flex items-center justify-center font-extrabold text-2xl">
-                            {{ selected_driver.user_id.full_name|default:selected_driver.user_id.phone_number|first|upper }}
-                        </div>
-                        {% endif %}
+            <!-- ================================================= -->
+            <!-- DRIVER LIST -->
+            <!-- ================================================= -->
 
-                        <div>
-                            <div class="flex items-center gap-3 flex-wrap">
-                                <h2 class="font-headline text-2xl font-extrabold text-on-surface">
-                                    {{ selected_driver.user_id.full_name|default:selected_driver.user_id.phone_number }}
+            <div class="xl:col-span-4">
+
+                <div class="rounded-2xl border border-outline-variant/20
+                            bg-surface-container-low overflow-hidden">
+
+                    <div class="px-5 py-4 border-b border-outline-variant/20">
+
+                        <div class="flex items-center justify-between">
+
+                            <div>
+
+                                <h2 class="font-black">
+                                    Driver Queue
                                 </h2>
 
-                                {% if selected_driver.doc_status == "approved" %}
-                                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                    <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-                                    KYC APPROVED
-                                </span>
-                                {% elif selected_driver.doc_status == "rejected" %}
-                                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                                    <span class="w-2 h-2 rounded-full bg-rose-400"></span>
-                                    KYC REJECTED
-                                </span>
-                                {% else %}
-                                <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                                    <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
-                                    PENDING VERIFICATION
-                                </span>
-                                {% endif %}
+                                <p class="text-xs text-on-surface-variant mt-1">
+                                    {{ paginator.count }} drivers
+                                </p>
+
                             </div>
 
-                            <div class="flex flex-wrap items-center gap-x-5 gap-y-1 mt-2 text-xs text-on-surface-variant">
-                                <span class="flex items-center gap-1">
-                                    <span class="material-symbols-outlined text-sm">badge</span>
-                                    Driver ID: <strong class="text-on-surface font-mono">#{{ selected_driver.id }}</strong>
-                                </span>
-                                <span class="flex items-center gap-1">
-                                    <span class="material-symbols-outlined text-sm">call</span>
-                                    <strong class="text-on-surface">{{ selected_driver.user_id.phone_number }}</strong>
-                                </span>
-                                {% if selected_driver.user_id.email %}
-                                <span class="flex items-center gap-1">
-                                    <span class="material-symbols-outlined text-sm">mail</span>
-                                    <span>{{ selected_driver.user_id.email }}</span>
-                                </span>
-                                {% endif %}
-                                <span class="flex items-center gap-1">
-                                    <span class="material-symbols-outlined text-sm">payments</span>
-                                    UPI: <span class="font-mono">{{ selected_driver.upi_id|default:"Not Set" }}</span>
-                                </span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- ACTION BUTTONS -->
-                    <div class="flex items-center gap-3 flex-wrap">
-                        <a
-                            href="{% url 'driver_profile' selected_driver.id %}"
-                            class="px-4 py-2.5 rounded-xl bg-surface-container hover:bg-surface-container-high border border-outline-variant/30 text-xs font-bold text-on-surface flex items-center gap-1.5 transition-all">
-                            <span class="material-symbols-outlined text-base">visibility</span>
-                            Full Profile
-                        </a>
-
-                        <!-- REJECT BUTTON (OPENS MODAL) -->
-                        <button
-                            type="button"
-                            onclick="openRejectModal({{ selected_driver.id }}, '{{ selected_driver.user_id.full_name|default:selected_driver.user_id.phone_number|escapejs }}')"
-                            class="px-4 py-2.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-xs font-bold text-rose-300 flex items-center gap-1.5 transition-all">
-                            <span class="material-symbols-outlined text-base">close</span>
-                            Reject KYC
-                        </button>
-
-                        <!-- APPROVE BUTTON -->
-                        <form method="POST" onsubmit="return confirm('Are you sure you want to APPROVE Driver #{{ selected_driver.id }}? This will grant them ride acceptance privileges.');">
-                            {% csrf_token %}
-                            <input type="hidden" name="action" value="approve">
-                            <input type="hidden" name="driver_id" value="{{ selected_driver.id }}">
-                            <button
-                                type="submit"
-                                class="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-black flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 transition-all">
-                                <span class="material-symbols-outlined text-base">check_circle</span>
-                                Approve Driver & Fleet
-                            </button>
-                        </form>
-                    </div>
-                </div>
-
-                <!-- PREVIOUS REJECTION REASON BANNER (IF ANY) -->
-                {% if selected_driver.doc_rejection_reason %}
-                <div class="mt-5 p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-start gap-3">
-                    <span class="material-symbols-outlined text-rose-400 text-xl flex-shrink-0 mt-0.5">report</span>
-                    <div>
-                        <p class="text-xs font-bold text-rose-300">Active Rejection Reason on Record:</p>
-                        <p class="text-xs text-rose-200/90 mt-0.5">{{ selected_driver.doc_rejection_reason }}</p>
-                        {% if selected_driver.doc_status_updated_at %}
-                        <p class="text-[10px] text-rose-400/60 mt-1 font-mono">Recorded on {{ selected_driver.doc_status_updated_at|date:"d M Y, h:i A" }}</p>
-                        {% endif %}
-                    </div>
-                </div>
-                {% endif %}
-            </div>
-
-            <!-- 2. MVA 2020 AGGREGATOR REGULATORY COMPLIANCE CHECKLIST -->
-            {% if compliance %}
-            <div class="bg-surface-container-low border border-outline-variant/20 rounded-2xl p-6 shadow-md">
-                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5 pb-4 border-b border-outline-variant/15">
-                    <div>
-                        <div class="flex items-center gap-2">
-                            <h3 class="text-base font-bold text-on-surface flex items-center gap-2">
-                                <span class="material-symbols-outlined text-primary">verified</span>
-                                MVA 2020 Aggregator Regulatory Checklist
-                            </h3>
-                            {% if compliance.is_fully_compliant %}
-                            <span class="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                                100% REGULATORY PASS
+                            <span class="material-symbols-outlined text-primary">
+                                group
                             </span>
-                            {% else %}
-                            <span class="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-500/15 text-amber-400 border border-amber-500/30">
-                                {{ compliance.passed_count }}/{{ compliance.total_mandatory }} COMPLIANCE CHECKS PASSED
-                            </span>
-                            {% endif %}
-                        </div>
-                        <p class="text-xs text-on-surface-variant mt-1">
-                            MoRTH Aggregator Guidelines 2020 mandatory credential verification before onboarding.
-                        </p>
-                    </div>
 
-                    <!-- PROGRESS BAR -->
-                    <div class="w-full md:w-48 flex flex-col gap-1.5">
-                        <div class="flex items-center justify-between text-[11px] font-bold">
-                            <span class="text-on-surface-variant">Compliance Score</span>
-                            <span class="{% if compliance.is_fully_compliant %}text-emerald-400{% else %}text-amber-400{% endif %}">
-                                {{ compliance.compliance_pct }}%
-                            </span>
-                        </div>
-                        <div class="w-full h-2 rounded-full bg-surface-container overflow-hidden">
-                            <div
-                                class="h-full rounded-full transition-all duration-500 {% if compliance.is_fully_compliant %}bg-emerald-400{% else %}bg-amber-400{% endif %}"
-                                style="width: {{ compliance.compliance_pct }}%">
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- CHECKLIST GRID PILLS -->
-                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-
-                    <!-- 1. DRIVER LICENSE -->
-                    <div class="p-3 rounded-xl border flex items-center justify-between gap-2
-                        {% if compliance.license_front.is_passed %}bg-emerald-500/5 border-emerald-500/20{% else %}bg-rose-500/5 border-rose-500/20{% endif %}">
-                        <div class="flex items-center gap-2.5 min-w-0">
-                            <span class="material-symbols-outlined text-lg {% if compliance.license_front.is_passed %}text-emerald-400{% else %}text-rose-400{% endif %}">
-                                {% if compliance.license_front.is_passed %}check_circle{% else %}cancel{% endif %}
-                            </span>
-                            <div class="min-w-0">
-                                <p class="text-xs font-bold text-on-surface truncate">Driving License</p>
-                                <p class="text-[10px] text-on-surface-variant truncate">{{ compliance.license_front.status_label }}</p>
-                            </div>
-                        </div>
-                        {% if compliance.license_front.file_url %}
-                        <button type="button" onclick="previewDocument('{{ compliance.license_front.file_url }}', 'Driving License')" class="text-primary hover:underline text-[11px] font-semibold">View</button>
-                        {% endif %}
-                    </div>
-
-                    <!-- 2. REGISTRATION CERTIFICATE (RC) -->
-                    <div class="p-3 rounded-xl border flex items-center justify-between gap-2
-                        {% if compliance.rc_doc.is_passed %}bg-emerald-500/5 border-emerald-500/20{% else %}bg-rose-500/5 border-rose-500/20{% endif %}">
-                        <div class="flex items-center gap-2.5 min-w-0">
-                            <span class="material-symbols-outlined text-lg {% if compliance.rc_doc.is_passed %}text-emerald-400{% else %}text-rose-400{% endif %}">
-                                {% if compliance.rc_doc.is_passed %}check_circle{% else %}cancel{% endif %}
-                            </span>
-                            <div class="min-w-0">
-                                <p class="text-xs font-bold text-on-surface truncate">Vehicle RC</p>
-                                <p class="text-[10px] text-on-surface-variant truncate">{{ compliance.rc_doc.status_label }}</p>
-                            </div>
-                        </div>
-                        {% if compliance.rc_doc.file_url %}
-                        <button type="button" onclick="previewDocument('{{ compliance.rc_doc.file_url }}', 'Vehicle Registration Certificate (RC)')" class="text-primary hover:underline text-[11px] font-semibold">View</button>
-                        {% endif %}
-                    </div>
-
-                    <!-- 3. COMMERCIAL INSURANCE -->
-                    <div class="p-3 rounded-xl border flex items-center justify-between gap-2
-                        {% if compliance.insurance_doc.is_passed %}bg-emerald-500/5 border-emerald-500/20{% else %}bg-rose-500/5 border-rose-500/20{% endif %}">
-                        <div class="flex items-center gap-2.5 min-w-0">
-                            <span class="material-symbols-outlined text-lg {% if compliance.insurance_doc.is_passed %}text-emerald-400{% else %}text-rose-400{% endif %}">
-                                {% if compliance.insurance_doc.is_passed %}check_circle{% else %}cancel{% endif %}
-                            </span>
-                            <div class="min-w-0">
-                                <p class="text-xs font-bold text-on-surface truncate">Commercial Insurance</p>
-                                <p class="text-[10px] text-on-surface-variant truncate">{{ compliance.insurance_doc.status_label }}</p>
-                            </div>
-                        </div>
-                        {% if compliance.insurance_doc.file_url %}
-                        <button type="button" onclick="previewDocument('{{ compliance.insurance_doc.file_url }}', 'Commercial Insurance Policy')" class="text-primary hover:underline text-[11px] font-semibold">View</button>
-                        {% endif %}
-                    </div>
-
-                    <!-- 4. COMMERCIAL PERMIT -->
-                    <div class="p-3 rounded-xl border flex items-center justify-between gap-2
-                        {% if compliance.permit_doc.is_passed %}bg-emerald-500/5 border-emerald-500/20{% else %}bg-rose-500/5 border-rose-500/20{% endif %}">
-                        <div class="flex items-center gap-2.5 min-w-0">
-                            <span class="material-symbols-outlined text-lg {% if compliance.permit_doc.is_passed %}text-emerald-400{% else %}text-rose-400{% endif %}">
-                                {% if compliance.permit_doc.is_passed %}check_circle{% else %}cancel{% endif %}
-                            </span>
-                            <div class="min-w-0">
-                                <p class="text-xs font-bold text-on-surface truncate">Commercial Permit</p>
-                                <p class="text-[10px] text-on-surface-variant truncate">{{ compliance.permit_doc.status_label }}</p>
-                            </div>
-                        </div>
-                        {% if compliance.permit_doc.file_url %}
-                        <button type="button" onclick="previewDocument('{{ compliance.permit_doc.file_url }}', 'Commercial Vehicle Permit')" class="text-primary hover:underline text-[11px] font-semibold">View</button>
-                        {% endif %}
-                    </div>
-
-                    <!-- 5. FITNESS CERTIFICATE -->
-                    <div class="p-3 rounded-xl border flex items-center justify-between gap-2
-                        {% if compliance.fitness_doc.is_passed %}bg-emerald-500/5 border-emerald-500/20{% else %}bg-rose-500/5 border-rose-500/20{% endif %}">
-                        <div class="flex items-center gap-2.5 min-w-0">
-                            <span class="material-symbols-outlined text-lg {% if compliance.fitness_doc.is_passed %}text-emerald-400{% else %}text-rose-400{% endif %}">
-                                {% if compliance.fitness_doc.is_passed %}check_circle{% else %}cancel{% endif %}
-                            </span>
-                            <div class="min-w-0">
-                                <p class="text-xs font-bold text-on-surface truncate">Fitness Certificate (FC)</p>
-                                <p class="text-[10px] text-on-surface-variant truncate">{{ compliance.fitness_doc.status_label }}</p>
-                            </div>
-                        </div>
-                        {% if compliance.fitness_doc.file_url %}
-                        <button type="button" onclick="previewDocument('{{ compliance.fitness_doc.file_url }}', 'Vehicle Fitness Certificate')" class="text-primary hover:underline text-[11px] font-semibold">View</button>
-                        {% endif %}
-                    </div>
-
-                    <!-- 6. PUC CERTIFICATE -->
-                    <div class="p-3 rounded-xl border flex items-center justify-between gap-2
-                        {% if compliance.puc_doc.is_passed %}bg-emerald-500/5 border-emerald-500/20{% else %}bg-rose-500/5 border-rose-500/20{% endif %}">
-                        <div class="flex items-center gap-2.5 min-w-0">
-                            <span class="material-symbols-outlined text-lg {% if compliance.puc_doc.is_passed %}text-emerald-400{% else %}text-rose-400{% endif %}">
-                                {% if compliance.puc_doc.is_passed %}check_circle{% else %}cancel{% endif %}
-                            </span>
-                            <div class="min-w-0">
-                                <p class="text-xs font-bold text-on-surface truncate">Pollution Under Control (PUC)</p>
-                                <p class="text-[10px] text-on-surface-variant truncate">{{ compliance.puc_doc.status_label }}</p>
-                            </div>
-                        </div>
-                        {% if compliance.puc_doc.file_url %}
-                        <button type="button" onclick="previewDocument('{{ compliance.puc_doc.file_url }}', 'PUC Certificate')" class="text-primary hover:underline text-[11px] font-semibold">View</button>
-                        {% endif %}
-                    </div>
-
-                </div>
-            </div>
-            {% endif %}
-
-            <!-- 3. DRIVER IDENTITY & LICENSE DOSSIER -->
-            <div class="bg-surface-container-low border border-outline-variant/20 rounded-2xl p-6 shadow-md">
-                <div class="flex items-center justify-between pb-4 mb-5 border-b border-outline-variant/15">
-                    <div>
-                        <h3 class="text-base font-bold text-on-surface flex items-center gap-2">
-                            <span class="material-symbols-outlined text-primary">id_card</span>
-                            Driver Identity & Driving License
-                        </h3>
-                        <p class="text-xs text-on-surface-variant mt-0.5">Government-issued commercial driving license verification.</p>
-                    </div>
-
-                    {% if selected_driver.license_expiry %}
-                    <div class="text-right">
-                        <p class="text-[10px] uppercase font-bold text-on-surface-variant">License Expiry</p>
-                        <p class="text-xs font-bold font-mono text-on-surface">{{ selected_driver.license_expiry|date:"d M Y" }}</p>
-                    </div>
-                    {% endif %}
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-
-                    <!-- LICENSE FRONT -->
-                    <div class="p-4 rounded-xl bg-surface-container border border-outline-variant/20 flex flex-col justify-between">
-                        <div>
-                            <div class="flex items-center justify-between mb-3">
-                                <span class="text-xs font-bold text-on-surface">Driving License (Front)</span>
-                                {% if compliance.license_front.file_url %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                    AVAILABLE
-                                </span>
-                                {% else %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                                    MISSING
-                                </span>
-                                {% endif %}
-                            </div>
-
-                            {% if compliance.license_front.file_url %}
-                            <div class="relative group aspect-video rounded-lg overflow-hidden bg-black/40 border border-outline-variant/20 flex items-center justify-center">
-                                <img
-                                    src="{{ compliance.license_front.file_url }}"
-                                    alt="License Front"
-                                    class="w-full h-full object-contain cursor-pointer transition-transform group-hover:scale-105"
-                                    onclick="previewDocument('{{ compliance.license_front.file_url }}', 'Driving License Front')"
-                                    onerror="this.onerror=null; this.parentElement.innerHTML='<div class=\'p-6 text-center text-xs text-on-surface-variant\'><span class=\'material-symbols-outlined text-3xl mb-1 text-primary\'>description</span><p class=\'font-bold\'>License Front Document Available</p><p class=\'text-[10px] opacity-70 mt-1\'>PDF / Certified Document</p></div>';"
-                                >
-                                <div class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 pointer-events-none">
-                                    <span class="px-3 py-1.5 rounded-lg bg-primary text-black text-xs font-bold">Zoom Preview</span>
-                                </div>
-                            </div>
-                            {% else %}
-                            <div class="aspect-video rounded-lg bg-surface-container-high/40 border border-dashed border-outline-variant/30 flex flex-col items-center justify-center text-on-surface-variant/60">
-                                <span class="material-symbols-outlined text-3xl mb-1">no_photography</span>
-                                <span class="text-xs font-semibold">No License Front Uploaded</span>
-                            </div>
-                            {% endif %}
                         </div>
 
-                        {% if compliance.license_front.file_url %}
-                        <div class="mt-4 pt-3 border-t border-outline-variant/10 flex items-center justify-between">
-                            <button
-                                type="button"
-                                onclick="previewDocument('{{ compliance.license_front.file_url }}', 'Driving License Front')"
-                                class="text-xs font-bold text-primary hover:underline flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">zoom_in</span>
-                                Fullscreen Preview
-                            </button>
+                    </div>
+
+
+                    <div class="divide-y divide-outline-variant/10">
+
+                        {% for driver in drivers %}
+
                             <a
-                                href="{{ compliance.license_front.file_url }}"
-                                target="_blank"
-                                class="text-xs text-on-surface-variant hover:text-on-surface flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">open_in_new</span>
-                                Open Tab
-                            </a>
-                        </div>
-                        {% endif %}
-                    </div>
+                                href="?selected_driver={{ driver.id }}&status={{ status }}&page={{ page_obj.number }}{% if search %}&search={{ search|urlencode }}{% endif %}"
+                                class="block p-5 hover:bg-surface-container-high transition
+                                {% if selected_driver and selected_driver.pk == driver.id %}
+                                    bg-surface-container-high
+                                {% endif %}"
+                            >
 
-                    <!-- LICENSE BACK -->
-                    <div class="p-4 rounded-xl bg-surface-container border border-outline-variant/20 flex flex-col justify-between">
-                        <div>
-                            <div class="flex items-center justify-between mb-3">
-                                <span class="text-xs font-bold text-on-surface">Driving License (Back)</span>
-                                {% if compliance.license_back.file_url %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                    AVAILABLE
-                                </span>
-                                {% else %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-surface-variant text-on-surface-variant border border-outline-variant/20">
-                                    OPTIONAL / NOT UPLOADED
-                                </span>
-                                {% endif %}
-                            </div>
+                                <div class="flex gap-4">
 
-                            {% if compliance.license_back.file_url %}
-                            <div class="relative group aspect-video rounded-lg overflow-hidden bg-black/40 border border-outline-variant/20 flex items-center justify-center">
-                                <img
-                                    src="{{ compliance.license_back.file_url }}"
-                                    alt="License Back"
-                                    class="w-full h-full object-contain cursor-pointer transition-transform group-hover:scale-105"
-                                    onclick="previewDocument('{{ compliance.license_back.file_url }}', 'Driving License Back')"
-                                    onerror="this.onerror=null; this.parentElement.innerHTML='<div class=\'p-6 text-center text-xs text-on-surface-variant\'><span class=\'material-symbols-outlined text-3xl mb-1 text-primary\'>description</span><p class=\'font-bold\'>License Back Document Available</p><p class=\'text-[10px] opacity-70 mt-1\'>PDF / Certified Document</p></div>';"
-                                >
-                                <div class="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 pointer-events-none">
-                                    <span class="px-3 py-1.5 rounded-lg bg-primary text-black text-xs font-bold">Zoom Preview</span>
-                                </div>
-                            </div>
-                            {% else %}
-                            <div class="aspect-video rounded-lg bg-surface-container-high/40 border border-dashed border-outline-variant/30 flex flex-col items-center justify-center text-on-surface-variant/60">
-                                <span class="material-symbols-outlined text-3xl mb-1">description</span>
-                                <span class="text-xs font-semibold">License Back Not Provided</span>
-                            </div>
-                            {% endif %}
-                        </div>
+                                    <!-- Avatar -->
 
-                        {% if compliance.license_back.file_url %}
-                        <div class="mt-4 pt-3 border-t border-outline-variant/10 flex items-center justify-between">
-                            <button
-                                type="button"
-                                onclick="previewDocument('{{ compliance.license_back.file_url }}', 'Driving License Back')"
-                                class="text-xs font-bold text-primary hover:underline flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">zoom_in</span>
-                                Fullscreen Preview
-                            </button>
-                            <a
-                                href="{{ compliance.license_back.file_url }}"
-                                target="_blank"
-                                class="text-xs text-on-surface-variant hover:text-on-surface flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">open_in_new</span>
-                                Open Tab
-                            </a>
-                        </div>
-                        {% endif %}
-                    </div>
+                                    <div class="w-11 h-11 shrink-0 rounded-full
+                                                bg-primary/10 border border-primary/20
+                                                flex items-center justify-center">
 
-                </div>
-            </div>
+                                        <span class="font-black text-primary">
+                                            {{ driver.initial }}
+                                        </span>
 
-            <!-- 4. VEHICLE FLEET & REGULATORY COMPLIANCE DOSSIER (MVA 2020) -->
-            <div class="bg-surface-container-low border border-outline-variant/20 rounded-2xl p-6 shadow-md">
-                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 mb-5 border-b border-outline-variant/15">
-                    <div>
-                        <h3 class="text-base font-bold text-on-surface flex items-center gap-2">
-                            <span class="material-symbols-outlined text-primary">directions_car</span>
-                            Vehicle Fleet Compliance & Documents (MVA 2020)
-                        </h3>
-                        <p class="text-xs text-on-surface-variant mt-0.5">
-                            Mandatory commercial vehicle registration, insurance, fitness, and pollution certificates.
-                        </p>
-                    </div>
-
-                    {% if compliance.vehicle %}
-                    <span class="px-3 py-1 rounded-xl bg-surface-container border border-primary/30 text-xs font-mono font-bold text-primary self-start">
-                        {{ compliance.vehicle.vehicle_number }}
-                    </span>
-                    {% endif %}
-                </div>
-
-                {% if compliance.vehicle %}
-
-                <!-- VEHICLE SPECIFICATION STRIP -->
-                <div class="p-4 rounded-xl bg-surface-container border border-outline-variant/20 mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                    <div class="flex items-center gap-4">
-                        {% if compliance.vehicle_pic_url %}
-                        <img
-                            src="{{ compliance.vehicle_pic_url }}"
-                            alt="Vehicle Photo"
-                            class="w-16 h-16 rounded-xl object-cover border border-outline-variant/30 flex-shrink-0 cursor-pointer hover:opacity-80"
-                            onclick="previewDocument('{{ compliance.vehicle_pic_url }}', 'Vehicle Photo ({{ compliance.vehicle.vehicle_number }})')"
-                        >
-                        {% else %}
-                        <div class="w-16 h-16 rounded-xl bg-surface-container-high flex items-center justify-center text-on-surface-variant flex-shrink-0">
-                            <span class="material-symbols-outlined text-2xl">directions_car</span>
-                        </div>
-                        {% endif %}
-
-                        <div>
-                            <div class="flex items-center gap-2">
-                                <h4 class="font-bold text-sm text-on-surface">
-                                    {{ compliance.vehicle.brand|default:"" }} {{ compliance.vehicle.model|default:"Vehicle Details" }}
-                                </h4>
-                                <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-primary/10 text-primary border border-primary/20">
-                                    {{ compliance.vehicle.vehicle_type_id.type|default:"Standard"|upper }}
-                                </span>
-                            </div>
-                            <div class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-xs text-on-surface-variant">
-                                <span>Plate: <strong class="text-on-surface font-mono">{{ compliance.vehicle.vehicle_number }}</strong></span>
-                                <span>Color: <strong>{{ compliance.vehicle.color|default:"N/A" }}</strong></span>
-                                <span>Year: <strong>{{ compliance.vehicle.year|default:"N/A" }}</strong></span>
-                                <span>Capacity: <strong>{{ compliance.vehicle.capacity }} Seats</strong></span>
-                                <span>Status: <strong class="text-emerald-400 capitalize">{{ compliance.vehicle.status }}</strong></span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 5 REGULATORY COMPLIANCE DOCUMENTS GRID -->
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-
-                    <!-- DOC 1: REGISTRATION CERTIFICATE (RC) -->
-                    <div class="p-4 rounded-xl bg-surface-container border border-outline-variant/20 flex flex-col justify-between">
-                        <div>
-                            <div class="flex items-center justify-between mb-2">
-                                <span class="text-xs font-bold text-on-surface">Registration Certificate (RC)</span>
-                                {% if compliance.rc_doc.file_url %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                    UPLOADED
-                                </span>
-                                {% else %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                                    MISSING
-                                </span>
-                                {% endif %}
-                            </div>
-
-                            <p class="text-[11px] text-on-surface-variant mb-3">Vehicle ownership and registration document issued by RTO.</p>
-
-                            {% if compliance.rc_doc.file_url %}
-                            <div class="relative group aspect-[4/3] rounded-lg overflow-hidden bg-black/40 border border-outline-variant/20 flex items-center justify-center">
-                                <img
-                                    src="{{ compliance.rc_doc.file_url }}"
-                                    alt="RC Document"
-                                    class="w-full h-full object-contain cursor-pointer"
-                                    onclick="previewDocument('{{ compliance.rc_doc.file_url }}', 'Registration Certificate (RC)')"
-                                    onerror="this.onerror=null; this.parentElement.innerHTML='<div class=\'p-6 text-center text-xs text-on-surface-variant\'><span class=\'material-symbols-outlined text-3xl mb-1 text-primary\'>description</span><p class=\'font-bold\'>RC Document Available</p><p class=\'text-[10px] opacity-70 mt-1\'>PDF / Certified Scan</p></div>';"
-                                >
-                            </div>
-                            {% else %}
-                            <div class="aspect-[4/3] rounded-lg bg-surface-container-high/40 border border-dashed border-outline-variant/30 flex flex-col items-center justify-center text-on-surface-variant/60">
-                                <span class="material-symbols-outlined text-3xl mb-1">no_photography</span>
-                                <span class="text-xs font-semibold">RC Document Missing</span>
-                            </div>
-                            {% endif %}
-                        </div>
-
-                        {% if compliance.rc_doc.file_url %}
-                        <div class="mt-4 pt-3 border-t border-outline-variant/10 flex items-center justify-between">
-                            <button
-                                type="button"
-                                onclick="previewDocument('{{ compliance.rc_doc.file_url }}', 'Registration Certificate (RC)')"
-                                class="text-xs font-bold text-primary hover:underline flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">zoom_in</span>
-                                Preview
-                            </button>
-                            <a href="{{ compliance.rc_doc.file_url }}" target="_blank" class="text-xs text-on-surface-variant hover:text-on-surface flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">open_in_new</span>
-                                Open Tab
-                            </a>
-                        </div>
-                        {% endif %}
-                    </div>
-
-                    <!-- DOC 2: COMMERCIAL INSURANCE POLICY -->
-                    <div class="p-4 rounded-xl bg-surface-container border border-outline-variant/20 flex flex-col justify-between">
-                        <div>
-                            <div class="flex items-center justify-between mb-2">
-                                <span class="text-xs font-bold text-on-surface">Commercial Insurance</span>
-                                {% if compliance.insurance_doc.file_url %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                    UPLOADED
-                                </span>
-                                {% else %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                                    MISSING
-                                </span>
-                                {% endif %}
-                            </div>
-
-                            <div class="flex items-center justify-between text-[11px] text-on-surface-variant mb-3">
-                                <span>Expiry Date:</span>
-                                <span class="font-mono font-bold {% if compliance.insurance_doc.is_passed %}text-on-surface{% else %}text-rose-400{% endif %}">
-                                    {{ compliance.vehicle.insurance_expiry|date:"d M Y"|default:"Not Provided" }}
-                                </span>
-                            </div>
-
-                            {% if compliance.insurance_doc.file_url %}
-                            <div class="relative group aspect-[4/3] rounded-lg overflow-hidden bg-black/40 border border-outline-variant/20 flex items-center justify-center">
-                                <img
-                                    src="{{ compliance.insurance_doc.file_url }}"
-                                    alt="Insurance Document"
-                                    class="w-full h-full object-contain cursor-pointer"
-                                    onclick="previewDocument('{{ compliance.insurance_doc.file_url }}', 'Commercial Insurance Policy')"
-                                    onerror="this.onerror=null; this.parentElement.innerHTML='<div class=\'p-6 text-center text-xs text-on-surface-variant\'><span class=\'material-symbols-outlined text-3xl mb-1 text-primary\'>shield</span><p class=\'font-bold\'>Insurance Policy</p><p class=\'text-[10px] opacity-70 mt-1\'>PDF / Certified Policy</p></div>';"
-                                >
-                            </div>
-                            {% else %}
-                            <div class="aspect-[4/3] rounded-lg bg-surface-container-high/40 border border-dashed border-outline-variant/30 flex flex-col items-center justify-center text-on-surface-variant/60">
-                                <span class="material-symbols-outlined text-3xl mb-1">no_photography</span>
-                                <span class="text-xs font-semibold">Insurance Missing</span>
-                            </div>
-                            {% endif %}
-                        </div>
-
-                        {% if compliance.insurance_doc.file_url %}
-                        <div class="mt-4 pt-3 border-t border-outline-variant/10 flex items-center justify-between">
-                            <button
-                                type="button"
-                                onclick="previewDocument('{{ compliance.insurance_doc.file_url }}', 'Commercial Insurance Policy')"
-                                class="text-xs font-bold text-primary hover:underline flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">zoom_in</span>
-                                Preview
-                            </button>
-                            <a href="{{ compliance.insurance_doc.file_url }}" target="_blank" class="text-xs text-on-surface-variant hover:text-on-surface flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">open_in_new</span>
-                                Open Tab
-                            </a>
-                        </div>
-                        {% endif %}
-                    </div>
-
-                    <!-- DOC 3: COMMERCIAL VEHICLE PERMIT -->
-                    <div class="p-4 rounded-xl bg-surface-container border border-outline-variant/20 flex flex-col justify-between">
-                        <div>
-                            <div class="flex items-center justify-between mb-2">
-                                <span class="text-xs font-bold text-on-surface">Commercial Permit</span>
-                                {% if compliance.permit_doc.file_url %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                    UPLOADED
-                                </span>
-                                {% else %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                                    MISSING
-                                </span>
-                                {% endif %}
-                            </div>
-
-                            <div class="flex items-center justify-between text-[11px] text-on-surface-variant mb-3">
-                                <span>Permit Expiry:</span>
-                                <span class="font-mono font-bold {% if compliance.permit_doc.is_passed %}text-on-surface{% else %}text-rose-400{% endif %}">
-                                    {{ compliance.vehicle.permit_expiry|date:"d M Y"|default:"Not Provided" }}
-                                </span>
-                            </div>
-
-                            {% if compliance.permit_doc.file_url %}
-                            <div class="relative group aspect-[4/3] rounded-lg overflow-hidden bg-black/40 border border-outline-variant/20 flex items-center justify-center">
-                                <img
-                                    src="{{ compliance.permit_doc.file_url }}"
-                                    alt="Permit Document"
-                                    class="w-full h-full object-contain cursor-pointer"
-                                    onclick="previewDocument('{{ compliance.permit_doc.file_url }}', 'Commercial Vehicle Permit')"
-                                    onerror="this.onerror=null; this.parentElement.innerHTML='<div class=\'p-6 text-center text-xs text-on-surface-variant\'><span class=\'material-symbols-outlined text-3xl mb-1 text-primary\'>fact_check</span><p class=\'font-bold\'>Permit Certificate</p><p class=\'text-[10px] opacity-70 mt-1\'>PDF / Certified Scan</p></div>';"
-                                >
-                            </div>
-                            {% else %}
-                            <div class="aspect-[4/3] rounded-lg bg-surface-container-high/40 border border-dashed border-outline-variant/30 flex flex-col items-center justify-center text-on-surface-variant/60">
-                                <span class="material-symbols-outlined text-3xl mb-1">no_photography</span>
-                                <span class="text-xs font-semibold">Permit Missing</span>
-                            </div>
-                            {% endif %}
-                        </div>
-
-                        {% if compliance.permit_doc.file_url %}
-                        <div class="mt-4 pt-3 border-t border-outline-variant/10 flex items-center justify-between">
-                            <button
-                                type="button"
-                                onclick="previewDocument('{{ compliance.permit_doc.file_url }}', 'Commercial Vehicle Permit')"
-                                class="text-xs font-bold text-primary hover:underline flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">zoom_in</span>
-                                Preview
-                            </button>
-                            <a href="{{ compliance.permit_doc.file_url }}" target="_blank" class="text-xs text-on-surface-variant hover:text-on-surface flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">open_in_new</span>
-                                Open Tab
-                            </a>
-                        </div>
-                        {% endif %}
-                    </div>
-
-                    <!-- DOC 4: FITNESS CERTIFICATE (FC) -->
-                    <div class="p-4 rounded-xl bg-surface-container border border-outline-variant/20 flex flex-col justify-between">
-                        <div>
-                            <div class="flex items-center justify-between mb-2">
-                                <span class="text-xs font-bold text-on-surface">Fitness Certificate (FC)</span>
-                                {% if compliance.fitness_doc.file_url %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                    UPLOADED
-                                </span>
-                                {% else %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                                    MISSING
-                                </span>
-                                {% endif %}
-                            </div>
-
-                            <div class="flex items-center justify-between text-[11px] text-on-surface-variant mb-3">
-                                <span>Fitness Expiry:</span>
-                                <span class="font-mono font-bold {% if compliance.fitness_doc.is_passed %}text-on-surface{% else %}text-rose-400{% endif %}">
-                                    {{ compliance.vehicle.fitness_expiry|date:"d M Y"|default:"Not Provided" }}
-                                </span>
-                            </div>
-
-                            {% if compliance.fitness_doc.file_url %}
-                            <div class="relative group aspect-[4/3] rounded-lg overflow-hidden bg-black/40 border border-outline-variant/20 flex items-center justify-center">
-                                <img
-                                    src="{{ compliance.fitness_doc.file_url }}"
-                                    alt="Fitness Document"
-                                    class="w-full h-full object-contain cursor-pointer"
-                                    onclick="previewDocument('{{ compliance.fitness_doc.file_url }}', 'Fitness Certificate (FC)')"
-                                    onerror="this.onerror=null; this.parentElement.innerHTML='<div class=\'p-6 text-center text-xs text-on-surface-variant\'><span class=\'material-symbols-outlined text-3xl mb-1 text-primary\'>verified</span><p class=\'font-bold\'>Fitness Certificate</p><p class=\'text-[10px] opacity-70 mt-1\'>PDF / Certified Scan</p></div>';"
-                                >
-                            </div>
-                            {% else %}
-                            <div class="aspect-[4/3] rounded-lg bg-surface-container-high/40 border border-dashed border-outline-variant/30 flex flex-col items-center justify-center text-on-surface-variant/60">
-                                <span class="material-symbols-outlined text-3xl mb-1">no_photography</span>
-                                <span class="text-xs font-semibold">Fitness Certificate Missing</span>
-                            </div>
-                            {% endif %}
-                        </div>
-
-                        {% if compliance.fitness_doc.file_url %}
-                        <div class="mt-4 pt-3 border-t border-outline-variant/10 flex items-center justify-between">
-                            <button
-                                type="button"
-                                onclick="previewDocument('{{ compliance.fitness_doc.file_url }}', 'Fitness Certificate (FC)')"
-                                class="text-xs font-bold text-primary hover:underline flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">zoom_in</span>
-                                Preview
-                            </button>
-                            <a href="{{ compliance.fitness_doc.file_url }}" target="_blank" class="text-xs text-on-surface-variant hover:text-on-surface flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">open_in_new</span>
-                                Open Tab
-                            </a>
-                        </div>
-                        {% endif %}
-                    </div>
-
-                    <!-- DOC 5: POLLUTION UNDER CONTROL (PUC) -->
-                    <div class="p-4 rounded-xl bg-surface-container border border-outline-variant/20 flex flex-col justify-between">
-                        <div>
-                            <div class="flex items-center justify-between mb-2">
-                                <span class="text-xs font-bold text-on-surface">Pollution Under Control (PUC)</span>
-                                {% if compliance.puc_doc.file_url %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                    UPLOADED
-                                </span>
-                                {% else %}
-                                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/20">
-                                    MISSING
-                                </span>
-                                {% endif %}
-                            </div>
-
-                            <div class="flex items-center justify-between text-[11px] text-on-surface-variant mb-3">
-                                <span>PUC Expiry:</span>
-                                <span class="font-mono font-bold {% if compliance.puc_doc.is_passed %}text-on-surface{% else %}text-rose-400{% endif %}">
-                                    {{ compliance.vehicle.puc_expiry|date:"d M Y"|default:"Not Provided" }}
-                                </span>
-                            </div>
-
-                            {% if compliance.puc_doc.file_url %}
-                            <div class="relative group aspect-[4/3] rounded-lg overflow-hidden bg-black/40 border border-outline-variant/20 flex items-center justify-center">
-                                <img
-                                    src="{{ compliance.puc_doc.file_url }}"
-                                    alt="PUC Document"
-                                    class="w-full h-full object-contain cursor-pointer"
-                                    onclick="previewDocument('{{ compliance.puc_doc.file_url }}', 'Pollution Under Control Certificate (PUC)')"
-                                    onerror="this.onerror=null; this.parentElement.innerHTML='<div class=\'p-6 text-center text-xs text-on-surface-variant\'><span class=\'material-symbols-outlined text-3xl mb-1 text-primary\'>eco</span><p class=\'font-bold\'>PUC Certificate</p><p class=\'text-[10px] opacity-70 mt-1\'>PDF / Certified Scan</p></div>';"
-                                >
-                            </div>
-                            {% else %}
-                            <div class="aspect-[4/3] rounded-lg bg-surface-container-high/40 border border-dashed border-outline-variant/30 flex flex-col items-center justify-center text-on-surface-variant/60">
-                                <span class="material-symbols-outlined text-3xl mb-1">no_photography</span>
-                                <span class="text-xs font-semibold">PUC Certificate Missing</span>
-                            </div>
-                            {% endif %}
-                        </div>
-
-                        {% if compliance.puc_doc.file_url %}
-                        <div class="mt-4 pt-3 border-t border-outline-variant/10 flex items-center justify-between">
-                            <button
-                                type="button"
-                                onclick="previewDocument('{{ compliance.puc_doc.file_url }}', 'Pollution Under Control Certificate (PUC)')"
-                                class="text-xs font-bold text-primary hover:underline flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">zoom_in</span>
-                                Preview
-                            </button>
-                            <a href="{{ compliance.puc_doc.file_url }}" target="_blank" class="text-xs text-on-surface-variant hover:text-on-surface flex items-center gap-1">
-                                <span class="material-symbols-outlined text-sm">open_in_new</span>
-                                Open Tab
-                            </a>
-                        </div>
-                        {% endif %}
-                    </div>
-
-                    <!-- ATTACHED FLEET VEHICLES LIST -->
-                    <div class="p-4 rounded-xl bg-surface-container border border-outline-variant/20 flex flex-col justify-between">
-                        <div>
-                            <span class="text-xs font-bold text-on-surface">Attached Fleet Vehicles</span>
-                            <p class="text-[11px] text-on-surface-variant mt-1 mb-3">All registered vehicles for this driver profile.</p>
-
-                            <div class="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
-                                {% for v in selected_driver.vehicle_set.all %}
-                                <div class="p-2.5 rounded-lg bg-surface-container-high/60 border border-outline-variant/15 flex items-center justify-between text-xs">
-                                    <div>
-                                        <p class="font-mono font-bold text-on-surface">{{ v.vehicle_number }}</p>
-                                        <p class="text-[10px] text-on-surface-variant">{{ v.brand }} {{ v.model }} • {{ v.vehicle_type_id.type }}</p>
                                     </div>
-                                    {% if selected_driver.active_vehicle_id == v.id %}
-                                    <span class="px-2 py-0.5 rounded text-[9px] font-black bg-primary text-black">ACTIVE</span>
-                                    {% else %}
-                                    <span class="text-[10px] text-on-surface-variant">{{ v.status }}</span>
-                                    {% endif %}
+
+
+                                    <div class="min-w-0 flex-1">
+
+                                        <div class="flex items-start justify-between gap-2">
+
+                                            <div class="min-w-0">
+
+                                                <div class="font-bold truncate">
+                                                    {{ driver.name }}
+                                                </div>
+
+                                                <div class="text-xs text-on-surface-variant">
+                                                    Driver #{{ driver.id }}
+                                                </div>
+
+                                            </div>
+
+
+                                            <span
+                                                class="status-pill px-2 py-1 rounded-full shrink-0
+                                                {% if driver.status == 'APPROVED' %}
+                                                    bg-emerald-500/10 text-emerald-300
+                                                {% elif driver.status == 'REJECTED' %}
+                                                    bg-red-500/10 text-red-300
+                                                {% else %}
+                                                    bg-amber-500/10 text-amber-300
+                                                {% endif %}"
+                                            >
+                                                {{ driver.status }}
+                                            </span>
+
+                                        </div>
+
+
+                                        <!-- Phone -->
+
+                                        <div class="flex items-center gap-2 mt-3 text-xs text-on-surface-variant">
+
+                                            <span class="material-symbols-outlined text-[16px]">
+                                                call
+                                            </span>
+
+                                            {{ driver.phone }}
+
+                                        </div>
+
+
+                                        <!-- Vehicle -->
+
+                                        <div class="flex items-center gap-2 mt-2 text-xs">
+
+                                            <span class="material-symbols-outlined text-[16px]">
+                                                directions_car
+                                            </span>
+
+                                            {% if driver.vehicle_count > 0 %}
+
+                                                <span class="font-bold text-primary">
+                                                    {{ driver.vehicle_display }}
+                                                </span>
+
+                                            {% else %}
+
+                                                <span class="text-on-surface-variant">
+                                                    No Vehicle
+                                                </span>
+
+                                            {% endif %}
+
+                                        </div>
+
+
+                                        <!-- Rating -->
+
+                                        <div class="flex items-center justify-between mt-3">
+
+                                            <span class="text-xs text-on-surface-variant">
+                                                Rating:
+                                                <strong class="text-on-surface">
+                                                    {{ driver.rating|default:"0" }}
+                                                </strong>
+                                                ★
+                                            </span>
+
+
+                                            {% if driver.total_trips %}
+                                                <span class="text-xs text-on-surface-variant">
+                                                    {{ driver.total_trips }} trips
+                                                </span>
+                                            {% endif %}
+
+                                        </div>
+
+
+                                        {% if driver.updated_at != "Not Provided" %}
+
+                                            <div class="text-[11px] text-on-surface-variant mt-2">
+                                                Updated {{ driver.updated_at }}
+                                            </div>
+
+                                        {% endif %}
+
+                                    </div>
+
                                 </div>
-                                {% empty %}
-                                <p class="text-xs text-on-surface-variant/60 py-4 text-center">No vehicles attached</p>
-                                {% endfor %}
+
+                            </a>
+
+                        {% empty %}
+
+                            <div class="p-8 text-center">
+
+                                <span class="material-symbols-outlined text-4xl text-on-surface-variant">
+                                    person_off
+                                </span>
+
+                                <p class="mt-3 text-sm text-on-surface-variant">
+                                    No drivers found.
+                                </p>
+
                             </div>
-                        </div>
+
+                        {% endfor %}
+
                     </div>
 
+
+                    <!-- ================================================= -->
+                    <!-- PAGINATION -->
+                    <!-- ================================================= -->
+
+                    {% if page_obj.paginator.num_pages > 1 %}
+
+                        <div class="px-5 py-4 border-t border-outline-variant/20">
+
+                            <div class="flex items-center justify-between gap-3">
+
+                                {% if page_obj.has_previous %}
+
+                                    <a
+                                        href="?page={{ page_obj.previous_page_number }}&status={{ status }}{% if search %}&search={{ search|urlencode }}{% endif %}"
+                                        class="px-3 py-2 rounded-lg bg-surface-container-high text-xs font-bold"
+                                    >
+                                        ← Previous
+                                    </a>
+
+                                {% else %}
+
+                                    <span></span>
+
+                                {% endif %}
+
+
+                                <span class="text-xs text-on-surface-variant">
+
+                                    Page
+                                    {{ page_obj.number }}
+                                    of
+                                    {{ page_obj.paginator.num_pages }}
+
+                                </span>
+
+
+                                {% if page_obj.has_next %}
+
+                                    <a
+                                        href="?page={{ page_obj.next_page_number }}&status={{ status }}{% if search %}&search={{ search|urlencode }}{% endif %}"
+                                        class="px-3 py-2 rounded-lg bg-surface-container-high text-xs font-bold"
+                                    >
+                                        Next →
+                                    </a>
+
+                                {% else %}
+
+                                    <span></span>
+
+                                {% endif %}
+
+                            </div>
+
+                        </div>
+
+                    {% endif %}
+
                 </div>
+
+            </div>
+
+
+            <!-- ================================================= -->
+            <!-- SELECTED DRIVER -->
+            <!-- ================================================= -->
+
+            <div class="xl:col-span-8">
+
+                {% if selected %}
+
+                    <div class="space-y-6">
+
+
+                        <!-- ============================================= -->
+                        <!-- DRIVER HEADER -->
+                        <!-- ============================================= -->
+
+                        <div class="rounded-2xl border border-outline-variant/20
+                                    bg-surface-container-low p-6">
+
+                            <div class="flex flex-col lg:flex-row
+                                        lg:items-center lg:justify-between gap-5">
+
+                                <div class="flex items-center gap-4">
+
+                                    <div class="w-16 h-16 rounded-2xl
+                                                bg-primary/10 border border-primary/20
+                                                flex items-center justify-center">
+
+                                        <span class="text-2xl font-black text-primary">
+                                            {{ selected.name|first|upper }}
+                                        </span>
+
+                                    </div>
+
+
+                                    <div>
+
+                                        <div class="flex items-center gap-3 flex-wrap">
+
+                                            <h2 class="text-xl font-black">
+                                                {{ selected.name }}
+                                            </h2>
+
+
+                                            <span
+                                                class="status-pill px-3 py-1 rounded-full
+                                                {% if selected.status == 'APPROVED' %}
+                                                    bg-emerald-500/10 text-emerald-300
+                                                {% elif selected.status == 'REJECTED' %}
+                                                    bg-red-500/10 text-red-300
+                                                {% else %}
+                                                    bg-amber-500/10 text-amber-300
+                                                {% endif %}"
+                                            >
+                                                KYC {{ selected.status }}
+                                            </span>
+
+                                        </div>
+
+
+                                        <div class="flex flex-wrap gap-x-5 gap-y-2 mt-3 text-sm text-on-surface-variant">
+
+                                            <span>
+                                                Driver ID:
+                                                <strong class="text-on-surface">
+                                                    #{{ selected.id }}
+                                                </strong>
+                                            </span>
+
+                                            <span>
+                                                <span class="material-symbols-outlined text-[16px] align-middle">
+                                                    call
+                                                </span>
+
+                                                {{ selected.phone }}
+                                            </span>
+
+                                            <span>
+                                                <span class="material-symbols-outlined text-[16px] align-middle">
+                                                    payments
+                                                </span>
+
+                                                UPI:
+                                                {{ selected.upi }}
+                                            </span>
+
+                                        </div>
+
+                                    </div>
+
+                                </div>
+
+
+                                <!-- ACTIONS -->
+
+                                <div class="flex flex-wrap gap-2">
+
+                                    <a
+                                        href="/driver/{{ selected.id }}/"
+                                        class="px-4 py-2.5 rounded-xl
+                                               bg-surface-container-high
+                                               text-sm font-bold
+                                               flex items-center gap-2"
+                                    >
+
+                                        <span class="material-symbols-outlined text-[18px]">
+                                            visibility
+                                        </span>
+
+                                        Full Profile
+
+                                    </a>
+
+
+                                    <button
+                                        type="button"
+                                        onclick="document.getElementById('rejectPanel').classList.toggle('hidden')"
+                                        class="px-4 py-2.5 rounded-xl
+                                               bg-red-500/10 text-red-300
+                                               border border-red-500/20
+                                               text-sm font-bold
+                                               flex items-center gap-2"
+                                    >
+
+                                        <span class="material-symbols-outlined text-[18px]">
+                                            close
+                                        </span>
+
+                                        Reject KYC
+
+                                    </button>
+
+
+                                    {% if selected.compliance_complete %}
+
+                                        <form
+                                            method="post"
+                                            class="inline"
+                                            onsubmit="return confirm('Approve this driver and fleet? All mandatory compliance checks have passed.');"
+                                        >
+
+                                            {% csrf_token %}
+
+                                            <input
+                                                type="hidden"
+                                                name="action"
+                                                value="approve"
+                                            >
+
+                                            <input
+                                                type="hidden"
+                                                name="driver_id"
+                                                value="{{ selected.id }}"
+                                            >
+
+                                            <button
+                                                type="submit"
+                                                class="px-4 py-2.5 rounded-xl
+                                                       bg-primary text-black
+                                                       text-sm font-black
+                                                       flex items-center gap-2"
+                                            >
+
+                                                <span class="material-symbols-outlined text-[18px]">
+                                                    check_circle
+                                                </span>
+
+                                                Approve Driver & Fleet
+
+                                            </button>
+
+                                        </form>
+
+                                    {% else %}
+
+                                        <button
+                                            type="button"
+                                            disabled
+                                            title="Approval is blocked until all mandatory compliance checks pass."
+                                            class="disabled-approval px-4 py-2.5 rounded-xl
+                                                   bg-primary text-black
+                                                   text-sm font-black
+                                                   flex items-center gap-2"
+                                        >
+
+                                            <span class="material-symbols-outlined text-[18px]">
+                                                block
+                                            </span>
+
+                                            Approval Blocked
+
+                                        </button>
+
+                                    {% endif %}
+
+                                </div>
+
+                            </div>
+
+
+                            <!-- ========================================= -->
+                            <!-- REJECTION PANEL -->
+                            <!-- ========================================= -->
+
+                            <div
+                                id="rejectPanel"
+                                class="hidden mt-5 pt-5 border-t border-outline-variant/20"
+                            >
+
+                                <form method="post">
+
+                                    {% csrf_token %}
+
+                                    <input
+                                        type="hidden"
+                                        name="action"
+                                        value="reject"
+                                    >
+
+                                    <input
+                                        type="hidden"
+                                        name="driver_id"
+                                        value="{{ selected.id }}"
+                                    >
+
+                                    <label class="block text-sm font-bold mb-2">
+                                        Rejection Reason
+                                    </label>
+
+                                    <textarea
+                                        name="rejection_reason"
+                                        rows="3"
+                                        required
+                                        placeholder="Explain why the driver KYC or fleet compliance is rejected..."
+                                        class="w-full rounded-xl border border-outline-variant/30
+                                               bg-surface-container-high
+                                               px-4 py-3 text-sm outline-none
+                                               focus:border-red-400"
+                                    ></textarea>
+
+                                    <div class="flex justify-end mt-3">
+
+                                        <button
+                                            type="submit"
+                                            class="px-5 py-2.5 rounded-xl
+                                                   bg-red-500 text-white
+                                                   font-bold text-sm"
+                                        >
+                                            Confirm Rejection
+                                        </button>
+
+                                    </div>
+
+                                </form>
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- ============================================= -->
+                        <!-- REJECTION RECORD -->
+                        <!-- ============================================= -->
+
+                        {% if selected.rejection_reason %}
+
+                            <div class="rounded-2xl border border-red-500/20
+                                        bg-red-500/5 p-5">
+
+                                <div class="flex items-start gap-3">
+
+                                    <span class="material-symbols-outlined text-red-400">
+                                        report
+                                    </span>
+
+                                    <div>
+
+                                        <div class="text-xs font-black
+                                                    tracking-widest text-red-300 uppercase">
+                                            Active Rejection Reason on Record
+                                        </div>
+
+                                        <div class="mt-2 font-bold">
+                                            {{ selected.rejection_reason }}
+                                        </div>
+
+                                        {% if selected.rejection_date != "Not Provided" %}
+
+                                            <div class="mt-2 text-xs text-on-surface-variant">
+                                                Recorded on {{ selected.rejection_date }}
+                                            </div>
+
+                                        {% endif %}
+
+                                    </div>
+
+                                </div>
+
+                            </div>
+
+                        {% endif %}
+
+
+                        <!-- ============================================= -->
+                        <!-- COMPLIANCE HEADER -->
+                        <!-- ============================================= -->
+
+                        <div class="rounded-2xl border border-outline-variant/20
+                                    bg-surface-container-low p-6">
+
+                            <div class="flex flex-col md:flex-row
+                                        md:items-center md:justify-between gap-5">
+
+                                <div>
+
+                                    <div class="flex items-center gap-2">
+
+                                        <span class="material-symbols-outlined text-primary">
+                                            verified
+                                        </span>
+
+                                        <h2 class="font-black text-lg">
+                                            MVA 2020 Aggregator Regulatory Checklist
+                                        </h2>
+
+                                    </div>
+
+                                    <p class="text-xs text-on-surface-variant mt-2">
+                                        MoRTH Aggregator Guidelines 2020 mandatory
+                                        credential verification before onboarding.
+                                    </p>
+
+                                </div>
+
+
+                                <div class="text-right">
+
+                                    <div class="text-2xl font-black">
+
+                                        {{ selected.passed_checks }}/{{ selected.total_checks }}
+
+                                    </div>
+
+                                    <div class="text-xs font-bold text-on-surface-variant">
+                                        COMPLIANCE CHECKS PASSED
+                                    </div>
+
+                                </div>
+
+                            </div>
+
+
+                            <!-- Compliance progress -->
+
+                            <div class="mt-6">
+
+                                <div class="flex items-center justify-between mb-2">
+
+                                    <span class="text-xs font-bold">
+                                        Compliance Score
+                                    </span>
+
+                                    <span
+                                        class="text-sm font-black
+                                        {% if selected.compliance_complete %}
+                                            text-emerald-400
+                                        {% else %}
+                                            text-amber-400
+                                        {% endif %}"
+                                    >
+                                        {{ selected.compliance_percentage }}%
+                                    </span>
+
+                                </div>
+
+
+                                <div class="h-2 rounded-full bg-surface-container-high overflow-hidden">
+
+                                    <div
+                                        class="h-full
+                                        {% if selected.compliance_complete %}
+                                            bg-emerald-400
+                                        {% else %}
+                                            bg-amber-400
+                                        {% endif %}"
+                                        style="width: {{ selected.compliance_percentage }}%;"
+                                    ></div>
+
+                                </div>
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- ============================================= -->
+                        <!-- COMPLIANCE CHECKS -->
+                        <!-- ============================================= -->
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+                            {% for check in selected.compliance_checks %}
+
+                                <div class="compliance-card rounded-2xl
+                                            border
+                                            {% if check.passed %}
+                                                border-emerald-500/20 bg-emerald-500/5
+                                            {% else %}
+                                                border-red-500/20 bg-red-500/5
+                                            {% endif %}
+                                            p-5">
+
+                                    <div class="flex items-start gap-3">
+
+                                        {% if check.passed %}
+
+                                            <span class="material-symbols-outlined text-emerald-400">
+                                                check_circle
+                                            </span>
+
+                                        {% else %}
+
+                                            <span class="material-symbols-outlined text-red-400">
+                                                cancel
+                                            </span>
+
+                                        {% endif %}
+
+
+                                        <div class="flex-1">
+
+                                            <div class="font-bold">
+                                                {{ check.name }}
+                                            </div>
+
+                                            <div class="text-xs mt-1
+                                                {% if check.passed %}
+                                                    text-emerald-300
+                                                {% else %}
+                                                    text-red-300
+                                                {% endif %}
+                                            ">
+
+                                                {% if check.passed %}
+                                                    Passed
+                                                {% else %}
+                                                    Missing
+                                                {% endif %}
+
+                                            </div>
+
+                                            <p class="text-xs text-on-surface-variant mt-2">
+                                                {{ check.description }}
+                                            </p>
+
+                                        </div>
+
+                                    </div>
+
+                                </div>
+
+                            {% endfor %}
+
+                        </div>
+
+
+                        <!-- ============================================= -->
+                        <!-- LICENSE -->
+                        <!-- ============================================= -->
+
+                        <div class="rounded-2xl border border-outline-variant/20
+                                    bg-surface-container-low p-6">
+
+                            <div class="flex items-center gap-2 mb-5">
+
+                                <span class="material-symbols-outlined text-primary">
+                                    id_card
+                                </span>
+
+                                <h2 class="font-black text-lg">
+                                    Driver Identity & Driving License
+                                </h2>
+
+                            </div>
+
+                            <p class="text-xs text-on-surface-variant mb-5">
+                                Government-issued commercial driving license verification.
+                            </p>
+
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+
+                                <!-- License Front -->
+
+                                <div class="rounded-xl border border-outline-variant/20
+                                            bg-surface-container-high p-4">
+
+                                    <div class="flex items-center justify-between">
+
+                                        <span class="font-bold text-sm">
+                                            Driving License (Front)
+                                        </span>
+
+                                        {% if selected.license_front.present %}
+
+                                            <span class="text-xs font-bold text-emerald-400">
+                                                VERIFIED
+                                            </span>
+
+                                        {% else %}
+
+                                            <span class="text-xs font-bold text-red-400">
+                                                MISSING
+                                            </span>
+
+                                        {% endif %}
+
+                                    </div>
+
+
+                                    <div class="mt-4">
+
+                                        {% if selected.license_front.present %}
+
+                                            {% if selected.license_front.url %}
+
+                                                <a
+                                                    href="{{ selected.license_front.url }}"
+                                                    target="_blank"
+                                                    rel="noopener"
+                                                    class="document-link inline-flex items-center gap-2
+                                                           px-3 py-2 rounded-lg
+                                                           bg-primary text-black
+                                                           text-xs font-black"
+                                                >
+
+                                                    <span class="material-symbols-outlined text-[16px]">
+                                                        visibility
+                                                    </span>
+
+                                                    View Document
+
+                                                </a>
+
+                                            {% else %}
+
+                                                <span class="text-xs text-emerald-300">
+                                                    License Uploaded
+                                                </span>
+
+                                            {% endif %}
+
+                                        {% else %}
+
+                                            <div class="flex items-center gap-2 text-xs text-red-300">
+
+                                                <span class="material-symbols-outlined text-[18px]">
+                                                    no_photography
+                                                </span>
+
+                                                No License Front Uploaded
+
+                                            </div>
+
+                                        {% endif %}
+
+                                    </div>
+
+                                </div>
+
+
+                                <!-- License Back -->
+
+                                <div class="rounded-xl border border-outline-variant/20
+                                            bg-surface-container-high p-4">
+
+                                    <div class="flex items-center justify-between">
+
+                                        <span class="font-bold text-sm">
+                                            Driving License (Back)
+                                        </span>
+
+                                        {% if selected.license_back.present %}
+
+                                            <span class="text-xs font-bold text-emerald-400">
+                                                UPLOADED
+                                            </span>
+
+                                        {% else %}
+
+                                            <span class="text-xs font-bold text-on-surface-variant">
+                                                OPTIONAL / NOT UPLOADED
+                                            </span>
+
+                                        {% endif %}
+
+                                    </div>
+
+
+                                    <div class="mt-4">
+
+                                        {% if selected.license_back.present %}
+
+                                            {% if selected.license_back.url %}
+
+                                                <a
+                                                    href="{{ selected.license_back.url }}"
+                                                    target="_blank"
+                                                    rel="noopener"
+                                                    class="document-link inline-flex items-center gap-2
+                                                           px-3 py-2 rounded-lg
+                                                           bg-surface-container-highest
+                                                           text-xs font-bold"
+                                                >
+
+                                                    <span class="material-symbols-outlined text-[16px]">
+                                                        visibility
+                                                    </span>
+
+                                                    View Document
+
+                                                </a>
+
+                                            {% else %}
+
+                                                <span class="text-xs text-emerald-300">
+                                                    License Back Uploaded
+                                                </span>
+
+                                            {% endif %}
+
+                                        {% else %}
+
+                                            <div class="flex items-center gap-2 text-xs text-on-surface-variant">
+
+                                                <span class="material-symbols-outlined text-[18px]">
+                                                    description
+                                                </span>
+
+                                                License Back Not Provided
+
+                                            </div>
+
+                                        {% endif %}
+
+                                    </div>
+
+                                </div>
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- ============================================= -->
+                        <!-- VEHICLE FLEET -->
+                        <!-- ============================================= -->
+
+                        <div class="rounded-2xl border border-outline-variant/20
+                                    bg-surface-container-low p-6">
+
+                            <div class="flex items-center gap-2 mb-2">
+
+                                <span class="material-symbols-outlined text-primary">
+                                    directions_car
+                                </span>
+
+                                <h2 class="font-black text-lg">
+                                    Vehicle Fleet Compliance & Documents
+                                </h2>
+
+                            </div>
+
+                            <p class="text-xs text-on-surface-variant mb-6">
+                                Mandatory commercial vehicle registration,
+                                insurance, fitness, and pollution certificates.
+                            </p>
+
+
+                            {% if selected.vehicles %}
+
+                                <div class="space-y-6">
+
+                                    {% for vehicle in selected.vehicles %}
+
+                                        <div class="rounded-2xl border border-outline-variant/20
+                                                    bg-surface-container-high overflow-hidden">
+
+
+                                            <!-- Vehicle header -->
+
+                                            <div class="p-5 border-b border-outline-variant/20">
+
+                                                <div class="flex flex-col md:flex-row
+                                                            md:items-center md:justify-between gap-4">
+
+                                                    <div>
+
+                                                        <div class="text-xl font-black">
+                                                            {{ vehicle.number }}
+                                                        </div>
+
+                                                        <div class="text-xs text-on-surface-variant mt-1">
+                                                            Vehicle ID #{{ vehicle.id }}
+                                                        </div>
+
+                                                    </div>
+
+
+                                                    <div class="flex gap-2 flex-wrap">
+
+                                                        <span class="px-3 py-1.5 rounded-lg
+                                                                     bg-primary/10 text-primary
+                                                                     text-xs font-black uppercase">
+                                                            {{ vehicle.vehicle_type }}
+                                                        </span>
+
+                                                        <span class="px-3 py-1.5 rounded-lg
+                                                                     {% if vehicle.status|lower == 'active' %}
+                                                                         bg-emerald-500/10 text-emerald-300
+                                                                     {% else %}
+                                                                         bg-amber-500/10 text-amber-300
+                                                                     {% endif %}
+                                                                     text-xs font-bold">
+                                                            {{ vehicle.status }}
+                                                        </span>
+
+                                                    </div>
+
+                                                </div>
+
+                                            </div>
+
+
+                                            <!-- Vehicle details -->
+
+                                            <div class="p-5">
+
+                                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+
+                                                    <div>
+
+                                                        <div class="text-[10px] uppercase
+                                                                    tracking-widest
+                                                                    text-on-surface-variant">
+                                                            Brand
+                                                        </div>
+
+                                                        <div class="font-bold mt-1">
+                                                            {{ vehicle.brand }}
+                                                        </div>
+
+                                                    </div>
+
+
+                                                    <div>
+
+                                                        <div class="text-[10px] uppercase
+                                                                    tracking-widest
+                                                                    text-on-surface-variant">
+                                                            Model
+                                                        </div>
+
+                                                        <div class="font-bold mt-1">
+                                                            {{ vehicle.model }}
+                                                        </div>
+
+                                                    </div>
+
+
+                                                    <div>
+
+                                                        <div class="text-[10px] uppercase
+                                                                    tracking-widest
+                                                                    text-on-surface-variant">
+                                                            Color
+                                                        </div>
+
+                                                        <div class="font-bold mt-1">
+                                                            {{ vehicle.color }}
+                                                        </div>
+
+                                                    </div>
+
+
+                                                    <div>
+
+                                                        <div class="text-[10px] uppercase
+                                                                    tracking-widest
+                                                                    text-on-surface-variant">
+                                                            Capacity
+                                                        </div>
+
+                                                        <div class="font-bold mt-1">
+                                                            {{ vehicle.capacity }} Seats
+                                                        </div>
+
+                                                    </div>
+
+                                                </div>
+
+
+                                                <!-- Documents -->
+
+                                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+
+                                                    <!-- RC -->
+
+                                                    <div class="rounded-xl border border-outline-variant/20 p-4">
+
+                                                        <div class="flex items-center justify-between">
+
+                                                            <div class="font-bold text-sm">
+                                                                Registration Certificate (RC)
+                                                            </div>
+
+                                                            {% if vehicle.rc.present %}
+
+                                                                <span class="text-xs font-black text-emerald-400">
+                                                                    VERIFIED
+                                                                </span>
+
+                                                            {% else %}
+
+                                                                <span class="text-xs font-black text-red-400">
+                                                                    MISSING
+                                                                </span>
+
+                                                            {% endif %}
+
+                                                        </div>
+
+
+                                                        <div class="text-xs text-on-surface-variant mt-2">
+                                                            Vehicle ownership and registration document issued by RTO.
+                                                        </div>
+
+
+                                                        {% if vehicle.rc.present %}
+
+                                                            <div class="mt-3 flex items-center justify-between">
+
+                                                                <span class="text-xs">
+                                                                    Expiry:
+                                                                    <strong>
+                                                                        {{ vehicle.rc.expiry }}
+                                                                    </strong>
+                                                                </span>
+
+                                                                {% if vehicle.rc.url %}
+
+                                                                    <a
+                                                                        href="{{ vehicle.rc.url }}"
+                                                                        target="_blank"
+                                                                        rel="noopener"
+                                                                        class="px-3 py-2 rounded-lg bg-primary text-black text-xs font-bold"
+                                                                    >
+                                                                        View
+                                                                    </a>
+
+                                                                {% endif %}
+
+                                                            </div>
+
+                                                        {% else %}
+
+                                                            <div class="flex items-center gap-2 mt-3 text-xs text-red-300">
+
+                                                                <span class="material-symbols-outlined text-[18px]">
+                                                                    no_photography
+                                                                </span>
+
+                                                                RC Document Missing
+
+                                                            </div>
+
+                                                        {% endif %}
+
+                                                    </div>
+
+
+                                                    <!-- Insurance -->
+
+                                                    <div class="rounded-xl border border-outline-variant/20 p-4">
+
+                                                        <div class="flex items-center justify-between">
+
+                                                            <div class="font-bold text-sm">
+                                                                Commercial Insurance
+                                                            </div>
+
+                                                            {% if vehicle.insurance.present %}
+
+                                                                <span class="text-xs font-black text-emerald-400">
+                                                                    VERIFIED
+                                                                </span>
+
+                                                            {% else %}
+
+                                                                <span class="text-xs font-black text-red-400">
+                                                                    MISSING
+                                                                </span>
+
+                                                            {% endif %}
+
+                                                        </div>
+
+
+                                                        <div class="mt-2 text-xs text-on-surface-variant">
+                                                            Valid commercial motor insurance.
+                                                        </div>
+
+
+                                                        {% if vehicle.insurance.present %}
+
+                                                            <div class="mt-3 flex items-center justify-between">
+
+                                                                <span class="text-xs">
+                                                                    Expiry:
+                                                                    <strong>
+                                                                        {{ vehicle.insurance.expiry }}
+                                                                    </strong>
+                                                                </span>
+
+                                                                {% if vehicle.insurance.url %}
+
+                                                                    <a
+                                                                        href="{{ vehicle.insurance.url }}"
+                                                                        target="_blank"
+                                                                        rel="noopener"
+                                                                        class="px-3 py-2 rounded-lg bg-primary text-black text-xs font-bold"
+                                                                    >
+                                                                        View
+                                                                    </a>
+
+                                                                {% endif %}
+
+                                                            </div>
+
+                                                        {% else %}
+
+                                                            <div class="flex items-center gap-2 mt-3 text-xs text-red-300">
+
+                                                                <span class="material-symbols-outlined text-[18px]">
+                                                                    no_photography
+                                                                </span>
+
+                                                                Insurance Missing
+
+                                                            </div>
+
+                                                        {% endif %}
+
+                                                    </div>
+
+
+                                                    <!-- Permit -->
+
+                                                    <div class="rounded-xl border border-outline-variant/20 p-4">
+
+                                                        <div class="flex items-center justify-between">
+
+                                                            <div class="font-bold text-sm">
+                                                                Commercial Permit
+                                                            </div>
+
+                                                            {% if vehicle.permit.present %}
+
+                                                                <span class="text-xs font-black text-emerald-400">
+                                                                    VERIFIED
+                                                                </span>
+
+                                                            {% else %}
+
+                                                                <span class="text-xs font-black text-red-400">
+                                                                    MISSING
+                                                                </span>
+
+                                                            {% endif %}
+
+                                                        </div>
+
+
+                                                        <div class="mt-2 text-xs text-on-surface-variant">
+                                                            Valid commercial transport permit.
+                                                        </div>
+
+
+                                                        {% if vehicle.permit.present %}
+
+                                                            <div class="mt-3 flex items-center justify-between">
+
+                                                                <span class="text-xs">
+                                                                    Expiry:
+                                                                    <strong>
+                                                                        {{ vehicle.permit.expiry }}
+                                                                    </strong>
+                                                                </span>
+
+                                                                {% if vehicle.permit.url %}
+
+                                                                    <a
+                                                                        href="{{ vehicle.permit.url }}"
+                                                                        target="_blank"
+                                                                        rel="noopener"
+                                                                        class="px-3 py-2 rounded-lg bg-primary text-black text-xs font-bold"
+                                                                    >
+                                                                        View
+                                                                    </a>
+
+                                                                {% endif %}
+
+                                                            </div>
+
+                                                        {% else %}
+
+                                                            <div class="flex items-center gap-2 mt-3 text-xs text-red-300">
+
+                                                                <span class="material-symbols-outlined text-[18px]">
+                                                                    no_photography
+                                                                </span>
+
+                                                                Permit Missing
+
+                                                            </div>
+
+                                                        {% endif %}
+
+                                                    </div>
+
+
+                                                    <!-- Fitness -->
+
+                                                    <div class="rounded-xl border border-outline-variant/20 p-4">
+
+                                                        <div class="flex items-center justify-between">
+
+                                                            <div class="font-bold text-sm">
+                                                                Fitness Certificate (FC)
+                                                            </div>
+
+                                                            {% if vehicle.fitness.present %}
+
+                                                                <span class="text-xs font-black text-emerald-400">
+                                                                    VERIFIED
+                                                                </span>
+
+                                                            {% else %}
+
+                                                                <span class="text-xs font-black text-red-400">
+                                                                    MISSING
+                                                                </span>
+
+                                                            {% endif %}
+
+                                                        </div>
+
+
+                                                        <div class="mt-2 text-xs text-on-surface-variant">
+                                                            Valid vehicle fitness certificate.
+                                                        </div>
+
+
+                                                        {% if vehicle.fitness.present %}
+
+                                                            <div class="mt-3 flex items-center justify-between">
+
+                                                                <span class="text-xs">
+                                                                    Expiry:
+                                                                    <strong>
+                                                                        {{ vehicle.fitness.expiry }}
+                                                                    </strong>
+                                                                </span>
+
+                                                                {% if vehicle.fitness.url %}
+
+                                                                    <a
+                                                                        href="{{ vehicle.fitness.url }}"
+                                                                        target="_blank"
+                                                                        rel="noopener"
+                                                                        class="px-3 py-2 rounded-lg bg-primary text-black text-xs font-bold"
+                                                                    >
+                                                                        View
+                                                                    </a>
+
+                                                                {% endif %}
+
+                                                            </div>
+
+                                                        {% else %}
+
+                                                            <div class="flex items-center gap-2 mt-3 text-xs text-red-300">
+
+                                                                <span class="material-symbols-outlined text-[18px]">
+                                                                    no_photography
+                                                                </span>
+
+                                                                Fitness Certificate Missing
+
+                                                            </div>
+
+                                                        {% endif %}
+
+                                                    </div>
+
+
+                                                    <!-- PUC -->
+
+                                                    <div class="rounded-xl border border-outline-variant/20 p-4 md:col-span-2">
+
+                                                        <div class="flex items-center justify-between">
+
+                                                            <div class="font-bold text-sm">
+                                                                Pollution Under Control (PUC)
+                                                            </div>
+
+                                                            {% if vehicle.puc.present %}
+
+                                                                <span class="text-xs font-black text-emerald-400">
+                                                                    VERIFIED
+                                                                </span>
+
+                                                            {% else %}
+
+                                                                <span class="text-xs font-black text-red-400">
+                                                                    MISSING
+                                                                </span>
+
+                                                            {% endif %}
+
+                                                        </div>
+
+
+                                                        <div class="mt-2 text-xs text-on-surface-variant">
+                                                            Valid Pollution Under Control certificate.
+                                                        </div>
+
+
+                                                        {% if vehicle.puc.present %}
+
+                                                            <div class="mt-3 flex items-center justify-between">
+
+                                                                <span class="text-xs">
+                                                                    Expiry:
+                                                                    <strong>
+                                                                        {{ vehicle.puc.expiry }}
+                                                                    </strong>
+                                                                </span>
+
+                                                                {% if vehicle.puc.url %}
+
+                                                                    <a
+                                                                        href="{{ vehicle.puc.url }}"
+                                                                        target="_blank"
+                                                                        rel="noopener"
+                                                                        class="px-3 py-2 rounded-lg bg-primary text-black text-xs font-bold"
+                                                                    >
+                                                                        View
+                                                                    </a>
+
+                                                                {% endif %}
+
+                                                            </div>
+
+                                                        {% else %}
+
+                                                            <div class="flex items-center gap-2 mt-3 text-xs text-red-300">
+
+                                                                <span class="material-symbols-outlined text-[18px]">
+                                                                    no_photography
+                                                                </span>
+
+                                                                PUC Certificate Missing
+
+                                                            </div>
+
+                                                        {% endif %}
+
+                                                    </div>
+
+                                                </div>
+
+                                            </div>
+
+                                        </div>
+
+                                    {% endfor %}
+
+                                </div>
+
+
+                            {% else %}
+
+                                <!-- No vehicle -->
+
+                                <div class="rounded-xl border border-amber-500/20
+                                            bg-amber-500/5 p-6 text-center">
+
+                                    <span class="material-symbols-outlined text-4xl text-amber-400">
+                                        directions_car
+                                    </span>
+
+                                    <div class="font-black mt-3">
+                                        No Vehicle Registered
+                                    </div>
+
+                                    <p class="text-xs text-on-surface-variant mt-2">
+                                        This driver has no vehicle attached to the
+                                        driver profile. Fleet approval is blocked.
+                                    </p>
+
+                                </div>
+
+                            {% endif %}
+
+                        </div>
+
+
+                        <!-- ============================================= -->
+                        <!-- APPROVAL STATUS -->
+                        <!-- ============================================= -->
+
+                        {% if selected.compliance_complete %}
+
+                            <div class="rounded-2xl border border-emerald-500/20
+                                        bg-emerald-500/5 p-5">
+
+                                <div class="flex items-start gap-3">
+
+                                    <span class="material-symbols-outlined text-emerald-400">
+                                        verified
+                                    </span>
+
+                                    <div>
+
+                                        <div class="font-black text-emerald-300">
+                                            Driver is eligible for approval
+                                        </div>
+
+                                        <p class="text-xs text-on-surface-variant mt-1">
+                                            All six mandatory compliance checks have passed.
+                                            The approval action is available above.
+                                        </p>
+
+                                    </div>
+
+                                </div>
+
+                            </div>
+
+                        {% else %}
+
+                            <div class="rounded-2xl border border-amber-500/20
+                                        bg-amber-500/5 p-5">
+
+                                <div class="flex items-start gap-3">
+
+                                    <span class="material-symbols-outlined text-amber-400">
+                                        warning
+                                    </span>
+
+                                    <div>
+
+                                        <div class="font-black text-amber-300">
+                                            Driver approval is blocked
+                                        </div>
+
+                                        <p class="text-xs text-on-surface-variant mt-1">
+                                            Mandatory compliance documents are missing.
+                                            The driver cannot be approved until all
+                                            six checks pass.
+                                        </p>
+
+                                    </div>
+
+                                </div>
+
+                            </div>
+
+                        {% endif %}
+
+                    </div>
+
 
                 {% else %}
-                <div class="py-12 text-center text-on-surface-variant bg-surface-container/40 rounded-xl border border-dashed border-outline-variant/30">
-                    <span class="material-symbols-outlined text-4xl mb-2 text-amber-400">warning</span>
-                    <p class="text-sm font-bold text-on-surface">No Vehicle Assigned</p>
-                    <p class="text-xs text-on-surface-variant mt-1 max-w-md mx-auto">
-                        This driver has not registered a vehicle or vehicle documents yet. Under MVA 2020 Guidelines, at least one verified commercial vehicle is required before KYC approval.
-                    </p>
-                </div>
+
+                    <!-- No selection -->
+
+                    <div class="rounded-2xl border border-outline-variant/20
+                                bg-surface-container-low p-12 text-center">
+
+                        <span class="material-symbols-outlined text-5xl text-on-surface-variant">
+                            person_search
+                        </span>
+
+                        <h2 class="font-black text-lg mt-4">
+                            Select a Driver
+                        </h2>
+
+                        <p class="text-sm text-on-surface-variant mt-2">
+                            Select a driver from the queue to review KYC
+                            and vehicle compliance.
+                        </p>
+
+                    </div>
+
                 {% endif %}
+
             </div>
 
-            {% else %}
-            <!-- NO DRIVER SELECTED EMPTY STATE -->
-            <div class="h-full flex flex-col items-center justify-center text-center p-12 bg-surface-container-low border border-outline-variant/20 rounded-2xl">
-                <div class="w-16 h-16 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary mb-4">
-                    <span class="material-symbols-outlined text-3xl">badge</span>
-                </div>
-                <h3 class="text-lg font-bold text-on-surface">Select a Driver to Review</h3>
-                <p class="text-xs text-on-surface-variant mt-1 max-w-sm">
-                    Choose a pending or approved driver from the queue on the left to inspect KYC credentials, vehicle registration, and fleet compliance documents.
-                </p>
-            </div>
-            {% endif %}
-        </main>
-
-    </div>
-</div>
-
-<!-- ================================================================= -->
-<!-- REJECTION MODAL -->
-<!-- ================================================================= -->
-<div id="rejectModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden items-center justify-center p-4">
-    <div class="bg-surface-container-low border border-outline-variant/30 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5">
-        <div class="flex items-start justify-between">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 rounded-xl bg-rose-500/10 text-rose-400 flex items-center justify-center border border-rose-500/20">
-                    <span class="material-symbols-outlined">gpp_bad</span>
-                </div>
-                <div>
-                    <h3 class="text-base font-bold text-on-surface">Reject Driver KYC & Documents</h3>
-                    <p class="text-xs text-on-surface-variant" id="rejectModalDriverLabel">Driver Verification</p>
-                </div>
-            </div>
-            <button type="button" onclick="closeRejectModal()" class="text-on-surface-variant hover:text-on-surface">✕</button>
         </div>
 
-        <form method="POST" id="rejectForm" class="space-y-4">
-            {% csrf_token %}
-            <input type="hidden" name="action" value="reject">
-            <input type="hidden" name="driver_id" id="rejectModalDriverId" value="">
-
-            <div>
-                <label class="block text-xs font-bold text-on-surface mb-2">Standard Rejection Presets (Click to insert):</label>
-                <div class="flex flex-wrap gap-1.5">
-                    <button type="button" onclick="setRejectReason('Driving License photo is blurry or unreadable. Please upload a clear photo.')" class="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 text-on-surface-variant hover:text-primary transition-all">
-                        Blurry License
-                    </button>
-                    <button type="button" onclick="setRejectReason('Driving License is expired. Please upload a valid renewed license.')" class="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 text-on-surface-variant hover:text-primary transition-all">
-                        Expired License
-                    </button>
-                    <button type="button" onclick="setRejectReason('Vehicle RC document is missing or does not match the registered vehicle number.')" class="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 text-on-surface-variant hover:text-primary transition-all">
-                        RC Mismatch
-                    </button>
-                    <button type="button" onclick="setRejectReason('Commercial Insurance Policy is expired or invalid under MVA 2020 Guidelines.')" class="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 text-on-surface-variant hover:text-primary transition-all">
-                        Expired Insurance
-                    </button>
-                    <button type="button" onclick="setRejectReason('Vehicle Fitness Certificate (FC) is expired or missing.')" class="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 text-on-surface-variant hover:text-primary transition-all">
-                        Fitness Expired
-                    </button>
-                    <button type="button" onclick="setRejectReason('Pollution Under Control (PUC) certificate is expired.')" class="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 text-on-surface-variant hover:text-primary transition-all">
-                        PUC Expired
-                    </button>
-                </div>
-            </div>
-
-            <div>
-                <label for="rejection_reason" class="block text-xs font-bold text-on-surface mb-1.5">
-                    Rejection Reason & Feedback to Driver <span class="text-rose-400">*</span>
-                </label>
-                <textarea
-                    name="rejection_reason"
-                    id="rejection_reason"
-                    rows="4"
-                    required
-                    placeholder="Specify exactly what document is invalid or needs to be re-uploaded. This message will be sent directly to the driver's phone/app..."
-                    class="w-full p-3 rounded-xl bg-surface-container border border-outline-variant/30 text-xs text-on-surface outline-none focus:border-rose-400 transition-all placeholder:text-on-surface-variant/50"
-                ></textarea>
-                <p class="text-[10px] text-on-surface-variant mt-1">
-                    An in-app push notification will be dispatched to the driver containing these instructions.
-                </p>
-            </div>
-
-            <div class="flex items-center justify-end gap-3 pt-3 border-t border-outline-variant/15">
-                <button
-                    type="button"
-                    onclick="closeRejectModal()"
-                    class="px-4 py-2.5 rounded-xl bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 text-xs font-bold text-on-surface">
-                    Cancel
-                </button>
-                <button
-                    type="submit"
-                    class="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-rose-600/20 transition-all">
-                    <span class="material-symbols-outlined text-base">send</span>
-                    Confirm Rejection & Notify Driver
-                </button>
-            </div>
-        </form>
     </div>
+
 </div>
 
-<!-- ================================================================= -->
-<!-- DOCUMENT LIGHTBOX / PREVIEW MODAL -->
-<!-- ================================================================= -->
-<div id="previewModal" class="fixed inset-0 z-50 bg-black/90 backdrop-blur-md hidden items-center justify-center p-4">
-    <div class="bg-surface-container-lowest border border-outline-variant/30 rounded-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
-        <!-- MODAL HEADER -->
-        <div class="px-6 py-4 border-b border-outline-variant/20 flex items-center justify-between bg-surface-container-low">
-            <div class="flex items-center gap-2">
-                <span class="material-symbols-outlined text-primary">visibility</span>
-                <h3 class="text-sm font-bold text-on-surface" id="previewModalTitle">Document Preview</h3>
-            </div>
-            <div class="flex items-center gap-3">
-                <a
-                    id="previewModalExternalLink"
-                    href="#"
-                    target="_blank"
-                    class="px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high border border-outline-variant/20 text-xs font-bold text-primary flex items-center gap-1">
-                    <span class="material-symbols-outlined text-sm">open_in_new</span>
-                    Open Full Resolution
-                </a>
-                <button type="button" onclick="closePreviewModal()" class="w-8 h-8 rounded-lg bg-surface-container hover:bg-surface-container-high flex items-center justify-center text-on-surface">✕</button>
-            </div>
-        </div>
-
-        <!-- MODAL BODY -->
-        <div class="flex-1 p-6 overflow-auto flex items-center justify-center bg-black/40 min-h-[400px]">
-            <img id="previewModalImage" src="" alt="Document Preview" class="max-w-full max-h-[70vh] object-contain rounded-lg shadow-lg hidden">
-            <iframe id="previewModalFrame" src="" class="w-full h-[70vh] rounded-lg hidden border-0"></iframe>
-            <div id="previewModalFallback" class="text-center p-8 hidden">
-                <span class="material-symbols-outlined text-5xl text-primary mb-3">description</span>
-                <p class="text-sm font-bold text-on-surface">Document Ready</p>
-                <p class="text-xs text-on-surface-variant mt-1 mb-4">This document format is best viewed in a separate tab.</p>
-                <a id="previewModalFallbackBtn" href="#" target="_blank" class="px-4 py-2 rounded-xl bg-primary text-black font-bold text-xs inline-flex items-center gap-1.5">
-                    <span class="material-symbols-outlined text-sm">open_in_new</span>
-                    Open Document
-                </a>
-            </div>
-        </div>
-    </div>
-</div>
-
-<script>
-    function openRejectModal(driverId, driverLabel) {
-        document.getElementById('rejectModalDriverId').value = driverId;
-        document.getElementById('rejectModalDriverLabel').innerText = 'Driver #' + driverId + ' (' + driverLabel + ')';
-        document.getElementById('rejectModal').classList.remove('hidden');
-        document.getElementById('rejectModal').classList.add('flex');
-    }
-
-    function closeRejectModal() {
-        document.getElementById('rejectModal').classList.add('hidden');
-        document.getElementById('rejectModal').classList.remove('flex');
-    }
-
-    function setRejectReason(reasonText) {
-        document.getElementById('rejection_reason').value = reasonText;
-    }
-
-    function previewDocument(docUrl, docTitle) {
-        if (!docUrl) return;
-        document.getElementById('previewModalTitle').innerText = docTitle || 'Document Preview';
-        document.getElementById('previewModalExternalLink').href = docUrl;
-        document.getElementById('previewModalFallbackBtn').href = docUrl;
-
-        const imgEl = document.getElementById('previewModalImage');
-        const frameEl = document.getElementById('previewModalFrame');
-        const fallbackEl = document.getElementById('previewModalFallback');
-
-        imgEl.classList.add('hidden');
-        frameEl.classList.add('hidden');
-        fallbackEl.classList.add('hidden');
-
-        const isPdf = docUrl.toLowerCase().includes('.pdf');
-
-        if (isPdf) {
-            frameEl.src = docUrl;
-            frameEl.classList.remove('hidden');
-        } else {
-            imgEl.src = docUrl;
-            imgEl.classList.remove('hidden');
-            imgEl.onerror = function() {
-                imgEl.classList.add('hidden');
-                fallbackEl.classList.remove('hidden');
-            };
-        }
-
-        document.getElementById('previewModal').classList.remove('hidden');
-        document.getElementById('previewModal').classList.add('flex');
-    }
-
-    function closePreviewModal() {
-        document.getElementById('previewModal').classList.add('hidden');
-        document.getElementById('previewModal').classList.remove('flex');
-        document.getElementById('previewModalImage').src = '';
-        document.getElementById('previewModalFrame').src = '';
-    }
-
-    // Close modals on Escape key
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') {
-            closeRejectModal();
-            closePreviewModal();
-        }
-    });
-</script>
 {% endblock %}

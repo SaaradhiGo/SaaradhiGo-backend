@@ -11,7 +11,7 @@ from django.core.paginator import Paginator
 from django.db import models, transaction as db_transaction
 from django.db.models.functions import Coalesce
 from django.db.models import (Avg,Count, Q,Sum,F,Max,Value,DecimalField,)
-from servers.driver.models import Driver, WithdrawalRequest,VehicleType,Vehicle
+from servers.driver.models import Driver, WithdrawalRequest,VehicleType,Vehicle,DriverSession,DriverCancellation,DriverBankAccount,DriverUPIContact
 from servers.ride.models import (
     ChatMessage,
     FarePricing,
@@ -106,283 +106,1745 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         # WebSocket driver feed is still useful on its own.
         kpis = None
     return render(request, 'admin_pages/fleet_monitor.html', {"kpis": kpis})
+from urllib.parse import urlencode
+from django.db import transaction
 @admin_required
 def driver_onboarding(request: HttpRequest) -> HttpResponse:
-    status = request.GET.get("status", "ALL")
-    search = request.GET.get("search", "").strip()
-    selected_driver_id = request.GET.get("selected_driver")
-    page_number = request.GET.get("page", 1)
+    """
+    Driver KYC + Vehicle Fleet Compliance Admin Page.
+
+    No model changes required.
+
+    Approval is allowed only when all mandatory checks pass:
+
+        1. Driving License
+        2. Vehicle RC
+        3. Commercial Insurance
+        4. Commercial Permit
+        5. Fitness Certificate
+        6. Pollution Under Control (PUC)
+    """
+
+    # =========================================================
+    # GET PARAMETERS
+    # =========================================================
+
+    status_filter = request.GET.get(
+        "status",
+        "ALL",
+    ).upper()
+
+    search = request.GET.get(
+        "search",
+        "",
+    ).strip()
+
+    selected_driver_id = request.GET.get(
+        "selected_driver"
+    )
+
+    page_number = request.GET.get(
+        "page",
+        1,
+    )
+
+    valid_statuses = {
+        "ALL",
+        "PENDING",
+        "APPROVED",
+        "REJECTED",
+    }
+
+    if status_filter not in valid_statuses:
+        status_filter = "ALL"
+
+    # =========================================================
+    # HELPER FUNCTIONS
+    # =========================================================
+
+    def get_value(
+        obj,
+        *names,
+        default=None,
+    ):
+        """
+        Safely return the first non-empty attribute.
+        """
+
+        for name in names:
+
+            try:
+                value = getattr(
+                    obj,
+                    name,
+                    None,
+                )
+            except Exception:
+                value = None
+
+            if value not in (
+                None,
+                "",
+            ):
+                return value
+
+        return default
+
+    def has_document(value):
+        """
+        Safely determine whether a FileField contains a file.
+        """
+
+        if value is None:
+            return False
+
+        try:
+            if hasattr(value, "name"):
+                return bool(value.name)
+        except Exception:
+            pass
+
+        try:
+            return bool(
+                str(value).strip()
+            )
+        except Exception:
+            return False
+
+    def document_url(value):
+        """
+        Safely get a document URL.
+        """
+
+        if not value:
+            return None
+
+        try:
+            return value.url
+        except Exception:
+            return None
+
+    def format_date(value):
+        """
+        Format date/datetime for the template.
+        """
+
+        if not value:
+            return "Not Provided"
+
+        try:
+            return value.strftime(
+                "%d %b %Y"
+            )
+        except Exception:
+            return str(value)
+
+    def get_driver_name(driver):
+        """
+        EXACT Driver model mapping:
+
+            Driver.user_id -> User
+            User.full_name
+        """
+
+        try:
+            if (
+                driver.user_id
+                and driver.user_id.full_name
+            ):
+                return (
+                    driver.user_id.full_name
+                )
+        except Exception:
+            pass
+
+        return f"Driver #{driver.pk}"
+
+    def get_driver_phone(driver):
+        """
+        EXACT Driver model mapping:
+
+            Driver.user_id -> User
+            User.phone_number
+        """
+
+        try:
+            if (
+                driver.user_id
+                and driver.user_id.phone_number
+            ):
+                return (
+                    driver.user_id.phone_number
+                )
+        except Exception:
+            pass
+
+        return "Not Provided"
+
+    def get_driver_vehicles(driver):
+        """
+        Vehicle model uses:
+
+            driver_id = ForeignKey(
+                Driver,
+                on_delete=models.CASCADE
+            )
+
+        Therefore Django's default reverse
+        relationship is:
+
+            driver.vehicle_set.all()
+        """
+
+        try:
+            return list(
+                driver.vehicle_set.all()
+            )
+        except Exception:
+            return []
+
+    def get_vehicle_type(vehicle):
+        """
+        EXACT Vehicle model mapping:
+
+            vehicle.vehicle_type_id -> VehicleType
+            VehicleType.type
+        """
+
+        try:
+            if (
+                vehicle.vehicle_type_id
+                and vehicle.vehicle_type_id.type
+            ):
+                return (
+                    vehicle.vehicle_type_id.type
+                )
+        except Exception:
+            pass
+
+        return "N/A"
+
+    def build_onboarding_url(
+        driver_id=None,
+    ):
+        """
+        Preserve current filter/search/page
+        when redirecting after POST actions.
+        """
+
+        params = {
+            "status": status_filter,
+            "page": page_number,
+        }
+
+        if search:
+            params["search"] = search
+
+        if driver_id:
+            params["selected_driver"] = driver_id
+
+        return (
+            "/driver_onboarding/?"
+            + urlencode(params)
+        )
+
+    # =========================================================
+    # POST ACTIONS
+    # =========================================================
 
     if request.method == "POST":
-        action = request.POST.get("action")
-        driver_id = request.POST.get("driver_id")
-        rejection_reason = (request.POST.get("rejection_reason") or request.POST.get("custom_reason") or "").strip()
+
+        action = request.POST.get(
+            "action",
+            "",
+        ).strip().lower()
+
+        driver_id = request.POST.get(
+            "driver_id"
+        )
 
         if not driver_id:
-            messages.error(request, "No driver selected.")
-            return redirect(request.path)
 
-        driver = get_object_or_404(Driver, id=driver_id)
-        driver_label = (
-            getattr(driver.user_id, "full_name", None)
-            or getattr(driver.user_id, "phone_number", None)
-            or f"Driver #{driver.id}"
-        )
+            messages.error(
+                request,
+                "Driver ID is missing.",
+            )
+
+            return redirect(
+                "driver_onboarding"
+            )
+
+        try:
+
+            driver = (
+                Driver.objects
+                .select_related(
+                    "user_id"
+                )
+                .get(
+                    pk=driver_id
+                )
+            )
+
+        except (
+            Driver.DoesNotExist,
+            ValueError,
+            TypeError,
+        ):
+
+            messages.error(
+                request,
+                "Driver not found.",
+            )
+
+            return redirect(
+                "driver_onboarding"
+            )
+
+        # =====================================================
+        # APPROVE DRIVER
+        # =====================================================
 
         if action == "approve":
-            before_snapshot = {
-                "doc_status": driver.doc_status,
-                "approved": driver.approved,
-            }
-            driver.doc_status = "approved"
-            driver.approved = True
-            driver.doc_status_updated_at = timezone.now()
-            driver.doc_rejection_reason = None
-            driver.save(
-                update_fields=[
-                    "doc_status",
-                    "approved",
-                    "doc_status_updated_at",
-                    "doc_rejection_reason",
-                ]
+
+            # -------------------------------------------------
+            # 1. DRIVING LICENSE
+            # -------------------------------------------------
+
+            license_front = (
+                driver.license_doc
             )
 
-            # Record audit action
-            try:
-                from servers.admin_audit.services import record_admin_action
-                record_admin_action(
+            license_passed = (
+                has_document(
+                    license_front
+                )
+            )
+
+            # -------------------------------------------------
+            # VEHICLES
+            # -------------------------------------------------
+
+            vehicles = (
+                get_driver_vehicles(
+                    driver
+                )
+            )
+
+            vehicle_compliance_results = []
+
+            # No vehicle means approval must fail.
+            all_vehicle_compliant = bool(
+                vehicles
+            )
+
+            # -------------------------------------------------
+            # CHECK EVERY VEHICLE
+            # -------------------------------------------------
+
+            for vehicle in vehicles:
+
+                # EXACT MODEL FIELD
+                rc_doc = (
+                    vehicle.rc_doc
+                )
+
+                # EXACT MODEL FIELD
+                insurance_doc = (
+                    vehicle.insurance_doc
+                )
+
+                # EXACT MODEL FIELD
+                permit_doc = (
+                    vehicle.permit_doc
+                )
+
+                # EXACT MODEL FIELD
+                fitness_doc = (
+                    vehicle.fitness_doc
+                )
+
+                # EXACT MODEL FIELD
+                puc_doc = (
+                    vehicle.puc_doc
+                )
+
+                vehicle_checks = {
+                    "rc": has_document(
+                        rc_doc
+                    ),
+
+                    "insurance": has_document(
+                        insurance_doc
+                    ),
+
+                    "permit": has_document(
+                        permit_doc
+                    ),
+
+                    "fitness": has_document(
+                        fitness_doc
+                    ),
+
+                    "puc": has_document(
+                        puc_doc
+                    ),
+                }
+
+                vehicle_compliance_results.append(
+                    vehicle_checks
+                )
+
+                if not all(
+                    vehicle_checks.values()
+                ):
+                    all_vehicle_compliant = False
+
+            # -------------------------------------------------
+            # SIX MANDATORY CHECKS
+            # -------------------------------------------------
+
+            total_checks = 6
+
+            passed_checks = 0
+
+            # Driving License
+            if license_passed:
+                passed_checks += 1
+
+            # Vehicle documents
+            if vehicle_compliance_results:
+
+                if all(
+                    item["rc"]
+                    for item
+                    in vehicle_compliance_results
+                ):
+                    passed_checks += 1
+
+                if all(
+                    item["insurance"]
+                    for item
+                    in vehicle_compliance_results
+                ):
+                    passed_checks += 1
+
+                if all(
+                    item["permit"]
+                    for item
+                    in vehicle_compliance_results
+                ):
+                    passed_checks += 1
+
+                if all(
+                    item["fitness"]
+                    for item
+                    in vehicle_compliance_results
+                ):
+                    passed_checks += 1
+
+                if all(
+                    item["puc"]
+                    for item
+                    in vehicle_compliance_results
+                ):
+                    passed_checks += 1
+
+            # -------------------------------------------------
+            # FINAL APPROVAL CONDITION
+            # -------------------------------------------------
+
+            compliance_complete = (
+                license_passed
+                and bool(vehicles)
+                and all_vehicle_compliant
+                and passed_checks
+                == total_checks
+            )
+
+            # -------------------------------------------------
+            # BLOCK APPROVAL
+            # -------------------------------------------------
+
+            if not compliance_complete:
+
+                messages.error(
                     request,
-                    action="kyc_approved",
-                    target_type="driver",
-                    target_id=driver.id,
-                    before=before_snapshot,
-                    after={"doc_status": "approved", "approved": True},
-                    reason="Approved via Driver Onboarding console",
+                    (
+                        f"Driver #{driver.pk} "
+                        f"cannot be approved. "
+                        f"Mandatory compliance is "
+                        f"incomplete: "
+                        f"{passed_checks}/"
+                        f"{total_checks} "
+                        f"checks passed."
+                    ),
                 )
-            except Exception as e:
-                logger.error(f"Audit log failed for driver approve: {e}")
 
-            # Send transactional notification
+                return redirect(
+                    build_onboarding_url(
+                        driver.pk
+                    )
+                )
+
+            # -------------------------------------------------
+            # APPROVE
+            # -------------------------------------------------
+
             try:
-                from servers.rider.models import Notification
-                Notification.objects.create(
-                    user_id=driver.user_id,
-                    title="KYC & Vehicle Approved 🎉",
-                    message="Congratulations! Your KYC documents and vehicle compliance have been verified and approved. You are now authorized to accept rides.",
-                    notif_type="ride_event",
-                    data={"type": "kyc_approved", "driver_id": driver.id},
+
+                with transaction.atomic():
+
+                    update_fields = []
+
+                    # Driver KYC status
+                    driver.doc_status = (
+                        "approved"
+                    )
+
+                    update_fields.append(
+                        "doc_status"
+                    )
+
+                    # Driver active status
+                    driver.status = "active"
+
+                    update_fields.append(
+                        "status"
+                    )
+
+                    # Existing approved flag
+                    driver.approved = True
+
+                    update_fields.append(
+                        "approved"
+                    )
+
+                    # Correct timestamp update
+                    driver.doc_status_updated_at = (
+                        timezone.now()
+                    )
+
+                    update_fields.append(
+                        "doc_status_updated_at"
+                    )
+
+                    driver.save(
+                        update_fields=update_fields
+                    )
+
+                messages.success(
+                    request,
+                    (
+                        f"Driver #{driver.pk} "
+                        "and fleet approved "
+                        "successfully."
+                    ),
                 )
-            except Exception as e:
-                logger.error(f"Failed to send approval notification to driver {driver.id}: {e}")
 
-            messages.success(request, f"{driver_label} has been approved successfully.")
+            except Exception as exc:
 
-        elif action in ["reject", "request_reupload"]:
+                messages.error(
+                    request,
+                    (
+                        "Unable to approve driver: "
+                        f"{exc}"
+                    ),
+                )
+
+            return redirect(
+                build_onboarding_url(
+                    driver.pk
+                )
+            )
+
+        # =====================================================
+        # REJECT DRIVER
+        # =====================================================
+
+        elif action == "reject":
+
+            rejection_reason = (
+                request.POST.get(
+                    "rejection_reason",
+                    "",
+                ).strip()
+            )
+
             if not rejection_reason:
-                rejection_reason = "Document verification failed. Please check your uploaded Driving License and Vehicle Compliance documents."
 
-            before_snapshot = {
-                "doc_status": driver.doc_status,
-                "approved": driver.approved,
-                "doc_rejection_reason": driver.doc_rejection_reason,
-            }
-            driver.doc_status = "rejected"
-            driver.approved = False
-            driver.doc_status_updated_at = timezone.now()
-            driver.doc_rejection_reason = rejection_reason
-            driver.save(
-                update_fields=[
-                    "doc_status",
-                    "approved",
-                    "doc_status_updated_at",
-                    "doc_rejection_reason",
-                ]
+                messages.error(
+                    request,
+                    "Please enter a rejection reason.",
+                )
+
+                return redirect(
+                    build_onboarding_url(
+                        driver.pk
+                    )
+                )
+
+            try:
+
+                with transaction.atomic():
+
+                    # -------------------------------------------------
+                    # EXACT MODEL FIELD
+                    # Driver.doc_status
+                    # -------------------------------------------------
+
+                    driver.doc_status = (
+                        "rejected"
+                    )
+
+                    # -------------------------------------------------
+                    # EXACT MODEL FIELD
+                    # Driver.doc_status_updated_at
+                    # -------------------------------------------------
+
+                    driver.doc_status_updated_at = (
+                        timezone.now()
+                    )
+
+                    # -------------------------------------------------
+                    # EXACT MODEL FIELD
+                    # Driver.doc_rejection_reason
+                    # -------------------------------------------------
+
+                    driver.doc_rejection_reason = (
+                        rejection_reason
+                    )
+
+                    # -------------------------------------------------
+                    # Do not mark driver approved
+                    # -------------------------------------------------
+
+                    driver.approved = False
+
+                    driver.save(
+                        update_fields=[
+                            "doc_status",
+                            "doc_status_updated_at",
+                            "doc_rejection_reason",
+                            "approved",
+                        ]
+                    )
+
+                messages.success(
+                    request,
+                    (
+                        f"Driver #{driver.pk} "
+                        "rejected successfully."
+                    ),
+                )
+
+            except Exception as exc:
+
+                messages.error(
+                    request,
+                    (
+                        "Unable to reject driver: "
+                        f"{exc}"
+                    ),
+                )
+
+            return redirect(
+                build_onboarding_url(
+                    driver.pk
+                )
             )
 
-            # Record audit action
-            try:
-                from servers.admin_audit.services import record_admin_action
-                record_admin_action(
-                    request,
-                    action="kyc_rejected",
-                    target_type="driver",
-                    target_id=driver.id,
-                    before=before_snapshot,
-                    after={"doc_status": "rejected", "approved": False, "doc_rejection_reason": rejection_reason},
-                    reason=rejection_reason,
-                )
-            except Exception as e:
-                logger.error(f"Audit log failed for driver rejection: {e}")
-
-            # Send transactional notification with reason
-            try:
-                from servers.rider.models import Notification
-                Notification.objects.create(
-                    user_id=driver.user_id,
-                    title="KYC Verification Action Required ⚠️",
-                    message=f"Document verification update: {rejection_reason}. Please open the SaaradhiGo Driver app to re-upload your valid documents.",
-                    notif_type="ride_event",
-                    data={"type": "kyc_rejected", "reason": rejection_reason, "driver_id": driver.id},
-                )
-            except Exception as e:
-                logger.error(f"Failed to send rejection notification to driver {driver.id}: {e}")
-
-            messages.warning(request, f"{driver_label} rejected. Reason recorded and notification dispatched.")
+        # =====================================================
+        # INVALID ACTION
+        # =====================================================
 
         else:
-            messages.error(request, "Invalid action requested.")
 
-        return redirect(
-            f"{request.path}"
-            f"?selected_driver={driver.id}"
-            f"&status={status}"
-            f"&page={page_number}"
-            f"&search={search}"
-        )
+            messages.error(
+                request,
+                "Invalid action.",
+            )
 
-    # Base drivers query
+            return redirect(
+                build_onboarding_url(
+                    driver.pk
+                )
+            )
+
+    # =========================================================
+    # DRIVER QUERYSET
+    # =========================================================
+
     drivers_qs = (
         Driver.objects
         .select_related(
-            "user_id",
-            "active_vehicle",
-            "active_vehicle__vehicle_type_id",
+            "user_id"
         )
-        .prefetch_related("vehicle_set", "vehicle_set__vehicle_type_id")
+        .prefetch_related(
+            "vehicle_set__vehicle_type_id"
+        )
         .all()
-        .order_by("-id")
+        .order_by("-pk")
     )
 
-    if search:
+    # =========================================================
+    # STATUS FILTER
+    # =========================================================
+
+    if status_filter == "PENDING":
+
         drivers_qs = drivers_qs.filter(
-            Q(user_id__full_name__icontains=search)
-            | Q(user_id__phone_number__icontains=search)
-            | Q(vehicle_set__vehicle_number__icontains=search)
-            | Q(id__iexact=search.replace("#", ""))
-        ).distinct()
-
-    if status == "APPROVED":
-        drivers_qs = drivers_qs.filter(doc_status="approved")
-    elif status == "PENDING":
-        drivers_qs = drivers_qs.filter(doc_status="pending")
-    elif status == "REJECTED":
-        drivers_qs = drivers_qs.filter(doc_status="rejected")
-
-    all_drivers = Driver.objects.all()
-    pending_reviews_count = all_drivers.filter(doc_status="pending").count()
-    approved_count = all_drivers.filter(doc_status="approved").count()
-    rejected_count = all_drivers.filter(doc_status="rejected").count()
-    total_count = all_drivers.count()
-
-    paginator = Paginator(drivers_qs, 10)
-    page_obj = paginator.get_page(page_number)
-    drivers = page_obj.object_list
-
-    selected_driver = None
-    if selected_driver_id:
-        selected_driver = (
-            Driver.objects
-            .select_related(
-                "user_id",
-                "active_vehicle",
-                "active_vehicle__vehicle_type_id",
-            )
-            .prefetch_related("vehicle_set", "vehicle_set__vehicle_type_id")
-            .filter(id=selected_driver_id)
-            .first()
+            doc_status__iexact="pending"
         )
 
-    if not selected_driver and drivers:
-        selected_driver = drivers[0]
+    elif status_filter == "APPROVED":
 
-    # Evaluate compliance checklist for selected driver
-    compliance_data = None
+        drivers_qs = drivers_qs.filter(
+            doc_status__iexact="approved"
+        )
+
+    elif status_filter == "REJECTED":
+
+        drivers_qs = drivers_qs.filter(
+            doc_status__iexact="rejected"
+        )
+
+    # =========================================================
+    # SEARCH
+    # =========================================================
+
+    if search:
+
+        search_queries = []
+
+        # Driver ID
+        try:
+
+            search_queries.append(
+                Q(
+                    pk=int(search)
+                )
+            )
+
+        except ValueError:
+            pass
+
+        # Actual User fields
+        search_queries.append(
+            Q(
+                user_id__full_name__icontains=search
+            )
+        )
+
+        search_queries.append(
+            Q(
+                user_id__phone_number__icontains=search
+            )
+        )
+
+        # Vehicle number
+        search_queries.append(
+            Q(
+                vehicle_set__vehicle_number__icontains=search
+            )
+        )
+
+        combined_query = (
+            search_queries[0]
+        )
+
+        for query_item in search_queries[1:]:
+
+            combined_query |= query_item
+
+        drivers_qs = (
+            drivers_qs
+            .filter(
+                combined_query
+            )
+            .distinct()
+        )
+
+    # =========================================================
+    # COUNTS
+    # =========================================================
+
+    total_drivers = (
+        Driver.objects.count()
+    )
+
+    pending_count = (
+        Driver.objects
+        .filter(
+            doc_status__iexact="pending"
+        )
+        .count()
+    )
+
+    approved_count = (
+        Driver.objects
+        .filter(
+            doc_status__iexact="approved"
+        )
+        .count()
+    )
+
+    rejected_count = (
+        Driver.objects
+        .filter(
+            doc_status__iexact="rejected"
+        )
+        .count()
+    )
+
+    # =========================================================
+    # PAGINATION
+    # =========================================================
+
+    paginator = Paginator(
+        drivers_qs,
+        10,
+    )
+
+    page_obj = paginator.get_page(
+        page_number
+    )
+
+    # =========================================================
+    # DRIVER QUEUE CARDS
+    # =========================================================
+
+    driver_cards = []
+
+    for driver in page_obj.object_list:
+
+        # -----------------------------------------------------
+        # ACTUAL DRIVER NAME
+        # -----------------------------------------------------
+
+        name = get_driver_name(
+            driver
+        )
+
+        # -----------------------------------------------------
+        # ACTUAL PHONE
+        # -----------------------------------------------------
+
+        phone = get_driver_phone(
+            driver
+        )
+
+        # -----------------------------------------------------
+        # KYC STATUS
+        # -----------------------------------------------------
+
+        doc_status = str(
+            driver.doc_status
+            or "pending"
+        ).upper()
+
+        # -----------------------------------------------------
+        # RATING
+        # -----------------------------------------------------
+
+        rating = (
+            driver.ratings
+            if driver.ratings is not None
+            else 0
+        )
+
+        # -----------------------------------------------------
+        # TOTAL TRIPS
+        # -----------------------------------------------------
+
+        total_trips = (
+            driver.total_trips
+            if driver.total_trips is not None
+            else 0
+        )
+
+        # -----------------------------------------------------
+        # UPDATED DATE
+        # -----------------------------------------------------
+
+        updated_at = (
+            driver.doc_status_updated_at
+            or driver.uploaded_timestamp
+        )
+
+        # -----------------------------------------------------
+        # VEHICLES
+        # -----------------------------------------------------
+
+        vehicles = (
+            get_driver_vehicles(
+                driver
+            )
+        )
+
+        vehicle_numbers = []
+
+        for vehicle in vehicles:
+
+            if vehicle.vehicle_number:
+
+                vehicle_numbers.append(
+                    str(
+                        vehicle.vehicle_number
+                    )
+                )
+
+        if vehicle_numbers:
+
+            vehicle_display = ", ".join(
+                vehicle_numbers
+            )
+
+        elif vehicles:
+
+            if len(vehicles) == 1:
+
+                vehicle_display = (
+                    "1 Vehicle"
+                )
+
+            else:
+
+                vehicle_display = (
+                    f"{len(vehicles)} "
+                    "Vehicles"
+                )
+
+        else:
+
+            vehicle_display = (
+                "No Vehicle"
+            )
+
+        # -----------------------------------------------------
+        # INITIAL
+        # -----------------------------------------------------
+
+        try:
+
+            initial = (
+                str(name)
+                .strip()[0]
+                .upper()
+            )
+
+        except Exception:
+
+            initial = "D"
+
+        # -----------------------------------------------------
+        # CARD DATA
+        # -----------------------------------------------------
+
+        driver_cards.append(
+            {
+                "id": driver.pk,
+
+                "name": name,
+
+                "phone": phone,
+
+                "status": doc_status,
+
+                "rating": rating,
+
+                "total_trips": total_trips,
+
+                "vehicle_display": (
+                    vehicle_display
+                ),
+
+                "vehicle_count": (
+                    len(vehicles)
+                ),
+
+                "initial": initial,
+
+                "updated_at": format_date(
+                    updated_at
+                ),
+            }
+        )
+
+    # =========================================================
+    # SELECTED DRIVER
+    # =========================================================
+
+    selected_driver = None
+
+    selected_data = None
+
+    if selected_driver_id:
+
+        try:
+
+            selected_driver = (
+                Driver.objects
+                .select_related(
+                    "user_id"
+                )
+                .prefetch_related(
+                    "vehicle_set__vehicle_type_id"
+                )
+                .get(
+                    pk=selected_driver_id
+                )
+            )
+
+        except (
+            Driver.DoesNotExist,
+            ValueError,
+            TypeError,
+        ):
+
+            selected_driver = None
+
+    # ---------------------------------------------------------
+    # Default to first driver on current page
+    # ---------------------------------------------------------
+
+    if (
+        selected_driver is None
+        and page_obj.object_list
+    ):
+
+        selected_driver = (
+            page_obj.object_list[0]
+        )
+
+    # =========================================================
+    # SELECTED DRIVER DETAILS
+    # =========================================================
+
     if selected_driver:
-        today = timezone.localdate()
-        soon = today + timedelta(days=30)
 
-        vehicle = selected_driver.active_vehicle or selected_driver.vehicle_set.first()
+        driver = selected_driver
 
-        def build_doc_item(label, doc_field, expiry_field=None, is_mandatory=True):
-            has_file = bool(doc_field)
-            file_url = doc_field.url if has_file else None
-            status_code = "missing"
-            status_label = "Missing"
-            status_color = "rose"
+        # -----------------------------------------------------
+        # ACTUAL NAME
+        # -----------------------------------------------------
 
-            if has_file:
-                status_code = "valid"
-                status_label = "Uploaded"
-                status_color = "emerald"
+        name = get_driver_name(
+            driver
+        )
 
-                if expiry_field:
-                    if expiry_field < today:
-                        status_code = "expired"
-                        status_label = f"Expired ({expiry_field.strftime('%d %b %Y')})"
-                        status_color = "rose"
-                    elif expiry_field <= soon:
-                        status_code = "expiring_soon"
-                        status_label = f"Expiring ({expiry_field.strftime('%d %b %Y')})"
-                        status_color = "amber"
-                    else:
-                        status_label = f"Valid till {expiry_field.strftime('%d %b %Y')}"
+        # -----------------------------------------------------
+        # ACTUAL PHONE
+        # -----------------------------------------------------
 
-            is_passed = (status_code in ["valid", "expiring_soon"]) if is_mandatory else True
-            if not has_file and is_mandatory:
-                is_passed = False
+        phone = get_driver_phone(
+            driver
+        )
 
-            return {
-                "label": label,
-                "has_file": has_file,
-                "file_url": file_url,
-                "expiry_date": expiry_field,
-                "status_code": status_code,
-                "status_label": status_label,
-                "status_color": status_color,
-                "is_mandatory": is_mandatory,
-                "is_passed": is_passed,
+        # -----------------------------------------------------
+        # KYC STATUS
+        # -----------------------------------------------------
+
+        doc_status = str(
+            driver.doc_status
+            or "pending"
+        ).upper()
+
+        # -----------------------------------------------------
+        # ACTUAL REJECTION REASON
+        # -----------------------------------------------------
+
+        rejection_reason = (
+            driver.doc_rejection_reason
+            or ""
+        )
+
+        # -----------------------------------------------------
+        # REJECTION DATE
+        # -----------------------------------------------------
+
+        rejection_date = (
+            driver.doc_status_updated_at
+        )
+
+        # -----------------------------------------------------
+        # LICENSE
+        # -----------------------------------------------------
+
+        license_front = (
+            driver.license_doc
+        )
+
+        license_back = (
+            driver.license_doc_back
+        )
+
+        license_expiry = (
+            driver.license_expiry
+        )
+
+        # -----------------------------------------------------
+        # VEHICLES
+        # -----------------------------------------------------
+
+        vehicles = (
+            get_driver_vehicles(
+                driver
+            )
+        )
+
+        vehicle_details = []
+
+        # =====================================================
+        # BUILD VEHICLE DETAILS
+        # =====================================================
+
+        for vehicle in vehicles:
+
+            # -------------------------------------------------
+            # EXACT VEHICLE DOCUMENT FIELDS
+            # -------------------------------------------------
+
+            rc_doc = (
+                vehicle.rc_doc
+            )
+
+            insurance_doc = (
+                vehicle.insurance_doc
+            )
+
+            permit_doc = (
+                vehicle.permit_doc
+            )
+
+            fitness_doc = (
+                vehicle.fitness_doc
+            )
+
+            puc_doc = (
+                vehicle.puc_doc
+            )
+
+            # -------------------------------------------------
+            # VEHICLE COMPLIANCE CHECKS
+            # -------------------------------------------------
+
+            checks = {
+
+                "license": has_document(
+                    license_front
+                ),
+
+                "rc": has_document(
+                    rc_doc
+                ),
+
+                "insurance": has_document(
+                    insurance_doc
+                ),
+
+                "permit": has_document(
+                    permit_doc
+                ),
+
+                "fitness": has_document(
+                    fitness_doc
+                ),
+
+                "puc": has_document(
+                    puc_doc
+                ),
             }
 
-        license_front = build_doc_item("Driving License (Front)", selected_driver.license_doc, selected_driver.license_expiry, True)
-        license_back = build_doc_item("Driving License (Back)", selected_driver.license_doc_back, None, False)
+            passed = sum(
+                1
+                for value in checks.values()
+                if value
+            )
 
-        rc_item = build_doc_item("Registration Certificate (RC)", getattr(vehicle, "rc_doc", None), None, True)
-        insurance_item = build_doc_item("Commercial Insurance Policy", getattr(vehicle, "insurance_doc", None), getattr(vehicle, "insurance_expiry", None), True)
-        permit_item = build_doc_item("Commercial Vehicle Permit", getattr(vehicle, "permit_doc", None), getattr(vehicle, "permit_expiry", None), True)
-        fitness_item = build_doc_item("Fitness Certificate (FC)", getattr(vehicle, "fitness_doc", None), getattr(vehicle, "fitness_expiry", None), True)
-        puc_item = build_doc_item("Pollution Under Control (PUC)", getattr(vehicle, "puc_doc", None), getattr(vehicle, "puc_expiry", None), True)
+            # -------------------------------------------------
+            # VEHICLE DETAILS
+            # -------------------------------------------------
 
-        all_checks = [license_front, rc_item, insurance_item, permit_item, fitness_item, puc_item]
-        passed_count = sum(1 for c in all_checks if c["is_passed"])
-        total_mandatory = len(all_checks)
-        compliance_pct = int((passed_count / total_mandatory) * 100) if total_mandatory > 0 else 0
+            vehicle_details.append(
+                {
+                    "id": vehicle.pk,
 
-        compliance_data = {
-            "vehicle": vehicle,
-            "license_front": license_front,
-            "license_back": license_back,
-            "rc_doc": rc_item,
-            "insurance_doc": insurance_item,
-            "permit_doc": permit_item,
-            "fitness_doc": fitness_item,
-            "puc_doc": puc_item,
-            "passed_count": passed_count,
-            "total_mandatory": total_mandatory,
-            "compliance_pct": compliance_pct,
-            "is_fully_compliant": passed_count == total_mandatory,
+                    "number": (
+                        vehicle.vehicle_number
+                        or "N/A"
+                    ),
+
+                    "vehicle_type": (
+                        get_vehicle_type(
+                            vehicle
+                        )
+                    ),
+
+                    "brand": (
+                        vehicle.brand
+                        or "N/A"
+                    ),
+
+                    "model": (
+                        vehicle.model
+                        or "N/A"
+                    ),
+
+                    "color": (
+                        vehicle.color
+                        or "N/A"
+                    ),
+
+                    "year": (
+                        vehicle.year
+                        or "N/A"
+                    ),
+
+                    "capacity": (
+                        vehicle.capacity
+                        if vehicle.capacity
+                        is not None
+                        else 1
+                    ),
+
+                    "status": (
+                        vehicle.status
+                        or "active"
+                    ),
+
+                    # -----------------------------------------
+                    # RC
+                    # -----------------------------------------
+
+                    "rc": {
+
+                        "present": (
+                            has_document(
+                                rc_doc
+                            )
+                        ),
+
+                        "url": (
+                            document_url(
+                                rc_doc
+                            )
+                        ),
+
+                        "expiry": (
+                            format_date(
+                                vehicle.rc_expiry
+                                if hasattr(
+                                    vehicle,
+                                    "rc_expiry"
+                                )
+                                else None
+                            )
+                        ),
+                    },
+
+                    # -----------------------------------------
+                    # INSURANCE
+                    # -----------------------------------------
+
+                    "insurance": {
+
+                        "present": (
+                            has_document(
+                                insurance_doc
+                            )
+                        ),
+
+                        "url": (
+                            document_url(
+                                insurance_doc
+                            )
+                        ),
+
+                        "expiry": (
+                            format_date(
+                                vehicle.insurance_expiry
+                            )
+                        ),
+                    },
+
+                    # -----------------------------------------
+                    # PERMIT
+                    # -----------------------------------------
+
+                    "permit": {
+
+                        "present": (
+                            has_document(
+                                permit_doc
+                            )
+                        ),
+
+                        "url": (
+                            document_url(
+                                permit_doc
+                            )
+                        ),
+
+                        "expiry": (
+                            format_date(
+                                vehicle.permit_expiry
+                            )
+                        ),
+                    },
+
+                    # -----------------------------------------
+                    # FITNESS
+                    # -----------------------------------------
+
+                    "fitness": {
+
+                        "present": (
+                            has_document(
+                                fitness_doc
+                            )
+                        ),
+
+                        "url": (
+                            document_url(
+                                fitness_doc
+                            )
+                        ),
+
+                        "expiry": (
+                            format_date(
+                                vehicle.fitness_expiry
+                            )
+                        ),
+                    },
+
+                    # -----------------------------------------
+                    # PUC
+                    # -----------------------------------------
+
+                    "puc": {
+
+                        "present": (
+                            has_document(
+                                puc_doc
+                            )
+                        ),
+
+                        "url": (
+                            document_url(
+                                puc_doc
+                            )
+                        ),
+
+                        "expiry": (
+                            format_date(
+                                vehicle.puc_expiry
+                            )
+                        ),
+                    },
+
+                    "checks": checks,
+
+                    "passed": passed,
+                }
+            )
+
+        # =====================================================
+        # COMPLIANCE CHECKS
+        # =====================================================
+
+        has_vehicles = bool(
+            vehicle_details
+        )
+
+        def every_vehicle_has(
+            key
+        ):
+            """
+            A compliance requirement passes
+            only when EVERY vehicle has that
+            document.
+            """
+
+            if not vehicle_details:
+                return False
+
+            return all(
+                item["checks"][key]
+                for item in vehicle_details
+            )
+
+        compliance_checks = [
+
+            # -------------------------------------------------
+            # 1. LICENSE
+            # -------------------------------------------------
+
+            {
+                "name": (
+                    "Driving License"
+                ),
+
+                "short_name": (
+                    "Driving License"
+                ),
+
+                "passed": (
+                    has_document(
+                        license_front
+                    )
+                ),
+
+                "description": (
+                    "Government-issued "
+                    "commercial driving "
+                    "license verification."
+                ),
+            },
+
+            # -------------------------------------------------
+            # 2. RC
+            # -------------------------------------------------
+
+            {
+                "name": (
+                    "Vehicle RC"
+                ),
+
+                "short_name": (
+                    "Vehicle RC"
+                ),
+
+                "passed": (
+                    every_vehicle_has(
+                        "rc"
+                    )
+                ),
+
+                "description": (
+                    "Vehicle ownership and "
+                    "registration document "
+                    "issued by RTO."
+                ),
+            },
+
+            # -------------------------------------------------
+            # 3. INSURANCE
+            # -------------------------------------------------
+
+            {
+                "name": (
+                    "Commercial Insurance"
+                ),
+
+                "short_name": (
+                    "Commercial Insurance"
+                ),
+
+                "passed": (
+                    every_vehicle_has(
+                        "insurance"
+                    )
+                ),
+
+                "description": (
+                    "Valid commercial "
+                    "motor insurance."
+                ),
+            },
+
+            # -------------------------------------------------
+            # 4. PERMIT
+            # -------------------------------------------------
+
+            {
+                "name": (
+                    "Commercial Permit"
+                ),
+
+                "short_name": (
+                    "Commercial Permit"
+                ),
+
+                "passed": (
+                    every_vehicle_has(
+                        "permit"
+                    )
+                ),
+
+                "description": (
+                    "Valid commercial "
+                    "transport permit."
+                ),
+            },
+
+            # -------------------------------------------------
+            # 5. FITNESS
+            # -------------------------------------------------
+
+            {
+                "name": (
+                    "Fitness Certificate (FC)"
+                ),
+
+                "short_name": (
+                    "Fitness Certificate (FC)"
+                ),
+
+                "passed": (
+                    every_vehicle_has(
+                        "fitness"
+                    )
+                ),
+
+                "description": (
+                    "Valid vehicle fitness "
+                    "certificate."
+                ),
+            },
+
+            # -------------------------------------------------
+            # 6. PUC
+            # -------------------------------------------------
+
+            {
+                "name": (
+                    "Pollution Under "
+                    "Control (PUC)"
+                ),
+
+                "short_name": (
+                    "Pollution Under "
+                    "Control (PUC)"
+                ),
+
+                "passed": (
+                    every_vehicle_has(
+                        "puc"
+                    )
+                ),
+
+                "description": (
+                    "Valid Pollution Under "
+                    "Control certificate."
+                ),
+            },
+        ]
+
+        # =====================================================
+        # COMPLIANCE SCORE
+        # =====================================================
+
+        passed_checks = sum(
+            1
+            for item
+            in compliance_checks
+            if item["passed"]
+        )
+
+        total_checks = len(
+            compliance_checks
+        )
+
+        compliance_percentage = int(
+            (
+                passed_checks
+                / total_checks
+            )
+            * 100
+        )
+
+        compliance_complete = (
+            passed_checks
+            == total_checks
+            and has_vehicles
+        )
+
+        # =====================================================
+        # DRIVER STATUS
+        # =====================================================
+
+        driver_status = str(
+            driver.status
+            or "off"
+        ).upper()
+
+        # =====================================================
+        # SELECTED DRIVER DATA
+        # =====================================================
+
+        selected_data = {
+
+            "id": driver.pk,
+
+            # Actual User.full_name
+            "name": name,
+
+            # Actual User.phone_number
+            "phone": phone,
+
+            # KYC
+            "status": doc_status,
+
+            # Driver operational status
+            "driver_status": driver_status,
+
+            # Rating
+            "rating": (
+                driver.ratings
+                if driver.ratings
+                is not None
+                else 0
+            ),
+
+            # Trips
+            "total_trips": (
+                driver.total_trips
+                if driver.total_trips
+                is not None
+                else 0
+            ),
+
+            # Actual Driver.upi_id
+            "upi": (
+                driver.upi_id
+                or "Not Set"
+            ),
+
+            # Actual Driver.doc_rejection_reason
+            "rejection_reason": (
+                rejection_reason
+            ),
+
+            "rejection_date": (
+                format_date(
+                    rejection_date
+                )
+            ),
+
+            # -------------------------------------------------
+            # LICENSE FRONT
+            # -------------------------------------------------
+
+            "license_front": {
+
+                "present": (
+                    has_document(
+                        license_front
+                    )
+                ),
+
+                "url": (
+                    document_url(
+                        license_front
+                    )
+                ),
+            },
+
+            # -------------------------------------------------
+            # LICENSE BACK
+            # -------------------------------------------------
+
+            "license_back": {
+
+                "present": (
+                    has_document(
+                        license_back
+                    )
+                ),
+
+                "url": (
+                    document_url(
+                        license_back
+                    )
+                ),
+            },
+
+            # -------------------------------------------------
+            # LICENSE EXPIRY
+            # -------------------------------------------------
+
+            "license_expiry": (
+                format_date(
+                    license_expiry
+                )
+            ),
+
+            # -------------------------------------------------
+            # VEHICLES
+            # -------------------------------------------------
+
+            "vehicles": (
+                vehicle_details
+            ),
+
+            # -------------------------------------------------
+            # COMPLIANCE
+            # -------------------------------------------------
+
+            "compliance_checks": (
+                compliance_checks
+            ),
+
+            "passed_checks": (
+                passed_checks
+            ),
+
+            "total_checks": (
+                total_checks
+            ),
+
+            "compliance_percentage": (
+                compliance_percentage
+            ),
+
+            "compliance_complete": (
+                compliance_complete
+            ),
         }
 
+    # =========================================================
+    # FINAL CONTEXT
+    # =========================================================
+
     context = {
+
+        # Driver queue
+        "drivers": driver_cards,
+
+        # Pagination
         "page_obj": page_obj,
-        "drivers": drivers,
-        "selected_driver": selected_driver,
-        "compliance": compliance_data,
+
+        "paginator": paginator,
+
+        # Current filters
+        "status": status_filter,
+
         "search": search,
-        "status_filter": status,
-        "pending_reviews_count": pending_reviews_count,
-        "approved_count": approved_count,
-        "rejected_count": rejected_count,
-        "total_count": total_count,
+
+        # Selected driver
+        "selected_driver": (
+            selected_driver
+        ),
+
+        "selected": selected_data,
+
+        # Counts
+        "pending_count": (
+            pending_count
+        ),
+
+        "approved_count": (
+            approved_count
+        ),
+
+        "rejected_count": (
+            rejected_count
+        ),
+
+        "total_drivers": (
+            total_drivers
+        ),
     }
 
     return render(
@@ -3235,12 +4697,33 @@ def global_search_api(request: HttpRequest) -> JsonResponse:
 
     return JsonResponse({"status": "ok", "results": results[:20]})
 
-
 @admin_required
 @require_http_methods(["GET", "POST"])
-def driver_profile(request: HttpRequest, driver_id: int) -> HttpResponse:
+def driver_profile(request, driver_id):
+    """
+    Admin Driver Profile.
+
+    Shows:
+    - Driver information
+    - Vehicle information
+    - Trip performance
+    - Revenue and distance
+    - Cancellation discipline
+    - Dispatch/acceptance timing
+    - Fatigue and shift duty
+    - Bank account
+    - UPI
+    - Recent driver cancellations
+    - Trip history
+    - Verification status
+
+    POST:
+    - block
+    - unblock
+    """
+
     # =========================================================
-    # GET DRIVER
+    # DRIVER
     # =========================================================
     driver = get_object_or_404(
         Driver.objects.select_related(
@@ -3250,159 +4733,86 @@ def driver_profile(request: HttpRequest, driver_id: int) -> HttpResponse:
         ),
         id=driver_id,
     )
+
     # =========================================================
     # BLOCK / UNBLOCK DRIVER
     # =========================================================
     if request.method == "POST":
-        is_json_request = (
-            request.content_type
-            and "application/json" in request.content_type
-        )
-        # -----------------------------------------------------
-        # Get action
-        # -----------------------------------------------------
-        try:
-            if is_json_request:
-                data = json.loads(
-                    request.body.decode("utf-8") or "{}"
-                )
-                action = data.get("action")
-            else:
-                action = request.POST.get("action")
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return JsonResponse(
-                {
-                    "status": "error",
-                    "error": {
-                        "code": "INVALID_JSON",
-                        "message": "Invalid request data.",
-                        "details": {
-                            "field": "general",
-                            "issue": "Invalid JSON body",
-                        },
-                    },
-                },
-                status=400,
-            )
-        # -----------------------------------------------------
-        # Validate action
-        # -----------------------------------------------------
-        if action not in ["block", "unblock"]:
-            if is_json_request:
-                return JsonResponse(
-                    {
-                        "status": "error",
-                        "error": {
-                            "code": "INVALID_ACTION",
-                            "message": "Invalid driver action.",
-                            "details": {
-                                "field": "action",
-                                "issue": "Action must be block or unblock",
-                            },
-                        },
-                    },
-                    status=400,
-                )
-            return redirect(
-                "driver_profile",
-                driver_id=driver_id,
-            )
-        # -----------------------------------------------------
-        # Update driver status
-        # -----------------------------------------------------
-        try:
-            if action == "block":
-                driver.status = "blocked"
-                driver.save(
-                    update_fields=["status"]
-                )
-                message = "Driver blocked successfully."
-            else:
-                driver.status = "active"
-                driver.save(
-                    update_fields=["status"]
-                )
-                message = "Driver unblocked successfully."
-            # -------------------------------------------------
-            # JSON response
-            # -------------------------------------------------
-            if is_json_request:
-                return JsonResponse(
-                    {
-                        "status": "success",
-                        "message": message,
-                        "data": {
-                            "driver_id": driver.id,
-                            "action": action,
-                            "status": driver.status,
-                        },
-                    }
-                )
-            # -------------------------------------------------
-            # Normal form request
-            # -------------------------------------------------
-            return redirect(
-                "driver_profile",
-                driver_id=driver_id,
-            )
-        except Exception as exc:
-            logger.exception(
-                "Failed to %s driver %s",
-                action,
-                driver.id,
-            )
-            if is_json_request:
-                return JsonResponse(
-                    {
-                        "status": "error",
-                        "error": {
-                            "code": "INTERNAL_ERROR",
-                            "message": "Unable to update driver status.",
-                            "details": {
-                                "field": "general",
-                                "issue": str(exc),
-                            },
-                        },
-                    },
-                    status=500,
-                )
-            return redirect(
-                "driver_profile",
-                driver_id=driver_id,
-            )
+        action = request.POST.get("action")
+
+        if action == "block":
+            driver.status = "blocked"
+            driver.save(update_fields=["status"])
+
+            return redirect("driver_profile", driver_id=driver.id)
+
+        elif action == "unblock":
+            driver.status = "active"
+            driver.save(update_fields=["status"])
+
+            return redirect("driver_profile", driver_id=driver.id)
+
     # =========================================================
-    # DRIVER STATUS
+    # DRIVER / USER DETAILS
     # =========================================================
-    driver_status = str(
-        getattr(driver, "status", "") or ""
-    ).lower()
-    is_blocked = driver_status == "blocked"
-    # =========================================================
-    # DRIVER USER INFORMATION
-    # =========================================================
-    user = getattr(
-        driver,
-        "user_id",
-        None,
-    )
+    user = getattr(driver, "user_id", None)
+
+    # ---------------------------------------------------------
+    # DRIVER NAME
+    # ---------------------------------------------------------
     driver_name = ""
-    phone_number = ""
-    email = ""
+
     if user:
+        try:
+            full_name_from_user = user.get_full_name()
+        except Exception:
+            full_name_from_user = ""
+
         driver_name = (
-            getattr(user, "full_name", "")
+            full_name_from_user
+            or getattr(user, "username", "")
+            or getattr(user, "first_name", "")
             or ""
-        )
-        phone_number = (
-            getattr(user, "phone_number", "")
+        ).strip()
+
+    # Fallback to Driver model fields
+    if not driver_name:
+        driver_name = (
+            getattr(driver, "name", "")
+            or getattr(driver, "full_name", "")
+            or getattr(driver, "driver_name", "")
             or ""
-        )
-        email = (
-            getattr(user, "email", "")
-            or ""
-        )
+        ).strip()
+
+    # Final fallback
+    if not driver_name:
+        driver_name = "Unknown Driver"
+
+    # Use the SAME value everywhere
+    full_name = driver_name
+
+    # ---------------------------------------------------------
+    # PHONE
+    # ---------------------------------------------------------
+    phone_number = (
+        getattr(user, "phone_number", None)
+        or getattr(user, "phone", None)
+        or getattr(driver, "phone_number", None)
+        or getattr(driver, "phone", None)
+        or "—"
+    )
+
+    # ---------------------------------------------------------
+    # EMAIL
+    # ---------------------------------------------------------
+    email = (
+        getattr(user, "email", None)
+        or getattr(driver, "email", None)
+        or "—"
+    )
+
     # =========================================================
-    # DRIVER TRIPS
+    # TRIPS
     # =========================================================
     trips_qs = (
         Trip.objects
@@ -3415,27 +4825,17 @@ def driver_profile(request: HttpRequest, driver_id: int) -> HttpResponse:
         )
         .order_by("-requested_at")
     )
-    # ---------------------------------------------------------
-    # All trips
-    # ---------------------------------------------------------
+
     total_trips = trips_qs.count()
-    # ---------------------------------------------------------
-    # Completed trips
-    # ---------------------------------------------------------
+
     completed_trips = trips_qs.filter(
         status_id__status_code="completed"
     ).count()
-    # ---------------------------------------------------------
-    # Cancelled trips
-    # ---------------------------------------------------------
+
     cancelled_trips = trips_qs.filter(
         status_id__status_code="cancelled"
     ).count()
-    # ---------------------------------------------------------
-    # Active trips
-    #
-    # requested / accepted / reached / in_progress
-    # ---------------------------------------------------------
+
     active_trips = trips_qs.filter(
         status_id__status_code__in=[
             "requested",
@@ -3444,63 +4844,53 @@ def driver_profile(request: HttpRequest, driver_id: int) -> HttpResponse:
             "in_progress",
         ]
     ).count()
+
     # =========================================================
     # DRIVER RATING
     # =========================================================
-    rating_value = (
-        driver.ratings
-        if getattr(driver, "ratings", None) is not None
-        else Decimal("0.00")
-    )
-    try:
-        rating_value = Decimal(str(rating_value))
-    except (TypeError, ValueError):
-        rating_value = Decimal("0.00")
+    rating = getattr(driver, "ratings", None)
+
+    if rating is None:
+        rating = 0
+
     # =========================================================
     # REVENUE
-    #
-    # Use final_fare for completed trips.
-    # If final_fare is NULL, use estimated_fare.
     # =========================================================
-    revenue_data = trips_qs.filter(
-        status_id__status_code="completed"
-    ).aggregate(
-        total_revenue=Sum("final_fare")
+    revenue_result = (
+        trips_qs
+        .filter(status_id__status_code="completed")
+        .aggregate(
+            total=Sum("final_fare")
+        )
     )
-    total_revenue = (
-        revenue_data.get("total_revenue")
-        or Decimal("0.00")
-    )
+
+    total_revenue = revenue_result.get("total") or 0
+
     # =========================================================
-    # TOTAL DISTANCE
-    #
-    # Prefer actual_distance_km.
+    # DISTANCE
     # =========================================================
-    distance_data = trips_qs.aggregate(
-        total_distance=Sum("actual_distance_km")
+    distance_result = (
+        trips_qs
+        .aggregate(
+            total=Sum("actual_distance_km")
+        )
     )
-    total_distance = (
-        distance_data.get("total_distance")
-        or Decimal("0.00")
-    )
+
+    total_distance = distance_result.get("total") or 0
+
     # =========================================================
-    # VEHICLE
-    #
-    # First use Driver.active_vehicle.
-    #
-    # If active_vehicle_id is NULL, look for an active vehicle
-    # belonging to this driver.
-    #
-    # This handles your current Driver #3 data:
-    #
-    # Driver #3 -> active_vehicle_id = NULL
-    # Vehicle #2 -> driver_id = 3, status = active
+    # VEHICLE INFORMATION
     # =========================================================
-    vehicle = getattr(
-        driver,
-        "active_vehicle",
-        None,
-    )
+    vehicle = None
+
+    try:
+        vehicle = driver.active_vehicle
+    except Exception:
+        vehicle = None
+
+    # Driver #3 currently has active Vehicle #2,
+    # but active_vehicle can be None.
+    # Therefore use direct Vehicle lookup as fallback.
     if vehicle is None:
         vehicle = (
             Vehicle.objects
@@ -3509,159 +4899,631 @@ def driver_profile(request: HttpRequest, driver_id: int) -> HttpResponse:
                 status="active",
             )
             .select_related("vehicle_type_id")
-            .order_by("id")
+            .order_by("-id")
             .first()
         )
-    context = {
-        # =====================================================
-        # DRIVER
-        # =====================================================
-        "driver": driver,
-        "driver_id": driver.id,
-        "driver_status": driver_status,
-        "is_blocked": is_blocked,
-        "driver_name": driver_name,
-        "phone_number": phone_number,
-        "email": email,
-        # =====================================================
-        # APPROVAL / DOCUMENT
-        # =====================================================
-        "approved": bool(
-            getattr(
-                driver,
-                "approved",
-                False,
-            )
-        ),
-        "doc_status": getattr(
-            driver,
-            "doc_status",
-            "pending",
-        ),
-        "document_status": getattr(
-            driver,
-            "doc_status",
-            "pending",
-        ),
-        # =====================================================
-        # PERFORMANCE
-        # =====================================================
-        "total_trips": total_trips,
-        "completed_trips": completed_trips,
-        "cancelled_trips": cancelled_trips,
-        "active_trips": active_trips,
-        "rating": rating_value,
-        "total_revenue": total_revenue,
-        "total_distance": total_distance,
-        "trips": trips_qs[:50],
-    }
+
     # =========================================================
-    # VEHICLE INFORMATION
+    # VEHICLE DETAILS
     # =========================================================
-    context["vehicle"] = vehicle
+    vehicle_type = None
+    vehicle_number = None
+    vehicle_brand = None
+    vehicle_model = None
+    vehicle_color = None
+    vehicle_rc_doc = None
+    vehicle_pic = None
+
     if vehicle:
-        context["vehicle_id"] = getattr(
-            vehicle,
-            "id",
-            None,
-        )
-        context["vehicle_number"] = getattr(
-            vehicle,
-            "vehicle_number",
-            "",
-        )
-        context["vehicle_brand"] = getattr(
-            vehicle,
-            "brand",
-            "",
-        )
-        context["vehicle_model"] = getattr(
-            vehicle,
-            "model",
-            "",
-        )
-        context["vehicle_color"] = getattr(
-            vehicle,
-            "color",
-            "",
-        )
-        context["vehicle_year"] = getattr(
-            vehicle,
-            "year",
-            "",
-        )
-        context["vehicle_capacity"] = getattr(
-            vehicle,
-            "capacity",
-            "",
-        )
-        context["vehicle_status"] = getattr(
-            vehicle,
-            "status",
-            "",
-        )
-        # -----------------------------------------------------
-        # Vehicle Type
-        #
-        # Actual model:
-        #
-        # Vehicle.vehicle_type_id -> VehicleType
-        # VehicleType.type
-        # -----------------------------------------------------
-        vehicle_type = getattr(
+
+        vehicle_type_obj = getattr(
             vehicle,
             "vehicle_type_id",
             None,
         )
-        if vehicle_type:
-            context["vehicle_type"] = getattr(
-                vehicle_type,
-                "type",
-                "",
+
+        if vehicle_type_obj:
+            vehicle_type = (
+                getattr(
+                    vehicle_type_obj,
+                    "name",
+                    None,
+                )
+                or getattr(
+                    vehicle_type_obj,
+                    "type_name",
+                    None,
+                )
+                or str(vehicle_type_obj)
             )
-        else:
-            context["vehicle_type"] = ""
-        # -----------------------------------------------------
-        # RC document
-        #
-        # Actual model field is rc_doc
-        # -----------------------------------------------------
-        rc_value = getattr(
+
+        vehicle_number = getattr(
+            vehicle,
+            "vehicle_number",
+            None,
+        )
+
+        vehicle_brand = getattr(
+            vehicle,
+            "brand",
+            None,
+        )
+
+        vehicle_model = getattr(
+            vehicle,
+            "model",
+            None,
+        )
+
+        vehicle_color = getattr(
+            vehicle,
+            "color",
+            None,
+        )
+
+        vehicle_rc_doc = getattr(
             vehicle,
             "rc_doc",
             None,
         )
-        context["rc_available"] = bool(
-            rc_value
+
+        vehicle_pic = getattr(
+            vehicle,
+            "vehicle_pic",
+            None,
         )
-    else:
-        context.update(
-            {
-                "vehicle_id": None,
-                "vehicle_number": "",
-                "vehicle_type": "",
-                "vehicle_brand": "",
-                "vehicle_model": "",
-                "vehicle_color": "",
-                "vehicle_year": "",
-                "vehicle_capacity": "",
-                "vehicle_status": "",
-                "rc_available": False,
-            }
-        )
+
     # =========================================================
-    # OPTIONAL: DRIVER'S OWN total_trips FIELD
-    #
-    # Keep database value available to template if needed.
+    # DRIVER CANCELLATIONS
     # =========================================================
-    context["driver_total_trips"] = getattr(
-        driver,
-        "total_trips",
-        0,
+    cancellation_qs = (
+        DriverCancellation.objects
+        .filter(driver=driver)
+        .select_related("trip")
+        .order_by("-created_at")
     )
+
+    driver_cancellation_count = cancellation_qs.count()
+
     # =========================================================
-    # RENDER
+    # CANCELLATION RATE
     # =========================================================
+    if total_trips > 0:
+        cancellation_rate = (
+            driver_cancellation_count / total_trips
+        ) * 100
+    else:
+        cancellation_rate = 0
+
+    # =========================================================
+    # CANCELLATIONS IN LAST 24 HOURS
+    # =========================================================
+    now = timezone.now()
+
+    last_24_hours = now - timedelta(hours=24)
+
+    cancellations_24h = (
+        cancellation_qs
+        .filter(
+            created_at__gte=last_24_hours
+        )
+        .count()
+    )
+
+    # =========================================================
+    # RECENT CANCELLATIONS
+    # =========================================================
+    recent_cancellations = cancellation_qs[:10]
+
+    # =========================================================
+    # DISPATCH / ACCEPTANCE TIMING
+    # =========================================================
+    accepted_trips = trips_qs.filter(
+        accepted_at__isnull=False,
+        requested_at__isnull=False,
+    )
+
+    accepted_count = accepted_trips.count()
+
+    if total_trips > 0:
+        acceptance_rate = (
+            accepted_count / total_trips
+        ) * 100
+    else:
+        acceptance_rate = 0
+
+    acceptance_times = []
+
+    for trip in accepted_trips:
+
+        if trip.requested_at and trip.accepted_at:
+
+            response_seconds = (
+                trip.accepted_at
+                - trip.requested_at
+            ).total_seconds()
+
+            if response_seconds >= 0:
+                acceptance_times.append(
+                    response_seconds
+                )
+
+    if acceptance_times:
+
+        average_response_seconds = (
+            sum(acceptance_times)
+            / len(acceptance_times)
+        )
+
+        average_response_minutes = (
+            average_response_seconds / 60
+        )
+
+        acceptance_timing_available = True
+
+    else:
+
+        average_response_seconds = None
+        average_response_minutes = None
+        acceptance_timing_available = False
+
+    # =========================================================
+    # DRIVER SESSION / FATIGUE
+    # =========================================================
+    current_session = (
+        DriverSession.objects
+        .filter(
+            driver=driver,
+            ended_at__isnull=True,
+        )
+        .order_by("-started_at")
+        .first()
+    )
+
+    current_shift_hours = 0
+
+    if current_session and current_session.started_at:
+
+        current_shift_seconds = (
+            now
+            - current_session.started_at
+        ).total_seconds()
+
+        if current_shift_seconds < 0:
+            current_shift_seconds = 0
+
+        current_shift_hours = (
+            current_shift_seconds / 3600
+        )
+
+    # =========================================================
+    # ROLLING 24 HOUR DUTY
+    # =========================================================
+    duty_window_start = (
+        now - timedelta(hours=24)
+    )
+
+    sessions_24h = (
+        DriverSession.objects
+        .filter(
+            driver=driver,
+            started_at__lt=now,
+        )
+        .filter(
+            models.Q(
+                ended_at__isnull=True
+            )
+            |
+            models.Q(
+                ended_at__gte=duty_window_start
+            )
+        )
+        .order_by("started_at")
+    )
+
+    rolling_duty_seconds = 0
+
+    for session in sessions_24h:
+
+        if not session.started_at:
+            continue
+
+        session_start = session.started_at
+
+        if session_start < duty_window_start:
+            session_start = duty_window_start
+
+        session_end = (
+            session.ended_at
+            or now
+        )
+
+        if session_end > now:
+            session_end = now
+
+        if session_end > session_start:
+
+            rolling_duty_seconds += (
+                session_end
+                - session_start
+            ).total_seconds()
+
+    rolling_24h_duty_hours = (
+        rolling_duty_seconds / 3600
+    )
+
+    # =========================================================
+    # FATIGUE STATUS
+    # =========================================================
+    if rolling_24h_duty_hours >= 12:
+
+        fatigue_status = "Lockout Required"
+
+    elif rolling_24h_duty_hours >= 10:
+
+        fatigue_status = "High"
+
+    elif rolling_24h_duty_hours >= 8:
+
+        fatigue_status = "Warning"
+
+    else:
+
+        fatigue_status = "Normal"
+
+    # =========================================================
+    # FATIGUE LOCKOUT
+    # =========================================================
+    fatigue_lockout_until = getattr(
+        driver,
+        "fatigue_lockout_until",
+        None,
+    )
+
+    if fatigue_lockout_until:
+
+        if fatigue_lockout_until > now:
+
+            fatigue_status = "Locked"
+
+        else:
+
+            fatigue_lockout_until = None
+
+    # =========================================================
+    # BANK ACCOUNT
+    # =========================================================
+    bank_account = None
+
+    try:
+
+        bank_account = driver.bank_account
+
+    except Exception:
+
+        bank_account = (
+            DriverBankAccount.objects
+            .filter(driver=driver)
+            .first()
+        )
+
+    bank_configured = False
+    bank_name = None
+    bank_account_number = None
+    bank_ifsc = None
+    masked_bank_account = None
+
+    if bank_account:
+
+        bank_name = getattr(
+            bank_account,
+            "bank_name",
+            None,
+        )
+
+        bank_account_number = getattr(
+            bank_account,
+            "account_number",
+            None,
+        )
+
+        bank_ifsc = getattr(
+            bank_account,
+            "ifsc_code",
+            None,
+        )
+
+        if bank_account_number:
+
+            bank_configured = True
+
+            account_string = str(
+                bank_account_number
+            )
+
+            if len(account_string) > 4:
+
+                masked_bank_account = (
+                    "*"
+                    * (len(account_string) - 4)
+                    + account_string[-4:]
+                )
+
+            else:
+
+                masked_bank_account = account_string
+
+    # =========================================================
+    # UPI
+    # =========================================================
+    upi_contact = None
+
+    try:
+
+        upi_contact = driver.upi_contact
+
+    except Exception:
+
+        upi_contact = (
+            DriverUPIContact.objects
+            .filter(
+                driver=driver,
+                is_active=True,
+            )
+            .first()
+        )
+
+    upi_configured = False
+    upi_id = None
+
+    if upi_contact and getattr(
+        upi_contact,
+        "is_active",
+        True,
+    ):
+
+        upi_id = getattr(
+            upi_contact,
+            "upi_id",
+            None,
+        )
+
+        if upi_id:
+            upi_configured = True
+
+    # =========================================================
+    # DRIVER STATUS
+    # =========================================================
+    driver_status = getattr(
+        driver,
+        "status",
+        None,
+    )
+
+    driver_doc_status = getattr(
+        driver,
+        "doc_status",
+        None,
+    )
+
+    # =========================================================
+    # VERIFICATION
+    # =========================================================
+    approval_status = driver_status
+
+    # =========================================================
+    # TRIP HISTORY
+    # =========================================================
+    recent_trips = trips_qs[:10]
+
+    # =========================================================
+    # TEMPLATE ALIASES
+    # =========================================================
+    is_blocked = (
+        driver_status == "blocked"
+    )
+
+    approved = (
+        driver_doc_status == "approved"
+        or driver_status == "approved"
+    )
+
+    document_status = driver_doc_status
+
+    # Fatigue aliases used by template
+    fatigue_locked = bool(
+        fatigue_lockout_until
+        and fatigue_lockout_until > now
+    )
+
+    # =========================================================
+    # CONTEXT
+    # =========================================================
+    context = {
+
+        # -----------------------------------------------------
+        # DRIVER
+        # -----------------------------------------------------
+        "driver": driver,
+        "user": user,
+
+        # IMPORTANT:
+        # All three point to the SAME actual driver name.
+        "driver_name": driver_name,
+        "full_name": driver_name,
+        "name": driver_name,
+
+        "phone_number": phone_number,
+        "email": email,
+
+        # -----------------------------------------------------
+        # DRIVER STATUS
+        # -----------------------------------------------------
+        "driver_status": driver_status,
+
+        "driver_doc_status": driver_doc_status,
+
+        "doc_status": driver_doc_status,
+
+        "document_status": document_status,
+
+        "approval_status": approval_status,
+
+        "approved": approved,
+
+        "is_blocked": is_blocked,
+
+        # -----------------------------------------------------
+        # VEHICLE
+        # -----------------------------------------------------
+        "vehicle": vehicle,
+
+        "vehicle_type": vehicle_type,
+
+        "vehicle_number": vehicle_number,
+
+        "vehicle_brand": vehicle_brand,
+
+        "vehicle_model": vehicle_model,
+
+        "vehicle_color": vehicle_color,
+
+        "vehicle_rc_doc": vehicle_rc_doc,
+
+        "vehicle_pic": vehicle_pic,
+
+        # -----------------------------------------------------
+        # PERFORMANCE
+        # -----------------------------------------------------
+        "total_trips": total_trips,
+
+        "completed_trips": completed_trips,
+
+        "cancelled_trips": cancelled_trips,
+
+        "active_trips": active_trips,
+
+        "rating": rating,
+
+        # -----------------------------------------------------
+        # REVENUE / DISTANCE
+        # -----------------------------------------------------
+        "total_revenue": total_revenue,
+
+        "total_distance": total_distance,
+
+        # -----------------------------------------------------
+        # CANCELLATION
+        # -----------------------------------------------------
+        "driver_cancellation_count":
+            driver_cancellation_count,
+
+        "total_driver_cancellations":
+            driver_cancellation_count,
+
+        "cancellation_rate":
+            cancellation_rate,
+
+        "cancellations_24h":
+            cancellations_24h,
+
+        "cancellation_count_24h":
+            cancellations_24h,
+
+        "recent_cancellations":
+            recent_cancellations,
+
+        # -----------------------------------------------------
+        # DISPATCH / ACCEPTANCE
+        # -----------------------------------------------------
+        "accepted_count":
+            accepted_count,
+
+        "acceptance_rate":
+            acceptance_rate,
+
+        "average_response_seconds":
+            average_response_seconds,
+
+        "average_response_minutes":
+            average_response_minutes,
+
+        "average_dispatch_response_minutes":
+            average_response_minutes,
+
+        "acceptance_timing_available":
+            acceptance_timing_available,
+
+        "dispatch_response_available":
+            acceptance_timing_available,
+
+        # -----------------------------------------------------
+        # SESSION / FATIGUE
+        # -----------------------------------------------------
+        "current_session":
+            current_session,
+
+        "current_shift_hours":
+            current_shift_hours,
+
+        "rolling_24h_duty_hours":
+            rolling_24h_duty_hours,
+
+        "duty_hours_24h":
+            rolling_24h_duty_hours,
+
+        "fatigue_status":
+            fatigue_status,
+
+        "fatigue_lockout_until":
+            fatigue_lockout_until,
+
+        "fatigue_locked":
+            fatigue_locked,
+
+        # -----------------------------------------------------
+        # BANK
+        # -----------------------------------------------------
+        "bank_account":
+            bank_account,
+
+        "bank_configured":
+            bank_configured,
+
+        "bank_name":
+            bank_name,
+
+        "bank_account_number":
+            bank_account_number,
+
+        "masked_bank_account":
+            masked_bank_account,
+
+        "bank_ifsc":
+            bank_ifsc,
+
+        # -----------------------------------------------------
+        # UPI
+        # -----------------------------------------------------
+        "upi_contact":
+            upi_contact,
+
+        "upi_configured":
+            upi_configured,
+
+        "upi_id":
+            upi_id,
+
+        # -----------------------------------------------------
+        # TRIPS
+        # -----------------------------------------------------
+        "recent_trips":
+            recent_trips,
+
+        "trips":
+            recent_trips,
+    }
+
     return render(
         request,
         "admin_pages/driver_profile.html",

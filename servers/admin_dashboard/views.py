@@ -4788,8 +4788,6 @@ def driver_profile(request, driver_id):
     if not driver_name:
         driver_name = "Unknown Driver"
 
-    # Use the SAME value everywhere
-    full_name = driver_name
 
     # ---------------------------------------------------------
     # PHONE

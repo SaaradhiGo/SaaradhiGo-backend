@@ -311,97 +311,148 @@ def verify_payment(request):
         'amount': str(payment.amount),
         'gateway': gateway.get_name(),
     }, status.HTTP_200_OK)
-
-
 @csrf_exempt
 @require_POST
 def payment_webhook(request):
     """
     Payment gateway webhook endpoint.
     Handles webhooks from Cashfree.
-    POST-only (enforced by @require_POST so GETs from probes return
-    405 not 200). No JWT auth — verified via gateway signature header.
+    POST-only. No JWT auth — verified via gateway signature header.
     """
     if request.method != 'POST':
-        return JsonResponse({'error': 'Method not allowed'}, status=405)
+        return JsonResponse(
+            {'error': 'Method not allowed'},
+            status=405,
+        )
 
     body = request.body
-    
+
     # Cashfree V3 uses x-webhook-signature and x-webhook-timestamp
-    signature = request.headers.get('x-webhook-signature') or request.headers.get('X-Cashfree-Signature')
+    signature = (
+        request.headers.get('x-webhook-signature')
+        or request.headers.get('X-Cashfree-Signature')
+    )
     timestamp = request.headers.get('x-webhook-timestamp')
-    
+
     # Determine gateway from headers
     gateway_name = None
     if signature:
         gateway_name = PaymentGateway.CASHFREE
-    
+
     if not gateway_name:
-        return JsonResponse({'error': 'Missing signature header'}, status=400)
+        return JsonResponse(
+            {'error': 'Missing signature header'},
+            status=400,
+        )
 
     # Get payment gateway
     gateway = get_payment_gateway(gateway_name)
     if not gateway:
-        return JsonResponse({'error': f'Gateway {gateway_name} not configured'}, status=503)
+        return JsonResponse(
+            {
+                'error': (
+                    f'Gateway {gateway_name} '
+                    'not configured'
+                )
+            },
+            status=503,
+        )
 
     # Verify webhook signature
-    if not gateway.verify_webhook_signature(body, signature, timestamp):
-        logger.warning(f"Webhook signature verification failed for {gateway_name}")
-        return JsonResponse({'error': 'Invalid signature'}, status=400)
+    if not gateway.verify_webhook_signature(
+        body,
+        signature,
+        timestamp,
+    ):
+        logger.warning(
+            f"Webhook signature verification failed "
+            f"for {gateway_name}"
+        )
+        return JsonResponse(
+            {'error': 'Invalid signature'},
+            status=400,
+        )
 
     try:
         payload = json.loads(body)
 
-        # Idempotency gate. The signature is a function of (body, timestamp,
-        # secret) and is unique per delivery, so it doubles as a perfect
-        # dedupe key for both legitimate retries and forged replays.
-        #
-        # The INSERT runs inside `transaction.atomic()` so an IntegrityError
-        # from the unique constraint rolls back just the savepoint instead
-        # of poisoning the surrounding transaction. Without the explicit
-        # savepoint, Django's autocommit hides the bug in production but
-        # any caller that wraps webhook handling in a transaction (and the
-        # test runner does) sees a TransactionManagementError on the next
-        # query.
-        event_type = (payload.get('type') or payload.get('event') or '')[:64]
+        # ---------------------------------------------------------
+        # IDEMPOTENCY / WEBHOOK DEDUPLICATION
+        # ---------------------------------------------------------
+        event_type = (
+            payload.get('type')
+            or payload.get('event')
+            or ''
+        )[:64]
+
+        dedupe_key = signature[:512]
+
         try:
             with transaction.atomic():
                 WebhookEvent.objects.create(
                     gateway=gateway_name,
-                    dedupe_key=signature[:512],
+                    dedupe_key=dedupe_key,
                     event_type=event_type,
                     raw_payload=payload,
                 )
         except IntegrityError:
             logger.info(
-                f"Webhook deduplicated (gateway={gateway_name}, "
-                f"sig={signature[:16]}…)"
+                f"Payment webhook deduplicated "
+                f"(gateway={gateway_name}, "
+                f"sig={signature[:16]}...)"
             )
-            return JsonResponse({'status': 'already_processed'}, status=200)
+            return JsonResponse(
+                {'status': 'already_processed'},
+                status=200,
+            )
 
-        # Handle Cashfree webhook payload
-        response = _handle_cashfree_webhook(payload, gateway)
+        # ---------------------------------------------------------
+        # PROCESS PAYMENT WEBHOOK
+        # ---------------------------------------------------------
+        response = _handle_cashfree_webhook(
+            payload,
+            gateway,
+        )
 
-        # Mark this event as processed for observability.
+        # ---------------------------------------------------------
+        # MARK WEBHOOK AS PROCESSED
+        # ---------------------------------------------------------
         try:
             WebhookEvent.objects.filter(
-                gateway=gateway_name, dedupe_key=signature[:512]
+                gateway=gateway_name,
+                dedupe_key=dedupe_key,
             ).update(
                 processed_at=timezone.now(),
-                result='ok' if response.status_code == 200 else 'error',
+                result=(
+                    'ok'
+                    if response.status_code == 200
+                    else 'error'
+                ),
             )
         except Exception:
+            # Observability failure must not turn a processed
+            # payment into a 500 response.
             pass
 
         return response
 
     except (json.JSONDecodeError, KeyError) as e:
-        logger.error(f"Webhook: Invalid payload: {e}")
-        return JsonResponse({'error': 'Invalid payload'}, status=400)
-    except Exception as e:
-        logger.error(f"Webhook: Error processing: {e}")
-        return JsonResponse({'error': 'Internal error'}, status=500)
+        logger.error(
+            f"Webhook: Invalid payload: {e}"
+        )
+        return JsonResponse(
+            {'error': 'Invalid payload'},
+            status=400,
+        )
 
+    except Exception as e:
+        logger.error(
+            f"Webhook: Error processing: {e}"
+        )
+        return JsonResponse(
+            {'error': 'Internal error'},
+            status=500,
+        )
 
 def _handle_cashfree_webhook(payload, gateway):
     """Handle Cashfree webhook payload."""
@@ -619,7 +670,6 @@ def _handle_cashfree_webhook(payload, gateway):
     logger.info(f"Cashfree Webhook: Received event {event_type or payload.get('event')}, ignoring")
     return JsonResponse({'status': 'ok'}, status=200)
 
-
 @csrf_exempt
 @require_POST
 def payout_webhook(request):
@@ -629,179 +679,595 @@ def payout_webhook(request):
     POST-only. No JWT auth — verified via gateway signature header.
     """
     if request.method != 'POST':
-        return JsonResponse({'error': 'Method not allowed'}, status=405)
+        return JsonResponse(
+            {'error': 'Method not allowed'},
+            status=405,
+        )
 
     body = request.body
-    
+
     # Cashfree V3 uses x-webhook-signature and x-webhook-timestamp
-    signature = request.headers.get('x-webhook-signature') or request.headers.get('X-Cashfree-Signature')
+    signature = (
+        request.headers.get('x-webhook-signature')
+        or request.headers.get('X-Cashfree-Signature')
+    )
     timestamp = request.headers.get('x-webhook-timestamp')
-    
+
     # Determine gateway from headers
     gateway_name = None
     if signature:
         gateway_name = PaymentGateway.CASHFREE
-    
+
     if not gateway_name:
-        return JsonResponse({'error': 'Missing signature header'}, status=400)
+        return JsonResponse(
+            {'error': 'Missing signature header'},
+            status=400,
+        )
 
     # Get payment gateway for payouts
     gateway = get_payment_gateway_for_payouts()
     if not gateway:
-        return JsonResponse({'error': f'Gateway {gateway_name} not configured'}, status=503)
+        return JsonResponse(
+            {
+                'error': (
+                    f'Gateway {gateway_name} '
+                    'not configured'
+                )
+            },
+            status=503,
+        )
 
     # Verify webhook signature
-    if not gateway.verify_webhook_signature(body, signature, timestamp):
-        logger.warning(f"Payout webhook signature verification failed for {gateway_name}")
-        return JsonResponse({'error': 'Invalid signature'}, status=400)
+    if not gateway.verify_webhook_signature(
+        body,
+        signature,
+        timestamp,
+    ):
+        logger.warning(
+            f"Payout webhook signature verification failed "
+            f"for {gateway_name}"
+        )
+        return JsonResponse(
+            {'error': 'Invalid signature'},
+            status=400,
+        )
 
     try:
         payload = json.loads(body)
-        
-        # Handle Cashfree payout webhook payload
-        return _handle_cashfree_payout_webhook(payload, gateway)
+
+        # ---------------------------------------------------------
+        # IDEMPOTENCY / WEBHOOK DEDUPLICATION
+        # ---------------------------------------------------------
+        event_type = (
+            payload.get('type')
+            or payload.get('event')
+            or ''
+        )[:64]
+
+        dedupe_key = signature[:512]
+
+        try:
+            with transaction.atomic():
+                WebhookEvent.objects.create(
+                    gateway=gateway_name,
+                    dedupe_key=dedupe_key,
+                    event_type=event_type,
+                    raw_payload=payload,
+                )
+        except IntegrityError:
+            logger.info(
+                f"Payout webhook deduplicated "
+                f"(gateway={gateway_name}, "
+                f"sig={signature[:16]}...)"
+            )
+            return JsonResponse(
+                {'status': 'already_processed'},
+                status=200,
+            )
+
+        # ---------------------------------------------------------
+        # PROCESS PAYOUT WEBHOOK
+        # ---------------------------------------------------------
+        response = _handle_cashfree_payout_webhook(
+            payload,
+            gateway,
+        )
+
+        # ---------------------------------------------------------
+        # MARK WEBHOOK AS PROCESSED
+        # ---------------------------------------------------------
+        try:
+            WebhookEvent.objects.filter(
+                gateway=gateway_name,
+                dedupe_key=dedupe_key,
+            ).update(
+                processed_at=timezone.now(),
+                result=(
+                    'ok'
+                    if response.status_code == 200
+                    else 'error'
+                ),
+            )
+        except Exception:
+            # Observability failure must not turn a processed
+            # payout into a 500 response.
+            pass
+
+        return response
 
     except (json.JSONDecodeError, KeyError) as e:
-        logger.error(f"Payout webhook: Invalid payload: {e}")
-        return JsonResponse({'error': 'Invalid payload'}, status=400)
-    except Exception as e:
-        logger.error(f"Payout webhook: Error processing: {e}")
-        return JsonResponse({'error': 'Internal error'}, status=500)
+        logger.error(
+            f"Payout webhook: Invalid payload: {e}"
+        )
+        return JsonResponse(
+            {'error': 'Invalid payload'},
+            status=400,
+        )
 
+    except Exception as e:
+        logger.error(
+            f"Payout webhook: Error processing: {e}"
+        )
+        return JsonResponse(
+            {'error': 'Internal error'},
+            status=500,
+        )
 
 def _handle_cashfree_payout_webhook(payload, gateway):
-    """Handle Cashfree payout webhook payload."""
-    event = payload.get('event', '')
-    # Extract payout IDs (supporting both V2 and V3 structures)
-    payout_id = payload.get('transfer_id') or payload.get('payoutId')
-    reference_id = payload.get('cf_transfer_id') or payload.get('referenceId')
-    status = payload.get('status')
-    failure_reason = payload.get('failureReason', '')
-    
-    logger.info(f"Cashfree Payout Webhook: Received event {event} for payout {payout_id}, status: {status}")
-    
-    # Import models here to avoid circular imports
-    from servers.driver.models import WithdrawalRequest
-    from servers.driver.services import trigger_payout_creation
-    
-    if not payout_id:
-        logger.warning("Cashfree Payout Webhook: No payout_id in payload")
-        return JsonResponse({'status': 'skipped', 'reason': 'no payout_id'}, status=200)
-    
-    # Find withdrawal request by payout_reference_id (stores Cashfree payout ID)
-    withdrawal = WithdrawalRequest.objects.filter(payout_reference_id=payout_id).first()
-    if not withdrawal:
-        logger.warning(f"Cashfree Payout Webhook: No withdrawal found for payout_id {payout_id}")
-        return JsonResponse({'status': 'skipped', 'reason': 'withdrawal not found'}, status=200)
-    
-    # Check if already processed (idempotency)
-    if withdrawal.payout_status == status and withdrawal.status == 'completed':
-        logger.info(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} already processed with status {status}")
-        return JsonResponse({'status': 'already_processed'}, status=200)
-    
-    # Handle payout events
-    if event == 'TRANSFER_SUCCESS' or event == 'PAYOUT_SUCCESS':
-        with transaction.atomic():
-            withdrawal.status = 'completed'
-            withdrawal.payout_status = status if status else 'success'
-            withdrawal.save(update_fields=['status', 'payout_status'])
+    """Handle Cashfree payout webhook payload safely and idempotently."""
 
-            # Stamp last_withdrawal_at on the driver ONLY now — at confirmed
-            # TRANSFER_SUCCESS. trigger_payout_creation used to set this at
-            # request time, which meant a failed payout still blocked the
-            # driver from new withdrawals for 7 days even though no money
-            # moved. Audit M8.
+    event = payload.get("event", "")
+
+    # Support Cashfree payload variations.
+    payout_id = payload.get("transfer_id") or payload.get("payoutId")
+    reference_id = payload.get("cf_transfer_id") or payload.get("referenceId")
+    status = payload.get("status")
+    failure_reason = payload.get("failureReason", "")
+
+    logger.info(
+        "Cashfree Payout Webhook: event=%s payout_id=%s status=%s",
+        event,
+        payout_id,
+        status,
+    )
+
+    from servers.driver.models import WithdrawalRequest
+    from servers.driver.models import Driver
+    from servers.payments.models import (
+        PaymentGateway,
+        TransactionHistory,
+    )
+    from servers.rider.models import Wallet, WalletTransaction
+
+    if not payout_id and not reference_id:
+        logger.warning(
+            "Cashfree Payout Webhook: No payout ID or reference ID in payload"
+        )
+        return JsonResponse(
+            {
+                "status": "skipped",
+                "reason": "no payout_id_or_reference_id",
+            },
+            status=200,
+        )
+
+    # ---------------------------------------------------------
+    # FIND WITHDRAWAL
+    # ---------------------------------------------------------
+    withdrawal = None
+
+    if payout_id:
+        withdrawal = (
+            WithdrawalRequest.objects
+            .select_related("driver", "driver__user_id")
+            .filter(payout_reference_id=str(payout_id))
+            .first()
+        )
+
+    # Fallback to our stable reference ID.
+    if withdrawal is None and reference_id:
+        withdrawal = (
+            WithdrawalRequest.objects
+            .select_related("driver", "driver__user_id")
+            .filter(
+                payout_reference_id=str(reference_id)
+            )
+            .first()
+        )
+
+    if withdrawal is None and reference_id:
+        # Our application reference has the form:
+        # withdrawal_<id>_driver_<driver_id>
+        reference_text = str(reference_id)
+
+        if reference_text.startswith("withdrawal_"):
+            try:
+                withdrawal_id = int(
+                    reference_text.split("_")[1]
+                )
+
+                withdrawal = (
+                    WithdrawalRequest.objects
+                    .select_related("driver", "driver__user_id")
+                    .filter(id=withdrawal_id)
+                    .first()
+                )
+            except (IndexError, ValueError):
+                withdrawal = None
+
+    if not withdrawal:
+        logger.warning(
+            "Cashfree Payout Webhook: No withdrawal found "
+            "for payout_id=%s reference_id=%s",
+            payout_id,
+            reference_id,
+        )
+
+        # Return 200 so Cashfree does not repeatedly retry a webhook
+        # that cannot be matched to an application withdrawal.
+        return JsonResponse(
+            {
+                "status": "skipped",
+                "reason": "withdrawal not found",
+            },
+            status=200,
+        )
+
+    # ---------------------------------------------------------
+    # HELPER: REFUND DRIVER WALLET EXACTLY ONCE
+    # ---------------------------------------------------------
+    def refund_failed_payout(withdrawal_obj):
+        """
+        Refund the wallet exactly once.
+
+        The wallet was already debited when the withdrawal request
+        was created.
+        """
+        refund_reference = (
+            f"refund_withdrawal_{withdrawal_obj.id}"
+        )
+        refund_idempotency_key = (
+            f"refund_withdrawal_{withdrawal_obj.id}"
+        )
+
+        wallet = Wallet.objects.select_for_update().get(
+            user_id=withdrawal_obj.driver.user_id,
+            scope=Wallet.SCOPE_DRIVER,
+        )
+
+        existing_refund = WalletTransaction.objects.filter(
+            reference_id=refund_reference,
+            purpose="refund_failed_withdrawal",
+            txn_type="credit",
+            status="completed",
+        ).exists()
+
+        if existing_refund:
+            logger.info(
+                "Wallet refund already exists for withdrawal %s. "
+                "Skipping duplicate webhook refund.",
+                withdrawal_obj.id,
+            )
+            return False
+
+        wallet.balance += withdrawal_obj.amount
+        wallet.save(update_fields=["balance"])
+
+        WalletTransaction.objects.create(
+            user_id=withdrawal_obj.driver.user_id,
+            amount=withdrawal_obj.amount,
+            txn_type="credit",
+            status="completed",
+            purpose="refund_failed_withdrawal",
+            reference_id=refund_reference,
+            idempotency_key=refund_idempotency_key,
+        )
+
+        logger.info(
+            "Wallet refunded for failed/reversed withdrawal %s: amount=%s",
+            withdrawal_obj.id,
+            withdrawal_obj.amount,
+        )
+
+        return True
+
+    # ---------------------------------------------------------
+    # TRANSFER SUCCESS
+    # ---------------------------------------------------------
+    if event in ("TRANSFER_SUCCESS", "PAYOUT_SUCCESS"):
+
+        with transaction.atomic():
+            withdrawal = (
+                WithdrawalRequest.objects
+                .select_for_update()
+                .select_related("driver", "driver__user_id")
+                .get(pk=withdrawal.pk)
+            )
+
+            # Already completed: webhook is a duplicate.
+            if withdrawal.status == "completed":
+                logger.info(
+                    "Cashfree Payout Webhook: Withdrawal %s "
+                    "already completed.",
+                    withdrawal.id,
+                )
+                return JsonResponse(
+                    {"status": "already_processed"},
+                    status=200,
+                )
+
+            withdrawal.status = "completed"
+            withdrawal.payout_status = (
+                status or "success"
+            )
+
+            withdrawal.failure_reason = None
+
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "payout_status",
+                    "failure_reason",
+                ]
+            )
+
+            # Only confirmed successful transfers update the
+            # driver's withdrawal cooldown timestamp.
             driver = withdrawal.driver
             driver.last_withdrawal_at = timezone.now()
-            driver.save(update_fields=['last_withdrawal_at'])
-
-            # Create transaction history entry
-            TransactionHistory.objects.get_or_create(
-                withdrawal_request=withdrawal,
-                gateway_transaction_id=str(reference_id),
-                defaults={
-                    'user_id': withdrawal.driver.user_id,
-                    'driver_id': withdrawal.driver,
-                    'amount': withdrawal.amount,
-                    'method': withdrawal.payout_method,
-                    'payment_gateway': PaymentGateway.CASHFREE,
-                    'gateway_payment_id': str(payout_id),
-                    'cashfree_payment_id': str(payout_id),
-                    'user_name': withdrawal.driver.user_id.full_name or withdrawal.driver.user_id.phone_number,
-                    'status': 'completed',
-                    'txn_type': 'payout',
-                }
+            driver.save(
+                update_fields=["last_withdrawal_at"]
             )
 
-        logger.info(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} completed successfully")
-        return JsonResponse({'status': 'ok'}, status=200)
-    
-    elif event == 'TRANSFER_FAILED' or event == 'PAYOUT_FAILED':
+            # Record successful payout.
+            TransactionHistory.objects.get_or_create(
+                withdrawal_request=withdrawal,
+                gateway_transaction_id=(
+                    str(reference_id)
+                    if reference_id
+                    else str(payout_id)
+                ),
+                defaults={
+                    "user_id": withdrawal.driver.user_id,
+                    "driver_id": withdrawal.driver,
+                    "amount": withdrawal.amount,
+                    "method": withdrawal.payout_method,
+                    "payment_gateway": PaymentGateway.CASHFREE,
+                    "gateway_payment_id": str(payout_id),
+                    "cashfree_payment_id": str(payout_id),
+                    "cashfree_transfer_id": str(payout_id),
+                    "user_name": (
+                        withdrawal.driver.user_id.full_name
+                        or withdrawal.driver.user_id.phone_number
+                    ),
+                    "status": "completed",
+                    "txn_type": "credit",
+                },
+            )
+
+        logger.info(
+            "Cashfree Payout Webhook: Withdrawal %s "
+            "completed successfully.",
+            withdrawal.id,
+        )
+
+        return JsonResponse(
+            {"status": "ok"},
+            status=200,
+        )
+
+    # ---------------------------------------------------------
+    # TRANSFER FAILED
+    # ---------------------------------------------------------
+    if event in ("TRANSFER_FAILED", "PAYOUT_FAILED"):
+
         with transaction.atomic():
-            withdrawal.status = 'failed'
-            withdrawal.payout_status = status if status else 'failed'
-            withdrawal.failure_reason = failure_reason[:255] if failure_reason else 'Payout failed via webhook'
-            withdrawal.failure_count = (withdrawal.failure_count or 0) + 1
-            withdrawal.save(update_fields=['status', 'payout_status', 'failure_reason', 'failure_count'])
-            
-            # Create transaction history entry for failed payout
+            withdrawal = (
+                WithdrawalRequest.objects
+                .select_for_update()
+                .select_related("driver", "driver__user_id")
+                .get(pk=withdrawal.pk)
+            )
+
+            if withdrawal.status in ("completed", "failed"):
+                logger.info(
+                    "Ignoring duplicate/late failed payout webhook "
+                    "for withdrawal %s with status=%s.",
+                    withdrawal.id,
+                    withdrawal.status,
+                )
+                return JsonResponse(
+                    {"status": "already_processed"},
+                    status=200,
+                )
+
+            withdrawal.status = "failed"
+            withdrawal.payout_status = (
+                status or "failed"
+            )
+            withdrawal.failure_reason = (
+                failure_reason[:255]
+                if failure_reason
+                else "Payout failed via Cashfree webhook"
+            )
+            withdrawal.failure_count = (
+                withdrawal.failure_count or 0
+            ) + 1
+
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "payout_status",
+                    "failure_reason",
+                    "failure_count",
+                ]
+            )
+
+            # CRITICAL:
+            # Cashfree failed the transfer, so return the amount
+            # to the driver's wallet exactly once.
+            refund_failed_payout(withdrawal)
+
             TransactionHistory.objects.get_or_create(
                 withdrawal_request=withdrawal,
                 gateway_payment_id=str(payout_id),
                 defaults={
-                    'user_id': withdrawal.driver.user_id,
-                    'driver_id': withdrawal.driver,
-                    'amount': withdrawal.amount,
-                    'method': withdrawal.payout_method,
-                    'payment_gateway': PaymentGateway.CASHFREE,
-                    'cashfree_payment_id': str(payout_id),
-                    'user_name': withdrawal.driver.user_id.full_name or withdrawal.driver.user_id.phone_number,
-                    'status': 'failed',
-                    'txn_type': 'payout',
-                }
+                    "user_id": withdrawal.driver.user_id,
+                    "driver_id": withdrawal.driver,
+                    "amount": withdrawal.amount,
+                    "method": withdrawal.payout_method,
+                    "payment_gateway": PaymentGateway.CASHFREE,
+                    "cashfree_payment_id": str(payout_id),
+                    "cashfree_transfer_id": str(payout_id),
+                    "user_name": (
+                        withdrawal.driver.user_id.full_name
+                        or withdrawal.driver.user_id.phone_number
+                    ),
+                    "status": "failed",
+                    "txn_type": "credit",
+                },
             )
-        
-        logger.warning(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} failed: {failure_reason}")
-        return JsonResponse({'status': 'ok'}, status=200)
-    
-    elif event == 'PAYOUT_PENDING':
-        # Update status but don't change withdrawal status (remains 'processing')
-        withdrawal.payout_status = status if status else 'pending'
-        withdrawal.save(update_fields=['payout_status'])
-        
-        logger.info(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} is pending")
-        return JsonResponse({'status': 'ok'}, status=200)
-    
-    elif event == 'TRANSFER_REVERSED' or event == 'PAYOUT_REVERSED':
+
+        logger.warning(
+            "Cashfree Payout Webhook: Withdrawal %s failed: %s",
+            withdrawal.id,
+            failure_reason,
+        )
+
+        return JsonResponse(
+            {"status": "ok"},
+            status=200,
+        )
+
+    # ---------------------------------------------------------
+    # PAYOUT PENDING
+    # ---------------------------------------------------------
+    if event == "PAYOUT_PENDING":
+
         with transaction.atomic():
-            withdrawal.status = 'reversed'
-            withdrawal.payout_status = status if status else 'reversed'
-            withdrawal.save(update_fields=['status', 'payout_status'])
-            
-            # Create transaction history entry for reversal
+            withdrawal = (
+                WithdrawalRequest.objects
+                .select_for_update()
+                .get(pk=withdrawal.pk)
+            )
+
+            # Don't move a completed/failed payout backwards.
+            if withdrawal.status not in (
+                "completed",
+                "failed",
+            ):
+                withdrawal.payout_status = (
+                    status or "pending"
+                )
+                withdrawal.save(
+                    update_fields=["payout_status"]
+                )
+
+        logger.info(
+            "Cashfree Payout Webhook: Withdrawal %s is pending.",
+            withdrawal.id,
+        )
+
+        return JsonResponse(
+            {"status": "ok"},
+            status=200,
+        )
+
+    # ---------------------------------------------------------
+    # TRANSFER REVERSED
+    # ---------------------------------------------------------
+    if event in (
+        "TRANSFER_REVERSED",
+        "PAYOUT_REVERSED",
+    ):
+
+        with transaction.atomic():
+            withdrawal = (
+                WithdrawalRequest.objects
+                .select_for_update()
+                .select_related("driver", "driver__user_id")
+                .get(pk=withdrawal.pk)
+            )
+
+            # "reversed" is not a valid WithdrawalRequest status.
+            # Treat the payout as failed/reversed instead.
+            if withdrawal.status in ("completed", "failed"):
+                logger.info(
+                    "Ignoring duplicate/late reversed payout webhook "
+                    "for withdrawal %s with status=%s.",
+                    withdrawal.id,
+                    withdrawal.status,
+                )
+                return JsonResponse(
+                    {"status": "already_processed"},
+                    status=200,
+                )
+            withdrawal.status = "failed"
+            withdrawal.payout_status = (
+                status or "reversed"
+            )
+            withdrawal.failure_reason = (
+                "Cashfree payout was reversed"
+            )
+            withdrawal.failure_count = (
+                withdrawal.failure_count or 0
+            ) + 1
+
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "payout_status",
+                    "failure_reason",
+                    "failure_count",
+                ]
+            )
+
+            # A reversed payout means the transfer did not remain
+            # with the driver. Refund the wallet exactly once.
+            refund_failed_payout(withdrawal)
+
             TransactionHistory.objects.get_or_create(
                 withdrawal_request=withdrawal,
                 gateway_payment_id=str(payout_id),
                 defaults={
-                    'user_id': withdrawal.driver.user_id,
-                    'driver_id': withdrawal.driver,
-                    'amount': withdrawal.amount,
-                    'method': withdrawal.payout_method,
-                    'payment_gateway': PaymentGateway.CASHFREE,
-                    'cashfree_payment_id': str(payout_id),
-                    'user_name': withdrawal.driver.user_id.full_name or withdrawal.driver.user_id.phone_number,
-                    'status': 'reversed',
-                    'txn_type': 'payout',
-                }
+                    "user_id": withdrawal.driver.user_id,
+                    "driver_id": withdrawal.driver,
+                    "amount": withdrawal.amount,
+                    "method": withdrawal.payout_method,
+                    "payment_gateway": PaymentGateway.CASHFREE,
+                    "cashfree_payment_id": str(payout_id),
+                    "cashfree_transfer_id": str(payout_id),
+                    "user_name": (
+                        withdrawal.driver.user_id.full_name
+                        or withdrawal.driver.user_id.phone_number
+                    ),
+                    "status": "reversed",
+                    "txn_type": "credit",
+                },
             )
-        
-        logger.info(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} reversed")
-        return JsonResponse({'status': 'ok'}, status=200)
-    
-    # Log other events but don't process
-    logger.info(f"Cashfree Payout Webhook: Received event {event}, ignoring")
-    return JsonResponse({'status': 'ok'}, status=200)
 
+        logger.warning(
+            "Cashfree Payout Webhook: Withdrawal %s reversed.",
+            withdrawal.id,
+        )
+
+        return JsonResponse(
+            {"status": "ok"},
+            status=200,
+        )
+
+    # ---------------------------------------------------------
+    # OTHER EVENTS
+    # ---------------------------------------------------------
+    logger.info(
+        "Cashfree Payout Webhook: Received event %s, ignoring.",
+        event,
+    )
+
+    return JsonResponse(
+        {"status": "ok"},
+        status=200,
+    )
 
 class PaymentPagination(PageNumberPagination):
     page_size = 10

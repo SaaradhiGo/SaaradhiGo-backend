@@ -1,4 +1,5 @@
 from datetime import datetime, time, timedelta
+import csv
 from functools import wraps
 from django.utils import timezone
 from django.contrib.auth import authenticate, login as auth_login, logout as auth_logout
@@ -25,7 +26,7 @@ from decimal import Decimal, InvalidOperation
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST,require_http_methods
 from django.contrib.admin.views.decorators import staff_member_required
-from servers.payments.models import Payment
+from servers.payments.models import Payment,TransactionHistory
 from servers.rider.models import (
     Rider, FavoritePlace, Wallet, WalletTransaction, Notification,
     NotificationPreference,
@@ -1852,18 +1853,902 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
         "admin_pages/driver_onboarding.html",
         context,
     )
-@admin_required
 def payment_dashboard(request: HttpRequest) -> HttpResponse:
-    total_gross_revenue = FarePricing.objects.aggregate(total_revenue=models.Sum('total_fare'))['total_revenue'] or 0
-    completed_count = WithdrawalRequest.objects.filter(status='completed').count()
-    cancelled_count = WithdrawalRequest.objects.filter(status='failed').count()
-    recent_transactions = WithdrawalRequest.objects.select_related('driver','driver__user_id','driver__active_vehicle','driver__active_vehicle__vehicle_type_id').order_by('-requested_at')
-    paginator = Paginator(recent_transactions, 20)
-    page_number = request.GET.get('page', 1)
-    page_obj = paginator.get_page(page_number)
-    print(page_obj)
-    return render(request, "admin_pages/payment_dashboard.html",{"total_payments": total_gross_revenue, "completed_count": completed_count, "cancelled_count": cancelled_count, "page_obj": page_obj})
-@admin_required
+    """
+    Financial Operations / Payment Gateway dashboard.
+
+    Financial sources:
+    - Payment: confirmed rider payments/revenue
+    - WithdrawalRequest: driver payout requests
+    - TransactionHistory: actual driver payout ledger
+    - WebhookEvent: Cashfree webhook audit trail
+    """
+
+    # =========================================================
+    # FINANCIAL ACTIONS
+    # =========================================================
+    if request.method == "POST":
+        action = request.POST.get("action", "").strip().lower()
+        withdrawal_id = request.POST.get("withdrawal_id", "").strip()
+
+        # -----------------------------------------------------
+        # APPROVE / REJECT SINGLE WITHDRAWAL
+        # -----------------------------------------------------
+        if action in {"approve", "reject"} and withdrawal_id:
+            try:
+                withdrawal_id_int = int(withdrawal_id)
+            except (TypeError, ValueError):
+                messages.error(request, "Invalid withdrawal ID.")
+                return redirect("payment_dashboard")
+
+            try:
+                from django.db import transaction
+                from django.utils import timezone
+                from servers.rider.models import Wallet, WalletTransaction
+
+                # =================================================
+                # REJECT WITHDRAWAL
+                # =================================================
+                if action == "reject":
+                    with transaction.atomic():
+                        withdrawal = (
+                            WithdrawalRequest.objects
+                            .select_for_update()
+                            .select_related("driver")
+                            .get(id=withdrawal_id_int)
+                        )
+
+                        if withdrawal.status != "pending":
+                            messages.error(
+                                request,
+                                (
+                                    f"Withdrawal #{withdrawal.id} cannot be "
+                                    f"rejected because its status is "
+                                    f"'{withdrawal.status}'."
+                                ),
+                            )
+                            return redirect("payment_dashboard")
+
+                        wallet = (
+                            Wallet.objects
+                            .select_for_update()
+                            .get(
+                                user_id=withdrawal.driver.user_id_id
+                            )
+                        )
+
+                        refund_reference = (
+                            f"refund_rejected_withdrawal_{withdrawal.id}"
+                        )
+
+                        refund_idempotency_key = (
+                            f"refund_rejected_withdrawal_{withdrawal.id}"
+                        )
+
+                        existing_refund = (
+                            WalletTransaction.objects
+                            .filter(
+                                user_id=withdrawal.driver.user_id_id,
+                                purpose="refund_rejected_withdrawal",
+                                reference_id=refund_reference,
+                                status="completed",
+                            )
+                            .first()
+                        )
+
+                        # Refund exactly once.
+                        if not existing_refund:
+                            wallet.balance += withdrawal.amount
+                            wallet.save(
+                                update_fields=["balance"]
+                            )
+
+                            WalletTransaction.objects.create(
+                                user_id=withdrawal.driver.user_id,
+                                amount=withdrawal.amount,
+                                txn_type="credit",
+                                status="completed",
+                                purpose="refund_rejected_withdrawal",
+                                reference_id=refund_reference,
+                                idempotency_key=refund_idempotency_key,
+                            )
+
+                        withdrawal.status = "rejected"
+                        withdrawal.processed_at = timezone.now()
+                        withdrawal.admin_notes = (
+                            "Rejected from Payment Dashboard."
+                        )
+
+                        withdrawal.save(
+                            update_fields=[
+                                "status",
+                                "processed_at",
+                                "admin_notes",
+                            ]
+                        )
+
+                    messages.success(
+                        request,
+                        (
+                            f"Withdrawal #{withdrawal_id_int} rejected "
+                            "and wallet amount refunded."
+                        ),
+                    )
+
+                    return redirect("payment_dashboard")
+
+                # =================================================
+                # APPROVE WITHDRAWAL
+                # =================================================
+                with transaction.atomic():
+                    withdrawal = (
+                        WithdrawalRequest.objects
+                        .select_for_update()
+                        .select_related("driver")
+                        .get(id=withdrawal_id_int)
+                    )
+
+                    if withdrawal.status != "pending":
+                        messages.error(
+                            request,
+                            (
+                                f"Withdrawal #{withdrawal.id} cannot be "
+                                f"approved because its status is "
+                                f"'{withdrawal.status}'."
+                            ),
+                        )
+                        return redirect("payment_dashboard")
+
+                    withdrawal.status = "approved"
+                    withdrawal.processed_at = timezone.now()
+                    withdrawal.admin_notes = (
+                        "Approved from Payment Dashboard."
+                    )
+
+                    withdrawal.save(
+                        update_fields=[
+                            "status",
+                            "processed_at",
+                            "admin_notes",
+                        ]
+                    )
+
+                # -------------------------------------------------
+                # Start payout AFTER database transaction commits.
+                # -------------------------------------------------
+                try:
+                    from servers.driver.services import (
+                        trigger_payout_creation,
+                    )
+
+                    trigger_payout_creation(withdrawal)
+
+                    messages.success(
+                        request,
+                        (
+                            f"Withdrawal #{withdrawal_id_int} approved "
+                            "and payout processing started."
+                        ),
+                    )
+
+                except Exception as payout_error:
+                    logger.exception(
+                        "Failed to start payout for withdrawal %s: %s",
+                        withdrawal_id_int,
+                        payout_error,
+                    )
+
+                    messages.error(
+                        request,
+                        (
+                            f"Withdrawal #{withdrawal_id_int} was approved, "
+                            "but payout processing could not be started."
+                        ),
+                    )
+
+            except WithdrawalRequest.DoesNotExist:
+                messages.error(
+                    request,
+                    f"Withdrawal #{withdrawal_id_int} was not found.",
+                )
+
+            except Wallet.DoesNotExist:
+                logger.exception(
+                    "Wallet missing for withdrawal %s",
+                    withdrawal_id_int,
+                )
+
+                messages.error(
+                    request,
+                    (
+                        "Driver wallet was not found. "
+                        "Withdrawal was not rejected."
+                    ),
+                )
+
+            except Exception as exc:
+                logger.exception(
+                    "Payment dashboard withdrawal action failed: %s",
+                    exc,
+                )
+
+                messages.error(
+                    request,
+                    "Unable to process the withdrawal action.",
+                )
+
+            return redirect("payment_dashboard")
+
+        # -----------------------------------------------------
+        # EXPORT FINANCIAL STATEMENT
+        # -----------------------------------------------------
+        if action == "export_statement":
+            response = HttpResponse(
+                content_type="text/csv",
+            )
+
+            response["Content-Disposition"] = (
+                'attachment; filename="saaradhigo_financial_statement.csv"'
+            )
+
+            writer = csv.writer(response)
+
+            writer.writerow(
+                [
+                    "Type",
+                    "ID",
+                    "Date",
+                    "Driver/User",
+                    "Amount",
+                    "Method",
+                    "Status",
+                    "Gateway",
+                    "Gateway Reference",
+                    "Gateway Status",
+                ]
+            )
+
+            # ---------------------------------------------
+            # Driver payouts
+            # ---------------------------------------------
+            withdrawals = (
+                WithdrawalRequest.objects
+                .select_related(
+                    "driver",
+                    "driver__user_id",
+                )
+                .order_by("-requested_at")
+            )
+
+            for withdrawal in withdrawals:
+                driver_name = "Unknown Driver"
+
+                try:
+                    driver_name = (
+                        withdrawal.driver.user_id.full_name
+                        or "Unknown Driver"
+                    )
+                except Exception:
+                    pass
+
+                writer.writerow(
+                    [
+                        "Driver Payout",
+                        withdrawal.id,
+                        (
+                            withdrawal.requested_at.strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
+                            if withdrawal.requested_at
+                            else ""
+                        ),
+                        driver_name,
+                        str(withdrawal.amount),
+                        withdrawal.payout_method,
+                        withdrawal.status,
+                        "Cashfree",
+                        withdrawal.payout_reference_id or "",
+                        withdrawal.payout_status or "",
+                    ]
+                )
+
+            # ---------------------------------------------
+            # Completed rider payments
+            # ---------------------------------------------
+            completed_payments = (
+                Payment.objects
+                .filter(status="completed")
+                .select_related("user_id")
+                .order_by("-created_at")
+            )
+
+            for payment in completed_payments:
+                user_name = "Unknown User"
+
+                try:
+                    user_name = (
+                        payment.user_id.full_name
+                        or "Unknown User"
+                    )
+                except Exception:
+                    pass
+
+                writer.writerow(
+                    [
+                        "Rider Payment",
+                        payment.id,
+                        (
+                            payment.created_at.strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
+                            if payment.created_at
+                            else ""
+                        ),
+                        user_name,
+                        str(payment.amount),
+                        payment.method,
+                        payment.status,
+                        payment.payment_gateway,
+                        (
+                            payment.gateway_payment_id
+                            or payment.cashfree_payment_id
+                            or payment.gateway_order_id
+                            or payment.cashfree_order_id
+                            or ""
+                        ),
+                        payment.status,
+                    ]
+                )
+
+            return response
+
+        # -----------------------------------------------------
+        # BULK PAYOUT
+        # -----------------------------------------------------
+        if action == "bulk_approve":
+            selected_ids = request.POST.getlist(
+                "withdrawal_ids"
+            )
+
+            if not selected_ids:
+                messages.error(
+                    request,
+                    "Select at least one pending withdrawal.",
+                )
+                return redirect("payment_dashboard")
+
+            if len(selected_ids) > 50:
+                messages.error(
+                    request,
+                    "You can process a maximum of 50 withdrawals at once.",
+                )
+                return redirect("payment_dashboard")
+
+            from django.db import transaction
+            from django.utils import timezone
+
+            approved_withdrawals = []
+            approved_count = 0
+            skipped_count = 0
+
+            for raw_id in selected_ids:
+                try:
+                    withdrawal_id_int = int(raw_id)
+                except (TypeError, ValueError):
+                    skipped_count += 1
+                    continue
+
+                try:
+                    with transaction.atomic():
+                        withdrawal = (
+                            WithdrawalRequest.objects
+                            .select_for_update()
+                            .get(id=withdrawal_id_int)
+                        )
+
+                        if withdrawal.status != "pending":
+                            skipped_count += 1
+                            continue
+
+                        withdrawal.status = "approved"
+                        withdrawal.processed_at = timezone.now()
+                        withdrawal.admin_notes = (
+                            "Approved from Payment Dashboard bulk action."
+                        )
+
+                        withdrawal.save(
+                            update_fields=[
+                                "status",
+                                "processed_at",
+                                "admin_notes",
+                            ]
+                        )
+
+                        approved_withdrawals.append(
+                            withdrawal
+                        )
+                        approved_count += 1
+
+                except WithdrawalRequest.DoesNotExist:
+                    skipped_count += 1
+
+                except Exception as exc:
+                    skipped_count += 1
+
+                    logger.exception(
+                        "Bulk approval failed for withdrawal %s: %s",
+                        withdrawal_id_int,
+                        exc,
+                    )
+
+            # -------------------------------------------------
+            # Start payouts after DB updates are committed.
+            # -------------------------------------------------
+            payout_started = 0
+            payout_failed = 0
+
+            if approved_withdrawals:
+                try:
+                    from servers.driver.services import (
+                        trigger_payout_creation,
+                    )
+
+                    for withdrawal in approved_withdrawals:
+                        try:
+                            trigger_payout_creation(
+                                withdrawal
+                            )
+                            payout_started += 1
+                        except Exception as exc:
+                            payout_failed += 1
+
+                            logger.exception(
+                                "Bulk payout start failed for "
+                                "withdrawal %s: %s",
+                                withdrawal.id,
+                                exc,
+                            )
+
+                except Exception as exc:
+                    payout_failed = len(
+                        approved_withdrawals
+                    )
+
+                    logger.exception(
+                        "Unable to load payout service: %s",
+                        exc,
+                    )
+
+            if approved_count:
+                message = (
+                    f"{approved_count} withdrawal(s) approved "
+                    f"and {payout_started} payout(s) started."
+                )
+
+                if payout_failed:
+                    message += (
+                        f" {payout_failed} payout(s) failed to start."
+                    )
+
+                if skipped_count:
+                    message += (
+                        f" {skipped_count} withdrawal(s) skipped."
+                    )
+
+                if payout_failed:
+                    messages.warning(
+                        request,
+                        message,
+                    )
+                else:
+                    messages.success(
+                        request,
+                        message,
+                    )
+            else:
+                messages.error(
+                    request,
+                    "No pending withdrawals were approved.",
+                )
+
+            return redirect("payment_dashboard")
+
+    # =========================================================
+    # AUTHORITATIVE PAYMENT METRICS
+    # =========================================================
+
+    completed_payments = Payment.objects.filter(
+        status="completed"
+    )
+
+    total_gross_revenue = (
+        completed_payments.aggregate(
+            total_revenue=models.Sum("amount")
+        )["total_revenue"]
+        or 0
+    )
+
+    completed_count = completed_payments.count()
+
+    cancelled_count = Payment.objects.filter(
+        status__in=[
+            "failed",
+            "refunded",
+        ]
+    ).count()
+
+    # =========================================================
+    # DRIVER PAYOUT REQUESTS
+    # =========================================================
+
+    recent_transactions = (
+        WithdrawalRequest.objects
+        .select_related(
+            "driver",
+            "driver__user_id",
+            "driver__active_vehicle",
+            "driver__active_vehicle__vehicle_type_id",
+        )
+        .order_by("-requested_at")
+    )
+
+    paginator = Paginator(
+        recent_transactions,
+        20,
+    )
+
+    page_number = request.GET.get(
+        "page",
+        1,
+    )
+
+    page_obj = paginator.get_page(
+        page_number,
+    )
+
+    # =========================================================
+    # CASHFREE GATEWAY LEDGER
+    # =========================================================
+
+    from servers.payments.models import (
+        TransactionHistory,
+        WebhookEvent,
+    )
+
+    # ---------------------------------------------------------
+    # CASHFREE RIDER PAYMENTS
+    # ---------------------------------------------------------
+
+    gateway_payments = list(
+        Payment.objects
+        .filter(
+            payment_gateway="cashfree",
+        )
+        .exclude(
+            gateway_order_id__isnull=True,
+            cashfree_order_id__isnull=True,
+            gateway_payment_id__isnull=True,
+            cashfree_payment_id__isnull=True,
+        )
+        .select_related("user_id")
+        .order_by("-created_at")[:25]
+    )
+
+    # ---------------------------------------------------------
+    # CASHFREE DRIVER PAYOUT TRANSACTIONS
+    # ---------------------------------------------------------
+
+    gateway_payouts = list(
+        TransactionHistory.objects
+        .filter(
+            payment_gateway="cashfree",
+        )
+        .exclude(
+            cashfree_transfer_id__isnull=True,
+        )
+        .exclude(
+            cashfree_transfer_id="",
+        )
+        .select_related(
+            "driver_id",
+            "driver_id__user_id",
+            "withdrawal_request",
+        )
+        .order_by("-created_at")[:25]
+    )
+
+    # ---------------------------------------------------------
+    # FAILED UPI PAYOUTS
+    # ---------------------------------------------------------
+
+    failed_upi_payouts = list(
+        WithdrawalRequest.objects
+        .filter(
+            payout_method="upi",
+            status="failed",
+        )
+        .select_related(
+            "driver",
+            "driver__user_id",
+        )
+        .order_by(
+            "-processed_at",
+            "-requested_at",
+        )[:25]
+    )
+
+    # ---------------------------------------------------------
+    # REFUNDED RIDER PAYMENTS
+    # ---------------------------------------------------------
+
+    refunded_payments = list(
+        Payment.objects
+        .filter(
+            status="refunded",
+        )
+        .select_related("user_id")
+        .order_by("-updated_at")[:25]
+    )
+
+    # ---------------------------------------------------------
+    # CASHFREE WEBHOOK LOG
+    # ---------------------------------------------------------
+
+    gateway_webhooks = list(
+        WebhookEvent.objects
+        .filter(
+            gateway="cashfree",
+        )
+        .order_by("-received_at")[:30]
+    )
+
+    # =========================================================
+    # BUILD ONE SMALL GATEWAY LEDGER
+    # =========================================================
+
+    gateway_ledger = []
+
+    # ---------------------------------------------------------
+    # Rider payments
+    # ---------------------------------------------------------
+
+    for payment in gateway_payments:
+        gateway_ledger.append(
+            {
+                "type": "Rider Payment",
+                "reference": (
+                    payment.cashfree_payment_id
+                    or payment.gateway_payment_id
+                    or payment.cashfree_order_id
+                    or payment.gateway_order_id
+                    or f"PAY-{payment.id}"
+                ),
+                "order_id": (
+                    payment.cashfree_order_id
+                    or payment.gateway_order_id
+                    or "-"
+                ),
+                "payment_id": (
+                    payment.cashfree_payment_id
+                    or payment.gateway_payment_id
+                    or "-"
+                ),
+                "transfer_id": "-",
+                "status": payment.status,
+                "amount": payment.amount,
+                "detail": payment.method,
+                "created_at": payment.created_at,
+                "source": "Payment",
+            }
+        )
+
+    # ---------------------------------------------------------
+    # Driver payouts
+    # ---------------------------------------------------------
+
+    for payout in gateway_payouts:
+        driver_name = "Unknown Driver"
+
+        try:
+            driver_name = (
+                payout.driver_id.user_id.full_name
+                or "Unknown Driver"
+            )
+        except Exception:
+            pass
+
+        gateway_ledger.append(
+            {
+                "type": "Driver Payout",
+                "reference": (
+                    payout.cashfree_transfer_id
+                    or f"TXN-{payout.id}"
+                ),
+                "order_id": "-",
+                "payment_id": (
+                    payout.cashfree_payment_id
+                    or payout.gateway_payment_id
+                    or "-"
+                ),
+                "transfer_id": (
+                    payout.cashfree_transfer_id
+                    or "-"
+                ),
+                "status": (
+                    payout.status
+                    or "unknown"
+                ),
+                "amount": payout.amount,
+                "detail": driver_name,
+                "created_at": payout.created_at,
+                "source": "TransactionHistory",
+            }
+        )
+
+    # ---------------------------------------------------------
+    # Failed UPI payouts
+    # ---------------------------------------------------------
+
+    for withdrawal in failed_upi_payouts:
+        driver_name = "Unknown Driver"
+
+        try:
+            driver_name = (
+                withdrawal.driver.user_id.full_name
+                or "Unknown Driver"
+            )
+        except Exception:
+            pass
+
+        gateway_ledger.append(
+            {
+                "type": "UPI Failure",
+                "reference": (
+                    withdrawal.payout_reference_id
+                    or f"WD-{withdrawal.id}"
+                ),
+                "order_id": "-",
+                "payment_id": "-",
+                "transfer_id": "-",
+                "status": (
+                    withdrawal.payout_status
+                    or "failed"
+                ),
+                "amount": withdrawal.amount,
+                "detail": (
+                    withdrawal.failure_reason
+                    or driver_name
+                ),
+                "created_at": (
+                    withdrawal.processed_at
+                    or withdrawal.requested_at
+                ),
+                "source": "WithdrawalRequest",
+            }
+        )
+
+    # ---------------------------------------------------------
+    # Refunded rider payments
+    # ---------------------------------------------------------
+
+    for payment in refunded_payments:
+        gateway_ledger.append(
+            {
+                "type": "Rider Refund",
+                "reference": (
+                    payment.cashfree_payment_id
+                    or payment.gateway_payment_id
+                    or f"PAY-{payment.id}"
+                ),
+                "order_id": (
+                    payment.cashfree_order_id
+                    or payment.gateway_order_id
+                    or "-"
+                ),
+                "payment_id": (
+                    payment.cashfree_payment_id
+                    or payment.gateway_payment_id
+                    or "-"
+                ),
+                "transfer_id": "-",
+                "status": "refunded",
+                "amount": payment.amount,
+                "detail": "Payment refunded",
+                "created_at": payment.updated_at,
+                "source": "Payment",
+            }
+        )
+
+    # ---------------------------------------------------------
+    # Cashfree webhooks
+    # ---------------------------------------------------------
+
+    for webhook in gateway_webhooks:
+        gateway_ledger.append(
+            {
+                "type": "Webhook",
+                "reference": webhook.dedupe_key,
+                "order_id": "-",
+                "payment_id": "-",
+                "transfer_id": "-",
+                "status": (
+                    webhook.result
+                    or "received"
+                ),
+                "amount": 0,
+                "detail": (
+                    webhook.event_type
+                    or "Cashfree Event"
+                ),
+                "created_at": webhook.received_at,
+                "source": "WebhookEvent",
+            }
+        )
+
+    # Newest gateway activity first.
+    gateway_ledger.sort(
+        key=lambda item: (
+            item["created_at"]
+            or ""
+        ),
+        reverse=True,
+    )
+
+    # Keep dashboard rendering small.
+    gateway_ledger = gateway_ledger[:50]
+
+    # =========================================================
+    # GATEWAY SUMMARY
+    # =========================================================
+
+    cashfree_payment_count = Payment.objects.filter(
+        payment_gateway="cashfree",
+    ).count()
+
+    cashfree_refund_count = Payment.objects.filter(
+        payment_gateway="cashfree",
+        status="refunded",
+    ).count()
+
+    failed_upi_count = WithdrawalRequest.objects.filter(
+        payout_method="upi",
+        status="failed",
+    ).count()
+
+    webhook_count = WebhookEvent.objects.filter(
+        gateway="cashfree",
+    ).count()
+
+    # =========================================================
+    # RENDER DASHBOARD
+    # =========================================================
+
+    return render(
+        request,
+        "admin_pages/payment_dashboard.html",
+        {
+            # Existing metrics
+            "total_payments": total_gross_revenue,
+            "completed_count": completed_count,
+            "cancelled_count": cancelled_count,
+            "page_obj": page_obj,
+
+            # Gateway ledger
+            "gateway_ledger": gateway_ledger,
+            "gateway_payments": gateway_payments,
+            "gateway_payouts": gateway_payouts,
+            "failed_upi_payouts": failed_upi_payouts,
+            "refunded_payments": refunded_payments,
+            "gateway_webhooks": gateway_webhooks,
+
+            # Gateway summary
+            "cashfree_payment_count": cashfree_payment_count,
+            "cashfree_refund_count": cashfree_refund_count,
+            "failed_upi_count": failed_upi_count,
+            "webhook_count": webhook_count,
+        },
+    )
+
 def executive_revenue(request: HttpRequest) -> HttpResponse:
     tz = timezone.get_current_timezone()
     start_date = (request.GET.get("start_date") or "").strip()
@@ -4071,13 +4956,11 @@ def emergency_dashboard(request: HttpRequest) -> HttpResponse:
     })
 @admin_required
 def transaction_dashboard(request):
-    from decimal import Decimal
-    from django.core.paginator import Paginator
-    from django.shortcuts import render
-    from servers.ride.models import Trip
+
     q = request.GET.get("q", "").strip().lower()
     selected_type = request.GET.get("type", "").strip().lower()
     selected_status = request.GET.get("status", "").strip().lower()
+
     def money(value):
         try:
             return Decimal(str(value or 0)).quantize(
@@ -4085,307 +4968,383 @@ def transaction_dashboard(request):
             )
         except Exception:
             return Decimal("0.00")
+
     def user_name(user, fallback):
         if not user:
             return fallback
+
         return (
             getattr(user, "full_name", None)
             or getattr(user, "phone_number", None)
             or getattr(user, "username", None)
             or fallback
         )
-    trips = list(
-        Trip.objects
+
+    def matches_search(row):
+        if not q:
+            return True
+
+        searchable = " ".join(
+            [
+                str(row.get("transaction_id", "")),
+                str(row.get("trip_id", "")),
+                str(row.get("rider", "")),
+                str(row.get("driver", "")),
+                str(row.get("type", "")),
+                str(row.get("payment_method", "")),
+                str(row.get("gateway_reference", "")),
+            ]
+        ).lower()
+
+        return q in searchable
+
+    transactions = []
+
+    # =========================================================
+    # 1. AUTHORITATIVE RIDER PAYMENTS
+    # =========================================================
+
+    completed_payments = (
+        Payment.objects
+        .filter(status="completed")
+        .select_related("user_id")
+        .order_by("-created_at")
+    )
+
+    rider_total = money(
+        completed_payments.aggregate(
+            total=Sum("amount")
+        )["total"]
+    )
+
+    for payment in completed_payments.iterator(chunk_size=500):
+        rider = payment.user_id
+
+        row = {
+            "transaction_id": f"TXN-{payment.id}",
+            "type": "rider_payment",
+            "trip_id": getattr(payment.trip_id, "id", None),
+            "rider": user_name(rider, "Unknown Rider"),
+            "driver": getattr(payment, "driver_name", None) or "Not Assigned",
+            "amount": money(payment.amount),
+            "status": "success",
+            "payment_method": payment.method or "—",
+            "created_at": payment.created_at,
+            "gateway_reference": (
+                payment.gateway_payment_id
+                or payment.cashfree_payment_id
+                or payment.gateway_order_id
+                or payment.cashfree_order_id
+                or ""
+            ),
+        }
+
+        if matches_search(row):
+            transactions.append(row)
+
+    # =========================================================
+    # 2. REFUNDED PAYMENTS
+    # =========================================================
+
+    refunded_payments = (
+        Payment.objects
+        .filter(status="refunded")
+        .select_related("user_id")
+        .order_by("-updated_at")
+    )
+
+    refund_total = money(
+        refunded_payments.aggregate(
+            total=Sum("amount")
+        )["total"]
+    )
+
+    for payment in refunded_payments.iterator(chunk_size=500):
+        rider = payment.user_id
+
+        row = {
+            "transaction_id": f"REFUND-{payment.id}",
+            "type": "refund",
+            "trip_id": getattr(payment.trip_id, "id", None),
+            "rider": user_name(rider, "Unknown Rider"),
+            "driver": getattr(payment, "driver_name", None) or "Not Assigned",
+            "amount": money(payment.amount),
+            "status": "refunded",
+            "payment_method": payment.method or "—",
+            "created_at": payment.updated_at or payment.created_at,
+            "gateway_reference": (
+                payment.gateway_payment_id
+                or payment.cashfree_payment_id
+                or payment.gateway_order_id
+                or payment.cashfree_order_id
+                or ""
+            ),
+        }
+
+        if matches_search(row):
+            transactions.append(row)
+
+    # =========================================================
+    # 3. DRIVER EARNINGS FROM FINANCIAL LEDGER
+    # =========================================================
+
+    earning_history = (
+        TransactionHistory.objects
+        .filter(
+            txn_type="credit",
+            status__in=["success", "completed", "processed", "successful"],
+        )
         .select_related(
             "user_id",
             "driver_id",
             "driver_id__user_id",
-            "status_id",
         )
-        .order_by("-requested_at")
+        .order_by("-created_at")
     )
-    rider_rows = []
-    earning_rows = []
-    payout_rows = []
-    fee_rows = []
-    refund_rows = []
-    cancellation_rows = []
-    for trip in trips:
-        rider = trip.user_id
-        driver = trip.driver_id
-        driver_user = getattr(driver, "user_id", None) if driver else None
-        rider_name = user_name(rider, "Unknown Rider")
-        driver_name = user_name(
-            driver_user,
-            f"Driver #{driver.pk}" if driver else "Not Assigned"
-        )
-        fare = money(
-            trip.final_fare
-            if trip.final_fare is not None
-            else trip.estimated_fare
-        )
-        if fare <= 0:
-            continue
-        payment_method = (
-            getattr(trip, "payment_method", None) or "—"
-        )
-        created_at = (
-            getattr(trip, "completed_at", None)
-            or getattr(trip, "cancelled_at", None)
-            or getattr(trip, "requested_at", None)
-        )
-        # =====================================================
-        # CANCELLATION HAS PRIORITY
-        # =====================================================
-        is_cancelled = bool(
-            getattr(trip, "cancelled_at", None)
-        )
-        if not is_cancelled and getattr(trip, "status_id", None):
-            status_code = str(
-                getattr(
-                    trip.status_id,
-                    "status_code",
-                    ""
-                )
+
+    driver_earning_total = money(
+        earning_history.aggregate(
+            total=Sum("amount")
+        )["total"]
+    )
+
+    for txn in earning_history.iterator(chunk_size=500):
+        driver = txn.driver_id
+        driver_user = getattr(driver, "user_id", None)
+
+        row = {
+            "transaction_id": (
+                f"EARNING-{txn.id}"
+            ),
+            "type": "driver_earnings",
+            "trip_id": getattr(txn.trip_id, "id", None),
+            "rider": user_name(
+                txn.user_id,
+                "Unknown Rider",
+            ),
+            "driver": user_name(
+                driver_user,
+                f"Driver #{driver.pk}" if driver else "Unknown Driver",
+            ),
+            "amount": money(txn.amount),
+            "status": "success",
+            "payment_method": txn.method or "—",
+            "created_at": txn.created_at,
+            "gateway_reference": (
+                txn.cashfree_transfer_id
+                or txn.gateway_transaction_id
+                or txn.gateway_payment_id
                 or ""
-            ).lower()
-            is_cancelled = "cancel" in status_code
-        if is_cancelled:
-            cancellation_fee = money(
-                getattr(
-                    trip,
-                    "cancellation_fee",
-                    None
-                )
-            )
-            cancellation_rows.append({
-                "transaction_id": f"CANCEL-{trip.id}",
-                "type": "cancellation_fee",
-                "trip_id": trip.id,
-                "rider": rider_name,
-                "driver": driver_name,
-                "amount": cancellation_fee,
-                "status": "cancelled",
-                "payment_method": payment_method,
-                "created_at": created_at,
-            })
-            # Paid cancelled ride -> refund fare
-            payment_status = str(
-                getattr(
-                    trip,
-                    "payment_status",
-                    ""
-                )
+            ),
+        }
+
+        if matches_search(row):
+            transactions.append(row)
+
+    # =========================================================
+    # 4. ACTUAL DRIVER PAYOUTS
+    # =========================================================
+
+    completed_withdrawals = (
+        WithdrawalRequest.objects
+        .filter(status="completed")
+        .select_related(
+            "driver",
+            "driver__user_id",
+        )
+        .order_by("-processed_at", "-requested_at")
+    )
+
+    driver_payout_total = money(
+        completed_withdrawals.aggregate(
+            total=Sum("amount")
+        )["total"]
+    )
+
+    for withdrawal in completed_withdrawals.iterator(chunk_size=500):
+        driver = withdrawal.driver
+        driver_user = getattr(driver, "user_id", None)
+
+        row = {
+            "transaction_id": f"PAYOUT-{withdrawal.id}",
+            "type": "driver_payout",
+            "trip_id": None,
+            "rider": "—",
+            "driver": user_name(
+                driver_user,
+                f"Driver #{driver.pk}" if driver else "Unknown Driver",
+            ),
+            "amount": money(withdrawal.amount),
+            "status": "success",
+            "payment_method": withdrawal.payout_method or "—",
+            "created_at": (
+                withdrawal.processed_at
+                or withdrawal.requested_at
+            ),
+            "gateway_reference": (
+                withdrawal.payout_reference_id
                 or ""
-            ).lower()
-            if payment_status in {
+            ),
+        }
+
+        if matches_search(row):
+            transactions.append(row)
+
+    # =========================================================
+    # 5. CANCELLATION FEES
+    #
+    # Cancellation fees are kept only if they are actually
+    # recorded in TransactionHistory.
+    # =========================================================
+
+    cancellation_history = (
+        TransactionHistory.objects
+        .filter(
+            txn_type="payment",
+            status__in=[
+                "cancelled",
+                "canceled",
                 "completed",
                 "success",
-                "successful",
-                "paid",
-                "refunded",
-            }:
-                refund_rows.append({
-                    "transaction_id": f"REFUND-{trip.id}",
-                    "type": "refund",
-                    "trip_id": trip.id,
-                    "rider": rider_name,
-                    "driver": driver_name,
-                    "amount": fare,
-                    "status": "refunded",
-                    "payment_method": payment_method,
-                    "created_at": created_at,
-                })
-            continue
-        # =====================================================
-        # NORMAL COMPLETED RIDE
-        # =====================================================
-        status_code = ""
-        if getattr(trip, "status_id", None):
-            status_code = str(
-                getattr(
-                    trip.status_id,
-                    "status_code",
-                    ""
-                )
+            ],
+            method__icontains="cancel",
+        )
+        .select_related(
+            "user_id",
+            "driver_id",
+            "driver_id__user_id",
+        )
+        .order_by("-created_at")
+    )
+
+    cancellation_total = money(
+        cancellation_history.aggregate(
+            total=Sum("amount")
+        )["total"]
+    )
+
+    for txn in cancellation_history.iterator(chunk_size=500):
+        driver = txn.driver_id
+        driver_user = getattr(driver, "user_id", None)
+
+        row = {
+            "transaction_id": f"CANCEL-{txn.id}",
+            "type": "cancellation_fee",
+            "trip_id": getattr(txn.trip_id, "id", None),
+            "rider": user_name(
+                txn.user_id,
+                "Unknown Rider",
+            ),
+            "driver": user_name(
+                driver_user,
+                f"Driver #{driver.pk}" if driver else "Not Assigned",
+            ),
+            "amount": money(txn.amount),
+            "status": "cancelled",
+            "payment_method": txn.method or "—",
+            "created_at": txn.created_at,
+            "gateway_reference": (
+                txn.gateway_transaction_id
+                or txn.gateway_payment_id
                 or ""
-            ).lower()
-        if "complete" not in status_code:
-            continue
-        # Rider Payment
-        rider_rows.append({
-            "transaction_id": f"TXN-{trip.id}",
-            "type": "rider_payment",
-            "trip_id": trip.id,
-            "rider": rider_name,
-            "driver": driver_name,
-            "amount": fare,
-            "status": "success",
-            "payment_method": payment_method,
-            "created_at": created_at,
-        })
-        # Commission
-        try:
-            from servers.pricing.services import (
-                commission_percent_for_trip
-            )
-            commission_percent = Decimal(
-                str(
-                    commission_percent_for_trip(trip)
-                )
-            )
-        except Exception:
-            commission_percent = Decimal("18.00")
-        platform_fee = money(
-            fare
-            * commission_percent
-            / Decimal("100")
-        )
-        driver_earning = money(
-            fare - platform_fee
-        )
-        # Driver Earnings
-        earning_rows.append({
-            "transaction_id": f"EARNING-{trip.id}",
-            "type": "driver_earnings",
-            "trip_id": trip.id,
-            "rider": rider_name,
-            "driver": driver_name,
-            "amount": driver_earning,
-            "status": "success",
-            "payment_method": payment_method,
-            "created_at": created_at,
-        })
-        # Driver Payout (mock = earnings)
-        payout_rows.append({
-            "transaction_id": f"PAYOUT-{trip.id}",
-            "type": "driver_payout",
-            "trip_id": trip.id,
-            "rider": rider_name,
-            "driver": driver_name,
-            "amount": driver_earning,
-            "status": "success",
-            "payment_method": payment_method,
-            "created_at": created_at,
-        })
-        # Platform Fee
-        fee_rows.append({
-            "transaction_id": f"FEE-{trip.id}",
-            "type": "platform_fee",
-            "trip_id": trip.id,
-            "rider": rider_name,
-            "driver": driver_name,
-            "amount": platform_fee,
-            "status": "success",
-            "payment_method": payment_method,
-            "created_at": created_at,
-        })
+            ),
+        }
+
+        if matches_search(row):
+            transactions.append(row)
+
     # =========================================================
-    # FILTERED TRANSACTIONS
+    # 6. PLATFORM FEES
+    #
+    # Platform fees are not stored as a separate authoritative
+    # financial ledger entry in the current models.
+    # Do not manufacture a fee from FarePricing or estimated fare.
     # =========================================================
-    if selected_type == "rider_payment":
-        transactions = rider_rows
-    elif selected_type == "driver_earnings":
-        transactions = earning_rows
-    elif selected_type == "driver_payout":
-        transactions = payout_rows
-    elif selected_type == "platform_fee":
-        transactions = fee_rows
-    elif selected_type == "refund":
-        transactions = refund_rows
-    elif selected_type == "cancellation_fee":
-        transactions = cancellation_rows
-    else:
-        # All Types = completed rider payments + actual
-        # cancellation/refund events
-        transactions = (
-            rider_rows
-            + refund_rows
-            + cancellation_rows
-        )
+
+    platform_total = Decimal("0.00")
+
     # =========================================================
-    # SEARCH
+    # FILTER BY TRANSACTION TYPE
     # =========================================================
-    if q:
+
+    if selected_type:
         transactions = [
-            t for t in transactions
-            if (
-                q in str(t["transaction_id"]).lower()
-                or q in str(t["trip_id"]).lower()
-                or q in str(t["rider"]).lower()
-                or q in str(t["driver"]).lower()
-                or q in str(t["type"]).lower()
-                or q in str(t["payment_method"]).lower()
-            )
+            row
+            for row in transactions
+            if row["type"] == selected_type
         ]
+
     # =========================================================
-    # STATUS
+    # FILTER BY STATUS
     # =========================================================
+
     if selected_status:
         transactions = [
-            t for t in transactions
-            if t["status"] == selected_status
+            row
+            for row in transactions
+            if row["status"] == selected_status
         ]
+
+    # =========================================================
+    # SORT
+    # =========================================================
+
     transactions.sort(
-        key=lambda x: x["created_at"] or 0,
-        reverse=True
+        key=lambda row: row.get("created_at") or 0,
+        reverse=True,
     )
-    # =========================================================
-    # TOTALS
-    # =========================================================
-    rider_total = money(sum(
-        (t["amount"] for t in rider_rows),
-        Decimal("0.00")
-    ))
-    platform_total = money(sum(
-        (t["amount"] for t in fee_rows),
-        Decimal("0.00")
-    ))
-    driver_earning_total = money(sum(
-        (t["amount"] for t in earning_rows),
-        Decimal("0.00")
-    ))
-    driver_payout_total = money(sum(
-        (t["amount"] for t in payout_rows),
-        Decimal("0.00")
-    ))
-    refund_total = money(sum(
-        (t["amount"] for t in refund_rows),
-        Decimal("0.00")
-    ))
-    cancellation_total = money(sum(
-        (t["amount"] for t in cancellation_rows),
-        Decimal("0.00")
-    ))
+
     # =========================================================
     # PAGINATION
     # =========================================================
+
     paginator = Paginator(transactions, 10)
+
     page_obj = paginator.get_page(
         request.GET.get("page", 1)
     )
+
+    # =========================================================
+    # TOTALS
+    # =========================================================
+
+    total_transactions = len(transactions)
+
+    refund_total = money(refund_total)
+    cancellation_total = money(cancellation_total)
+
     # =========================================================
     # CONTEXT
     # =========================================================
+
     context = {
-        "transactions": transactions,
+        "transactions": page_obj.object_list,
         "page_obj": page_obj,
-        # All financial events shown in All Types
-        "total_transactions": len(transactions)
-            if selected_type or q or selected_status
-            else len(rider_rows) + len(refund_rows)
-            + len(cancellation_rows),
+
+        "total_transactions": total_transactions,
+
         "rider_payments": rider_total,
-        # IMPORTANT: don't add earnings + payout
+
+        # Driver earnings are actual ledger credits.
         "driver_payments": driver_earning_total,
         "driver_earnings": driver_earning_total,
+
+        # Actual completed withdrawal payouts.
         "driver_payouts": driver_payout_total,
+
+        # No authoritative platform-fee ledger currently exists.
         "platform_fees": platform_total,
+
         "refunds": refund_total,
+
         "cancellation_fees": cancellation_total,
+
         "search": request.GET.get("q", ""),
+
         "transaction_type": selected_type,
+
         "transaction_status": selected_status,
+
         "transaction_types": [
             ("rider_payment", "Rider Payment"),
             ("driver_earnings", "Driver Earnings"),
@@ -4398,6 +5357,7 @@ def transaction_dashboard(request):
             ("payment_reversal", "Payment Reversal"),
         ],
     }
+
     return render(
         request,
         "admin_pages/transaction_dashboard.html",

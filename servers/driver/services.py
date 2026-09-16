@@ -1130,252 +1130,538 @@ def generate_upi_compliance_handbook():
     
     return handbook
 
-
 def trigger_payout_creation(withdrawal):
     """
     Trigger payout creation for an approved withdrawal request.
-    
-    This function handles the business logic for creating payouts when
-    a withdrawal is approved by admin. It should:
-    1. Create a payout record in the database
-    2. Initiate the actual payout via payment gateway (Cashfree)
-    3. Update driver's last withdrawal timestamp
-    4. Handle any errors and log appropriately
-    
-    Args:
-        withdrawal: WithdrawalRequest instance that has been approved
-        
+
+    Wallet balance is already deducted when the withdrawal request is created.
+
+    A failed payout is refunded exactly once using a deterministic
+    reference/idempotency key.
+
     Returns:
-        bool: True if payout was successfully triggered, False otherwise
+        bool: True when the payout was successfully initiated.
+        False when the payout could not be initiated.
     """
     import logging
-    import uuid
-    from django.utils import timezone
-    from django.db import transaction
-    from servers.rider.models import Wallet, WalletTransaction
-    from decimal import Decimal
-    
-    logger = logging.getLogger(__name__)
-    
-    try:
-        driver = withdrawal.driver
-        # NOTE: driver.last_withdrawal_at is intentionally NOT set here.
-        # It is stamped only when the Cashfree payout webhook delivers
-        # TRANSFER_SUCCESS, so a failed payout doesn't unfairly block
-        # the driver from new withdrawals for 7 days. See audit M8 and
-        # _handle_cashfree_payout_webhook.
 
-        # Wallet deduction has already happened during WithdrawalRequest creation.
-        # We just initiate payout via payment gateway API.
-        payout_success = False
-        if withdrawal.payout_method == 'upi':
-            print('UPI')
-            # UPI payout
-            payout_success = initiate_upi_payout(withdrawal, driver)
-        else:
-            # Bank payout (default)
-            payout_success = initiate_bank_payout(withdrawal, driver)
-        print(payout_success)
-        
-        if payout_success:
-            # Update withdrawal status to processed
-            withdrawal.status = 'processed'
-            withdrawal.save()
-            logger.info(f"Payout successfully initiated for withdrawal {withdrawal.id}, amount: {withdrawal.amount}, method: {withdrawal.payout_method}")
-            return True
-        else:
-            # Payout failed, update status to failed
-            withdrawal.status = 'failed'
-            withdrawal.save()
-            logger.error(f"Failed to initiate payout for withdrawal {withdrawal.id}, amount: {withdrawal.amount}, method: {withdrawal.payout_method}")
-            
-            # Refund wallet
-            with transaction.atomic():
-                wallet = Wallet.objects.select_for_update().get(
-                    user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER,
-                )
-                wallet.balance += withdrawal.amount
-                wallet.save(update_fields=['balance'])
-                idempotency_key = f"refund_withdrawal_{withdrawal.id}_{uuid.uuid4().hex[:16]}"
-                WalletTransaction.objects.create(
-                    user_id=driver.user_id,
-                    amount=withdrawal.amount,
-                    txn_type='credit',
-                    status='completed',
-                    purpose='refund_failed_withdrawal',
-                    reference_id=f"refund_withdrawal_{withdrawal.id}",
-                    idempotency_key=idempotency_key
-                )
-            return False
-            
-    except Exception as e:
-        logger.error(f"Failed to trigger payout for withdrawal {withdrawal.id}: {e}")
-        # Update withdrawal status to failed on exception
-        withdrawal.status = 'failed'
-        withdrawal.save()
-        
-        # Refund wallet
-        from django.db import transaction
-        from servers.rider.models import Wallet, WalletTransaction
-        import uuid
+    from django.db import transaction
+    from django.utils import timezone
+    from servers.rider.models import Wallet, WalletTransaction
+
+    logger = logging.getLogger(__name__)
+
+    def refund_failed_withdrawal(driver, withdrawal_obj):
+        """
+        Refund the wallet exactly once for a failed payout attempt.
+        """
+        refund_reference = f"refund_withdrawal_{withdrawal_obj.id}"
+        refund_idempotency_key = f"refund_withdrawal_{withdrawal_obj.id}"
+
         with transaction.atomic():
             wallet = Wallet.objects.select_for_update().get(
-                user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER,
+                user_id=driver.user_id,
+                scope=Wallet.SCOPE_DRIVER,
             )
-            wallet.balance += withdrawal.amount
-            wallet.save(update_fields=['balance'])
-            idempotency_key = f"refund_withdrawal_{withdrawal.id}_{uuid.uuid4().hex[:16]}"
+
+            existing_refund = WalletTransaction.objects.filter(
+                reference_id=refund_reference,
+                purpose="refund_failed_withdrawal",
+                txn_type="credit",
+                status="completed",
+            ).exists()
+
+            if existing_refund:
+                logger.info(
+                    "Refund already exists for failed withdrawal %s. "
+                    "Skipping duplicate refund.",
+                    withdrawal_obj.id,
+                )
+                return False
+
+            wallet.balance += withdrawal_obj.amount
+            wallet.save(update_fields=["balance"])
+
             WalletTransaction.objects.create(
                 user_id=driver.user_id,
-                amount=withdrawal.amount,
-                txn_type='credit',
-                status='completed',
-                purpose='refund_failed_withdrawal',
-                reference_id=f"refund_withdrawal_{withdrawal.id}",
-                idempotency_key=idempotency_key
+                amount=withdrawal_obj.amount,
+                txn_type="credit",
+                status="completed",
+                purpose="refund_failed_withdrawal",
+                reference_id=refund_reference,
+                idempotency_key=refund_idempotency_key,
             )
+
+            logger.info(
+                "Refunded %s for failed withdrawal %s",
+                withdrawal_obj.amount,
+                withdrawal_obj.id,
+            )
+
+            return True
+
+    try:
+        driver = withdrawal.driver
+
+        # A payout should only be initiated after admin approval.
+        if withdrawal.status not in ("approved", "processed"):
+            logger.warning(
+                "Cannot trigger payout for withdrawal %s with status '%s'",
+                withdrawal.id,
+                withdrawal.status,
+            )
+            return False
+
+        # ---------------------------------------------------------
+        # BANK PAYOUT SAFETY
+        # ---------------------------------------------------------
+        # Bank payout integration is not currently wired to Cashfree.
+        # Never mark it as successfully processed using the old
+        # simulated initiate_bank_payout() implementation.
+        if withdrawal.payout_method == "bank":
+            withdrawal.status = "failed"
+            withdrawal.failure_reason = (
+                "Bank payout is not currently configured with the payment gateway."
+            )
+            withdrawal.processed_at = timezone.now()
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "failure_reason",
+                    "processed_at",
+                ]
+            )
+
+            refund_failed_withdrawal(driver, withdrawal)
+
+            logger.error(
+                "Bank payout blocked for withdrawal %s because bank "
+                "payout gateway integration is not configured.",
+                withdrawal.id,
+            )
+            return False
+
+        # ---------------------------------------------------------
+        # UPI PAYOUT
+        # ---------------------------------------------------------
+        if withdrawal.payout_method == "upi":
+            payout_success = initiate_upi_payout(withdrawal, driver)
+        else:
+            withdrawal.status = "failed"
+            withdrawal.failure_reason = (
+                f"Unsupported payout method: {withdrawal.payout_method}"
+            )
+            withdrawal.processed_at = timezone.now()
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "failure_reason",
+                    "processed_at",
+                ]
+            )
+
+            refund_failed_withdrawal(driver, withdrawal)
+
+            logger.error(
+                "Unsupported payout method '%s' for withdrawal %s",
+                withdrawal.payout_method,
+                withdrawal.id,
+            )
+            return False
+
+        # ---------------------------------------------------------
+        # PAYOUT INITIATED
+        # ---------------------------------------------------------
+        if payout_success:
+            withdrawal.status = "processed"
+            withdrawal.processed_at = timezone.now()
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "processed_at",
+                ]
+            )
+
+            logger.info(
+                "Payout successfully initiated for withdrawal %s, "
+                "amount=%s, method=%s",
+                withdrawal.id,
+                withdrawal.amount,
+                withdrawal.payout_method,
+            )
+            return True
+
+        # ---------------------------------------------------------
+        # PAYOUT FAILED
+        # ---------------------------------------------------------
+        withdrawal.status = "failed"
+
+        if not withdrawal.failure_reason:
+            withdrawal.failure_reason = "Payout initiation failed"
+
+        withdrawal.processed_at = timezone.now()
+
+        withdrawal.save(
+            update_fields=[
+                "status",
+                "failure_reason",
+                "processed_at",
+            ]
+        )
+
+        refund_failed_withdrawal(driver, withdrawal)
+
+        logger.error(
+            "Failed to initiate payout for withdrawal %s, "
+            "amount=%s, method=%s",
+            withdrawal.id,
+            withdrawal.amount,
+            withdrawal.payout_method,
+        )
+
         return False
 
+    except Exception as e:
+        logger.exception(
+            "Unexpected error while triggering payout for withdrawal %s: %s",
+            withdrawal.id,
+            e,
+        )
 
+        try:
+            driver = withdrawal.driver
+
+            withdrawal.status = "failed"
+
+            if not withdrawal.failure_reason:
+                withdrawal.failure_reason = (
+                    "Unexpected error while initiating payout"
+                )
+
+            withdrawal.processed_at = timezone.now()
+
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "failure_reason",
+                    "processed_at",
+                ]
+            )
+
+            refund_failed_withdrawal(driver, withdrawal)
+
+        except Exception as refund_error:
+            logger.exception(
+                "CRITICAL: payout failed and refund also failed "
+                "for withdrawal %s: %s",
+                withdrawal.id,
+                refund_error,
+            )
+
+        return False
 def initiate_upi_payout(withdrawal, driver):
     """
-    Initiate UPI payout via Cashfree API with production-grade error handling and retry logic.
-    
-    Args:
-        withdrawal: WithdrawalRequest instance
-        driver: Driver instance
-        
+    Initiate UPI payout through the configured payment gateway.
+
+    The withdrawal wallet amount has already been deducted when the
+    withdrawal request was created.
+
     Returns:
-        bool: True if payout was successfully initiated, False otherwise
+        bool: True when the gateway accepts the payout.
+        False when payout initiation fails.
     """
     import logging
     import time
+
     from django.utils import timezone
+
     from .models import DriverUPIContact
-    from servers.payments.payment_gateways.factory import get_payment_gateway_for_payouts
-    
+    from servers.payments.payment_gateways.factory import (
+        get_payment_gateway_for_payouts,
+    )
+
     logger = logging.getLogger(__name__)
-    
-    # Check if driver has UPI ID
+
+    # ---------------------------------------------------------
+    # BASIC VALIDATION
+    # ---------------------------------------------------------
     if not driver.upi_id:
-        logger.error(f"Driver {driver.id} does not have UPI ID set for UPI payout")
-        withdrawal.status = 'failed'
-        withdrawal.failure_reason = 'UPI ID not set'
-        withdrawal.save()
+        withdrawal.failure_reason = "UPI ID not set"
+        withdrawal.failure_count += 1
+        withdrawal.last_failure_at = timezone.now()
+        withdrawal.save(
+            update_fields=[
+                "failure_reason",
+                "failure_count",
+                "last_failure_at",
+            ]
+        )
+
+        logger.error(
+            "Driver %s does not have a UPI ID for withdrawal %s",
+            driver.id,
+            withdrawal.id,
+        )
         return False
-    
-    # Validate UPI ID format
+
     upi_validation = validate_upi_id_advanced(driver.upi_id)
-    print(upi_validation)
+
     if not upi_validation[0]:
-        logger.error(f"Invalid UPI ID format for driver {driver.id}: {driver.upi_id}")
-        withdrawal.status = 'failed'
-        withdrawal.failure_reason = f"Invalid UPI ID: {upi_validation[1]}"
-        withdrawal.save()
+        withdrawal.failure_reason = (
+            f"Invalid UPI ID: {upi_validation[1]}"
+        )
+        withdrawal.failure_count += 1
+        withdrawal.last_failure_at = timezone.now()
+        withdrawal.save(
+            update_fields=[
+                "failure_reason",
+                "failure_count",
+                "last_failure_at",
+            ]
+        )
+
+        logger.error(
+            "Invalid UPI ID for driver %s, withdrawal %s",
+            driver.id,
+            withdrawal.id,
+        )
         return False
-    
-    # Check if this is a retry attempt
-    is_retry = withdrawal.failure_count > 0
+
+    # ---------------------------------------------------------
+    # DO NOT CREATE ANOTHER PAYOUT IF ONE ALREADY EXISTS
+    # ---------------------------------------------------------
+    if withdrawal.payout_reference_id:
+        logger.warning(
+            "Withdrawal %s already has payout reference %s. "
+            "Skipping duplicate Cashfree payout creation.",
+            withdrawal.id,
+            withdrawal.payout_reference_id,
+        )
+        return True
+
+    # ---------------------------------------------------------
+    # RETRY PROTECTION
+    # ---------------------------------------------------------
     max_retries = 3
-    retry_delay = get_upi_payout_retry_delay(withdrawal.failure_count)
-    
-    # Check if we should retry based on previous failures
-    if is_retry and withdrawal.failure_count >= max_retries:
-        logger.error(f"Max retries ({max_retries}) exceeded for withdrawal {withdrawal.id}")
-        withdrawal.status = 'failed'
-        withdrawal.failure_reason = 'Max retries exceeded'
-        withdrawal.save()
+
+    if withdrawal.failure_count >= max_retries:
+        withdrawal.failure_reason = "Max retries exceeded"
+        withdrawal.save(update_fields=["failure_reason"])
+
+        logger.error(
+            "Maximum payout retries exceeded for withdrawal %s",
+            withdrawal.id,
+        )
         return False
-    
-    # Check if we should wait before retrying
-    if is_retry and withdrawal.last_failure_at:
-        time_since_failure = (timezone.now() - withdrawal.last_failure_at).total_seconds()
+
+    if withdrawal.failure_count > 0 and withdrawal.last_failure_at:
+        retry_delay = get_upi_payout_retry_delay(
+            withdrawal.failure_count
+        )
+
+        time_since_failure = (
+            timezone.now() - withdrawal.last_failure_at
+        ).total_seconds()
+
         if time_since_failure < retry_delay:
-            logger.info(f"Waiting {retry_delay - time_since_failure:.0f}s before retry for withdrawal {withdrawal.id}")
+            logger.info(
+                "Retry delay has not elapsed for withdrawal %s. "
+                "Remaining seconds: %.0f",
+                withdrawal.id,
+                retry_delay - time_since_failure,
+            )
             return False
-    
+
+    # ---------------------------------------------------------
+    # CASHFREE PAYOUT CREATION
+    # ---------------------------------------------------------
     try:
-        # Step 1: Get payment gateway for payouts
-        logger.info(f"Getting payment gateway for UPI payout to driver {driver.id}, UPI ID: {driver.upi_id}")
+        logger.info(
+            "Creating UPI payout for withdrawal %s, driver %s",
+            withdrawal.id,
+            driver.id,
+        )
+
         gateway = get_payment_gateway_for_payouts()
-        
-        # Step 2: Create UPI payout
-        logger.info(f"Creating UPI payout for withdrawal {withdrawal.id}, amount: {withdrawal.amount}")
-        
-        # Generate reference ID for tracking
-        reference_id = f"withdrawal_{withdrawal.id}_driver_{driver.id}_{int(time.time())}"
-        
+
+        # Use a stable reference for this withdrawal.
+        #
+        # Do NOT include the current timestamp here. A retry should
+        # not accidentally create a second logical payout.
+        reference_id = (
+            f"withdrawal_{withdrawal.id}_driver_{driver.id}"
+        )
+
         payout_result = gateway.create_upi_payout(
             upi_id=driver.upi_id,
             amount=withdrawal.amount,
             purpose="payout",
             currency="INR",
             reference_id=reference_id,
-            name=driver.user_id.full_name or driver.user_id.phone_number
+            name=(
+                driver.user_id.full_name
+                or driver.user_id.phone_number
+            ),
         )
-        
+
         if not payout_result:
-            logger.error(f"Failed to create UPI payout for withdrawal {withdrawal.id}")
             withdrawal.failure_count += 1
             withdrawal.last_failure_at = timezone.now()
-            withdrawal.failure_reason = 'Cashfree payout creation failed'
-            withdrawal.save()
+            withdrawal.failure_reason = (
+                "Cashfree payout creation failed"
+            )
+
+            withdrawal.save(
+                update_fields=[
+                    "failure_count",
+                    "last_failure_at",
+                    "failure_reason",
+                ]
+            )
+
+            logger.error(
+                "Cashfree returned no payout result for withdrawal %s",
+                withdrawal.id,
+            )
             return False
-        
-        # Step 3: Update withdrawal with payout details
-        # Store Cashfree payout_id in payout_reference_id for webhook matching
-        cashfree_payout_id = payout_result.get('payout_id')
+
+        # -----------------------------------------------------
+        # EXTRACT CASHFREE PAYOUT REFERENCE
+        # -----------------------------------------------------
+        cashfree_payout_id = payout_result.get("payout_id")
+
+        if not cashfree_payout_id:
+            withdrawal.failure_count += 1
+            withdrawal.last_failure_at = timezone.now()
+            withdrawal.failure_reason = (
+                "Cashfree payout response did not contain payout_id"
+            )
+
+            withdrawal.save(
+                update_fields=[
+                    "failure_count",
+                    "last_failure_at",
+                    "failure_reason",
+                ]
+            )
+
+            logger.error(
+                "Cashfree payout response missing payout_id "
+                "for withdrawal %s. Response keys: %s",
+                withdrawal.id,
+                list(payout_result.keys()),
+            )
+            return False
+
+        # -----------------------------------------------------
+        # SAVE PAYOUT TRACKING DATA
+        # -----------------------------------------------------
         withdrawal.payout_reference_id = cashfree_payout_id
-        withdrawal.payout_status = payout_result.get('status', 'created')
-        withdrawal.payout_mode = 'UPI'
-        withdrawal.status = 'processing'  # Mark as processing (awaiting webhook confirmation)
+        withdrawal.payout_status = payout_result.get(
+            "status",
+            "created",
+        )
+        withdrawal.payout_mode = "UPI"
+
+        # 'processed' here means payout request was accepted by
+        # the gateway. Final completion should come from webhook.
+        withdrawal.status = "processed"
         withdrawal.processed_at = timezone.now()
-        withdrawal.failure_count = 0  # Reset failure count on success
+
+        withdrawal.failure_count = 0
+        withdrawal.last_failure_at = None
         withdrawal.failure_reason = None
-        withdrawal.save()
-        
-        logger.info(f"Stored Cashfree payout ID {cashfree_payout_id} in withdrawal {withdrawal.id}")
-        
-        # Step 4: Update or create DriverUPIContact record
+
+        withdrawal.save(
+            update_fields=[
+                "payout_reference_id",
+                "payout_status",
+                "payout_mode",
+                "status",
+                "processed_at",
+                "failure_count",
+                "last_failure_at",
+                "failure_reason",
+            ]
+        )
+
+        logger.info(
+            "Cashfree UPI payout accepted for withdrawal %s. "
+            "Payout ID=%s",
+            withdrawal.id,
+            cashfree_payout_id,
+        )
+
+        # -----------------------------------------------------
+        # SAVE DRIVER UPI CONTACT
+        # -----------------------------------------------------
         try:
             upi_contact, created = DriverUPIContact.objects.get_or_create(
                 driver=driver,
                 defaults={
-                    'gateway_contact_id': payout_result.get('contact_id'),
-                    'gateway_fund_account_id': payout_result.get('fund_account_id'),
-                    'upi_id': driver.upi_id,
-                    'is_active': True
-                }
+                    "gateway_contact_id": payout_result.get(
+                        "contact_id"
+                    ),
+                    "gateway_fund_account_id": payout_result.get(
+                        "fund_account_id"
+                    ),
+                    "upi_id": driver.upi_id,
+                    "is_active": True,
+                },
             )
-            
+
             if not created:
-                # Update existing record
-                upi_contact.gateway_contact_id = payout_result.get('contact_id')
-                upi_contact.gateway_fund_account_id = payout_result.get('fund_account_id')
+                upi_contact.gateway_contact_id = (
+                    payout_result.get("contact_id")
+                )
+                upi_contact.gateway_fund_account_id = (
+                    payout_result.get("fund_account_id")
+                )
                 upi_contact.upi_id = driver.upi_id
-                upi_contact.last_used_at = timezone.now()
                 upi_contact.is_active = True
-                upi_contact.save()
-            
-            logger.info(f"DriverUPIContact {'created' if created else 'updated'} for driver {driver.id}")
-        except Exception as e:
-            logger.warning(f"Failed to update DriverUPIContact for driver {driver.id}: {e}")
-            # Non-critical error, continue
-        
-        logger.info(f"UPI payout successfully initiated for withdrawal {withdrawal.id}: "
-                   f"Cashfree payout ID: {withdrawal.payout_reference_id}, "
-                   f"Amount: {withdrawal.amount}, UPI ID: {driver.upi_id}")
-        
+                upi_contact.last_used_at = timezone.now()
+
+                upi_contact.save(
+                    update_fields=[
+                        "gateway_contact_id",
+                        "gateway_fund_account_id",
+                        "upi_id",
+                        "is_active",
+                        "last_used_at",
+                    ]
+                )
+
+        except Exception as contact_error:
+            # Contact persistence must not turn a successful
+            # Cashfree payout into a failed payout.
+            logger.warning(
+                "Failed to update DriverUPIContact for driver %s: %s",
+                driver.id,
+                contact_error,
+            )
+
         return True
-        
+
     except Exception as e:
-        logger.error(f"Failed to initiate UPI payout for withdrawal {withdrawal.id}: {e}", exc_info=True)
+        logger.exception(
+            "Failed to initiate UPI payout for withdrawal %s: %s",
+            withdrawal.id,
+            e,
+        )
+
         withdrawal.failure_count += 1
         withdrawal.last_failure_at = timezone.now()
-        withdrawal.failure_reason = str(e)[:255]  # Truncate to fit field length
-        withdrawal.save()
-        return False
+        withdrawal.failure_reason = str(e)[:255]
 
+        withdrawal.save(
+            update_fields=[
+                "failure_count",
+                "last_failure_at",
+                "failure_reason",
+            ]
+        )
+
+        return False
 
 def initiate_bank_payout(withdrawal, driver):
     """

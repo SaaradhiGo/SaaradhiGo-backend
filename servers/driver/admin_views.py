@@ -517,20 +517,28 @@ def approve_withdrawal_admin(request, withdrawal_id):
 def reject_withdrawal_admin(request, withdrawal_id):
     """
     POST /api/admin/withdrawals/{id}/reject/
-    Reject request with admin notes (status: PENDING → REJECTED).
+
+    Reject a pending withdrawal and refund the amount to the
+    driver's wallet exactly once.
     """
     from .models import WithdrawalRequest
     from django.db import transaction
     from django.utils import timezone
+    from servers.rider.models import Wallet, WalletTransaction
     from servers.admin_audit.services import record_admin_action
 
-    admin_notes = request.data.get('admin_notes', '')
+    admin_notes = request.data.get('admin_notes', '').strip()
 
     try:
         with transaction.atomic():
+
+            # Lock the withdrawal so two admins cannot reject
+            # the same withdrawal at the same time.
             try:
                 withdrawal = (
-                    WithdrawalRequest.objects.select_for_update()
+                    WithdrawalRequest.objects
+                    .select_for_update()
+                    .select_related('driver')
                     .get(id=withdrawal_id)
                 )
             except WithdrawalRequest.DoesNotExist:
@@ -542,6 +550,7 @@ def reject_withdrawal_admin(request, withdrawal_id):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
+            # Only pending withdrawals can be rejected.
             if withdrawal.status != 'pending':
                 return error_response(
                     code="INVALID_STATUS",
@@ -551,11 +560,123 @@ def reject_withdrawal_admin(request, withdrawal_id):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            before = {'status': withdrawal.status, 'amount': str(withdrawal.amount)}
+            driver = withdrawal.driver
+            amount = withdrawal.amount
+
+            # Lock the driver's wallet.
+            try:
+                wallet = (
+                    Wallet.objects
+                    .select_for_update()
+                    .get(
+                        user_id=driver.user_id,
+                        scope=Wallet.SCOPE_DRIVER,
+                    )
+                )
+            except Wallet.DoesNotExist:
+                logger.error(
+                    "Driver wallet not found while rejecting "
+                    "withdrawal %s for driver %s",
+                    withdrawal.id,
+                    driver.id,
+                )
+
+                return error_response(
+                    code="WALLET_NOT_FOUND",
+                    message="Driver wallet not found",
+                    field="wallet",
+                    issue=f"No driver wallet exists for driver {driver.id}",
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            # ---------------------------------------------------------
+            # IDEMPOTENT REFUND
+            # ---------------------------------------------------------
+            #
+            # The withdrawal creation flow already deducted this
+            # amount from the driver's wallet.
+            #
+            # Therefore, when an admin rejects the withdrawal,
+            # we must return the money exactly once.
+            #
+            refund_reference = (
+                f"refund_rejected_withdrawal_{withdrawal.id}"
+            )
+
+            refund_idempotency_key = (
+                f"refund_rejected_withdrawal_{withdrawal.id}"
+            )
+
+            refund_already_exists = (
+                WalletTransaction.objects
+                .filter(
+                    reference_id=refund_reference,
+                    purpose='refund_rejected_withdrawal',
+                    txn_type='credit',
+                    status='completed',
+                )
+                .exists()
+            )
+
+            if not refund_already_exists:
+
+                # Return the withdrawal amount to the driver wallet.
+                wallet.balance += amount
+
+                wallet.save(
+                    update_fields=['balance']
+                )
+
+                # Create one permanent refund transaction.
+                WalletTransaction.objects.create(
+                    user_id=driver.user_id,
+                    amount=amount,
+                    txn_type='credit',
+                    status='completed',
+                    purpose='refund_rejected_withdrawal',
+                    reference_id=refund_reference,
+                    idempotency_key=refund_idempotency_key,
+                )
+
+                logger.info(
+                    "Rejected withdrawal refunded successfully: "
+                    "withdrawal=%s driver=%s amount=%s",
+                    withdrawal.id,
+                    driver.id,
+                    amount,
+                )
+
+            else:
+                logger.info(
+                    "Refund already exists for rejected withdrawal=%s. "
+                    "Skipping duplicate refund.",
+                    withdrawal.id,
+                )
+
+            # ---------------------------------------------------------
+            # REJECT WITHDRAWAL
+            # ---------------------------------------------------------
+
+            before = {
+                'status': withdrawal.status,
+                'amount': str(amount),
+            }
+
             withdrawal.status = 'rejected'
             withdrawal.admin_notes = admin_notes
             withdrawal.processed_at = timezone.now()
-            withdrawal.save(update_fields=['status', 'admin_notes', 'processed_at'])
+
+            withdrawal.save(
+                update_fields=[
+                    'status',
+                    'admin_notes',
+                    'processed_at',
+                ]
+            )
+
+            # ---------------------------------------------------------
+            # ADMIN AUDIT LOG
+            # ---------------------------------------------------------
 
             record_admin_action(
                 request,
@@ -563,11 +684,22 @@ def reject_withdrawal_admin(request, withdrawal_id):
                 target_type='withdrawal_request',
                 target_id=withdrawal.id,
                 before=before,
-                after={'status': 'rejected', 'admin_notes': admin_notes},
-                reason=admin_notes,
+                after={
+                    'status': 'rejected',
+                    'admin_notes': admin_notes,
+                    'wallet_refunded': True,
+                    'refund_reference': refund_reference,
+                    'refund_amount': str(amount),
+                },
+                reason=admin_notes or 'Withdrawal rejected by admin',
             )
+
     except Exception as e:
-        logger.error(f"reject_withdrawal_admin atomic block failed: {e}")
+        logger.error(
+            f"reject_withdrawal_admin atomic block failed: {e}",
+            exc_info=True,
+        )
+
         return error_response(
             code="INTERNAL_ERROR",
             message="Failed to reject withdrawal",
@@ -577,30 +709,37 @@ def reject_withdrawal_admin(request, withdrawal_id):
         )
 
     from .serializers import WithdrawalRequestSerializer
-    serializer = WithdrawalRequestSerializer(withdrawal)
-    return success_response(serializer.data, status.HTTP_200_OK)
 
+    serializer = WithdrawalRequestSerializer(withdrawal)
+
+    return success_response(
+        serializer.data,
+        status.HTTP_200_OK,
+    )
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, IsAdmin])
 def bulk_action_withdrawal_admin(request):
     """
     POST /api/admin/withdrawals/bulk-action/
-    Bulk approve/reject multiple requests.
+
+    Bulk approve/reject multiple pending withdrawal requests.
+
+    Rejected withdrawals refund the driver's wallet exactly once.
     """
     from .models import WithdrawalRequest
     from django.db import transaction
     from django.utils import timezone
+    from servers.rider.models import Wallet, WalletTransaction
     from servers.admin_audit.services import record_admin_action
 
-    # Cap to prevent an admin (or a compromised admin session) from
-    # locking the entire withdrawals table or processing the platform's
-    # full backlog in a single accidental request.
+    # Prevent an admin request from processing an excessive number
+    # of withdrawals at once.
     BULK_MAX = 50
 
-    action = request.data.get('action')  # 'approve' or 'reject'
+    action = request.data.get('action')
     withdrawal_ids = request.data.get('withdrawal_ids', [])
-    admin_notes = request.data.get('admin_notes', '')
+    admin_notes = request.data.get('admin_notes', '').strip()
 
     if action not in ['approve', 'reject']:
         return error_response(
@@ -629,78 +768,246 @@ def bulk_action_withdrawal_admin(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Process each row inside its own atomic + select_for_update so:
-    #  - two concurrent bulk calls can't both flip the same row
-    #  - a transient failure on one row doesn't roll back the rest
-    #  - each audit row is written within the same transaction as its
-    #    state flip
     approved_for_payout = []
     updated_ids = []
     skipped_ids = []
 
     for wid in withdrawal_ids:
+
         try:
             with transaction.atomic():
+
+                # Lock withdrawal so concurrent admin requests
+                # cannot process the same withdrawal twice.
                 try:
-                    w = WithdrawalRequest.objects.select_for_update().get(id=wid)
+                    w = (
+                        WithdrawalRequest.objects
+                        .select_for_update()
+                        .select_related('driver')
+                        .get(id=wid)
+                    )
                 except WithdrawalRequest.DoesNotExist:
                     skipped_ids.append(wid)
                     continue
 
+                # Only pending withdrawals can be processed.
                 if w.status != 'pending':
                     skipped_ids.append(wid)
                     continue
 
-                before = {'status': w.status, 'amount': str(w.amount)}
+                before = {
+                    'status': w.status,
+                    'amount': str(w.amount),
+                }
+
+                # =====================================================
+                # APPROVE
+                # =====================================================
+
                 if action == 'approve':
+
                     w.status = 'approved'
                     w.processed_at = timezone.now()
-                    w.save(update_fields=['status', 'processed_at'])
+
+                    w.save(
+                        update_fields=[
+                            'status',
+                            'processed_at',
+                        ]
+                    )
+
                     record_admin_action(
                         request,
                         action='withdrawal_approved',
                         target_type='withdrawal_request',
                         target_id=w.id,
                         before=before,
-                        after={'status': 'approved', 'amount': str(w.amount)},
+                        after={
+                            'status': 'approved',
+                            'amount': str(w.amount),
+                        },
                         reason='bulk action',
                     )
+
                     approved_for_payout.append(w)
+
+                # =====================================================
+                # REJECT + REFUND
+                # =====================================================
+
                 else:
+
+                    driver = w.driver
+                    amount = w.amount
+
+                    # Lock driver's wallet before modifying the balance.
+                    try:
+                        wallet = (
+                            Wallet.objects
+                            .select_for_update()
+                            .get(
+                                user_id=driver.user_id,
+                                scope=Wallet.SCOPE_DRIVER,
+                            )
+                        )
+                    except Wallet.DoesNotExist:
+
+                        logger.error(
+                            "Driver wallet not found for bulk rejection: "
+                            "withdrawal=%s driver=%s",
+                            w.id,
+                            driver.id,
+                        )
+
+                        # Because this row is inside transaction.atomic(),
+                        # nothing for this withdrawal will be committed.
+                        skipped_ids.append(wid)
+                        continue
+
+                    # -------------------------------------------------
+                    # Deterministic refund reference
+                    # -------------------------------------------------
+
+                    refund_reference = (
+                        f"refund_rejected_withdrawal_{w.id}"
+                    )
+
+                    refund_idempotency_key = (
+                        f"refund_rejected_withdrawal_{w.id}"
+                    )
+
+                    # Check whether this withdrawal was already refunded.
+                    refund_already_exists = (
+                        WalletTransaction.objects
+                        .filter(
+                            reference_id=refund_reference,
+                            purpose='refund_rejected_withdrawal',
+                            txn_type='credit',
+                            status='completed',
+                        )
+                        .exists()
+                    )
+
+                    if not refund_already_exists:
+
+                        # Return the withdrawn amount to the driver wallet.
+                        wallet.balance += amount
+
+                        wallet.save(
+                            update_fields=['balance']
+                        )
+
+                        # Record the refund transaction.
+                        WalletTransaction.objects.create(
+                            user_id=driver.user_id,
+                            amount=amount,
+                            txn_type='credit',
+                            status='completed',
+                            purpose='refund_rejected_withdrawal',
+                            reference_id=refund_reference,
+                            idempotency_key=refund_idempotency_key,
+                        )
+
+                        logger.info(
+                            "Bulk rejected withdrawal refunded: "
+                            "withdrawal=%s driver=%s amount=%s",
+                            w.id,
+                            driver.id,
+                            amount,
+                        )
+
+                    else:
+
+                        logger.info(
+                            "Bulk rejection refund already exists: "
+                            "withdrawal=%s. Skipping duplicate refund.",
+                            w.id,
+                        )
+
+                    # -------------------------------------------------
+                    # Mark withdrawal rejected
+                    # -------------------------------------------------
+
                     w.status = 'rejected'
                     w.admin_notes = admin_notes
                     w.processed_at = timezone.now()
-                    w.save(update_fields=['status', 'admin_notes', 'processed_at'])
+
+                    w.save(
+                        update_fields=[
+                            'status',
+                            'admin_notes',
+                            'processed_at',
+                        ]
+                    )
+
+                    # -------------------------------------------------
+                    # Audit log
+                    # -------------------------------------------------
+
                     record_admin_action(
                         request,
                         action='withdrawal_rejected',
                         target_type='withdrawal_request',
                         target_id=w.id,
                         before=before,
-                        after={'status': 'rejected', 'admin_notes': admin_notes},
-                        reason=admin_notes or 'bulk action',
+                        after={
+                            'status': 'rejected',
+                            'admin_notes': admin_notes,
+                            'wallet_refunded': True,
+                            'refund_reference': refund_reference,
+                            'refund_amount': str(amount),
+                        },
+                        reason=(
+                            admin_notes
+                            or 'bulk action'
+                        ),
                     )
+
                 updated_ids.append(w.id)
+
         except Exception as e:
-            logger.error(f"bulk_action_withdrawal_admin: row {wid} failed: {e}")
+            logger.error(
+                "bulk_action_withdrawal_admin: "
+                "row %s failed: %s",
+                wid,
+                e,
+                exc_info=True,
+            )
+
             skipped_ids.append(wid)
 
-    # Payouts dispatch outside the per-row transactions to avoid holding
-    # locks through the gateway round-trip.
+    # =============================================================
+    # DISPATCH APPROVED PAYOUTS
+    # =============================================================
+    #
+    # Gateway calls happen outside the database transaction so we
+    # don't hold database locks during the external API request.
+    # =============================================================
+
     if approved_for_payout:
+
         from .services import trigger_payout_creation
+
         for w in approved_for_payout:
+
             try:
                 trigger_payout_creation(w)
+
             except Exception as e:
                 logger.error(
-                    f"bulk_action_withdrawal_admin: payout dispatch failed "
-                    f"for withdrawal {w.id}: {e}"
+                    "Bulk payout dispatch failed for withdrawal %s: %s",
+                    w.id,
+                    e,
+                    exc_info=True,
                 )
 
-    return success_response({
-        'message': f'Bulk {action} processed',
-        'updated_ids': updated_ids,
-        'skipped_ids': skipped_ids,
-        'updated_count': len(updated_ids),
-    }, status.HTTP_200_OK)
+    return success_response(
+        {
+            'action': action,
+            'updated_ids': updated_ids,
+            'skipped_ids': skipped_ids,
+            'updated_count': len(updated_ids),
+            'skipped_count': len(skipped_ids),
+        },
+        status.HTTP_200_OK,
+    )

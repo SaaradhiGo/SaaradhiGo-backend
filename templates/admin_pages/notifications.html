@@ -1,0 +1,480 @@
+{% extends "admin_pages/base.html" %}
+
+{% block content %}
+
+<div class="p-6">
+
+    <div class="mb-6">
+        <h1 class="text-2xl font-bold text-[#e5e2e1]">
+            Notifications
+        </h1>
+
+        <p class="text-[#e5e2e1]/60 mt-1">
+            Send push notifications to riders and drivers.
+        </p>
+    </div>
+
+    {% if messages %}
+        <div class="space-y-2 mb-6">
+            {% for message in messages %}
+                <div class="rounded-lg border border-[#343232] bg-[#201f1f] px-4 py-3 text-[#e5e2e1]">
+                    {{ message }}
+                </div>
+            {% endfor %}
+        </div>
+    {% endif %}
+
+    <form method="POST"
+          class="bg-[#161515] border border-[#343232] rounded-xl p-6 max-w-3xl">
+
+        {% csrf_token %}
+
+        <!-- Notification Type -->
+        <div class="mb-6">
+            <label class="block text-sm font-medium text-[#e5e2e1] mb-3">
+                Notification Type
+            </label>
+
+            <div class="space-y-3">
+
+                <label class="flex items-center gap-3 text-[#e5e2e1]">
+                    <input
+                        type="radio"
+                        name="notif_type"
+                        value="system"
+                        checked
+                    >
+                    <span>System</span>
+                </label>
+
+                <label class="flex items-center gap-3 text-[#e5e2e1]">
+                    <input
+                        type="radio"
+                        name="notif_type"
+                        value="marketing"
+                    >
+                    <span>Marketing</span>
+                </label>
+
+            </div>
+        </div>
+
+        <!-- Audience -->
+        <div class="mb-6">
+            <label class="block text-sm font-medium text-[#e5e2e1] mb-3">
+                Audience
+            </label>
+
+            <div class="space-y-3">
+
+                <label class="flex items-center gap-3 text-[#e5e2e1]">
+                    <input
+                        type="radio"
+                        name="audience"
+                        value="all"
+                        checked
+                    >
+                    <span>All Riders & Drivers</span>
+                </label>
+
+                <label class="flex items-center gap-3 text-[#e5e2e1]">
+                    <input
+                        type="radio"
+                        name="audience"
+                        value="riders"
+                    >
+                    <span>All Riders</span>
+                </label>
+
+                <label class="flex items-center gap-3 text-[#e5e2e1]">
+                    <input
+                        type="radio"
+                        name="audience"
+                        value="drivers"
+                    >
+                    <span>All Drivers</span>
+                </label>
+
+                <label class="flex items-center gap-3 text-[#e5e2e1]">
+                    <input
+                        type="radio"
+                        name="audience"
+                        value="specific"
+                    >
+                    <span>Specific People</span>
+                </label>
+
+            </div>
+        </div>
+
+        <!-- Dynamic Specific People -->
+        <div
+            id="specific-users-section"
+            class="mb-6 hidden"
+        >
+
+            <label class="block text-sm font-medium text-[#e5e2e1] mb-2">
+                Search Rider or Driver
+            </label>
+
+            <input
+                type="text"
+                id="user-search"
+                placeholder="Search by name or phone number..."
+                autocomplete="off"
+                class="w-full rounded-lg bg-[#201f1f] border border-[#343232] text-[#e5e2e1] px-4 py-3 focus:outline-none"
+            >
+
+            <!-- Search Results -->
+            <div
+                id="user-search-results"
+                class="mt-2 rounded-lg border border-[#343232] bg-[#201f1f] hidden overflow-hidden"
+            ></div>
+
+            <!-- Selected Users -->
+            <div
+                id="selected-users"
+                class="mt-4 space-y-2"
+            ></div>
+
+            <!-- IDs submitted to Django -->
+            <input
+                type="hidden"
+                name="user_ids"
+                id="selected-user-ids"
+                value=""
+            >
+
+            <p class="text-xs text-[#e5e2e1]/50 mt-2">
+                Search by name or phone number and select the rider or driver.
+            </p>
+
+        </div>
+
+        <!-- Title -->
+        <div class="mb-5">
+            <label class="block text-sm font-medium text-[#e5e2e1] mb-2">
+                Notification Title
+            </label>
+
+            <input
+                type="text"
+                name="title"
+                maxlength="256"
+                required
+                placeholder="Enter notification title"
+                class="w-full rounded-lg bg-[#201f1f] border border-[#343232] text-[#e5e2e1] px-4 py-3 focus:outline-none"
+            >
+        </div>
+
+        <!-- Message -->
+        <div class="mb-6">
+            <label class="block text-sm font-medium text-[#e5e2e1] mb-2">
+                Message
+            </label>
+
+            <textarea
+                name="message"
+                rows="5"
+                required
+                placeholder="Enter notification message"
+                class="w-full rounded-lg bg-[#201f1f] border border-[#343232] text-[#e5e2e1] px-4 py-3 focus:outline-none"
+            ></textarea>
+        </div>
+
+        <!-- Submit -->
+        <button
+            type="submit"
+            class="px-5 py-3 rounded-lg bg-primary text-black font-bold hover:opacity-90"
+        >
+            Send Notification
+        </button>
+
+    </form>
+
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+
+    const specificSection =
+        document.getElementById("specific-users-section");
+
+    const searchInput =
+        document.getElementById("user-search");
+
+    const searchResults =
+        document.getElementById("user-search-results");
+
+    const selectedUsersContainer =
+        document.getElementById("selected-users");
+
+    const selectedUserIds =
+        document.getElementById("selected-user-ids");
+
+    const audienceInputs =
+        document.querySelectorAll('input[name="audience"]');
+
+    let selectedUsers = [];
+    let searchTimer = null;
+
+
+    /* --------------------------------
+       Update hidden user IDs
+    -------------------------------- */
+    function updateUserIds() {
+
+        selectedUserIds.value =
+            selectedUsers
+                .map(user => user.id)
+                .join(",");
+    }
+
+
+    /* --------------------------------
+       Render selected users
+    -------------------------------- */
+    function renderSelectedUsers() {
+
+        selectedUsersContainer.innerHTML = "";
+
+        selectedUsers.forEach(function (user) {
+
+            const card = document.createElement("div");
+
+            card.className =
+                "flex items-center justify-between " +
+                "rounded-lg border border-[#343232] " +
+                "bg-[#201f1f] px-4 py-3";
+
+            card.innerHTML = `
+                <div>
+                    <div class="font-medium text-[#e5e2e1]">
+                        ${user.name}
+                    </div>
+
+                    <div class="text-sm text-[#e5e2e1]/50">
+                        ${user.phone} · ${user.role}
+                    </div>
+                </div>
+
+                <button
+                    type="button"
+                    class="text-red-400 hover:text-red-300"
+                    data-remove-id="${user.id}"
+                >
+                    Remove
+                </button>
+            `;
+
+            selectedUsersContainer.appendChild(card);
+        });
+
+        updateUserIds();
+    }
+
+
+    /* --------------------------------
+       Display search results
+    -------------------------------- */
+    function showSearchResults(users) {
+
+        searchResults.innerHTML = "";
+
+        if (!users.length) {
+
+            searchResults.innerHTML = `
+                <div class="px-4 py-3 text-[#e5e2e1]/50">
+                    No riders or drivers found.
+                </div>
+            `;
+
+            searchResults.classList.remove("hidden");
+
+            return;
+        }
+
+
+        users.forEach(function (user) {
+
+            const alreadySelected =
+                selectedUsers.some(
+                    selectedUser =>
+                        selectedUser.id === user.id
+                );
+
+
+            const item = document.createElement("button");
+
+            item.type = "button";
+
+            item.className =
+                "block w-full text-left px-4 py-3 " +
+                "hover:bg-[#2a2929] " +
+                "border-b border-[#343232]";
+
+
+            item.innerHTML = `
+                <div class="font-medium text-[#e5e2e1]">
+                    ${user.name}
+                </div>
+
+                <div class="text-sm text-[#e5e2e1]/50">
+                    ${user.phone} · ${user.role}
+                    ${alreadySelected ? " · Selected" : ""}
+                </div>
+            `;
+
+
+            item.addEventListener("click", function () {
+
+                if (!alreadySelected) {
+
+                    selectedUsers.push(user);
+
+                    renderSelectedUsers();
+                }
+
+                searchInput.value = "";
+
+                searchResults.classList.add("hidden");
+            });
+
+
+            searchResults.appendChild(item);
+        });
+
+
+        searchResults.classList.remove("hidden");
+    }
+
+
+    /* --------------------------------
+       Search users
+    -------------------------------- */
+    searchInput.addEventListener("input", function () {
+
+        const query =
+            searchInput.value.trim();
+
+        clearTimeout(searchTimer);
+
+
+        if (query.length < 2) {
+
+            searchResults.classList.add("hidden");
+
+            return;
+        }
+
+
+        searchTimer = setTimeout(function () {
+
+            fetch(
+                "{% url 'notifications' %}?search=" +
+                encodeURIComponent(query)
+            )
+            .then(function (response) {
+
+                if (!response.ok) {
+                    throw new Error("Search request failed");
+                }
+
+                return response.json();
+            })
+            .then(function (data) {
+
+                showSearchResults(
+                    data.users || []
+                );
+
+            })
+            .catch(function (error) {
+
+                console.error(
+                    "Notification user search failed:",
+                    error
+                );
+
+                searchResults.innerHTML = `
+                    <div class="px-4 py-3 text-red-400">
+                        Unable to search users.
+                    </div>
+                `;
+
+                searchResults.classList.remove("hidden");
+            });
+
+        }, 300);
+    });
+
+
+    /* --------------------------------
+       Remove selected user
+    -------------------------------- */
+    selectedUsersContainer.addEventListener(
+        "click",
+        function (event) {
+
+            const button =
+                event.target.closest("[data-remove-id]");
+
+            if (!button) {
+                return;
+            }
+
+            const userId =
+                Number(button.dataset.removeId);
+
+            selectedUsers =
+                selectedUsers.filter(
+                    user => user.id !== userId
+                );
+
+            renderSelectedUsers();
+        }
+    );
+
+
+    /* --------------------------------
+       Audience change
+    -------------------------------- */
+    audienceInputs.forEach(function (input) {
+
+        input.addEventListener(
+            "change",
+            function () {
+
+                if (
+                    input.value === "specific" &&
+                    input.checked
+                ) {
+
+                    specificSection.classList.remove(
+                        "hidden"
+                    );
+
+                } else if (input.checked) {
+
+                    specificSection.classList.add(
+                        "hidden"
+                    );
+
+                    searchInput.value = "";
+
+                    searchResults.classList.add(
+                        "hidden"
+                    );
+
+                    selectedUsers = [];
+
+                    renderSelectedUsers();
+                }
+            }
+        );
+    });
+
+});
+</script>
+
+{% endblock %}

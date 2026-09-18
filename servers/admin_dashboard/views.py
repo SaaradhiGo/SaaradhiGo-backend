@@ -6487,3 +6487,165 @@ def driver_profile(request, driver_id):
         "admin_pages/driver_profile.html",
         context,
     )
+from servers.auth_user.services import send_push_notification
+@admin_required
+def notifications(request: HttpRequest) -> HttpResponse:
+    """
+    Admin notification page.
+    Handles user search and notification sending.
+    """
+
+    User = get_user_model()
+
+    # Dynamic rider/driver search
+    if request.method == "GET" and request.GET.get("search"):
+
+        query = request.GET.get("search", "").strip()
+
+        if len(query) < 2:
+            return JsonResponse({"users": []})
+
+        users = (
+            User.objects
+            .filter(
+                role__in=["rider", "driver"],
+                is_active=True,
+            )
+            .filter(
+                Q(full_name__icontains=query)
+                | Q(phone_number__icontains=query)
+            )
+            .only(
+                "id",
+                "full_name",
+                "phone_number",
+                "role",
+            )
+            .order_by("full_name")[:20]
+        )
+
+        return JsonResponse({
+            "users": [
+                {
+                    "id": user.id,
+                    "name": user.full_name or "Unnamed User",
+                    "phone": user.phone_number,
+                    "role": user.role,
+                }
+                for user in users
+            ]
+        })
+
+    # Send notification
+    if request.method == "POST":
+
+        audience = (request.POST.get("audience") or "all").strip()
+        notif_type = (request.POST.get("notif_type") or "system").strip()
+        title = (request.POST.get("title") or "").strip()
+        message = (request.POST.get("message") or "").strip()
+
+        if not title:
+            messages.error(request, "Notification title is required.")
+            return redirect("notifications")
+
+        if not message:
+            messages.error(request, "Notification message is required.")
+            return redirect("notifications")
+
+        if notif_type not in {"system", "marketing"}:
+            messages.error(request, "Invalid notification type.")
+            return redirect("notifications")
+
+        recipients = User.objects.filter(
+            role__in=["rider", "driver"],
+            is_active=True,
+        )
+
+        if audience == "riders":
+            recipients = recipients.filter(role="rider")
+
+        elif audience == "drivers":
+            recipients = recipients.filter(role="driver")
+
+        elif audience == "specific":
+
+            raw_ids = request.POST.get("user_ids", "")
+
+            user_ids = [
+                value.strip()
+                for value in raw_ids.split(",")
+                if value.strip().isdigit()
+            ]
+
+            if not user_ids:
+                messages.error(
+                    request,
+                    "Please select at least one rider or driver."
+                )
+                return redirect("notifications")
+
+            recipients = recipients.filter(id__in=user_ids)
+
+        elif audience != "all":
+            messages.error(request, "Invalid audience.")
+            return redirect("notifications")
+
+        sent_count = 0
+        push_count = 0
+        skipped_count = 0
+
+        for user in recipients.iterator():
+
+            preferences = getattr(
+                user,
+                "notification_preferences",
+                None,
+            )
+
+            if preferences is not None:
+                if not preferences.is_enabled_for(notif_type):
+                    skipped_count += 1
+                    continue
+
+            Notification.objects.create(
+                user_id=user,
+                title=title,
+                message=message,
+                notif_type=notif_type,
+                data={
+                    "source": "admin_broadcast",
+                    "notification_type": notif_type,
+                },
+            )
+
+            sent_count += 1
+
+            if (
+                preferences is None
+                or preferences.push_enabled
+            ):
+                if getattr(user, "fcm_token", None):
+                    if send_push_notification(
+                        user,
+                        title,
+                        message,
+                        {
+                            "source": "admin_broadcast",
+                            "notification_type": notif_type,
+                        },
+                    ):
+                        push_count += 1
+
+        messages.success(
+            request,
+            f"Notification created for {sent_count} users. "
+            f"Push notifications queued: {push_count}. "
+            f"Skipped: {skipped_count}."
+        )
+
+        return redirect("notifications")
+
+    return render(
+        request,
+        "admin_pages/notifications.html",
+    )

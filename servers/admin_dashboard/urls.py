@@ -21,6 +21,7 @@ from .views import (
     emergency_dashboard,
     transaction_dashboard,
     update_global_config,
+    notifications,
 )
 
 urlpatterns = [
@@ -48,4 +49,5 @@ urlpatterns = [
 
     # Driver Profile
     path("driver/<int:driver_id>/", driver_profile, name="driver_profile"),
+    path("notifications/", notifications, name="notifications"),
 ]

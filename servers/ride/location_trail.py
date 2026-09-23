@@ -43,6 +43,8 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from math import asin, cos, radians, sin, sqrt
 
+from django.db.models import Q
+
 logger = logging.getLogger(__name__)
 
 # Policy thresholds. Read through helpers rather than captured at import time,
@@ -287,32 +289,92 @@ def _sequence_from_entry_id(entry_id):
         return None
 
 
-def _resolve_active_trips(driver_ids):
-    """Map driver_id -> Trip for drivers currently on a driver-active trip.
+def late_arrival_minutes():
+    """How long after a trip ends its pings are still accepted.
+
+    The drain is periodic, so the pings from the last stretch of a journey are
+    always still in the stream when the trip completes. Without this window they
+    would be discarded, and every trip's measured distance would be short by
+    however far the driver travelled since the previous drain -- systematically,
+    and invisibly. A lagging or restarted worker would lose a whole trail.
+    """
+    from django.conf import settings
+
+    return int(getattr(settings, 'GPS_TRAIL_LATE_ARRIVAL_MINUTES', 60))
+
+
+def collection_window(trip):
+    """(start, end) during which this trip should accumulate a trail.
+
+    `end` is None while the trip is still live. `accepted_at` is the start
+    because that is when a driver is assigned and their movement first belongs
+    to this trip; the narrower question of what is *billable* is decided later,
+    by the journey window in `ride.actual_metrics`, which uses `started_at`.
+    Storing the approach and billing only the journey keeps the approach
+    available for dispute review without it ever reaching a fare.
+    """
+    start = trip.accepted_at or trip.requested_at
+    end = trip.completed_at or trip.cancelled_at
+    return start, end
+
+
+def _resolve_candidate_trips(driver_ids):
+    """driver_id -> [Trip], newest first, for matching events to trips by time.
 
     Resolved from PostgreSQL, never from Redis: the collection window must
-    follow durable truth, so a trip that has just completed stops producing
-    trail rows even if Redis still believes the driver is busy. One query for
-    the whole batch rather than one per event.
+    follow durable truth. One query for the whole batch rather than one per
+    event.
+
+    Includes trips that have already ended, within `late_arrival_minutes`. This
+    is the difference between measuring a journey and measuring a journey minus
+    its last minute: a ping is assigned to the trip whose window contains the
+    moment it was *recorded*, not to whatever the driver happens to be doing
+    when the drain runs.
     """
+    from datetime import timedelta
+
+    from django.utils import timezone
+
     from servers.ride.models import DRIVER_ACTIVE_TRIP_STATUSES, Trip
 
     if not driver_ids:
         return {}
+
+    grace_cutoff = timezone.now() - timedelta(minutes=late_arrival_minutes())
     rows = (
         Trip.objects
-        .filter(driver_id__in=list(driver_ids),
-                status_id__status_code__in=DRIVER_ACTIVE_TRIP_STATUSES)
+        .filter(driver_id__in=list(driver_ids))
+        .filter(
+            Q(status_id__status_code__in=DRIVER_ACTIVE_TRIP_STATUSES)
+            | Q(completed_at__gte=grace_cutoff)
+            | Q(cancelled_at__gte=grace_cutoff)
+        )
         .select_related('status_id')
         .order_by('driver_id', '-requested_at')
     )
     out = {}
     for trip in rows:
-        # PR 3 guarantees at most one active trip per driver. If history ever
-        # holds more, take the most recent and let the invariant's
-        # reconciliation surface the anomaly rather than guessing here.
-        out.setdefault(trip.driver_id_id, trip)
+        out.setdefault(trip.driver_id_id, []).append(trip)
     return out
+
+
+def trip_for_event(trips, recorded_at):
+    """The trip whose collection window contains this moment, or None.
+
+    Newest first, so a driver who has already started their next trip attributes
+    new pings to it while a straggler from the previous trip still lands on the
+    previous one.
+    """
+    for trip in trips or ():
+        if trip.driver_id_id is None:
+            continue
+        start, end = collection_window(trip)
+        if start is not None and recorded_at < start:
+            continue
+        if end is not None and recorded_at > end:
+            continue
+        return trip
+    return None
 
 
 def _last_point_for_trips(trip_ids):
@@ -384,13 +446,17 @@ def persist_location_events(events):
     if not parsed:
         return handled, stats
 
-    trips_by_driver = _resolve_active_trips({p[1] for p in parsed})
-    last_points = _last_point_for_trips({t.id for t in trips_by_driver.values()})
+    trips_by_driver = _resolve_candidate_trips({p[1] for p in parsed})
+    last_points = _last_point_for_trips(
+        {t.id for trips in trips_by_driver.values() for t in trips}
+    )
 
     to_create = []
     for entry_id, driver_id, lat, lon, recorded_at in parsed:
-        trip = trips_by_driver.get(driver_id)
-        if trip is None or not trip_is_collecting(trip):
+        # Matched on when the ping was recorded, not on what the driver is doing
+        # now -- see _resolve_candidate_trips.
+        trip = trip_for_event(trips_by_driver.get(driver_id), recorded_at)
+        if trip is None:
             stats['no_active_trip'] += 1
             continue
 

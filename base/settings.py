@@ -410,6 +410,10 @@ GPS_TRAIL_MAX_POINTS_PER_TRIP = int(os.environ.get('GPS_TRAIL_MAX_POINTS_PER_TRI
 # beat tick -- see ADR-0010.
 GPS_TRAIL_BATCH_SIZE = int(os.environ.get('GPS_TRAIL_BATCH_SIZE', '500'))
 GPS_TRAIL_MAX_EVENTS_PER_RUN = int(os.environ.get('GPS_TRAIL_MAX_EVENTS_PER_RUN', '10000'))
+# The drain is periodic, so a journey's last pings are still in the stream when
+# the trip completes. Accept them for this long after the trip ends, or every
+# trip's measured distance is short by the final stretch -- systematically.
+GPS_TRAIL_LATE_ARRIVAL_MINUTES = int(os.environ.get('GPS_TRAIL_LATE_ARRIVAL_MINUTES', '60'))
 
 # --- Actual trip metrics (observe-only) -------------------------------------
 # How long after completion to derive actual distance/duration. The trail is

@@ -10,7 +10,8 @@ yet — see the branch notes — so there is no test here asserting that a live
 ping produces a row. What is tested is every rule that writer will obey.
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
+from datetime import timezone as dt_timezone
 from decimal import Decimal
 from unittest import mock
 
@@ -23,8 +24,8 @@ import servers.redis_client as rc
 from servers.driver.models import Driver, Vehicle, VehicleType
 from servers.ride.location_trail import (
     MAX_ACCURACY_METRES, MIN_DISTANCE_METRES, MIN_INTERVAL_SECONDS,
-    Candidate, Rejected, accuracy_is_acceptable, haversine_metres,
-    parse_coordinate, sample, should_keep, trip_is_collecting,
+    Candidate, Rejected, _stream_id_to_datetime, accuracy_is_acceptable,
+    haversine_metres, parse_coordinate, sample, should_keep, trip_is_collecting,
 )
 from servers.ride.models import Trip, TripLocationPoint, TripStatus
 
@@ -32,6 +33,22 @@ User = get_user_model()
 
 LAT = Decimal('17.4450000')
 LNG = Decimal('78.3800000')
+
+# Earlier than BASE_MS (the synthetic stream-id epoch used below) and earlier
+# than any real ping a test appends, so the trip's collection window is open for
+# every event in this file.
+ACCEPTED_AT = datetime(2025, 1, 1, tzinfo=dt_timezone.utc)
+
+
+def _ms_ago(minutes=0, seconds=0):
+    """A stream id timestamp relative to now.
+
+    Tests about the late-arrival window need real recent times: the window is a
+    query against `completed_at`, so a synthetic epoch a year in the past would
+    be excluded for the right reason and prove nothing.
+    """
+    return int((timezone.now() - timedelta(minutes=minutes, seconds=seconds))
+               .timestamp() * 1000)
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +83,13 @@ def trip(db, rider, driver):
         pickup_address='P', destination_address='D',
     )
     t.driver_id = driver
-    t.save(update_fields=['driver_id'])
+    # Accepted before any synthetic ping below. The writer assigns a ping to the
+    # trip whose collection window contains the moment it was recorded, and
+    # `requested_at` is auto-set to now while the fabricated stream ids sit in
+    # the past, so an explicit acceptance time is what makes these fixtures
+    # represent a real trip rather than a time-travelling one.
+    t.accepted_at = ACCEPTED_AT
+    t.save(update_fields=['driver_id', 'accepted_at'])
     return t
 
 
@@ -979,3 +1002,150 @@ def test_stream_helpers_use_the_same_redis_db_that_writes_the_stream():
     assert client.connection_pool.connection_kwargs.get('db') == 3
     assert rc.redis_client.connection_pool.connection_kwargs.get('db') == 2, \
         'geo client is a different db -- that is the whole point of this test'
+
+
+# ---------------------------------------------------------------------------
+# Events are matched to the trip that was live WHEN THEY WERE RECORDED
+# ---------------------------------------------------------------------------
+#
+# The drain is periodic. So by the time it runs, the pings from the end of a
+# journey belong to a trip that has already completed. Matching on the driver's
+# status at drain time discarded exactly those pings, which made every measured
+# distance short by the final stretch -- systematically, silently, and worse the
+# further the drain fell behind. These tests pin the fix.
+
+@pytest.mark.django_db
+def test_pings_recorded_before_completion_are_stored_after_completion(settings, trip, driver):
+    """The regression: a completed trip must still absorb its own trail."""
+    from servers.ride.location_trail import persist_location_events
+
+    settings.GPS_TRAIL_ENABLED = True
+
+    # Recorded across the last few minutes of a journey.
+    events = [_event(_eid(_ms_ago(minutes=10 - i)), driver.id,
+                     lat=Decimal('17.4450000') + Decimal('0.001') * i)
+              for i in range(4)]
+
+    # The trip ends after those pings were recorded, but before the drain runs.
+    trip.status_id = _status('completed')
+    trip.completed_at = timezone.now() - timedelta(minutes=5)
+    trip.save(update_fields=['status_id', 'completed_at'])
+
+    _handled, stats = persist_location_events(events)
+    assert stats['stored'] == 4, stats
+    assert stats['no_active_trip'] == 0
+    assert TripLocationPoint.objects.filter(trip=trip).count() == 4
+
+
+@pytest.mark.django_db
+def test_pings_recorded_after_the_trip_ended_are_not_stored(settings, trip, driver):
+    """The driver's movements after dropping the rider are not part of the trip."""
+    from servers.ride.location_trail import persist_location_events
+
+    settings.GPS_TRAIL_ENABLED = True
+
+    trip.status_id = _status('completed')
+    trip.completed_at = timezone.now() - timedelta(minutes=10)
+    trip.save(update_fields=['status_id', 'completed_at'])
+
+    _handled, stats = persist_location_events(
+        [_event(_eid(_ms_ago(minutes=2)), driver.id)]
+    )
+    assert stats['stored'] == 0
+    assert stats['no_active_trip'] == 1
+
+
+@pytest.mark.django_db
+def test_pings_recorded_before_acceptance_are_not_stored(settings, trip, driver):
+    """An idle driver's location is never persisted, even as backlog.
+
+    Before this, a ping sitting in the stream from before the driver was assigned
+    would have been attributed to whatever trip they later accepted -- storing a
+    stranger's-eye view of the driver's private movements against a trip.
+    """
+    from servers.ride.location_trail import persist_location_events
+
+    settings.GPS_TRAIL_ENABLED = True
+
+    before_acceptance = int(
+        (ACCEPTED_AT - timedelta(hours=1)).timestamp() * 1000
+    )
+    _handled, stats = persist_location_events(
+        [_event(_eid(before_acceptance), driver.id)]
+    )
+    assert stats['stored'] == 0
+    assert stats['no_active_trip'] == 1
+
+
+@pytest.mark.django_db
+def test_a_long_finished_trip_stops_absorbing_pings(settings, trip, driver):
+    """The late-arrival window is bounded, or a stale stream rewrites history."""
+    from servers.ride.location_trail import persist_location_events
+
+    settings.GPS_TRAIL_ENABLED = True
+    settings.GPS_TRAIL_LATE_ARRIVAL_MINUTES = 60
+
+    long_ago = timezone.now() - timedelta(days=3)
+    trip.status_id = _status('completed')
+    trip.completed_at = long_ago
+    trip.save(update_fields=['status_id', 'completed_at'])
+
+    ms = int((long_ago - timedelta(minutes=5)).timestamp() * 1000)
+    _handled, stats = persist_location_events([_event(_eid(ms), driver.id)])
+    assert stats['stored'] == 0, 'a trip finished days ago is outside the window'
+    assert stats['no_active_trip'] == 1
+
+
+@pytest.mark.django_db
+def test_a_straggler_lands_on_the_right_trip_when_the_next_one_has_started(
+    settings, trip, driver, rider,
+):
+    """A driver on their next trip must not have the previous trail merged in.
+
+    This is the case that makes time-based matching necessary rather than merely
+    tidy: one drain can carry the end of one journey and the start of the next.
+    """
+    from servers.ride.location_trail import persist_location_events
+
+    settings.GPS_TRAIL_ENABLED = True
+
+    # First trip ends ten minutes ago.
+    trip.status_id = _status('completed')
+    trip.completed_at = timezone.now() - timedelta(minutes=10)
+    trip.save(update_fields=['status_id', 'completed_at'])
+
+    # Second trip is accepted two minutes later and is still in progress.
+    second = Trip.objects.create(
+        user_id=rider, status_id=_status('in_progress'),
+        pickup_lat=LAT, pickup_long=LNG,
+        destination_lat=LAT, destination_long=LNG,
+    )
+    second.driver_id = driver
+    second.accepted_at = timezone.now() - timedelta(minutes=8)
+    second.save(update_fields=['driver_id', 'accepted_at'])
+
+    _handled, stats = persist_location_events([
+        _event(_eid(_ms_ago(minutes=12)), driver.id),        # first trip
+        _event(_eid(_ms_ago(minutes=6)), driver.id,
+               lat=Decimal('17.4500000')),                   # second trip
+    ])
+    assert stats['stored'] == 2, stats
+    assert TripLocationPoint.objects.filter(trip=trip).count() == 1
+    assert TripLocationPoint.objects.filter(trip=second).count() == 1
+
+
+@pytest.mark.django_db
+def test_a_cancelled_trip_keeps_the_trail_it_already_produced(settings, trip, driver):
+    """Cancellations are disputed too, and the approach is the evidence."""
+    from servers.ride.location_trail import persist_location_events
+
+    settings.GPS_TRAIL_ENABLED = True
+
+    trip.status_id = _status('cancelled')
+    trip.cancelled_at = timezone.now() - timedelta(minutes=5)
+    trip.save(update_fields=['status_id', 'cancelled_at'])
+
+    _handled, stats = persist_location_events(
+        [_event(_eid(_ms_ago(minutes=10)), driver.id)]
+    )
+    assert stats['stored'] == 1, stats

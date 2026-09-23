@@ -1440,9 +1440,24 @@ def initiate_upi_payout(withdrawal, driver):
         return True
 
     # ---------------------------------------------------------
-    # RETRY PROTECTION
+    # RETRY PROTECTION -- CONTAINMENT, NOT AN IDEMPOTENCY FIX
     # ---------------------------------------------------------
-    max_retries = 3
+    #
+    # One attempt. This codifies what is already reachable rather than changing
+    # behaviour: `trigger_payout_creation` treats the first failure as terminal
+    # (status='failed' plus an immediate wallet refund) and then refuses to
+    # dispatch anything whose status is not approved/processed -- so a second
+    # attempt through this path was already impossible and this cap never bound.
+    # Tests in tests/test_payout_single_provider_call.py assert the resulting
+    # property directly, by COUNTING provider calls: one execution, one call.
+    #
+    # THIS IS RISK CONTAINMENT, NOT AN IDEMPOTENCY FIX. Cashfree's behaviour for a
+    # repeated transferId is unverified, and the genuine exposure is elsewhere: if
+    # Cashfree executes a transfer while our request appears to fail, we mark the
+    # withdrawal failed AND refund the wallet, so the driver receives both. That
+    # cannot be fixed without the provider contract -- see
+    # runbooks/cashfree-payout-sandbox-checklist.md -- and must not be guessed at.
+    max_retries = 1
 
     if withdrawal.failure_count >= max_retries:
         withdrawal.failure_reason = "Max retries exceeded"

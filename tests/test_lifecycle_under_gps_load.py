@@ -783,3 +783,107 @@ async def test_per_frame_cost_and_ingestion_under_an_undrained_client():
         'coupled to client drain rate, so a backgrounded driver app silently '
         "stops producing the trip's distance evidence."
     )
+
+
+# ---------------------------------------------------------------------------
+# The driver must not receive an echo of its own GPS on its command socket
+# ---------------------------------------------------------------------------
+
+async def test_the_driver_does_not_receive_its_own_location_echo():
+    """The fix for the QA failure, pinned as a test.
+
+    `group_send('trip_<id>', ...)` reaches the whole trip group, so the assigned
+    driver used to receive one copy of every position it had just sent, on the same
+    socket that carries `complete`. That echo is what filled a slow client's receive
+    buffer; once full, the reference `websockets` client stops reading frames at all
+    -- including Daphne's keepalive pings -- so it stops answering pongs, Daphne's
+    ping timeout elapses, and the server closes the socket. The app never notices,
+    because its own `send()` still succeeds.
+
+    The rider still needs the position. The driver never did.
+    """
+    rider = await asyncio.to_thread(_make_rider, 910)
+    driver = await asyncio.to_thread(_make_driver, 30910)
+    trip = await asyncio.to_thread(_make_trip, rider, driver)
+
+    dws = await _open_driver_socket(driver.user_id)
+    driver_tws = await _open_trip_socket(driver.user_id, trip.id)
+    rider_tws = await _open_trip_socket(rider, trip.id)
+
+    await _send_gps(dws, 12)
+    await asyncio.sleep(4)
+
+    def locations(comm):
+        out = []
+        for raw in _pending(comm):
+            if raw.get('type') != 'websocket.send':
+                continue
+            try:
+                msg = json.loads(raw.get('text') or '{}')
+            except ValueError:
+                continue
+            if msg.get('type') == 'driver_location_update':
+                out.append(msg)
+        return out
+
+    to_driver = locations(driver_tws)
+    to_rider = locations(rider_tws)
+    print(f'location frames delivered -- driver:{len(to_driver)} rider:{len(to_rider)}')
+
+    await _shutdown(dws, driver_tws, rider_tws)
+
+    assert to_driver == [], (
+        f'the assigned driver received {len(to_driver)} echoes of its own position '
+        'on its command socket. That traffic is what kills the socket that carries '
+        '`complete`.'
+    )
+    assert to_rider, (
+        'the rider received no driver location at all -- the fix must not stop the '
+        'rider seeing the car move'
+    )
+
+
+async def test_a_long_quiet_command_socket_still_completes():
+    """A command socket that carries no traffic for minutes must still work.
+
+    The local analogue of the QA 300-second journey. There is no proxy and no ping
+    timeout here, so this cannot reproduce the QA close; what it does assert is that
+    nothing in the consumer degrades over a long, quiet, low-rate ride -- and that
+    the driver's socket stays clean of location traffic throughout, which is the
+    property that makes the QA failure impossible.
+    """
+    rider = await asyncio.to_thread(_make_rider, 911)
+    driver = await asyncio.to_thread(_make_driver, 30911)
+    trip = await asyncio.to_thread(_make_trip, rider, driver)
+
+    dws = await _open_driver_socket(driver.user_id)
+    tws = _bound_client_buffer(await _open_trip_socket(driver.user_id, trip.id),
+                               CLIENT_BUFFER)
+
+    # 30 pings at a realistic rate, compressed in time but not in count: the point
+    # is that the command socket accumulates nothing across them.
+    for i in range(30):
+        await dws.send_to(text_data=json.dumps({'lat': LAT + STEP * i, 'lng': LNG}))
+        await asyncio.sleep(0.1)
+    await asyncio.sleep(2)
+
+    queued_for_driver = tws.output_queue.qsize()
+
+    await tws.send_to(text_data=json.dumps({'action': 'complete'}))
+    completed = False
+    deadline = time.monotonic() + LIFECYCLE_BUDGET_SECONDS
+    while time.monotonic() < deadline:
+        if await asyncio.to_thread(_trip_status, trip.id) == 'completed':
+            completed = True
+            break
+        await asyncio.sleep(0.1)
+    print(f'30 pings, driver command socket queue={queued_for_driver}, '
+          f'completed={completed}')
+
+    await _shutdown(dws, tws)
+
+    assert queued_for_driver == 0, (
+        f'{queued_for_driver} frames were waiting on the driver command socket '
+        'after 30 pings. A buffer that fills is a socket the server will close.'
+    )
+    assert completed

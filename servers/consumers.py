@@ -1144,11 +1144,33 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         }))
 
     async def driver_location_update(self, event):
-        """Forward live driver location, without blocking the dispatch loop.
+        """Forward live driver location to the RIDER on this trip.
 
-        Queued rather than sent: a blocking send here is what stopped
-        `complete` from ever being routed. See LocationBroadcastMixin.
+        Not to the driver. `group_send('trip_<id>', ...)` reaches the whole trip
+        group, so before this the assigned driver received an echo of every
+        position it had just sent -- one frame per GPS ping, on the same socket
+        that carries `complete`, `cancel` and `start`, for no purpose at all. The
+        driver is the source of that position.
+
+        That echo was the whole failure. A driver app that is slow to drain fills
+        its receive buffer with its own GPS echo; the reference `websockets` client
+        stops reading frames at sixteen queued messages, **including ping frames**,
+        so it stops answering Daphne's keepalive; Daphne's ping timeout elapses and
+        the server closes the connection. The app never notices -- its `send()`
+        still succeeds -- so `complete` goes into a dead socket and the trip stays
+        `in_progress` while the driver is told the ride is over.
+
+        Observed in QA exactly as this predicts: with thirty pings ten seconds
+        apart, the buffer filled at ping sixteen and the server logged
+        WSDISCONNECT about fifty seconds later, eighty-seven seconds before
+        `complete` was sent.
+
+        Queued rather than sent for the rider's sake, so a slow rider app cannot
+        block the loop either. See LocationBroadcastMixin.
         """
+        if getattr(self, 'participation', None) == 'assigned_driver':
+            return
+
         self._queue_location_frame({
             'type': 'driver_location_update',
             'lng': event['lng'],

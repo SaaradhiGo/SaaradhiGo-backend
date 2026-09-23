@@ -156,14 +156,145 @@ def driver_active_trip_ids(driver, exclude_trip_id=None):
 
 
 class FarePricing(models.Model):
+    """Immutable snapshot of how a trip's fare was arrived at.
+
+    This table already existed and already behaved as a snapshot: one row is
+    written inside the trip-creation transaction and nothing ever updates it.
+    The columns added here close the gap between "a record of the amounts" and
+    "a record that can explain the amounts without reading today's RateCard",
+    which is the property the money chain needs.
+
+    Two snapshots per trip are expected once fare finalisation lands:
+
+        SNAPSHOT_QUOTE  written at booking, from the quote the rider accepted
+        SNAPSHOT_FINAL  written once inside the completion transaction
+
+    The FK (rather than a OneToOne) is what makes that possible without
+    destroying the booking row, and `receipts.py` already reads the most recent
+    row, so it picks up the final one with no change.
+
+    Nothing in this class is read by billing yet. Adding the columns changes no
+    behaviour; populating them at booking changes no behaviour either. Only a
+    later, separately reviewed change makes anything read `rider_payable`.
+    """
+
+    SNAPSHOT_QUOTE = 'quote'
+    SNAPSHOT_FINAL = 'final'
+    SNAPSHOT_CHOICES = [
+        (SNAPSHOT_QUOTE, 'Quote at booking'),
+        (SNAPSHOT_FINAL, 'Final at completion'),
+    ]
+
+    # How the billable quantities were arrived at. `estimate_legacy` is what
+    # every historical trip is: quoted up front, never reconciled against a
+    # measured journey. Recording it is what makes the eventual switch to a
+    # metered basis auditable and its fallback rate measurable.
+    BASIS_ESTIMATE_LEGACY = 'estimate_legacy'
+    BASIS_ESTIMATE_NO_TELEMETRY = 'estimate_no_telemetry'
+    BASIS_METERED = 'metered'
+    BASIS_METERED_DEGRADED = 'metered_degraded'
+    FARE_BASIS_CHOICES = [
+        (BASIS_ESTIMATE_LEGACY, 'Estimate (no metering in force)'),
+        (BASIS_ESTIMATE_NO_TELEMETRY, 'Estimate (telemetry unusable)'),
+        (BASIS_METERED, 'Metered from the trail'),
+        (BASIS_METERED_DEGRADED, 'Metered, degraded coverage'),
+    ]
+
     trip_id=models.ForeignKey(Trip,on_delete=models.CASCADE,related_name='fare_pricing')
+
+    # --- the original columns, unchanged ------------------------------------
     base_fare=models.DecimalField(max_digits=10,decimal_places=2)
     distance_fare=models.DecimalField(max_digits=10,decimal_places=2)
     time_fare=models.DecimalField(max_digits=10,decimal_places=2)
     surge_multiplier=models.DecimalField(max_digits=4,decimal_places=2,default=1.00)
     total_fare=models.DecimalField(max_digits=10,decimal_places=2)
+
+    # --- which snapshot this is ---------------------------------------------
+    snapshot_type = models.CharField(
+        max_length=8, choices=SNAPSHOT_CHOICES, default=SNAPSHOT_QUOTE,
+        db_index=True,
+    )
+    version = models.PositiveIntegerField(default=1)
+    fare_basis = models.CharField(
+        max_length=32, choices=FARE_BASIS_CHOICES,
+        default=BASIS_ESTIMATE_LEGACY,
+    )
+    # Non-null means immutable. It is also the idempotency guard: finalisation
+    # writes only when no final snapshot exists for the trip.
+    finalized_at = models.DateTimeField(null=True, blank=True)
+
+    # --- the quantities the fare was computed from --------------------------
+    # Stored because `distance_fare / per_km` cannot be inverted without a rate
+    # card, and because these are the numbers a rider disputes.
+    quoted_distance_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    quoted_duration_min = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # Copied onto the FINAL snapshot only. Deliberately duplicated from Trip:
+    # `record_actuals(force=True)` can revise Trip's values, and a fare must keep
+    # the quantities it was actually computed from.
+    actual_distance_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    actual_duration_min = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    # --- why the arithmetic looks the way it does ---------------------------
+    # When either of these binds, the components do NOT sum to the total, and a
+    # correct snapshot would otherwise read as broken.
+    min_fare_applied = models.BooleanField(default=False)
+    surge_cap_applied = models.BooleanField(default=False)
+    # Separates a time-of-day surcharge from demand surge. The dynamic component
+    # is then derivable as surge_multiplier / night_surge_multiplier.
+    night_surge_applied = models.BooleanField(default=False)
+    night_surge_multiplier = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
+
+    # --- which schedule priced it -------------------------------------------
+    # Codes and versions, not FKs: a renamed or reparented zone must not rewrite
+    # what a historical trip was priced under.
+    rate_card_version = models.IntegerField(null=True, blank=True)
+    zone_code = models.CharField(max_length=64, blank=True, default='')
+    vehicle_type = models.CharField(max_length=64, blank=True, default='')
+    # 'db' or 'default'. A fare quoted from the hardcoded fallback defaults must
+    # be identifiable; today it is invisible.
+    pricing_source = models.CharField(max_length=16, blank=True, default='')
+
+    # --- the three amounts --------------------------------------------------
+    # gross_fare is the commission basis and the driver's economics.
+    # rider_payable is what payment captures. They differ only by a discount.
+    gross_fare = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    rider_payable = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    promo = models.ForeignKey(
+        'ride.PromoCode', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='fare_snapshots',
+    )
+    # The code as it read at booking. Codes can be renamed; receipts cannot.
+    promo_code = models.CharField(max_length=32, blank=True, default='')
+
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+
+    class Meta:
+        constraints = [
+            # At most one FINAL snapshot per trip, enforced by the database
+            # rather than by the one service that writes it.
+            models.UniqueConstraint(
+                fields=['trip_id'],
+                condition=models.Q(snapshot_type='final'),
+                name='farepricing_one_final_per_trip',
+            ),
+            models.CheckConstraint(
+                # `condition=`, not the deprecated `check=`: CheckConstraint.check
+                # is removed in Django 6.0 and we are already on 5.2.
+                condition=models.Q(discount_amount__isnull=True) | models.Q(discount_amount__gte=0),
+                name='farepricing_discount_non_negative',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['trip_id', '-version'], name='farepricing_trip_ver_idx'),
+        ]
+
     def __str__(self):
-        return f'Fare for Trip {self.trip_id.id}'
+        return f'Fare for Trip {self.trip_id.id} ({self.snapshot_type} v{self.version})'
+
+    @property
+    def is_final(self):
+        return self.snapshot_type == self.SNAPSHOT_FINAL and self.finalized_at is not None
 class VehicleFarePricing(models.Model):
     vehicle_type_id=models.ForeignKey(VehicleType,on_delete=models.CASCADE,related_name='fare_pricing')
     base_fare=models.DecimalField(max_digits=10,decimal_places=2)

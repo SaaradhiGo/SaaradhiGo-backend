@@ -57,9 +57,14 @@ def build_s3_client():
             "(or AWS_REGION / AWS_DEFAULT_REGION) to the bucket's region."
         )
     addressing_style = getattr(settings, "AWS_S3_ADDRESSING_STYLE", None) or "virtual"
+    # An S3-compatible endpoint when one is configured, real AWS S3 otherwise.
+    # Threaded through here because this function builds its own client for
+    # presigning; the django-storages backends already read the same setting.
+    endpoint_url = getattr(settings, "AWS_S3_ENDPOINT_URL", None) or None
     return boto3.client(
         "s3",
         region_name=region,
+        endpoint_url=endpoint_url,
         aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
         aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
         config=Config(

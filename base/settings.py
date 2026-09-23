@@ -344,7 +344,17 @@ AWS_DEFAULT_ACL=None
 AWS_QUERYSTRING_EXPIRE=int(os.environ.get("AWS_QUERYSTRING_EXPIRE", "900"))
 AWS_S3_FILE_OVERWRITE=False
 AWS_S3_SIGNATURE_VERSION="s3v4"
-AWS_S3_ADDRESSING_STYLE="virtual"
+AWS_S3_ADDRESSING_STYLE=os.environ.get("AWS_S3_ADDRESSING_STYLE", "virtual")
+
+# Optional S3-compatible endpoint. Unset means real AWS S3, which is what
+# production uses. Set it to point document storage at any S3-compatible store --
+# a Railway bucket for QA, MinIO for local development -- without AWS credentials
+# existing in that environment at all.
+#
+# django-storages reads AWS_S3_ENDPOINT_URL from settings by itself, so the
+# storage backends need no change; only base.s3.build_s3_client (which constructs
+# its own boto3 client for presigning) has to be told.
+AWS_S3_ENDPOINT_URL=os.environ.get("AWS_S3_ENDPOINT_URL") or None
 
 # Razorpay
 RAZORPAY_KEY_ID=os.environ.get("RAZORPAY_KEY_ID", "")

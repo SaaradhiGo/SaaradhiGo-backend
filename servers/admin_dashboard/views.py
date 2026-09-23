@@ -4880,6 +4880,12 @@ def promo_codes(request: HttpRequest) -> HttpResponse:
         "active_promos": PromoCode.objects.filter(
             is_active=True, valid_from__lte=now, valid_to__gt=now
         ).count(),
+        # Redemption is not wired into booking: `promos.redeem_promo` has no
+        # callers, so this count is structurally 0 and always will be until that
+        # changes. Reported as an explicit state rather than a number, because
+        # "0 redemptions" beside "N active promos" reads as a campaign nobody
+        # used -- when the truth is that redeeming is not implemented yet.
+        "redemptions_enabled": False,
         "total_redemptions": PromoRedemption.objects.count(),
         "zones": ServiceZone.objects.filter(is_active=True).order_by("name"),
     })
@@ -5196,67 +5202,20 @@ def transaction_dashboard(request):
             transactions.append(row)
 
     # =========================================================
-    # 5. CANCELLATION FEES
+    # 5. CANCELLATION FEES -- NOT IMPLEMENTED, deliberately absent
     #
-    # Cancellation fees are kept only if they are actually
-    # recorded in TransactionHistory.
+    # There is no cancellation charging in this platform. `Trip.cancellation_fee`
+    # is a column no code writes, and the query that used to live here filtered
+    # TransactionHistory on `method__icontains="cancel"` -- while every method
+    # ever written is wallet / online / cash / deferred. It was empty by
+    # construction, so it contributed a permanent zero to a revenue dashboard,
+    # which reads as "we charge no cancellation fees": a business statement
+    # nobody has made.
+    #
+    # Removed rather than labelled, because a greyed-out zero still occupies a
+    # revenue row. The database column is intentionally kept -- it is where the
+    # value goes once a cancellation policy exists.
     # =========================================================
-
-    cancellation_history = (
-        TransactionHistory.objects
-        .filter(
-            txn_type="payment",
-            status__in=[
-                "cancelled",
-                "canceled",
-                "completed",
-                "success",
-            ],
-            method__icontains="cancel",
-        )
-        .select_related(
-            "user_id",
-            "driver_id",
-            "driver_id__user_id",
-        )
-        .order_by("-created_at")
-    )
-
-    cancellation_total = money(
-        cancellation_history.aggregate(
-            total=Sum("amount")
-        )["total"]
-    )
-
-    for txn in cancellation_history.iterator(chunk_size=500):
-        driver = txn.driver_id
-        driver_user = getattr(driver, "user_id", None)
-
-        row = {
-            "transaction_id": f"CANCEL-{txn.id}",
-            "type": "cancellation_fee",
-            "trip_id": getattr(txn.trip_id, "id", None),
-            "rider": user_name(
-                txn.user_id,
-                "Unknown Rider",
-            ),
-            "driver": user_name(
-                driver_user,
-                f"Driver #{driver.pk}" if driver else "Not Assigned",
-            ),
-            "amount": money(txn.amount),
-            "status": "cancelled",
-            "payment_method": txn.method or "—",
-            "created_at": txn.created_at,
-            "gateway_reference": (
-                txn.gateway_transaction_id
-                or txn.gateway_payment_id
-                or ""
-            ),
-        }
-
-        if matches_search(row):
-            transactions.append(row)
 
     # =========================================================
     # 6. PLATFORM FEES
@@ -5316,7 +5275,6 @@ def transaction_dashboard(request):
     total_transactions = len(transactions)
 
     refund_total = money(refund_total)
-    cancellation_total = money(cancellation_total)
 
     # =========================================================
     # CONTEXT
@@ -5342,8 +5300,6 @@ def transaction_dashboard(request):
 
         "refunds": refund_total,
 
-        "cancellation_fees": cancellation_total,
-
         "search": request.GET.get("q", ""),
 
         "transaction_type": selected_type,
@@ -5356,7 +5312,6 @@ def transaction_dashboard(request):
             ("driver_payout", "Driver Payout"),
             ("platform_fee", "Platform Fee"),
             ("refund", "Refund"),
-            ("cancellation_fee", "Cancellation Fee"),
             ("wallet_credit", "Wallet Credit"),
             ("wallet_debit", "Wallet Debit"),
             ("payment_reversal", "Payment Reversal"),

@@ -897,3 +897,110 @@ async def test_a_long_quiet_command_socket_still_completes():
         'after 30 pings. A buffer that fills is a socket the server will close.'
     )
     assert completed
+
+
+# ---------------------------------------------------------------------------
+# Keepalive, and the signal whose absence made this take a day
+# ---------------------------------------------------------------------------
+
+async def test_ping_gets_a_pong_and_not_an_error():
+    """The driver app pings every 25 seconds to keep this socket warm.
+
+    It used to send an unknown action and use the `Invalid action` error frame as
+    its liveness proof. That worked, but meant the socket carrying `complete` also
+    carried an error frame every 25 seconds, indistinguishable from a real command
+    failure by any client that surfaces errors to the user.
+    """
+    rider = await asyncio.to_thread(_make_rider, 920)
+    driver = await asyncio.to_thread(_make_driver, 30920)
+    trip = await asyncio.to_thread(_make_trip, rider, driver)
+
+    tws = await _open_trip_socket(driver.user_id, trip.id)
+    await tws.send_to(text_data=json.dumps({'action': 'ping'}))
+
+    reply, _, _ = await _await_frame(tws, lambda m: m.get('type') in ('pong', 'error'),
+                                     5)
+    print(f'ping -> {reply}')
+    await _shutdown(tws)
+
+    assert reply is not None, 'ping got no reply at all'
+    assert reply.get('type') == 'pong', (
+        f'ping must be answered with a pong, got {reply!r}')
+
+
+async def test_an_unknown_action_is_still_refused():
+    """Adding `ping` must not open the action list up."""
+    rider = await asyncio.to_thread(_make_rider, 921)
+    driver = await asyncio.to_thread(_make_driver, 30921)
+    trip = await asyncio.to_thread(_make_trip, rider, driver)
+
+    tws = await _open_trip_socket(driver.user_id, trip.id)
+    await tws.send_to(text_data=json.dumps({'action': 'teleport'}))
+
+    reply, _, _ = await _await_frame(tws, lambda m: m.get('type') == 'error', 5)
+    await _shutdown(tws)
+
+    assert reply is not None, 'an unknown action must still be refused'
+    assert 'Invalid action' in str(reply.get('message'))
+
+
+async def test_losing_the_command_socket_mid_ride_is_logged(caplog):
+    """The missing signal, now asserted.
+
+    Nothing in the platform said anything when a driver lost the socket it issues
+    `complete` on. That silence is why a completed-looking ride sat `in_progress`
+    and why the diagnosis took a day rather than minutes. WARNING level, so it
+    survives production's log configuration.
+    """
+    import logging
+
+    rider = await asyncio.to_thread(_make_rider, 922)
+    driver = await asyncio.to_thread(_make_driver, 30922)
+    trip = await asyncio.to_thread(_make_trip, rider, driver)
+
+    tws = await _open_trip_socket(driver.user_id, trip.id)
+    with caplog.at_level(logging.WARNING, logger='servers.consumers'):
+        await tws.disconnect(timeout=5)
+        await asyncio.sleep(0.5)
+
+    records = [r for r in caplog.records if r.msg == 'trip_command_socket_lost']
+    print(f'mid-ride disconnect -> {len(records)} warning(s)')
+
+    assert records, (
+        'a trip socket vanishing while the ride is still in progress must be '
+        'logged -- this is the signal whose absence hid the original defect'
+    )
+    logged = records[0].__dict__
+    assert logged['trip_id'] == str(trip.id) or logged['trip_id'] == trip.id
+    assert logged['trip_status'] == 'in_progress'
+    assert logged['participation'] == 'assigned_driver'
+
+
+async def test_a_normal_completed_ride_logs_no_lost_socket_warning(caplog):
+    """A warning that fires on every healthy ride is noise, and would be ignored."""
+    import logging
+
+    rider = await asyncio.to_thread(_make_rider, 923)
+    driver = await asyncio.to_thread(_make_driver, 30923)
+    trip = await asyncio.to_thread(_make_trip, rider, driver)
+
+    tws = await _open_trip_socket(driver.user_id, trip.id)
+    await tws.send_to(text_data=json.dumps({'action': 'complete'}))
+
+    deadline = time.monotonic() + LIFECYCLE_BUDGET_SECONDS
+    while time.monotonic() < deadline:
+        if await asyncio.to_thread(_trip_status, trip.id) == 'completed':
+            break
+        await asyncio.sleep(0.1)
+
+    with caplog.at_level(logging.WARNING, logger='servers.consumers'):
+        await tws.disconnect(timeout=5)
+        await asyncio.sleep(0.5)
+
+    records = [r for r in caplog.records if r.msg == 'trip_command_socket_lost']
+    print(f'completed ride disconnect -> {len(records)} warning(s)')
+
+    assert not records, (
+        'the ride completed normally, so closing its socket is not a lost command '
+        'channel and must not warn'
+    )

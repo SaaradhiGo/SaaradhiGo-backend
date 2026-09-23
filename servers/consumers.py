@@ -930,6 +930,35 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             await self.channel_layer.group_discard(self.trip_group, self.channel_name)
             self.in_trip_group = False
 
+        # If this socket goes away while the ride is still running, somebody just
+        # lost the channel they issue `complete`, `cancel` and `start` on -- and
+        # their app will not necessarily know, because a send() on a half-open
+        # socket succeeds. That is exactly how a completed ride was left
+        # `in_progress` with nothing logged anywhere.
+        #
+        # Emitted at WARNING so it survives production's log level. A normal ride
+        # ends with the trip already terminal, so this stays quiet in the good case.
+        try:
+            status = await self._current_trip_status()
+        except Exception:  # noqa: BLE001 -- observability must never break teardown
+            return
+        if status is not None and status not in ('completed', 'cancelled'):
+            logger.warning('trip_command_socket_lost', extra={
+                'event': 'trip_command_socket_lost',
+                'trip_id': getattr(self, 'trip_id', None),
+                'participation': getattr(self, 'participation', None),
+                'trip_status': status,
+                'close_code': close_code,
+            })
+
+    @database_sync_to_async
+    def _current_trip_status(self):
+        """The trip's status code, or None if it has gone."""
+        from servers.ride.models import Trip
+
+        return (Trip.objects.filter(id=self.trip_id)
+                .values_list('status_id__status_code', flat=True).first())
+
     async def receive(self, text_data):
         """
         Receive trip actions from driver.
@@ -940,10 +969,21 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             action = data.get('action')
             otp_input = data.get('otp')
 
+            if action == 'ping':
+                # The driver app keeps this socket warm with a 25-second
+                # application-level ping, because a client cannot send a
+                # protocol-level ping frame from Dart. Before this it used an
+                # unknown action and relied on the `Invalid action` error frame as
+                # its liveness proof -- which worked, but meant the socket that
+                # carries `complete` also carried a steady stream of error frames,
+                # indistinguishable from a real command failure.
+                await self.send(text_data=json.dumps({'type': 'pong'}))
+                return
+
             if action not in ('accept', 'reached', 'start', 'complete', 'cancel', 'confirm_cash'):
                 await self.send(text_data=json.dumps({
                     'type': 'error',
-                    'message': 'Invalid action. Must be: accept, reached, start, complete, cancel, or confirm_cash'
+                    'message': 'Invalid action. Must be: accept, reached, start, complete, cancel, confirm_cash, or ping'
                 }))
                 return
 

@@ -518,7 +518,26 @@ AUTH_USER_MODEL='auth_user.customUser'
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+# Django 4.2 deprecated STATICFILES_STORAGE in favour of STORAGES and 5.1
+# removed it. It is not an error on 5.2 -- it is silently IGNORED, which is
+# worse: `manage.py check` passes, the app boots, and whitenoise's
+# CompressedManifestStaticFilesStorage is simply never applied. collectstatic
+# then stops writing the hashed manifest and the gzip/brotli variants, so every
+# static asset loses cache-busting and compression with nothing to signal it.
+#
+# STORAGES exists from 4.2 onward, so this form is correct on both 5.0 and 5.2.
+STORAGES = {
+    'default': {
+        # Left as the filesystem default deliberately. The S3 backends in
+        # base/storage_backends.py are instantiated explicitly per field
+        # (get_public_media_storage / get_private_document_storage), not wired
+        # in globally, so nothing here should point at S3.
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

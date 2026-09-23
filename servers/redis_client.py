@@ -519,7 +519,11 @@ def nearby_drivers(lng, lat, radius=5000, count=50, vehicle_type=None):
         is_valid, error_msg = _validate_coordinates(lng, lat)
         if not is_valid:
             raise ValueError(error_msg)
-        
+        # redis-py rejects Decimal outright, and model coordinate fields are
+        # Decimal. The validator already proved these are numbers, so coerce here
+        # rather than trusting every caller to remember.
+        lng, lat = float(lng), float(lat)
+
         if radius <= 0:
             raise ValueError("Radius must be greater than 0")
         
@@ -754,7 +758,10 @@ def count_nearby_active_riders(lng, lat, radius=3000):
     try:
         is_valid, _ = _validate_coordinates(lng, lat)
         if not is_valid: return 0
-        
+        # See nearby_drivers: Decimal coordinates reach here from the pricing
+        # path, which reads them off a Trip row.
+        lng, lat = float(lng), float(lat)
+
         riders = redis_client.geosearch(
             'riders:geo',
             longitude=lng,

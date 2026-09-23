@@ -35,9 +35,92 @@ _PII_PATTERNS = [
 ]
 
 
+# Structured-logging keys whose VALUE must never be emitted, matched exactly
+# on the lowercased key name. Coordinates are included deliberately: a precise
+# pickup or drop point is location data about a named trip, and no log line
+# needs it — `trip_id` is enough to look the trip up.
+_REDACT_KEYS_EXACT = frozenset({
+    'lat', 'lng', 'lon', 'latitude', 'longitude',
+    'pickup_lat', 'pickup_lng', 'pickup_long',
+    'destination_lat', 'destination_lng', 'destination_long',
+    'coords', 'coordinates', 'location',
+    'rider_name', 'driver_name', 'full_name', 'payee_name',
+    'address', 'pickup_address', 'destination_address',
+    'upi', 'vpa', 'account_number', 'ifsc',
+    # Celery embeds the full task argument list under these keys, in both
+    # `celery.worker.strategy` ("received") and `celery.app.trace`
+    # ("succeeded"). Any task may legitimately carry PII in its arguments —
+    # the push bodies include rider and driver names — so arguments are never
+    # logged verbatim. Task name, id, runtime and return value are kept, which
+    # is what the lines are actually useful for.
+    'args', 'kwargs',
+})
+
+# Substring match on the key name, for the families where exact enumeration
+# would inevitably miss one (`fcm_token`, `access_token`, `webhook_secret`, …).
+_REDACT_KEY_SUBSTRINGS = (
+    'otp', 'token', 'secret', 'password', 'passwd', 'authorization',
+    'jwt', 'api_key', 'apikey', 'phone', 'email', 'card', 'cvv',
+)
+
+_REDACTED = '***'
+
+# Depth limit so a self-referential or deeply nested extra cannot make logging
+# recurse forever.
+_MAX_REDACT_DEPTH = 4
+
+# Record attributes that belong to logging itself, never to the caller's
+# `extra`. Mirrors the skip-list in JSONFormatter.
+_STDLIB_RECORD_ATTRS = frozenset({
+    'args', 'asctime', 'created', 'exc_info', 'exc_text', 'filename',
+    'funcName', 'levelname', 'levelno', 'lineno', 'module', 'msecs',
+    'message', 'msg', 'name', 'pathname', 'process', 'processName',
+    'relativeCreated', 'stack_info', 'thread', 'threadName', 'taskName',
+})
+
+
+def _key_is_sensitive(key):
+    k = str(key).lower()
+    if k in _REDACT_KEYS_EXACT:
+        return True
+    return any(frag in k for frag in _REDACT_KEY_SUBSTRINGS)
+
+
+def _scrub_value(value, depth=0):
+    """Redact a structured value in place-ish, returning the safe version."""
+    if depth >= _MAX_REDACT_DEPTH:
+        return _REDACTED
+    if isinstance(value, str):
+        out = value
+        for pat, repl in _PII_PATTERNS:
+            out = pat.sub(repl, out)
+        return out
+    if isinstance(value, dict):
+        return {
+            k: (_REDACTED if _key_is_sensitive(k) else _scrub_value(v, depth + 1))
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple, set)):
+        return type(value)(_scrub_value(v, depth + 1) for v in value)
+    return value
+
+
 class PIIRedactionFilter(logging.Filter):
-    """Run each log message through the patterns above. Returns True so
-    the record is always passed on, just with a scrubbed message."""
+    """Scrub PII from the message *and* from structured `extra` fields.
+
+    The message half is the original behaviour: run the formatted text through
+    `_PII_PATTERNS`.
+
+    The `extra` half was missing, and mattered the moment structured logging
+    arrived. `JSONFormatter` promotes every non-stdlib record attribute to a
+    top-level JSON key, so a caller passing `extra={'phone': ...}` or
+    `extra={'pickup_lat': ...}` would have emitted it verbatim — the message
+    filter never sees those values because they are not part of the message.
+    Sensitive keys are now redacted by name, and remaining string values are
+    run through the same patterns as the message.
+
+    Always returns True: a redaction bug must never drop a log record.
+    """
 
     def filter(self, record):
         try:
@@ -49,6 +132,18 @@ class PIIRedactionFilter(logging.Filter):
         except Exception:
             # Never break logging for a redaction bug.
             pass
+
+        try:
+            for key, value in list(record.__dict__.items()):
+                if key in _STDLIB_RECORD_ATTRS or key.startswith('_'):
+                    continue
+                if _key_is_sensitive(key):
+                    record.__dict__[key] = _REDACTED
+                else:
+                    record.__dict__[key] = _scrub_value(value)
+        except Exception:
+            pass
+
         return True
 
 

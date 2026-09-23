@@ -169,6 +169,32 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 CELERY_TIMEZONE = 'Asia/Kolkata'
+
+# Let Django's LOGGING own worker output.
+#
+# Celery defaults `worker_hijack_root_logger = True`, which replaces the root
+# logger's handlers with its own. That silently discarded the whole logging
+# configuration in this project for every line the worker emitted: the
+# JSONFormatter that promotes `extra={...}` to top-level JSON fields, and the
+# PIIRedactionFilter. The dispatch events added with ADR-0008 therefore logged
+# their event NAME but none of their fields — no trip_id, no wave_index, no
+# radius, no candidate count — and no worker log line passed through redaction
+# at all. Verified during the PR 2 QA rehearsal: setting
+# DJANGO_LOG_FORMAT=json on the worker changed nothing, because Django's
+# handler was not the one in use.
+#
+# With this False, Celery adds no root handler and every worker record flows
+# through the single console handler declared in LOGGING. Celery's own task
+# lifecycle lines ("Task ... received", "... succeeded in ...s") come from the
+# `celery.*` loggers, which propagate to root, so they are preserved rather
+# than replaced — just formatted and redacted like everything else. Because
+# Celery installs no handler of its own here, records are emitted once; there
+# is no double-logging.
+#
+# `worker_redirect_stdouts` is left at its default: it routes stray print()
+# output to the logger, which is still desirable and does not duplicate
+# records.
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
 # cache
 CACHES={
     'default':{

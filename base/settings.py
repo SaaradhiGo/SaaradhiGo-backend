@@ -160,6 +160,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'payments.reconcile_stuck_withdrawals',
         'schedule': _crontab(minute='*/10'),
     },
+    'fare-shadow-sweep-every-15-min': {
+        # Observes what a metered fare would have charged on completed trips.
+        # Writes only to TripFareShadow -- no rider is charged from this. A
+        # no-op while FARE_SHADOW_ENABLED is False.
+        'task': 'pricing.fare_shadow_sweep',
+        'schedule': _crontab(minute='*/15'),
+    },
     'gps-trail-drain-every-minute': {
         # Drains driver_location_stream into TripLocationPoint. A no-op while
         # GPS_TRAIL_ENABLED is False, so scheduling it is safe before the
@@ -431,6 +438,14 @@ TRIP_ACTUALS_MAX_SEGMENT_SPEED_KMH = float(
 TRIP_ACTUALS_MAX_ACCEPTABLE_GAP_SECONDS = float(
     os.environ.get('TRIP_ACTUALS_MAX_ACCEPTABLE_GAP_SECONDS', '120'),
 )
+
+# --- Fare shadow comparison (observe-only) -----------------------------------
+# Off by default. When on, completed trips with measured actuals are re-quoted
+# through the canonical fare function and the result is stored for analysis.
+# Nothing a rider pays depends on this.
+FARE_SHADOW_ENABLED = os.environ.get('FARE_SHADOW_ENABLED', 'False') == 'True'
+FARE_SHADOW_BATCH_SIZE = int(os.environ.get('FARE_SHADOW_BATCH_SIZE', '200'))
+FARE_SHADOW_LOOKBACK_HOURS = int(os.environ.get('FARE_SHADOW_LOOKBACK_HOURS', '72'))
 
 GOOGLE_MAPS_API_KEY=os.environ.get("GOOGLE_MAPS_API_KEY", "")
 

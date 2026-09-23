@@ -84,6 +84,48 @@ class Trip(models.Model):
             models.Index(fields=['status_id', '-requested_at'], name='trip_status_recent_idx'),
             models.Index(fields=['zone', '-requested_at'], name='trip_zone_recent_idx'),
         ]
+
+
+# Statuses in which a Trip already has a driver committed to it, and that
+# driver must therefore not be able to take another ride.
+#
+# Deliberately NARROWER than the trip-active set used elsewhere
+# (`('requested', 'accepted', 'reached', 'in_progress')`, which answers "does
+# this rider have a live trip?"). `requested` belongs in that broader set but
+# not here: a requested trip has no driver by definition, so including it
+# would make every unassigned trip look like it occupied someone.
+#
+# Keep this as the single source of truth for the driver invariant. Do not
+# inline the tuple at call sites.
+DRIVER_ACTIVE_TRIP_STATUSES = ('accepted', 'reached', 'in_progress')
+
+
+def driver_active_trip_ids(driver, exclude_trip_id=None):
+    """Ids of trips this driver is already committed to.
+
+    Empty list means the driver is free to accept. `exclude_trip_id` skips the
+    trip currently being accepted, so re-accepting the same trip (a duplicate
+    tap, a retried frame) is not mistaken for a conflict.
+
+    Completed and cancelled trips are excluded by
+    `DRIVER_ACTIVE_TRIP_STATUSES`, which is what lets `Trip.driver_id` stay
+    populated for history and settlement without ever blocking future work.
+
+    The caller is responsible for holding the Driver row lock: this is a plain
+    read, and it is only authoritative while that lock serialises competing
+    acceptances.
+    """
+    if driver is None:
+        return []
+    qs = Trip.objects.filter(
+        driver_id=driver,
+        status_id__status_code__in=DRIVER_ACTIVE_TRIP_STATUSES,
+    )
+    if exclude_trip_id is not None:
+        qs = qs.exclude(pk=exclude_trip_id)
+    return list(qs.values_list('pk', flat=True))
+
+
 class FarePricing(models.Model):
     trip_id=models.ForeignKey(Trip,on_delete=models.CASCADE,related_name='fare_pricing')
     base_fare=models.DecimalField(max_digits=10,decimal_places=2)

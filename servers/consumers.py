@@ -987,10 +987,19 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
                     await self.channel_layer.group_send(f'rider_{rider_id}', rider_event)
             else:
-                await self.send(text_data=json.dumps({
+                # Sent only to the acting driver's own socket, never to the
+                # trip group, so a rejection cannot disclose anything about
+                # another rider's trip. `reason` is a stable machine-readable
+                # code the driver app can branch on (e.g.
+                # 'driver_already_on_trip'); it is additive, so clients that
+                # only read `message` are unaffected.
+                error_frame = {
                     'type': 'error',
-                    'message': result.get('error', 'Action failed')
-                }))
+                    'message': result.get('error', 'Action failed'),
+                }
+                if result.get('reason'):
+                    error_frame['reason'] = result['reason']
+                await self.send(text_data=json.dumps(error_frame))
 
         except json.JSONDecodeError:
             await self.send(text_data=json.dumps({
@@ -1186,6 +1195,53 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                             f'Try again after {fatigue.locked_until.isoformat() if fatigue.locked_until else "the cooldown ends"}.'
                         ),
                         'fatigue': fatigue.to_dict(),
+                    }
+
+                # One driver, one ride. PostgreSQL is the authority.
+                #
+                # Until now the only thing stopping a driver taking two rides
+                # was Redis: `set_driver_active_trip` + `remove_driver` keep a
+                # busy driver out of the geo index, so dispatch stops offering
+                # to them. But that is an OFFER-time filter, and this function
+                # — the single place a driver is ever assigned — never
+                # consulted it. Three ways that failed:
+                #
+                #   * Redis loses the active-trip key (flush, restart,
+                #     eviction). The next location ping re-adds the driver to
+                #     the geo index and they are offered a second ride.
+                #   * `set_driver_active_trip` fails at accept time and its
+                #     False return is discarded, so the key is never written.
+                #   * No infrastructure failure at all: two offers are already
+                #     on the driver's screen from overlapping dispatch windows
+                #     and they tap both.
+                #
+                # This read is authoritative because of the lock we are
+                # already holding. Both competing transactions lock their own
+                # Trip row first (different rows, no contention) and then
+                # contend on this driver's row. The winner commits and
+                # releases it; the loser acquires it afterwards and, under
+                # READ COMMITTED, sees the committed assignment here.
+                #
+                # `exclude_trip_id` keeps a duplicate accept of THIS trip from
+                # looking like a conflict with itself.
+                from servers.ride.models import driver_active_trip_ids
+                conflicting = driver_active_trip_ids(driver, exclude_trip_id=trip.id)
+                if conflicting:
+                    logger.warning(
+                        'accept rejected: driver %s already on active trip(s) %s, '
+                        'refused trip %s', driver.id, conflicting, trip.id,
+                    )
+                    # No Trip mutation, no OTP, no Redis write, no
+                    # notifications — we return before any of that. The trip
+                    # stays `requested` with no driver and remains available
+                    # to other drivers.
+                    return {
+                        'success': False,
+                        'reason': 'driver_already_on_trip',
+                        'error': (
+                            'You are already on an active ride. Finish or '
+                            'cancel it before accepting another.'
+                        ),
                     }
 
                 status_obj, _ = TripStatus.objects.get_or_create(

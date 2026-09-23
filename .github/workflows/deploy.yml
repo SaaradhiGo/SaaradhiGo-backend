@@ -106,8 +106,78 @@ jobs:
         # override pytest.ini and split the two paths apart again.
         run: pytest
 
+  postgres-concurrency:
+    # Row-lock contention tests only. The `test` job above stays on SQLite and
+    # is unchanged; SELECT FOR UPDATE is a no-op there, so the one-driver-one-
+    # trip invariant cannot be proven by it. These tests are opted into by
+    # marker, so this job and the default `pytest` never overlap.
+    #
+    # PostgreSQL 15 on purpose, not the 18 that Railway QA happens to run:
+    # docker-compose.override.yml pins postgres:15-alpine for local dev,
+    # production is RDS at an unconfirmed version, and Django 5.0 supports
+    # 12+. Testing on the lowest version anyone runs is the conservative
+    # choice, and nothing here depends on post-15 behaviour — row locking and
+    # READ COMMITTED have been stable for many major versions.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: sgtest
+          POSTGRES_USER: sgtest
+          POSTGRES_PASSWORD: sgtest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest==8.1.1 pytest-django==4.8.0 pytest-asyncio==0.21.1
+
+      - name: Run PostgreSQL concurrency tests
+        # Reuses the existing DB_* configuration in base/settings.py rather
+        # than introducing a second settings architecture: setting DB_HOST is
+        # all it takes to switch off the SQLite fallback. DB_SSLMODE=disable
+        # because the service container speaks plaintext, and the app default
+        # is `require`.
+        env:
+          DB_HOST: localhost
+          DB_PORT: '5432'
+          DB_NAME: sgtest
+          DB_USER: sgtest
+          DB_PASSWORD: sgtest
+          DB_SSLMODE: disable
+        run: pytest -m postgres
+
   deploy:
-    needs: [test, lint]
+    needs: [test, lint, postgres-concurrency]
     runs-on: ubuntu-latest
     # Only deploy from a real push to dev. Prevents accidental deploys from
     # forks, pull_request runs, or workflow_dispatch trial-runs.

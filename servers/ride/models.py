@@ -332,3 +332,100 @@ class PromoRedemption(models.Model):
 
     def __str__(self):
         return f'Redeem promo={self.promo_id} user={self.user_id} amount={self.discount_amount}'
+
+
+class TripLocationPoint(models.Model):
+    """One durable GPS sample from a driver during an active trip.
+
+    Driver location has been Redis-only: a GEO index for matching and an
+    ephemeral `driver_location_stream`. Nothing survived, so the platform could
+    not compute actual distance, reconcile a fare, answer "which route did the
+    driver take", support an SOS investigation, or produce evidence for an
+    insurance claim. This is the durable half.
+
+    Deliberately NOT a telematics platform. It stores sampled points for the
+    operationally active portion of a trip and nothing else:
+
+      * Rider locations are never stored. Only the assigned driver's track
+        while they are actually driving that trip.
+      * Collection starts when the trip reaches a driver-active status and
+        stops the moment it becomes terminal — enforced by the writer, which
+        resolves the trip's status from PostgreSQL rather than from Redis.
+      * Points are sampled, not streamed. See `servers.ride.location_trail`.
+
+    Write path is the existing Redis stream drained in batches by Celery, so
+    the per-ping hot path takes no extra database work. Redis stays the live
+    source of truth for "where is this driver now"; this table is history.
+    """
+
+    SOURCE_DRIVER_WS = 'driver_ws'
+    SOURCE_DRIVER_REST = 'driver_rest'
+    SOURCE_BACKFILL = 'backfill'
+    SOURCE_CHOICES = [
+        (SOURCE_DRIVER_WS, 'Driver app websocket ping'),
+        (SOURCE_DRIVER_REST, 'Driver app REST update'),
+        (SOURCE_BACKFILL, 'Backfilled / reconstructed'),
+    ]
+
+    trip = models.ForeignKey(
+        Trip, on_delete=models.CASCADE, related_name='location_points',
+    )
+    # Denormalised from the trip on purpose: safety and insurance queries ask
+    # "where was driver X at time T" without knowing the trip, and the trip's
+    # driver can be reassigned in principle. Matches Trip.driver_id's
+    # on_delete so this table inherits no stricter behaviour than its parent.
+    driver = models.ForeignKey(
+        Driver, on_delete=models.DO_NOTHING, related_name='trip_location_points',
+    )
+
+    # Same precision as Trip.pickup_lat/long so a point can be compared with a
+    # trip endpoint without a cast.
+    latitude = models.DecimalField(max_digits=10, decimal_places=7)
+    longitude = models.DecimalField(max_digits=10, decimal_places=7)
+
+    # `recorded_at` is the device's clock and is therefore untrusted: phones
+    # drift and can be wrong by minutes. `received_at` is ours and is what
+    # anything legal or financial should reason about. Both are kept precisely
+    # because they disagree.
+    recorded_at = models.DateTimeField(db_index=True)
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    accuracy_m = models.FloatField(
+        null=True, blank=True,
+        help_text='Device-reported horizontal accuracy in metres. Low-accuracy '
+                  'points are dropped by the sampler rather than stored.',
+    )
+    speed_kmh = models.FloatField(null=True, blank=True)
+    heading_deg = models.FloatField(null=True, blank=True)
+
+    # Monotonic per trip, assigned by the writer. Lets a route be replayed in a
+    # stable order even where two points share a timestamp, which happens when
+    # a device flushes a buffer.
+    sequence = models.PositiveIntegerField(null=True, blank=True)
+
+    source = models.CharField(
+        max_length=16, choices=SOURCE_CHOICES, default=SOURCE_DRIVER_WS,
+    )
+
+    class Meta:
+        indexes = [
+            # The dominant read: replay one trip's route in order. Also serves
+            # actual-distance computation and fare reconciliation.
+            models.Index(fields=['trip', 'recorded_at'], name='triploc_trip_time_idx'),
+            # Safety / SOS / insurance: where was this driver around time T.
+            models.Index(fields=['driver', '-recorded_at'], name='triploc_driver_time_idx'),
+            # Retention sweeps delete by age.
+            models.Index(fields=['received_at'], name='triploc_received_idx'),
+        ]
+        constraints = [
+            # Cheap guard against a device sending a buffered duplicate twice.
+            # Not a substitute for the sampler's de-duplication; this only
+            # catches an exact repeat of the same instant on the same trip.
+            models.UniqueConstraint(
+                fields=['trip', 'recorded_at', 'sequence'],
+                name='triploc_no_exact_duplicate',
+            ),
+        ]
+
+    def __str__(self):
+        return f'TripLocationPoint trip={self.trip_id} seq={self.sequence}'

@@ -1149,3 +1149,67 @@ def test_a_cancelled_trip_keeps_the_trail_it_already_produced(settings, trip, dr
         [_event(_eid(_ms_ago(minutes=10)), driver.id)]
     )
     assert stats['stored'] == 1, stats
+
+
+@pytest.mark.django_db
+def test_the_full_drain_attributes_a_completed_trips_pings_while_the_driver_is_on_the_next_trip(
+    settings, real_stream, trip, driver, rider,
+):
+    """The drain-time defect, through the real drain, with all three conditions.
+
+    This is the exact scenario the regression must cover, and it is the normal
+    order of events rather than an edge case:
+
+      * the writer drains AFTER Trip A completed;
+      * the driver has already started Trip B;
+      * Trip A is no longer active at drain time.
+
+    The previous implementation resolved the trip from the driver's status when
+    the drain ran, so in this situation Trip A's pings were dropped entirely and
+    the whole batch would have been attributed to Trip B or to nothing at all.
+    """
+    from servers.ride.location_trail import drain_location_stream
+
+    settings.GPS_TRAIL_ENABLED = True
+    settings.GPS_TRAIL_BATCH_SIZE = 100
+    settings.GPS_TRAIL_MAX_EVENTS_PER_RUN = 100
+
+    # Trip A ran and finished twelve minutes ago.
+    trip.status_id = _status('completed')
+    trip.completed_at = timezone.now() - timedelta(minutes=12)
+    trip.save(update_fields=['status_id', 'completed_at'])
+
+    # Trip B was accepted ten minutes ago and is under way right now.
+    trip_b = Trip.objects.create(
+        user_id=rider, status_id=_status('in_progress'),
+        pickup_lat=LAT, pickup_long=LNG,
+        destination_lat=Decimal('17.4600000'), destination_long=LNG,
+    )
+    trip_b.driver_id = driver
+    trip_b.accepted_at = timezone.now() - timedelta(minutes=10)
+    trip_b.save(update_fields=['driver_id', 'accepted_at'])
+
+    # Pings from both journeys are still sitting in the stream, interleaved in
+    # time order exactly as Redis would hold them.
+    for i in range(3):                                   # Trip A
+        _xadd(driver.id, Decimal('17.4450000') + Decimal('0.001') * i, LNG,
+              ms=int((timezone.now() - timedelta(minutes=15 - i)).timestamp() * 1000))
+    for i in range(3):                                   # Trip B
+        _xadd(driver.id, Decimal('17.4550000') + Decimal('0.001') * i, LNG,
+              ms=int((timezone.now() - timedelta(minutes=8 - i)).timestamp() * 1000))
+
+    out = drain_location_stream(consumer='regression')
+
+    assert out['received'] == 6, out
+    assert out['no_active_trip'] == 0, 'no ping may be discarded as off-trip'
+    assert out['acked'] == 6
+
+    a_points = TripLocationPoint.objects.filter(trip=trip).count()
+    b_points = TripLocationPoint.objects.filter(trip=trip_b).count()
+    assert a_points == 3, f'the completed trip must keep its own trail (got {a_points})'
+    assert b_points == 3, f'the live trip must keep its own trail (got {b_points})'
+
+    # And the two trails must not have bled into each other.
+    a_lats = {p.latitude for p in TripLocationPoint.objects.filter(trip=trip)}
+    b_lats = {p.latitude for p in TripLocationPoint.objects.filter(trip=trip_b)}
+    assert not (a_lats & b_lats), 'next-trip points must not merge into the previous trip'

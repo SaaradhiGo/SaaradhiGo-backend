@@ -260,3 +260,92 @@ class RateCard(models.Model):
         if self.effective_to and at >= self.effective_to:
             return False
         return True
+
+
+class TripFareShadow(models.Model):
+    """What a metered fare *would* have charged, recorded without charging it.
+
+    The platform quotes an up-front estimate and never writes `final_fare`, so
+    nobody knows whether metering would collect more or less, or how often the
+    two disagree badly enough to anger a rider. Answering that from production
+    traffic is a prerequisite for changing billing, and it cannot be answered by
+    reasoning about the formula -- only by measuring real trips.
+
+    One row per completed trip. Nothing here is money: no payment, wallet,
+    commission or settlement reads this table, and nothing in the fare path
+    writes it. It exists to be queried by a human deciding a pricing policy.
+
+    Three amounts, because a single difference would be uninterpretable:
+
+    * `quoted_fare`      what the rider was actually told at booking.
+    * `shadow_estimate`  the estimated distance/duration re-quoted *now*.
+    * `shadow_actual`    the measured distance/duration quoted at the same
+                         instant, under the same rate card and surge.
+
+    `shadow_actual - shadow_estimate` is therefore attributable to the trip
+    metrics alone, while `shadow_estimate - quoted_fare` isolates drift in the
+    pricing context (a rate card edited since booking, night surge crossing
+    midnight, a different live surge multiplier). Collapsing those two into one
+    number is how a fare investigation reaches the wrong conclusion.
+    """
+
+    trip = models.OneToOneField(
+        'ride.Trip', on_delete=models.CASCADE, related_name='fare_shadow',
+    )
+
+    # What the rider was told, copied at observation time so a later edit to
+    # the trip cannot silently rewrite history in this table.
+    quoted_fare = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    shadow_estimate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    shadow_actual = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    # Inputs, so a surprising row can be understood without re-deriving them.
+    estimated_distance_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    actual_distance_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    estimated_duration_min = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    actual_duration_min = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    # Evidence quality behind `actual_distance_km`. A 40%-covered trail and a
+    # 95%-covered one must not be averaged together in the analysis.
+    coverage_ratio = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    trail_points = models.IntegerField(default=0)
+
+    # Pricing context at observation time, for grouping the analysis.
+    zone_code = models.CharField(max_length=64, blank=True, default='')
+    vehicle_type = models.CharField(max_length=64, blank=True, default='')
+    rate_card_version = models.IntegerField(null=True, blank=True)
+    surge_multiplier = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    quote_source = models.CharField(max_length=16, blank=True, default='')
+
+    # Why a row has no amounts: 'computed', 'no_actuals', 'pricing_unavailable',
+    # 'no_vehicle_type'. Stored rather than logged, so the denominator of any
+    # "metering would collect X% more" claim is visible in the same query.
+    status = models.CharField(max_length=32, default='computed')
+
+    observed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'trip_fare_shadow'
+        indexes = [
+            models.Index(fields=['observed_at'], name='fareshadow_observed_idx'),
+            models.Index(fields=['zone_code', 'observed_at'], name='fareshadow_zone_idx'),
+            models.Index(fields=['status'], name='fareshadow_status_idx'),
+        ]
+
+    def __str__(self):
+        return f'shadow(trip={self.trip_id}, {self.quoted_fare} -> {self.shadow_actual})'
+
+    @property
+    def metric_delta(self):
+        """Difference attributable to distance/duration alone."""
+        if self.shadow_actual is None or self.shadow_estimate is None:
+            return None
+        return self.shadow_actual - self.shadow_estimate
+
+    @property
+    def context_delta(self):
+        """Difference attributable to the pricing context having moved."""
+        if self.shadow_estimate is None or self.quoted_fare is None:
+            return None
+        return self.shadow_estimate - self.quoted_fare

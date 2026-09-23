@@ -207,6 +207,130 @@ def clear_offered_drivers(trip_id):
         return False
 
 
+LOCATION_STREAM = 'driver_location_stream'
+
+# Redis database map for this project, because it is not obvious and getting it
+# wrong is silent:
+#
+#   db 0  Celery broker
+#   db 1  Django cache (django_redis)
+#   db 2  THIS module: geo index, offers, heartbeat, active-trip, trip cache
+#   db 3  driver_location_stream, written by servers.driver.utils
+#   db 4  Channels layer
+#
+# The location stream lives in db 3 because servers/driver/utils.py builds its
+# own client against `REDIS_URL + '/3'`. This module's client is db 2. Reading
+# the stream through the db-2 client therefore finds NOTHING -- an empty
+# result, no error -- which would make the durable trail writer silently
+# persist zero rows in production.
+#
+# So the stream helpers deliberately borrow the exact client that writes the
+# stream rather than defining a second one. A duplicated connection string
+# could drift; a shared object cannot.
+
+
+def _stream_client():
+    """The client that owns driver_location_stream (db 3).
+
+    Imported lazily and by module attribute, not `from ... import redis_client`,
+    so a reconnect or a test patch on driver.utils is observed here too.
+    """
+    from servers.driver import utils as driver_utils
+    return getattr(driver_utils, 'redis_client', None)
+# A consumer group, not a bare XREAD: it tracks what has been acknowledged, so
+# a restarted worker resumes where it left off instead of re-reading the stream
+# or skipping it, and an entry whose processing died is redelivered rather than
+# lost. That is at-least-once, which is exactly what the durable writer's
+# idempotency key is designed for.
+LOCATION_STREAM_GROUP = 'trip_trail_writer'
+
+
+def ensure_location_stream_group():
+    """Create the consumer group if it does not exist. Idempotent.
+
+    `mkstream=True` so the group can be created before the stream has ever
+    received an entry -- otherwise the first drain on a quiet environment would
+    fail instead of returning nothing.
+    """
+    client = _stream_client()
+    if client is None:
+        return False
+    try:
+        client.xgroup_create(
+            LOCATION_STREAM, LOCATION_STREAM_GROUP, id='0', mkstream=True,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        # BUSYGROUP simply means it already exists, which is the normal path.
+        if 'BUSYGROUP' in str(exc):
+            return True
+        logger.warning('ensure_location_stream_group failed: %s', exc)
+        return False
+
+
+def read_location_events(count, consumer='worker-1', block_ms=None):
+    """Claim up to `count` unacknowledged location events for this consumer.
+
+    Returns a list of (entry_id, {field: value}) with str keys and values.
+    Returns [] when Redis is unavailable, so a drain degrades to doing nothing
+    rather than raising into the caller.
+    """
+    client = _stream_client()
+    if client is None:
+        return []
+    try:
+        resp = client.xreadgroup(
+            LOCATION_STREAM_GROUP, consumer,
+            {LOCATION_STREAM: '>'}, count=count, block=block_ms,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('read_location_events failed: %s', exc)
+        return []
+
+    events = []
+    for _stream, entries in resp or []:
+        for entry_id, fields in entries:
+            eid = entry_id.decode() if isinstance(entry_id, bytes) else str(entry_id)
+            clean = {}
+            for k, v in (fields or {}).items():
+                k = k.decode() if isinstance(k, bytes) else str(k)
+                v = v.decode() if isinstance(v, bytes) else v
+                clean[k] = v
+            events.append((eid, clean))
+    return events
+
+
+def ack_location_events(entry_ids):
+    """Acknowledge processed entries so they are not redelivered.
+
+    Called only after the durable rows are committed. If this fails the entries
+    stay pending and are re-processed later, which the writer's unique
+    constraint makes harmless.
+    """
+    client = _stream_client()
+    if client is None or not entry_ids:
+        return 0
+    try:
+        return client.xack(LOCATION_STREAM, LOCATION_STREAM_GROUP, *entry_ids)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('ack_location_events failed: %s', exc)
+        return 0
+
+
+def location_stream_pending():
+    """How many claimed-but-unacknowledged entries exist. Observability only."""
+    client = _stream_client()
+    if client is None:
+        return 0
+    try:
+        info = client.xpending(LOCATION_STREAM, LOCATION_STREAM_GROUP)
+        if isinstance(info, dict):
+            return int(info.get('pending') or 0)
+        return int(info[0]) if info else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def sweep_stale_drivers():
     """Remove geo entries whose heartbeat has expired.
 

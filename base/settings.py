@@ -160,6 +160,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'payments.reconcile_stuck_withdrawals',
         'schedule': _crontab(minute='*/10'),
     },
+    'gps-trail-drain-every-minute': {
+        # Drains driver_location_stream into TripLocationPoint. A no-op while
+        # GPS_TRAIL_ENABLED is False, so scheduling it is safe before the
+        # feature is switched on.
+        'task': 'ride.persist_location_trail',
+        'schedule': 60.0,
+    },
     'driver-presence-sweep-every-minute': {
         # Evict drivers whose heartbeat lapsed (app killed, worker crashed)
         # from the geo index. Heartbeat TTL is 45s, so a ghost is matchable
@@ -372,6 +379,41 @@ DISPATCH_RADIUS_WAVES_M = tuple(
     int(r) for r in os.environ.get('DISPATCH_RADIUS_WAVES_M', '1500,3000,5000').split(',') if r.strip()
 )
 DISPATCH_WAVE_SECONDS = float(os.environ.get('DISPATCH_WAVE_SECONDS', '20'))
+
+# --- Durable GPS trail (ADR-0010) -------------------------------------------
+# Off by default on purpose. The writer can therefore merge and deploy without
+# changing behaviour, and be switched on deliberately per environment once the
+# table and the beat cadence have been watched. Turning it off again is a
+# variable change, not a rollback.
+GPS_TRAIL_ENABLED = os.environ.get('GPS_TRAIL_ENABLED', 'False') == 'True'
+
+# Sampling policy. Every value is env-tunable because the right numbers depend
+# on city density and on how chatty the driver app build is, and we would
+# rather change a variable than ship a release to find out.
+#   MIN_INTERVAL  one point per N seconds is enough to reconstruct a route
+#   MIN_DISTANCE  below this, successive points are jitter, not movement --
+#                 this is what stops a driver idling at a pickup filling the
+#                 table
+#   MAX_ACCURACY  a fix worse than this makes derived distance worse, not
+#                 better, so it is dropped rather than stored
+GPS_TRAIL_MIN_INTERVAL_SECONDS = float(os.environ.get('GPS_TRAIL_MIN_INTERVAL_SECONDS', '5'))
+GPS_TRAIL_MIN_DISTANCE_METRES = float(os.environ.get('GPS_TRAIL_MIN_DISTANCE_METRES', '25'))
+GPS_TRAIL_MAX_ACCURACY_METRES = float(os.environ.get('GPS_TRAIL_MAX_ACCURACY_METRES', '50'))
+
+# Broken-client guard: a 60-minute trip sampled every 5s is ~720 points, so
+# this is roughly 7x headroom before something is clearly wrong.
+GPS_TRAIL_MAX_POINTS_PER_TRIP = int(os.environ.get('GPS_TRAIL_MAX_POINTS_PER_TRIP', '5000'))
+
+# How much of the Redis stream one drain run consumes. Bounded so a backlog
+# cannot turn a single beat tick into an unbounded transaction. At sustained
+# high ping rates this wants a dedicated long-running consumer rather than a
+# beat tick -- see ADR-0010.
+GPS_TRAIL_BATCH_SIZE = int(os.environ.get('GPS_TRAIL_BATCH_SIZE', '500'))
+GPS_TRAIL_MAX_EVENTS_PER_RUN = int(os.environ.get('GPS_TRAIL_MAX_EVENTS_PER_RUN', '10000'))
+# The drain is periodic, so a journey's last pings are still in the stream when
+# the trip completes. Accept them for this long after the trip ends, or every
+# trip's measured distance is short by the final stretch -- systematically.
+GPS_TRAIL_LATE_ARRIVAL_MINUTES = int(os.environ.get('GPS_TRAIL_LATE_ARRIVAL_MINUTES', '60'))
 
 GOOGLE_MAPS_API_KEY=os.environ.get("GOOGLE_MAPS_API_KEY", "")
 

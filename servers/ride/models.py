@@ -332,3 +332,113 @@ class PromoRedemption(models.Model):
 
     def __str__(self):
         return f'Redeem promo={self.promo_id} user={self.user_id} amount={self.discount_amount}'
+
+
+class TripLocationPoint(models.Model):
+    """One durable GPS sample from a driver during an active trip.
+
+    Driver location has been Redis-only: a GEO index for matching and an
+    ephemeral `driver_location_stream`. Nothing survived, so the platform could
+    not compute actual distance, reconcile a fare, answer "which route did the
+    driver take", support an SOS investigation, or produce evidence for an
+    insurance claim. This is the durable half.
+
+    Deliberately NOT a telematics platform. It stores sampled points for the
+    operationally active portion of a trip and nothing else:
+
+      * Rider locations are never stored. Only the assigned driver's track
+        while they are actually driving that trip.
+      * Collection starts when the trip reaches a driver-active status and
+        stops the moment it becomes terminal — enforced by the writer, which
+        resolves the trip's status from PostgreSQL rather than from Redis.
+      * Points are sampled, not streamed. See `servers.ride.location_trail`.
+
+    Write path is the existing Redis stream drained in batches by Celery, so
+    the per-ping hot path takes no extra database work. Redis stays the live
+    source of truth for "where is this driver now"; this table is history.
+    """
+
+    SOURCE_DRIVER_WS = 'driver_ws'
+    SOURCE_DRIVER_REST = 'driver_rest'
+    SOURCE_BACKFILL = 'backfill'
+    SOURCE_CHOICES = [
+        (SOURCE_DRIVER_WS, 'Driver app websocket ping'),
+        (SOURCE_DRIVER_REST, 'Driver app REST update'),
+        (SOURCE_BACKFILL, 'Backfilled / reconstructed'),
+    ]
+
+    trip = models.ForeignKey(
+        Trip, on_delete=models.CASCADE, related_name='location_points',
+    )
+    # Denormalised from the trip on purpose: safety and insurance queries ask
+    # "where was driver X at time T" without knowing the trip, and the trip's
+    # driver can be reassigned in principle. Matches Trip.driver_id's
+    # on_delete so this table inherits no stricter behaviour than its parent.
+    driver = models.ForeignKey(
+        Driver, on_delete=models.DO_NOTHING, related_name='trip_location_points',
+    )
+
+    # Same precision as Trip.pickup_lat/long so a point can be compared with a
+    # trip endpoint without a cast.
+    latitude = models.DecimalField(max_digits=10, decimal_places=7)
+    longitude = models.DecimalField(max_digits=10, decimal_places=7)
+
+    # `recorded_at` is the device's clock and is therefore untrusted: phones
+    # drift and can be wrong by minutes. `received_at` is ours and is what
+    # anything legal or financial should reason about. Both are kept precisely
+    # because they disagree.
+    recorded_at = models.DateTimeField(db_index=True)
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    accuracy_m = models.FloatField(
+        null=True, blank=True,
+        help_text='Device-reported horizontal accuracy in metres. Low-accuracy '
+                  'points are dropped by the sampler rather than stored.',
+    )
+    speed_kmh = models.FloatField(null=True, blank=True)
+    heading_deg = models.FloatField(null=True, blank=True)
+
+    # Monotonic per trip, assigned by the writer. Lets a route be replayed in a
+    # stable order even where two points share a timestamp, which happens when
+    # a device flushes a buffer.
+    sequence = models.PositiveIntegerField(null=True, blank=True)
+
+    # The Redis stream entry id this row came from, e.g. '1758623456789-0'.
+    # This is the idempotency key for the writer: Celery and Redis consumer
+    # groups both give at-least-once delivery, so the same entry can arrive
+    # twice after a retry or a worker death mid-batch. A unique constraint on
+    # (trip, source_event_id) makes the second insert a no-op instead of a
+    # duplicate point that would inflate actual distance.
+    #
+    # Nullable because backfilled or reconstructed rows have no originating
+    # event, and PostgreSQL permits unlimited NULLs in a unique index -- so
+    # those rows coexist without needing a partial predicate.
+    source_event_id = models.CharField(max_length=64, null=True, blank=True)
+
+    source = models.CharField(
+        max_length=16, choices=SOURCE_CHOICES, default=SOURCE_DRIVER_WS,
+    )
+
+    class Meta:
+        indexes = [
+            # The dominant read: replay one trip's route in order. Also serves
+            # actual-distance computation and fare reconciliation.
+            models.Index(fields=['trip', 'recorded_at'], name='triploc_trip_time_idx'),
+            # Safety / SOS / insurance: where was this driver around time T.
+            models.Index(fields=['driver', '-recorded_at'], name='triploc_driver_time_idx'),
+            # Retention sweeps delete by age.
+            models.Index(fields=['received_at'], name='triploc_received_idx'),
+        ]
+        constraints = [
+            # Idempotency for the writer. Re-processing a Redis stream entry --
+            # after a Celery retry, a redelivered consumer-group message, or a
+            # worker dying mid-batch -- must not create a second point, because
+            # duplicated points inflate actual distance and therefore the fare.
+            models.UniqueConstraint(
+                fields=['trip', 'source_event_id'],
+                name='triploc_one_row_per_source_event',
+            ),
+        ]
+
+    def __str__(self):
+        return f'TripLocationPoint trip={self.trip_id} seq={self.sequence}'

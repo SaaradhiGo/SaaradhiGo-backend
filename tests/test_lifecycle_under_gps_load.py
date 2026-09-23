@@ -6,24 +6,34 @@ client believed it had completed. This file reproduces the *mechanism* against t
 real consumers, the real Redis channel layer and real PostgreSQL, and measures
 where the boundary actually is rather than assuming twenty is meaningful.
 
-The mechanism under test
-------------------------
-Two couplings exist between location traffic and lifecycle commands, and neither is
-visible in a unit test:
+What it actually was
+--------------------
+Twenty was not a threshold, and the database was never reached. Two distinct defects
+came out of this, and only the first explains the reported symptom:
 
-1. **One process-wide thread.** `DriverLocationConsumer.receive` awaits two
-   `@database_sync_to_async` calls per frame (`_add_driver_location`,
-   `_get_driver_broadcast_info`) and `TripStatusConsumer._update_trip_status` is
-   also `@database_sync_to_async`. `database_sync_to_async` is
-   `thread_sensitive=True`, whose fallback executor is a **single-threaded
-   ThreadPoolExecutor shared by the whole process**. Location work and lifecycle
-   work therefore queue behind one another, across every connected driver.
+1. **The driver received an echo of its own GPS on its command socket.**
+   `group_send('trip_<id>', driver_location_update)` reaches the whole trip group,
+   so the assigned driver got one copy of every position it had just sent, on the
+   socket carrying `complete`. The reference `websockets` client stops reading
+   frames at sixteen queued messages -- *including Daphne's keepalive pings* -- so
+   it stopped answering pongs, Daphne's 20s/30s ping timeout elapsed, and **the
+   server closed the connection**. `complete` then went into a dead socket while the
+   client's `send()` still succeeded. Needs a full buffer *and* ~50 more seconds of
+   ride, which is why it looked like a frame count. Fixed by not sending a driver
+   its own position.
 
-2. **One dispatch loop per consumer.** Each GPS frame fans out to the trip group,
-   so `TripStatusConsumer` receives a `driver_location_update` per frame. Channels
-   feeds channel-layer events and websocket frames into a single sequential
-   `await_many_dispatch` loop, so a `complete` frame waits behind every queued
-   location event.
+2. **Location broadcasts could block the dispatch loop.** Channels feeds websocket
+   frames and channel-layer events through one sequential `await_many_dispatch`
+   loop, and the broadcasts were delivered with a blocking `await self.send(...)`.
+   A client that genuinely applies backpressure stalls the loop, so `complete` is
+   never dequeued. Fixed by coalescing location frames onto a depth-1 queue drained
+   by a dedicated task. The same coupling silently ended GPS ingestion: 17 of 200
+   frames reached the stream against an undrained client.
+
+Ruled out by measurement, and recorded so it is not re-investigated: the
+`database_sync_to_async` single-thread executor does **not** starve one driver's
+lifecycle commands, because `receive` awaits its hops sequentially and can only ever
+have one job queued. It remains a multi-driver scaling concern.
 
 Harness notes, because both cost a day
 --------------------------------------

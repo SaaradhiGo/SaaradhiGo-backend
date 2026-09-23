@@ -60,7 +60,13 @@ _REDACT_KEYS_EXACT = frozenset({
 # would inevitably miss one (`fcm_token`, `access_token`, `webhook_secret`, …).
 _REDACT_KEY_SUBSTRINGS = (
     'otp', 'token', 'secret', 'password', 'passwd', 'authorization',
-    'jwt', 'api_key', 'apikey', 'phone', 'email', 'card', 'cvv',
+    'jwt', 'api_key', 'apikey', 'phone', 'email', 'cvv',
+    # Payment-instrument keys only. A bare 'card' substring also swallowed
+    # `rate_card_id` and `rate_card_version`, which are pricing-schedule
+    # identifiers with nothing sensitive in them -- and redacting them removes
+    # exactly the provenance a fare audit needs. Over-redaction is not free: it
+    # looks like privacy while destroying the audit trail.
+    'card_number', 'cardnumber', 'card_no', 'card_num', 'pan_number',
 )
 
 _REDACTED = '***'

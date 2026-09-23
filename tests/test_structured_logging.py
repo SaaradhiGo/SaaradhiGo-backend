@@ -262,3 +262,45 @@ def test_nested_args_key_is_redacted_at_any_depth():
     assert out['data']['args'] == '***'
     assert out['data']['name'] == 'some.task'
     assert 'Ravi Kumar' not in json.dumps(out)
+
+
+def test_payment_card_keys_are_still_redacted():
+    """Narrowing the 'card' substring must not stop redacting real card data."""
+    import logging
+
+    from base.logging_filters import PIIRedactionFilter
+
+    f = PIIRedactionFilter()
+    rec = logging.LogRecord('t', logging.INFO, __file__, 1, 'x', (), None)
+    rec.card_number = '4111111111111111'
+    rec.cardnumber = '4111111111111111'
+    rec.card_no = '4111111111111111'
+    rec.pan_number = 'ABCDE1234F'
+    rec.cvv = '123'
+    f.filter(rec)
+
+    for attr in ('card_number', 'cardnumber', 'card_no', 'pan_number', 'cvv'):
+        assert getattr(rec, attr) == '***', attr
+
+
+def test_pricing_provenance_keys_survive_redaction():
+    """rate_card_id / rate_card_version are audit provenance, not card data.
+
+    Redacting them looked like privacy while destroying exactly the trail a fare
+    audit needs -- found because a RateCard test asserted on a logged id and got
+    '***' back.
+    """
+    import logging
+
+    from base.logging_filters import PIIRedactionFilter
+
+    f = PIIRedactionFilter()
+    rec = logging.LogRecord('t', logging.INFO, __file__, 1, 'x', (), None)
+    rec.rate_card_id = 17
+    rec.rate_card_version = 3
+    rec.zone_code = 'HYD'
+    f.filter(rec)
+
+    assert rec.rate_card_id == 17
+    assert rec.rate_card_version == 3
+    assert rec.zone_code == 'HYD'

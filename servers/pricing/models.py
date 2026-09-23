@@ -171,6 +171,26 @@ class ServiceZone(models.Model):
         return f'{self.code} ({self.name})'
 
 
+class RateCardQuerySet(models.QuerySet):
+    """Closes the `.update()` bypass.
+
+    `Model.save()` is not the only write path: `RateCard.objects.filter(...).update(
+    per_km_fare=...)` goes straight to SQL and never calls save(), so a guard on
+    save() alone would be one queryset away from useless. Lifecycle columns stay
+    updatable in bulk, because retiring a batch of cards is a legitimate operation.
+    """
+
+    def update(self, **kwargs):
+        pricing = set(RateCard.PRICING_FIELDS) & set(kwargs)
+        if pricing:
+            from django.core.exceptions import ValidationError
+            raise ValidationError(
+                'RateCard pricing is immutable: refusing a bulk update of '
+                f'{sorted(pricing)}. Create new versions instead.'
+            )
+        return super().update(**kwargs)
+
+
 class RateCard(models.Model):
     """Versioned, effective-dated fare schedule per (zone, vehicle_type).
 
@@ -225,6 +245,8 @@ class RateCard(models.Model):
         max_digits=5, decimal_places=2, default=Decimal('5.00'),
     )
 
+    objects = RateCardQuerySet.as_manager()
+
     effective_from = models.DateTimeField(default=timezone.now, db_index=True)
     effective_to = models.DateTimeField(null=True, blank=True, db_index=True)
     version = models.IntegerField(default=1)
@@ -250,6 +272,143 @@ class RateCard(models.Model):
 
     def __str__(self):
         return f'{self.zone.code} / {self.vehicle_type.type} v{self.version}'
+
+    # Fields that define what a ride COST. Once a card exists, these are history:
+    # a trip's fare snapshot points at this row by version, so editing one of them
+    # silently rewrites what past rides were priced under. Changing pricing means
+    # creating a new version.
+    PRICING_FIELDS = (
+        'base_fare', 'per_km_fare', 'per_min_fare', 'min_fare',
+        'night_surge_multiplier', 'night_surge_start_hour', 'night_surge_end_hour',
+        'surge_cap_multiplier', 'commission_percent', 'gst_percent',
+    )
+
+    # Fields an operator must still be able to change on an existing card, because
+    # they are lifecycle rather than price: retiring a card, closing its window,
+    # annotating it.
+    LIFECYCLE_FIELDS = ('is_active', 'effective_to', 'notes')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Snapshot the pricing fields as loaded, so save() can tell what changed
+        # without a second query.
+        self._loaded_pricing = self._pricing_snapshot() if self.pk else None
+        # Set by new_version() and by an audited correction; never by a caller
+        # that simply forgot.
+        self._allow_pricing_edit = False
+
+    def _pricing_snapshot(self):
+        return {f: getattr(self, f, None) for f in self.PRICING_FIELDS}
+
+    def changed_pricing_fields(self):
+        """Which pricing fields differ from what was loaded from the database."""
+        if self._loaded_pricing is None:
+            return []
+        now = self._pricing_snapshot()
+        return [f for f, was in self._loaded_pricing.items() if now[f] != was]
+
+    def save(self, *args, **kwargs):
+        """Refuse an in-place pricing edit unless it is an audited correction.
+
+        This is the guard that makes `rate_card_version` on a fare snapshot mean
+        something. Without it, "which rates priced this trip" is answerable only
+        as "whatever the row says today", and a fare from last month can change
+        because someone edited a card this morning.
+
+        Retiring a card, closing its effective window and editing its notes all
+        stay allowed -- operational correction must not become impossible.
+        """
+        if self.pk and not self._allow_pricing_edit:
+            changed = self.changed_pricing_fields()
+            # `update_fields` restricted to lifecycle columns is always fine: it
+            # cannot touch a pricing column by definition.
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None:
+                changed = [f for f in changed if f in set(update_fields)]
+            if changed:
+                from django.core.exceptions import ValidationError
+                raise ValidationError(
+                    'RateCard pricing is immutable once the card exists. '
+                    f'Refusing to change {sorted(changed)} on card id={self.pk} '
+                    f'(zone={self.zone_id}, version={self.version}). '
+                    'Create a new version with RateCard.new_version(...), or use '
+                    'apply_audited_correction() if this is a genuine correction '
+                    'to a card that never priced a ride.'
+                )
+        super().save(*args, **kwargs)
+        self._loaded_pricing = self._pricing_snapshot()
+        self._allow_pricing_edit = False
+
+    def new_version(self, *, effective_from=None, close_current=True, **changes):
+        """Supersede this card with a new version carrying `changes`.
+
+        This is how a price change is made. The new card inherits everything not
+        overridden, gets `version + 1`, and the current card's window is closed at
+        the same instant so the resolver never sees two live cards for the same
+        (zone, vehicle_type).
+        """
+        from django.db import transaction as _tx
+
+        at = effective_from or timezone.now()
+        fields = {
+            f.name: getattr(self, f.name)
+            for f in self._meta.fields
+            if f.name not in ('id', 'created_at', 'updated_at', 'version',
+                              'effective_from', 'effective_to')
+        }
+        fields.update(changes)
+
+        with _tx.atomic():
+            successor = type(self)(
+                version=(self.version or 1) + 1,
+                effective_from=at,
+                effective_to=None,
+                **fields,
+            )
+            successor.save()
+            if close_current:
+                # Lifecycle only -- allowed on an existing card.
+                self.effective_to = at
+                self.save(update_fields=['effective_to'])
+        return successor
+
+    def apply_audited_correction(self, *, reason, actor_label='unknown', **changes):
+        """Edit pricing in place, deliberately and with a record of why.
+
+        The escape hatch. Intended for a card that was mistyped before it priced
+        anything; using it on a card that has priced rides rewrites their history,
+        which is exactly what the guard exists to prevent -- so it says so, loudly,
+        in the log.
+        """
+        import logging
+
+        if not reason:
+            raise ValueError('An audited correction requires a reason.')
+        before = self._pricing_snapshot()
+        for field, value in changes.items():
+            if field not in self.PRICING_FIELDS:
+                raise ValueError(
+                    f'{field} is not a pricing field; set it normally.'
+                )
+            setattr(self, field, value)
+        self._allow_pricing_edit = True
+        self.save()
+        logging.getLogger(__name__).warning(
+            'ratecard_pricing_corrected',
+            extra={
+                'event': 'ratecard_pricing_corrected',
+                'rate_card_id': self.pk,
+                'zone_id': self.zone_id,
+                'version': self.version,
+                'changed': sorted(changes.keys()),
+                'before': {k: str(v) for k, v in before.items()
+                           if k in changes},
+                'after': {k: str(getattr(self, k)) for k in changes},
+                'reason': reason,
+                'actor': actor_label,
+            },
+        )
+        return self
 
     def is_currently_effective(self, at=None):
         at = at or timezone.now()

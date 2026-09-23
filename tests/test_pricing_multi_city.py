@@ -207,13 +207,15 @@ def test_quote_fare_uses_rate_card_when_zone_known():
 
     zone = ServiceZone.objects.get(code='IN-TG-HYD')
     vt, _ = VehicleType.objects.get_or_create(type='hatchback')
-    RateCard.objects.update_or_create(
-        zone=zone, vehicle_type=vt, version=1,
-        defaults={
-            'base_fare': Decimal('50.00'), 'per_km_fare': Decimal('15.00'),
-            'per_min_fare': Decimal('2.00'), 'min_fare': Decimal('80.00'),
-            'is_active': True,
-        },
+    # RateCard pricing is immutable, so the fixture retires whatever is seeded and
+    # creates a fresh version rather than editing a row in place -- the same path
+    # production now uses for a price change.
+    RateCard.objects.filter(zone=zone, vehicle_type=vt).update(is_active=False)
+    RateCard.objects.create(
+        zone=zone, vehicle_type=vt, version=99,
+        base_fare=Decimal('50.00'), per_km_fare=Decimal('15.00'),
+        per_min_fare=Decimal('2.00'), min_fare=Decimal('80.00'),
+        is_active=True,
     )
     fare = quote_fare(
         distance_km=Decimal('10'), duration_min=Decimal('20'),
@@ -250,13 +252,12 @@ def test_quote_fare_enforces_minimum_fare():
 
     zone = ServiceZone.objects.get(code='IN-TG-HYD')
     vt, _ = VehicleType.objects.get_or_create(type='auto')
-    RateCard.objects.update_or_create(
-        zone=zone, vehicle_type=vt, version=1,
-        defaults={
-            'base_fare': Decimal('10.00'), 'per_km_fare': Decimal('5.00'),
-            'per_min_fare': Decimal('1.00'), 'min_fare': Decimal('60.00'),
-            'is_active': True,
-        },
+    RateCard.objects.filter(zone=zone, vehicle_type=vt).update(is_active=False)
+    RateCard.objects.create(
+        zone=zone, vehicle_type=vt, version=99,
+        base_fare=Decimal('10.00'), per_km_fare=Decimal('5.00'),
+        per_min_fare=Decimal('1.00'), min_fare=Decimal('60.00'),
+        is_active=True,
     )
     fare = quote_fare(
         distance_km=Decimal('1'), duration_min=Decimal('1'),

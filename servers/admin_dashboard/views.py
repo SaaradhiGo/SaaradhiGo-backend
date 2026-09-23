@@ -4169,16 +4169,25 @@ def update_global_config(request):
             )
             action = "created"
         else:
-            rate_card.base_fare = base_fare
-            rate_card.per_km_fare = per_km_fare
-            rate_card.per_min_fare = per_min_fare
-            # Keep existing minimum fare when updating
-            if rate_card.min_fare is None:
-                rate_card.min_fare = base_fare
-            rate_card.surge_cap_multiplier = surge_cap_multiplier
-            rate_card.night_surge_multiplier = night_surge_multiplier
-            rate_card.save()
-            action = "updated"
+            # A price change SUPERSEDES the current card rather than editing it.
+            #
+            # This used to assign the new rates onto the live row and save it --
+            # which silently rewrote the schedule that historical trips had been
+            # priced under, because a fare snapshot points at a card by version.
+            # RateCard.save() now refuses that, and new_version() is the supported
+            # path: the successor inherits everything not overridden, takes
+            # version + 1, and the old card's effective window is closed so the
+            # resolver never sees two live cards for one zone + vehicle type.
+            rate_card = rate_card.new_version(
+                base_fare=base_fare,
+                per_km_fare=per_km_fare,
+                per_min_fare=per_min_fare,
+                min_fare=(rate_card.min_fare
+                          if rate_card.min_fare is not None else base_fare),
+                surge_cap_multiplier=surge_cap_multiplier,
+                night_surge_multiplier=night_surge_multiplier,
+            )
+            action = "superseded (new version %s)" % rate_card.version
         return JsonResponse({
             "success": True,
             "message": (

@@ -37,6 +37,32 @@ class RateCardViewSet(viewsets.ModelViewSet):
     serializer_class = RateCardSerializer
     permission_classes = [IsPlatformAdmin]
 
+    def update(self, request, *args, **kwargs):
+        """Refuse an in-place pricing edit; direct the caller to versioning.
+
+        RateCard.save() would raise ValidationError anyway -- this turns that into
+        a clear 409 with the reason, rather than a 500 or an opaque validation
+        error. Lifecycle-only edits (is_active, effective_to, notes) still pass
+        straight through, because retiring a card must stay possible.
+        """
+        pricing = set(RateCard.PRICING_FIELDS) & set(request.data.keys())
+        if pricing:
+            return Response(
+                {
+                    'detail': (
+                        'RateCard pricing is immutable. Create a new version '
+                        'instead of editing this one.'
+                    ),
+                    'immutable_fields': sorted(pricing),
+                    'how_to_change_pricing': (
+                        'POST a new RateCard for this zone + vehicle type, or use '
+                        'the fare form which now supersedes automatically.'
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().update(request, *args, **kwargs)
+
     def get_queryset(self):
         qs = super().get_queryset()
         zone = self.request.query_params.get('zone')

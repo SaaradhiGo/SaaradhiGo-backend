@@ -378,13 +378,25 @@ def reconcile_stuck_withdrawals():
         try:
             with transaction.atomic():
                 row = WithdrawalRequest.objects.select_for_update().get(pk=w.pk)
-                if row.status not in ('processing', 'approved'):
+                # Re-check under the lock, against the SAME status the selection
+                # used. This previously re-checked ('processing', 'approved') --
+                # the old vocabulary -- so every selected row would have hit this
+                # guard and continued, and the task would have resolved nothing
+                # even once provider polling existed. Unreachable while the
+                # boundary below is closed, which is exactly why it would have
+                # survived to bite whoever opened it.
+                if row.status != WITHDRAWAL_STUCK_STATUS:
                     continue  # someone else moved it
                 if gateway_state in ('SUCCESS', 'COMPLETED', 'PROCESSED'):
                     row.status = 'completed'
                     row.payout_status = gateway_state
-                    row.processed_at = timezone.now()
-                    row.save(update_fields=['status', 'payout_status', 'processed_at'])
+                    # processed_at is deliberately NOT touched: it means "the
+                    # transfer was dispatched at", and the selection window
+                    # depends on that meaning. Overwriting it here would relabel
+                    # dispatch time as reconciliation time and destroy the only
+                    # record of when the payout actually left. A dedicated
+                    # settled_at column is the follow-up; it needs a migration.
+                    row.save(update_fields=['status', 'payout_status'])
                     settled += 1
                 elif (
                     gateway_state in ('FAILED', 'REVERSED', 'CANCELLED', 'REJECTED')

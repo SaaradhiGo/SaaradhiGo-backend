@@ -22,6 +22,7 @@ provable without inventing any Cashfree behaviour.
 
 from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -267,3 +268,96 @@ def test_the_task_moves_no_money_and_changes_no_status(driver):
 def test_the_selection_ignores_other_drivers_nothing(driver):
     """Sanity: selection is by state, not by driver, and finds an empty set clean."""
     assert _ids(stuck_withdrawal_candidates()) == set()
+
+
+# ---------------------------------------------------------------------------
+# The settle path, exercised with an injected provider
+# ---------------------------------------------------------------------------
+#
+# These use a stub gateway. They do NOT claim anything about Cashfree's real
+# contract -- that is unverified and the boundary ships closed. What they pin is
+# our own logic on the far side of it, because two defects were hiding there that
+# only appear once a provider exists: the in-lock re-check used the OLD status
+# vocabulary (so every selected row would have been skipped), and the success
+# branch overwrote processed_at (relabelling dispatch time as reconciliation
+# time and destroying the timestamp the selection window depends on).
+
+class _StubGateway:
+    def __init__(self, status_value, fail=False):
+        self._status = status_value
+        self._fail = fail
+        self.calls = []
+
+    def get_payout_status(self, reference):
+        self.calls.append(reference)
+        if self._fail:
+            raise RuntimeError('provider unavailable')
+        return {'status': self._status, 'failure_reason': 'stub reason'}
+
+
+def _with_gateway(gateway):
+    return mock.patch(
+        'servers.payments.payment_gateways.factory.get_payment_gateway_for_payouts',
+        return_value=gateway,
+    )
+
+
+@pytest.mark.django_db
+def test_a_confirmed_success_is_settled_and_keeps_its_dispatch_time(driver):
+    """The re-check must accept the status the selection actually produced."""
+    w = _withdrawal(driver, 'processed', processed_minutes_ago=30)
+    dispatched_at = WithdrawalRequest.objects.get(pk=w.pk).processed_at
+
+    gw = _StubGateway('SUCCESS')
+    with _with_gateway(gw):
+        result = reconcile_stuck_withdrawals()
+
+    assert gw.calls == [w.payout_reference_id]
+    assert result['ok'] is True
+    assert result['settled'] == 1
+
+    row = WithdrawalRequest.objects.get(pk=w.pk)
+    assert row.status == 'completed'
+    assert row.payout_status == 'SUCCESS'
+    assert row.processed_at == dispatched_at, \
+        'processed_at means "dispatched at" and must survive reconciliation'
+
+
+@pytest.mark.django_db
+def test_a_confirmed_failure_is_left_alone_while_handling_is_disabled(driver):
+    """No status change, and above all no refund, until the policy is settled."""
+    from servers.rider.models import WalletTransaction
+
+    w = _withdrawal(driver, 'processed', processed_minutes_ago=30)
+    before = WithdrawalRequest.objects.filter(pk=w.pk).values().first()
+
+    with _with_gateway(_StubGateway('FAILED')):
+        result = reconcile_stuck_withdrawals()
+
+    assert result['skipped'] == 1
+    assert result['failed'] == 0
+    assert WithdrawalRequest.objects.filter(pk=w.pk).values().first() == before
+    assert not WalletTransaction.objects.exists(), 'reconciliation must never refund'
+
+
+@pytest.mark.django_db
+def test_an_unrecognised_provider_status_is_skipped_not_guessed(driver):
+    """An unknown vocabulary must never be read as success or failure."""
+    w = _withdrawal(driver, 'processed', processed_minutes_ago=30)
+
+    with _with_gateway(_StubGateway('SOME_NEW_STATE')):
+        result = reconcile_stuck_withdrawals()
+
+    assert result['skipped'] == 1
+    assert WithdrawalRequest.objects.get(pk=w.pk).status == 'processed'
+
+
+@pytest.mark.django_db
+def test_a_provider_error_skips_rather_than_mutating(driver):
+    w = _withdrawal(driver, 'processed', processed_minutes_ago=30)
+
+    with _with_gateway(_StubGateway('SUCCESS', fail=True)):
+        result = reconcile_stuck_withdrawals()
+
+    assert result['skipped'] == 1
+    assert WithdrawalRequest.objects.get(pk=w.pk).status == 'processed'

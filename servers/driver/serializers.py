@@ -35,6 +35,20 @@ class DriverProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = Driver
         fields = ['id', 'license_doc', 'license_doc_back', 'license_expiry', 'active_vehicle', 'active_vehicle_details', 'status', 'approved', 'total_trips', 'ratings']
+        # Defence in depth. This serializer is only ever bound to a DRIVER'S OWN
+        # token, and `update_driver_profile` already builds its payload from a
+        # four-field allow-list -- so `approved` was never reachable in practice.
+        # But the allow-list was the *only* thing standing between a driver and
+        # self-approval: anyone who later passes `request.data` straight in, or
+        # reuses this serializer in a new view, would hand out the KYC gate with
+        # no error and no test failure.
+        #
+        # These are lifecycle and compliance outcomes, owned by the approval
+        # workflow and the trip lifecycle, never by the subject of them. Admin
+        # approval is unaffected -- it uses KYCApprovalSerializer, which declares
+        # `approved` and `status` writable and enforces the MVA-2020 document
+        # checks before allowing approved=True.
+        read_only_fields = ['approved', 'status', 'total_trips', 'ratings']
 
 
 class DriverBankAccountSerializer(serializers.ModelSerializer):

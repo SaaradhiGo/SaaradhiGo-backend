@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import json
 import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
@@ -16,7 +18,110 @@ TRIP_OTP_MAX_ATTEMPTS = 5
 TRIP_OTP_ATTEMPT_TTL_SECONDS = 5 * 60
 
 
-class DriverLocationConsumer(AsyncWebsocketConsumer):
+
+class LocationBroadcastMixin:
+    """Deliver high-frequency location frames without blocking the dispatch loop.
+
+    Channels feeds a consumer's incoming websocket frames *and* its channel-layer
+    events into one sequential `await_many_dispatch` loop, and `self.send()` blocks
+    for as long as the client is not draining its socket. Forwarding a location
+    broadcast with a direct `await self.send(...)` therefore lets ordinary GPS
+    traffic stall the *commands* arriving on the same socket.
+
+    That is not hypothetical. Every location frame a driver sends fans out to the
+    trip group, so a trip socket receives one `driver_location_update` per ping.
+    Against a client that buffers sixteen messages -- the reference `websockets`
+    default, and more than a backgrounded mobile app manages -- the seventeenth
+    frame blocked the consumer's send, the dispatch loop stopped, and `complete`
+    sat unread in the incoming queue. The trip stayed `in_progress` while the
+    driver's app, whose send had succeeded, believed the ride was finished. The
+    same starvation applies to `cancel` and to an SOS.
+
+    The correction separates the two classes of traffic rather than enlarging a
+    buffer. Location frames go onto a depth-1 queue drained by a dedicated task,
+    and a newer position *replaces* an older undelivered one: coalescing, not
+    buffering, because a superseded position has no value to anyone. A slow client
+    now loses intermediate positions -- which is the correct thing to lose -- and
+    the dispatch loop stays free. Commands and status frames keep their direct
+    `await self.send(...)`: they are rare, they are ordered, and none may be
+    dropped.
+
+    Ordering contract, since this changes it:
+      * status/command frames stay strictly ordered among themselves, and are
+        never delayed behind a location frame;
+      * location frames stay ordered among themselves, but may be dropped, and may
+        arrive after a status frame that was emitted later.
+    """
+
+    async def _start_location_pump(self):
+        """Call once, after `accept()`."""
+        self._location_queue = asyncio.Queue(maxsize=1)
+        self._location_dropped = 0
+        self._location_pump_task = asyncio.create_task(self._location_pump())
+
+    async def _stop_location_pump(self):
+        """Call from `disconnect()`. Idempotent."""
+        task = getattr(self, '_location_pump_task', None)
+        if task is None:
+            return
+        self._location_pump_task = None
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        dropped = getattr(self, '_location_dropped', 0)
+        if dropped:
+            # Coordinates are never logged; only how many were superseded.
+            logger.info('location_frames_coalesced', extra={
+                'event': 'location_frames_coalesced',
+                'channel': getattr(self, 'channel_name', None),
+                'dropped': dropped,
+            })
+
+    def _queue_location_frame(self, payload):
+        """Hand a location frame to the pump. Never blocks, never raises.
+
+        This is what makes the decoupling real: it must be safe to call from the
+        dispatch loop with no possibility of waiting on the client.
+        """
+        queue = getattr(self, '_location_queue', None)
+        if queue is None:
+            # Pump never started -- the connection was refused before `accept()`.
+            return
+        if queue.full():
+            try:
+                queue.get_nowait()
+                self._location_dropped += 1
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            # Raced with another enqueue. The newest position wins next time.
+            self._location_dropped += 1
+
+    async def _location_pump(self):
+        """Drain the location queue into the socket.
+
+        This task may block for as long as the client likes. Nothing awaits it, so
+        that is now a location-delivery problem rather than a lifecycle one.
+        """
+        while True:
+            payload = await self._location_queue.get()
+            try:
+                await self.send(text_data=json.dumps(payload))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A wedged or closed socket must not take the consumer with it;
+                # the disconnect path owns teardown.
+                logger.debug('location_frame_undelivered', extra={
+                    'event': 'location_frame_undelivered',
+                    'channel': getattr(self, 'channel_name', None),
+                })
+                return
+
+
+class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     """
     WebSocket consumer for real-time driver location updates.
     
@@ -55,6 +160,7 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
             'type': 'connection_established',
             'message': f'Driver {self.driver_id} connected',
         }))
+        await self._start_location_pump()
 
         # Perform slower database/redis operations in the background of the connection
         await self._active_the_driver()
@@ -78,6 +184,7 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_send('admin_dashboard', driver_details)
 
     async def disconnect(self, close_code):
+        await self._stop_location_pump()
         if hasattr(self, 'driver_id'):
             await self._deactive_the_driver()
             # Remove from groups
@@ -114,11 +221,15 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
             result = await self._add_driver_location(lng, lat)
 
             if result.get('success'):
-                await self.send(text_data=json.dumps({
+                # Queued, not sent: this acknowledgement is emitted per GPS frame,
+                # so a driver app that does not read it would otherwise block
+                # `receive` once its buffer filled -- silently ending GPS
+                # ingestion, and with it the trip's distance evidence, mid-ride.
+                self._queue_location_frame({
                     'type': 'location_updated',
                     'lng': lng,
                     'lat': lat,
-                }))
+                })
                 
                 # Stream location to admin dashboard for real-time fleet monitor
                 active_trip_id = result.get('active_trip_id')
@@ -275,7 +386,7 @@ class DriverLocationConsumer(AsyncWebsocketConsumer):
         from servers.redis_client import add_driver_location
         return add_driver_location(self.driver_id, lng=lng, lat=lat)
 
-class RideRequestConsumer(AsyncWebsocketConsumer):
+class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     """
     WebSocket consumer for riders to request rides and receive updates.
     
@@ -305,6 +416,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             'type': 'connection_established',
             'message': 'Rider connected, ready for ride requests',
         }))
+        await self._start_location_pump()
 
         # Reconnect recovery. Dispatch now outlives this socket, so a rider
         # who dropped mid-search can come back to a trip that has already
@@ -325,6 +437,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
         # as `no_driver_accepted` though most drivers were never asked.
         # Celery owns wave execution now; this socket going away is not an
         # instruction to stop looking for a driver.
+        await self._stop_location_pump()
         if hasattr(self, 'rider_group'):
             await self.channel_layer.group_discard(self.rider_group, self.channel_name)
 
@@ -555,13 +668,16 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps(response_data))
 
     async def driver_location_update(self, event):
-        """Send live driver location to rider."""
-        await self.send(text_data=json.dumps({
+        """Forward live driver location, without blocking the dispatch loop.
+
+        A rider whose app is slow to drain must still be able to cancel.
+        """
+        self._queue_location_frame({
             'type': 'driver_location_update',
             'lng': event['lng'],
             'lat': event['lat'],
             'driver_id': event['driver_id'],
-        }))
+        })
         
     async def cash_payment_confirmed(self, event):
         """Notify rider that cash payment has been confirmed."""
@@ -755,7 +871,7 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             logger.error(f"Failed to send push to driver {driver_id}: {str(e)}")
 
 
-class TripStatusConsumer(AsyncWebsocketConsumer):
+class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     """
     WebSocket consumer for real-time trip status updates.
     Both rider and driver join a trip-specific group.
@@ -806,8 +922,10 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
             'subscribed': self.in_trip_group,
             'message': 'Connected to trip updates',
         }))
+        await self._start_location_pump()
 
     async def disconnect(self, close_code):
+        await self._stop_location_pump()
         if getattr(self, 'in_trip_group', False):
             await self.channel_layer.group_discard(self.trip_group, self.channel_name)
             self.in_trip_group = False
@@ -1026,13 +1144,17 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
         }))
 
     async def driver_location_update(self, event):
-        """Broadcast live driver location to riders on this trip."""
-        await self.send(text_data=json.dumps({
+        """Forward live driver location, without blocking the dispatch loop.
+
+        Queued rather than sent: a blocking send here is what stopped
+        `complete` from ever being routed. See LocationBroadcastMixin.
+        """
+        self._queue_location_frame({
             'type': 'driver_location_update',
             'lng': event['lng'],
             'lat': event['lat'],
             'driver_id': event['driver_id'],
-        }))
+        })
         
     async def cash_payment_confirmed(self, event):
         """Notify rider that cash payment has been confirmed."""
@@ -1721,7 +1843,7 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
         return process_refund_on_cancel(trip)
 
 
-class AdminDashboardConsumer(AsyncWebsocketConsumer):
+class AdminDashboardConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     """
     WebSocket consumer for Admin Dashboard real-time driver locations.
     
@@ -1756,8 +1878,10 @@ class AdminDashboardConsumer(AsyncWebsocketConsumer):
             'type': 'initial_drivers',
             'drivers': drivers
         }))
+        await self._start_location_pump()
 
     async def disconnect(self, close_code):
+        await self._stop_location_pump()
         if hasattr(self, 'admin_group'):
             await self.channel_layer.group_discard(self.admin_group, self.channel_name)
 
@@ -1768,8 +1892,12 @@ class AdminDashboardConsumer(AsyncWebsocketConsumer):
     async def driver_location_update(self, event):
         """
         Forward driver location updates to the admin client.
+
+        A fleet monitor watching every driver is the heaviest consumer of
+        location frames on the platform; it must not be able to apply
+        backpressure to the loop that carries its other events too.
         """
-        await self.send(text_data=json.dumps(event))
+        self._queue_location_frame(event)
 
     async def driver_status_update(self, event):
         """

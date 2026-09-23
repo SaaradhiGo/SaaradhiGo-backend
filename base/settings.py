@@ -411,6 +411,23 @@ GPS_TRAIL_MAX_POINTS_PER_TRIP = int(os.environ.get('GPS_TRAIL_MAX_POINTS_PER_TRI
 GPS_TRAIL_BATCH_SIZE = int(os.environ.get('GPS_TRAIL_BATCH_SIZE', '500'))
 GPS_TRAIL_MAX_EVENTS_PER_RUN = int(os.environ.get('GPS_TRAIL_MAX_EVENTS_PER_RUN', '10000'))
 
+# --- Actual trip metrics (observe-only) -------------------------------------
+# How long after completion to derive actual distance/duration. The trail is
+# drained on a 60s cadence, so waiting lets the final points land; computing at
+# completion would systematically under-read distance.
+TRIP_ACTUALS_DELAY_SECONDS = int(os.environ.get('TRIP_ACTUALS_DELAY_SECONDS', '180'))
+
+# A segment implying a higher speed than this is a GPS jump, not a car, and is
+# excluded from the distance sum rather than allowed to dominate it.
+TRIP_ACTUALS_MAX_SEGMENT_SPEED_KMH = float(
+    os.environ.get('TRIP_ACTUALS_MAX_SEGMENT_SPEED_KMH', '150'),
+)
+# Gaps longer than this are reported so the fare policy can distinguish a
+# well-covered trip from a patchy one.
+TRIP_ACTUALS_MAX_ACCEPTABLE_GAP_SECONDS = float(
+    os.environ.get('TRIP_ACTUALS_MAX_ACCEPTABLE_GAP_SECONDS', '120'),
+)
+
 GOOGLE_MAPS_API_KEY=os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
 # When no RateCard governs a pickup, may we quote the hardcoded fallback

@@ -224,20 +224,92 @@ WITHDRAWAL_RECON_GRACE_MINUTES = 5
 WITHDRAWAL_RECON_LOOKBACK_HOURS = 48
 WITHDRAWAL_RECON_BATCH_SIZE = 100
 
+# The one status a dispatched payout can get stuck in.
+#
+# 'processed' means the gateway accepted the transfer; the webhook is what moves it
+# to 'completed' or 'failed'. A missed webhook therefore leaves it here, and
+# nowhere else. The previous filter looked for 'processing' -- which is not a
+# status this system has: it is absent from WithdrawalRequest.STATUS_CHOICES and no
+# code writes it -- and for 'approved', which is the state BEFORE dispatch and so
+# has no payout reference to poll. The two conditions were mutually exclusive, so
+# the queryset could never match anything.
+WITHDRAWAL_STUCK_STATUS = 'processed'
+
+# Whether reconciliation may mark a payout FAILED.
+#
+# Deliberately off. The webhook failure path refunds the driver wallet; this task
+# does not. Enabling the failure branch without settling that asymmetry would
+# create a path that leaves a driver debited with a failed withdrawal and no
+# refund. See runbooks/payout-reconciliation-contract.md step 3 -- it is a policy
+# decision, not an implementation detail.
+WITHDRAWAL_RECON_FAILURE_HANDLING_ENABLED = False
+
+
+def stuck_withdrawal_candidates(now=None, grace_minutes=None, lookback_hours=None,
+                                limit=None):
+    """Dispatched payouts that a missed webhook may have left unresolved.
+
+    Provider-independent: it reads only our own state machine, so it is fully
+    testable without any gateway.
+
+    The window is measured on processed_at, not requested_at. Maker/checker
+    approval is a human step, so a withdrawal requested on Friday and approved on
+    Monday was already outside a 48-hour window measured from the request the
+    moment it was dispatched -- it could never have been reconciled even once the
+    other defects were fixed.
+
+    processed_at is safe to use here even though the column is overloaded
+    (approval, rejection and reconciliation all stamp it) because the selection is
+    pinned to status='processed', and both code paths that set that status set
+    processed_at in the same save. Within this selected set it therefore means
+    exactly "the transfer was dispatched at". Outside it the meaning differs, which
+    is why the status filter is not optional.
+    """
+    from datetime import timedelta
+
+    from servers.driver.models import WithdrawalRequest
+
+    now = now or timezone.now()
+    grace_minutes = (WITHDRAWAL_RECON_GRACE_MINUTES if grace_minutes is None
+                     else grace_minutes)
+    lookback_hours = (WITHDRAWAL_RECON_LOOKBACK_HOURS if lookback_hours is None
+                      else lookback_hours)
+    limit = WITHDRAWAL_RECON_BATCH_SIZE if limit is None else limit
+
+    grace_cutoff = now - timedelta(minutes=grace_minutes)
+    lookback_cutoff = now - timedelta(hours=lookback_hours)
+
+    return (
+        WithdrawalRequest.objects.filter(
+            status=WITHDRAWAL_STUCK_STATUS,
+            processed_at__lt=grace_cutoff,
+            processed_at__gt=lookback_cutoff,
+        )
+        # No reference means nothing to ask the provider about. Defensive: dispatch
+        # writes the reference and the status together, so a 'processed' row
+        # without one is itself an anomaly, better seen in the logs than polled.
+        .exclude(Q(payout_reference_id__isnull=True) | Q(payout_reference_id=''))
+        .order_by('processed_at')[:limit]
+    )
+
 
 @shared_task(name='payments.reconcile_stuck_withdrawals')
 def reconcile_stuck_withdrawals():
-    """Sweep driver withdrawal requests stuck in 'processing' / 'approved'.
+    """Sweep dispatched driver payouts a missed webhook may have left unresolved.
 
-    Twin to reconcile_stuck_payments. A missed Cashfree payout webhook
-    leaves the driver's withdrawal in 'processing' forever even though
-    the gateway has long since settled (or failed) the transfer. This
-    task polls each stuck row's payout reference and converges status.
+    Twin to reconcile_stuck_payments. A missed Cashfree payout webhook leaves the
+    withdrawal in 'processed' forever even though the gateway has long since
+    settled or failed the transfer.
 
-    Driver wallet debit happens at request time, NOT here — the only
-    thing this task does is move 'processing' → 'completed' or 'failed'
-    so the driver sees a final state and ops dashboards don't show
-    eternal-pending rows.
+    Selection lives in stuck_withdrawal_candidates, which is provider-independent
+    and separately tested. Provider polling is NOT implemented: the contract has
+    not been verified, so this task currently reports how many payouts are stuck
+    and resolves none. The failure branch is additionally gated behind
+    WITHDRAWAL_RECON_FAILURE_HANDLING_ENABLED, because the webhook refunds the
+    wallet on failure and this task does not.
+
+    The driver wallet is debited at REQUEST time, never here. Nothing in this task
+    moves money.
     """
     from servers.driver.models import WithdrawalRequest
     from servers.payments.payment_gateways.factory import (
@@ -246,8 +318,6 @@ def reconcile_stuck_withdrawals():
     from datetime import timedelta
 
     now = timezone.now()
-    grace_cutoff = now - timedelta(minutes=WITHDRAWAL_RECON_GRACE_MINUTES)
-    lookback_cutoff = now - timedelta(hours=WITHDRAWAL_RECON_LOOKBACK_HOURS)
 
     try:
         gateway = get_payment_gateway_for_payouts()
@@ -258,30 +328,38 @@ def reconcile_stuck_withdrawals():
         logger.warning("reconcile_stuck_withdrawals: payout gateway unavailable")
         return {'ok': False, 'reason': 'no gateway'}
 
-    stuck = (
-        WithdrawalRequest.objects.filter(
-            status__in=['processing', 'approved'],
-            requested_at__lt=grace_cutoff,
-            requested_at__gt=lookback_cutoff,
-        )
-        .exclude(Q(payout_reference_id__isnull=True) | Q(payout_reference_id=''))
-        .order_by('requested_at')[:WITHDRAWAL_RECON_BATCH_SIZE]
-    )
+    stuck = list(stuck_withdrawal_candidates(now=now))
 
     settled = 0
     failed = 0
     skipped = 0
 
-    # Cashfree's payout-status endpoint isn't currently abstracted on
-    # CashfreeGateway. Fail soft: if the gateway doesn't implement the
-    # method, log once and skip the batch.
+    # PROVIDER BOUNDARY -- explicitly unimplemented.
+    #
+    # Cashfree's payout-status endpoint is not abstracted on CashfreeGateway, and
+    # the contract (endpoint, identifier, request shape, response envelope, status
+    # vocabulary) has not been verified against the provider. Guessing it would be
+    # guessing with real money, so nothing is polled until it is proven in sandbox.
+    #
+    # The candidate count is reported anyway, and that is the operational point of
+    # this change: ops can now see HOW MANY payouts are sitting unresolved. The
+    # previous version could not report that, because its queryset never matched
+    # anything.
     status_fn = getattr(gateway, 'get_payout_status', None)
     if not callable(status_fn):
         logger.warning(
-            "reconcile_stuck_withdrawals: gateway has no get_payout_status; "
-            "skipping batch. Implement on CashfreeGateway to enable recon."
+            'recon-withdrawal: provider status polling is unimplemented; '
+            'selected %s stuck payout(s) and resolved none',
+            len(stuck),
+            extra={'event': 'withdrawal_recon_unimplemented',
+                   'candidates': len(stuck)},
         )
-        return {'ok': False, 'reason': 'no get_payout_status'}
+        return {
+            'ok': False,
+            'reason': 'provider_polling_unimplemented',
+            'candidates': len(stuck),
+            'candidate_ids': [w.id for w in stuck],
+        }
 
     for w in stuck:
         try:
@@ -308,6 +386,21 @@ def reconcile_stuck_withdrawals():
                     row.processed_at = timezone.now()
                     row.save(update_fields=['status', 'payout_status', 'processed_at'])
                     settled += 1
+                elif (
+                    gateway_state in ('FAILED', 'REVERSED', 'CANCELLED', 'REJECTED')
+                    and not WITHDRAWAL_RECON_FAILURE_HANDLING_ENABLED
+                ):
+                    # The provider says this failed, but the webhook failure path
+                    # refunds the wallet and this task does not. Marking it failed
+                    # here would leave the driver debited with nothing returned, so
+                    # it is left for a human until the refund policy is settled.
+                    logger.warning(
+                        'recon-withdrawal: withdrawal %s looks failed at the '
+                        'provider (%s) but failure handling is disabled; leaving '
+                        'it for manual review',
+                        row.pk, gateway_state,
+                    )
+                    skipped += 1
                 elif gateway_state in ('FAILED', 'REVERSED', 'CANCELLED', 'REJECTED'):
                     row.status = 'failed'
                     row.payout_status = gateway_state

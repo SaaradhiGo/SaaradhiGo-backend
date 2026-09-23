@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal
 from celery import shared_task
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,50 @@ def issue_receipt_for_trip(self, trip_id):
         raise self.retry(exc=exc)
 
     return f'receipt {getattr(receipt, "receipt_number", None)} for trip {trip_id}'
+
+
+@shared_task(
+    name='ride.compute_trip_actuals',
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    acks_late=True,
+)
+def compute_trip_actuals(self, trip_id, force=False):
+    """Derive actual distance/duration for a completed trip. OBSERVE ONLY.
+
+    Thin adapter: all logic lives in servers.ride.actual_metrics. Writes at most
+    actual_distance_km and actual_duration_min and never final_fare, so it
+    cannot change what a rider is charged.
+
+    Runs out-of-band, on a delay, for two reasons. The trail is drained by a
+    periodic task, so the last minute of points is not yet persisted when a trip
+    completes -- computing immediately would under-read distance. And keeping it
+    outside the completion transaction means it cannot slow or fail trip
+    completion.
+
+    Safe under at-least-once delivery: the computation is deterministic for a
+    given trail, and record_actuals skips an already-populated trip unless
+    forced.
+    """
+    from servers.ride.actual_metrics import record_actuals
+    from servers.ride.models import Trip
+
+    try:
+        trip = Trip.objects.select_related('status_id').get(id=trip_id)
+    except Trip.DoesNotExist:
+        logger.warning('compute_trip_actuals: trip %s not found', trip_id)
+        return {'ok': False, 'reason': 'trip_missing'}
+
+    try:
+        result = record_actuals(trip, force=force)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception('compute_trip_actuals failed for trip %s: %s', trip_id, exc)
+        raise self.retry(exc=exc)
+
+    # Keep the return value small and PII-free; it lands in Celery's logs.
+    return {k: (str(v) if isinstance(v, Decimal) else v)
+            for k, v in result.items() if k != 'fields'}
 
 
 @shared_task(

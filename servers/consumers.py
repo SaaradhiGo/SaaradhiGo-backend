@@ -1501,10 +1501,32 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                     # Receipt generation renders a PDF, uploads it to S3 and
                     # sends an email. That is a Celery job, not something to
                     # do while holding SELECT FOR UPDATE on this row.
-                    from servers.ride.tasks import issue_receipt_for_trip
+                    from servers.ride.tasks import (
+                        compute_trip_actuals, issue_receipt_for_trip,
+                    )
                     trip_pk = trip.id
                     transaction.on_commit(
                         lambda: issue_receipt_for_trip.delay(trip_pk)
+                    )
+
+                    # Derive actual distance/duration out-of-band. OBSERVE
+                    # ONLY: that task writes actual_* and never final_fare, so
+                    # nothing here changes what the rider is charged.
+                    #
+                    # Delayed deliberately. The trail is drained by a periodic
+                    # task, so the final stretch of points is not persisted yet
+                    # at completion; computing immediately would under-read
+                    # distance. The countdown gives the drain time to catch up.
+                    # Also on_commit, so a slow or failing computation can
+                    # never affect trip completion.
+                    from django.conf import settings as _settings
+                    actuals_delay = getattr(
+                        _settings, 'TRIP_ACTUALS_DELAY_SECONDS', 180,
+                    )
+                    transaction.on_commit(
+                        lambda: compute_trip_actuals.apply_async(
+                            (trip_pk,), countdown=actuals_delay,
+                        )
                     )
                 elif status_code == 'cancelled':
                     trip.cancelled_at = timezone.now()

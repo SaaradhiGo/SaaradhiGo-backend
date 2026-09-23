@@ -102,3 +102,27 @@ def test_invalid_coordinates_are_still_rejected(live_redis):
     assert rc.count_nearby_active_riders('not-a-number', LAT) == 0
     assert rc.count_nearby_active_riders(Decimal('999'), LAT) == 0
     assert rc.nearby_drivers(lng=Decimal('999'), lat=LAT) is None
+
+
+def test_geo_queries_do_not_log_the_query_point(live_redis, indexed_driver, caplog):
+    """A pickup point must not reach the logs, at any level.
+
+    The debug line in `nearby_drivers` used to print `lng=` and `lat=`. It is
+    DEBUG, so it is silent at the production default of WARNING -- but an engineer
+    debugging dispatch raises the level, which is precisely when every rider's
+    pickup location would start being emitted. The structured PII filter cannot
+    save this one: it redacts `extra` keys and matches tokens like OTPs and
+    phone numbers, not free-text coordinates in a message body.
+    """
+    import logging
+
+    with caplog.at_level(logging.DEBUG, logger='servers.redis_client'):
+        rc.nearby_drivers(lng=LNG, lat=LAT, radius=1000, count=10,
+                          vehicle_type='sedan')
+        rc.count_nearby_active_riders(LNG, LAT, radius=3000)
+
+    emitted = ' | '.join(r.getMessage() for r in caplog.records)
+    assert '17.445' not in emitted, emitted
+    assert '78.38' not in emitted, emitted
+    for token in ('lng=', 'lat=', 'longitude=', 'latitude='):
+        assert token not in emitted, (token, emitted)

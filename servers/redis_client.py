@@ -565,9 +565,15 @@ def nearby_drivers(lng, lat, radius=5000, count=50, vehicle_type=None):
             # Multi-key union is not distance-sorted; restore ASC by distance.
             live.sort(key=lambda e: float(e[1]) if isinstance(e, (list, tuple)) else 0.0)
 
+        # Counts and vehicle type only. The query point is a rider's pickup
+        # location; logging it puts a precise position for a named trip into
+        # whatever ships the logs, and the counts are the whole diagnostic value.
+        # This line is DEBUG, so it is silent at the production default of
+        # WARNING -- but an engineer debugging dispatch sets LOG_LEVEL=DEBUG, and
+        # that is exactly when every pickup point would start being emitted.
         logger.debug(
-            'nearby_drivers: %s live of %s indexed at lng=%s lat=%s (types=%s)',
-            len(live), len(drivers), lng, lat, vehicle_type or 'all',
+            'nearby_drivers: %s live of %s indexed (types=%s)',
+            len(live), len(drivers), vehicle_type or 'all',
         )
         return live[:count]
 

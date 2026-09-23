@@ -45,6 +45,13 @@ from math import asin, cos, radians, sin, sqrt
 
 logger = logging.getLogger(__name__)
 
+# Policy thresholds. Read through helpers rather than captured at import time,
+# so an environment can be retuned with a variable instead of a release, and so
+# tests can override them with `settings`.
+#
+# The module-level names are kept as the documented defaults and as the value a
+# caller gets when Django settings are unavailable.
+
 # A phone reporting worse than this is guessing — usually an indoor or
 # cold-start fix. Roughly the width of a wide road.
 MAX_ACCURACY_METRES = 50.0
@@ -61,7 +68,42 @@ MIN_DISTANCE_METRES = 25.0
 # headroom before something is clearly wrong.
 MAX_POINTS_PER_TRIP = 5000
 
+
+def _policy(name, default):
+    from django.conf import settings
+    return getattr(settings, f'GPS_TRAIL_{name}', default)
+
+
+def max_accuracy_metres():
+    return float(_policy('MAX_ACCURACY_METRES', MAX_ACCURACY_METRES))
+
+
+def min_interval_seconds():
+    return float(_policy('MIN_INTERVAL_SECONDS', MIN_INTERVAL_SECONDS))
+
+
+def min_distance_metres():
+    return float(_policy('MIN_DISTANCE_METRES', MIN_DISTANCE_METRES))
+
+
+def max_points_per_trip():
+    return int(_policy('MAX_POINTS_PER_TRIP', MAX_POINTS_PER_TRIP))
+
+
+def trail_enabled():
+    from django.conf import settings
+    return bool(getattr(settings, 'GPS_TRAIL_ENABLED', False))
+
 _EARTH_RADIUS_M = 6_371_000.0
+
+
+def _log(event, **fields):
+    """Structured trail log line. Counts and ids only, never positions.
+
+    The redaction filter in base.logging_filters would strip lat/lng-shaped
+    keys anyway, but the rule for this module is simpler: do not pass them.
+    """
+    logger.info(event, extra={'event': event, **fields})
 
 
 @dataclass(frozen=True)
@@ -122,7 +164,7 @@ def accuracy_is_acceptable(accuracy_m):
     if accuracy_m is None:
         return True
     try:
-        return float(accuracy_m) <= MAX_ACCURACY_METRES
+        return float(accuracy_m) <= max_accuracy_metres()
     except (TypeError, ValueError):
         return True
 
@@ -150,14 +192,14 @@ def should_keep(candidate, last_kept):
         # A device clock that jumps backwards is untrustworthy for ordering but
         # the point itself may still be real, so fall through to distance.
         delta = (candidate.recorded_at - prev_time).total_seconds()
-        if 0 <= delta < MIN_INTERVAL_SECONDS:
+        if 0 <= delta < min_interval_seconds():
             return False, 'too_soon'
 
     moved = haversine_metres(
         last_kept.latitude, last_kept.longitude,
         candidate.latitude, candidate.longitude,
     )
-    if moved < MIN_DISTANCE_METRES:
+    if moved < min_distance_metres():
         return False, 'too_close'
 
     return True, 'kept'
@@ -181,7 +223,7 @@ def sample(candidates, last_kept=None):
         stats['received'] += 1
         keep, reason = should_keep(raw, previous)
         if keep:
-            if len(kept) >= MAX_POINTS_PER_TRIP:
+            if len(kept) >= max_points_per_trip():
                 stats['over_trip_cap'] = stats.get('over_trip_cap', 0) + 1
                 continue
             kept.append(raw)
@@ -207,3 +249,228 @@ def trip_is_collecting(trip):
         return False
     code = trip.status_id.status_code if trip.status_id else None
     return code in DRIVER_ACTIVE_TRIP_STATUSES
+
+
+# ---------------------------------------------------------------------------
+# The durable writer
+# ---------------------------------------------------------------------------
+
+def _stream_id_to_datetime(entry_id):
+    """Redis stream ids are "<ms>-<seq>". The ms half is server receive time.
+
+    This is the best timestamp available for MVP: the driver app ping carries
+    only lat/lng, with no device clock, accuracy, speed or heading. So
+    `recorded_at` means "when the fix reached the server" and `received_at`
+    means "when it was persisted" -- they genuinely differ, because persistence
+    is batched. When the client protocol gains a device timestamp, only this
+    function and the Candidate construction below need to change.
+    """
+    from datetime import datetime
+    from datetime import timezone as _tz
+    try:
+        ms = int(str(entry_id).split('-')[0])
+    except (ValueError, IndexError):
+        return None
+    return datetime.fromtimestamp(ms / 1000.0, tz=_tz.utc)
+
+
+def _sequence_from_entry_id(entry_id):
+    """Deterministic ordering key derived from the stream id.
+
+    Derived rather than counted, so re-processing an entry produces the same
+    value and ordering stays stable across a retry.
+    """
+    try:
+        ms, _sep, _seq = str(entry_id).partition('-')
+        return int(ms) % 2_000_000_000
+    except ValueError:
+        return None
+
+
+def _resolve_active_trips(driver_ids):
+    """Map driver_id -> Trip for drivers currently on a driver-active trip.
+
+    Resolved from PostgreSQL, never from Redis: the collection window must
+    follow durable truth, so a trip that has just completed stops producing
+    trail rows even if Redis still believes the driver is busy. One query for
+    the whole batch rather than one per event.
+    """
+    from servers.ride.models import DRIVER_ACTIVE_TRIP_STATUSES, Trip
+
+    if not driver_ids:
+        return {}
+    rows = (
+        Trip.objects
+        .filter(driver_id__in=list(driver_ids),
+                status_id__status_code__in=DRIVER_ACTIVE_TRIP_STATUSES)
+        .select_related('status_id')
+        .order_by('driver_id', '-requested_at')
+    )
+    out = {}
+    for trip in rows:
+        # PR 3 guarantees at most one active trip per driver. If history ever
+        # holds more, take the most recent and let the invariant's
+        # reconciliation surface the anomaly rather than guessing here.
+        out.setdefault(trip.driver_id_id, trip)
+    return out
+
+
+def _last_point_for_trips(trip_ids):
+    """Most recently recorded stored point per trip, for threshold continuity.
+
+    Without this every batch would treat its first event as a trip's first
+    point, resetting the time and distance thresholds and letting a stationary
+    driver accumulate one row per batch.
+    """
+    from servers.ride.models import TripLocationPoint
+
+    if not trip_ids:
+        return {}
+    rows = (
+        TripLocationPoint.objects
+        .filter(trip_id__in=list(trip_ids))
+        .order_by('trip_id', '-recorded_at')
+    )
+    out = {}
+    for p in rows:
+        out.setdefault(p.trip_id, p)
+    return out
+
+
+def persist_location_events(events):
+    """Turn raw stream events into durable points. Returns (handled_ids, stats).
+
+    Free of Redis: it takes already-read events and returns the ids that were
+    handled, so the Celery task owns reading and acknowledging while this owns
+    the decision. That split is what lets the whole policy be tested without a
+    broker.
+
+    Events whose driver has no active trip are **handled but not stored** --
+    off-trip driver location is deliberately never persisted, and leaving those
+    entries pending forever would grow the consumer group backlog without
+    limit.
+    """
+    from django.db import transaction
+
+    from servers.ride.models import TripLocationPoint
+
+    stats = {'received': len(events), 'stored': 0, 'no_active_trip': 0,
+             'invalid': 0, 'sampled_out': 0}
+    if not events:
+        return [], stats
+
+    parsed = []
+    handled = []
+    for entry_id, fields in events:
+        handled.append(entry_id)
+        try:
+            driver_id = int(fields.get('driver_id'))
+        except (TypeError, ValueError):
+            stats['invalid'] += 1
+            continue
+        try:
+            lat, lon = parse_coordinate(fields.get('lat'), fields.get('lng'))
+        except Rejected as exc:
+            stats['invalid'] += 1
+            key = 'invalid_' + exc.reason
+            stats[key] = stats.get(key, 0) + 1
+            continue
+        recorded_at = _stream_id_to_datetime(entry_id)
+        if recorded_at is None:
+            stats['invalid'] += 1
+            continue
+        parsed.append((entry_id, driver_id, lat, lon, recorded_at))
+
+    if not parsed:
+        return handled, stats
+
+    trips_by_driver = _resolve_active_trips({p[1] for p in parsed})
+    last_points = _last_point_for_trips({t.id for t in trips_by_driver.values()})
+
+    to_create = []
+    for entry_id, driver_id, lat, lon, recorded_at in parsed:
+        trip = trips_by_driver.get(driver_id)
+        if trip is None or not trip_is_collecting(trip):
+            stats['no_active_trip'] += 1
+            continue
+
+        candidate = Candidate(latitude=lat, longitude=lon, recorded_at=recorded_at)
+        keep, reason = should_keep(candidate, last_points.get(trip.id))
+        if not keep:
+            stats['sampled_out'] += 1
+            stats[reason] = stats.get(reason, 0) + 1
+            continue
+
+        point = TripLocationPoint(
+            trip=trip, driver_id=driver_id,
+            latitude=lat, longitude=lon,
+            recorded_at=recorded_at,
+            sequence=_sequence_from_entry_id(entry_id),
+            source=TripLocationPoint.SOURCE_DRIVER_WS,
+            source_event_id=entry_id,
+        )
+        to_create.append(point)
+        # Advance the in-memory cursor so thresholds apply within this batch
+        # too, not only against what was already stored.
+        last_points[trip.id] = point
+
+    if to_create:
+        # ignore_conflicts leans on the (trip, source_event_id) unique
+        # constraint: a redelivered entry is skipped rather than raising, which
+        # is what makes at-least-once delivery safe without needing
+        # exactly-once.
+        with transaction.atomic():
+            TripLocationPoint.objects.bulk_create(to_create, ignore_conflicts=True)
+        stats['stored'] = len(to_create)
+
+    return handled, stats
+
+
+def drain_location_stream(consumer='worker-1'):
+    """Read pending location events and persist the ones worth keeping.
+
+    Bounded by GPS_TRAIL_BATCH_SIZE per read and GPS_TRAIL_MAX_EVENTS_PER_RUN
+    in total, so a backlog cannot turn one scheduler tick into an unbounded
+    unit of work.
+
+    A no-op while GPS_TRAIL_ENABLED is False, which is the default: the writer
+    can ship and be switched on per environment afterwards.
+    """
+    from django.conf import settings
+
+    from servers.redis_client import (
+        ack_location_events, ensure_location_stream_group, read_location_events,
+    )
+
+    if not trail_enabled():
+        return {'enabled': False}
+
+    batch = int(getattr(settings, 'GPS_TRAIL_BATCH_SIZE', 500))
+    budget = int(getattr(settings, 'GPS_TRAIL_MAX_EVENTS_PER_RUN', 10000))
+
+    ensure_location_stream_group()
+
+    totals = {'enabled': True, 'runs': 0, 'received': 0, 'stored': 0,
+              'no_active_trip': 0, 'invalid': 0, 'sampled_out': 0, 'acked': 0}
+    consumed = 0
+
+    while consumed < budget:
+        events = read_location_events(
+            count=min(batch, budget - consumed), consumer=consumer,
+        )
+        if not events:
+            break
+        consumed += len(events)
+        totals['runs'] += 1
+
+        handled, stats = persist_location_events(events)
+        for k in ('received', 'stored', 'no_active_trip', 'invalid', 'sampled_out'):
+            totals[k] += stats.get(k, 0)
+
+        # Acknowledge only after the rows are committed. If the worker dies
+        # before this, the entries stay pending and are re-processed, which the
+        # unique constraint renders harmless.
+        totals['acked'] += ack_location_events(handled)
+
+    _log('gps_trail_drained', **{k: v for k, v in totals.items() if k != 'enabled'})
+    return totals

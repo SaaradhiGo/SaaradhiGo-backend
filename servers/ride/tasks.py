@@ -41,6 +41,39 @@ def issue_receipt_for_trip(self, trip_id):
 
 
 @shared_task(
+    name='ride.persist_location_trail',
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+    acks_late=True,
+)
+def persist_location_trail(self):
+    """Drain driver_location_stream into TripLocationPoint (ADR-0010).
+
+    A thin async adapter: all policy lives in servers.ride.location_trail, so
+    it can be tested without a broker. A no-op while GPS_TRAIL_ENABLED is
+    False, which is the default.
+
+    `acks_late=True` is safe because persistence is idempotent on
+    (trip, source_event_id): a redelivery after a worker death re-processes the
+    same stream entries and the unique constraint turns the inserts into
+    no-ops. Entries are only acknowledged to Redis after their rows commit, so
+    a crash mid-batch loses nothing -- it repeats harmlessly.
+
+    Failure here must never affect live location: the Redis GEO write, the
+    driver websocket and dispatch are all upstream of this task and do not wait
+    on it.
+    """
+    from servers.ride.location_trail import drain_location_stream
+
+    try:
+        return drain_location_stream(consumer=f'worker-{self.request.hostname or "1"}')
+    except Exception as exc:  # noqa: BLE001
+        logger.exception('persist_location_trail failed: %s', exc)
+        raise self.retry(exc=exc)
+
+
+@shared_task(
     name='ride.dispatch_wave',
     bind=True,
     max_retries=3,

@@ -403,6 +403,18 @@ class TripLocationPoint(models.Model):
     # a device flushes a buffer.
     sequence = models.PositiveIntegerField(null=True, blank=True)
 
+    # The Redis stream entry id this row came from, e.g. '1758623456789-0'.
+    # This is the idempotency key for the writer: Celery and Redis consumer
+    # groups both give at-least-once delivery, so the same entry can arrive
+    # twice after a retry or a worker death mid-batch. A unique constraint on
+    # (trip, source_event_id) makes the second insert a no-op instead of a
+    # duplicate point that would inflate actual distance.
+    #
+    # Nullable because backfilled or reconstructed rows have no originating
+    # event, and PostgreSQL permits unlimited NULLs in a unique index -- so
+    # those rows coexist without needing a partial predicate.
+    source_event_id = models.CharField(max_length=64, null=True, blank=True)
+
     source = models.CharField(
         max_length=16, choices=SOURCE_CHOICES, default=SOURCE_DRIVER_WS,
     )
@@ -418,12 +430,13 @@ class TripLocationPoint(models.Model):
             models.Index(fields=['received_at'], name='triploc_received_idx'),
         ]
         constraints = [
-            # Cheap guard against a device sending a buffered duplicate twice.
-            # Not a substitute for the sampler's de-duplication; this only
-            # catches an exact repeat of the same instant on the same trip.
+            # Idempotency for the writer. Re-processing a Redis stream entry --
+            # after a Celery retry, a redelivered consumer-group message, or a
+            # worker dying mid-batch -- must not create a second point, because
+            # duplicated points inflate actual distance and therefore the fare.
             models.UniqueConstraint(
-                fields=['trip', 'recorded_at', 'sequence'],
-                name='triploc_no_exact_duplicate',
+                fields=['trip', 'source_event_id'],
+                name='triploc_one_row_per_source_event',
             ),
         ]
 

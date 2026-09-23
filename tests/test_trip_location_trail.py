@@ -12,12 +12,14 @@ ping produces a row. What is tested is every rule that writer will obey.
 
 from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.utils import timezone
 
+import servers.redis_client as rc
 from servers.driver.models import Driver, Vehicle, VehicleType
 from servers.ride.location_trail import (
     MAX_ACCURACY_METRES, MIN_DISTANCE_METRES, MIN_INTERVAL_SECONDS,
@@ -291,17 +293,40 @@ def test_device_and_server_timestamps_are_both_retained(trip, driver):
 
 
 @pytest.mark.django_db
-def test_exact_duplicate_point_is_refused_by_the_database(trip, driver):
+def test_reprocessing_a_stream_event_is_refused_by_the_database(trip, driver):
+    """The writer's idempotency key.
+
+    Celery retries and Redis consumer groups are both at-least-once, so the
+    same stream entry can arrive twice. A duplicate point would inflate actual
+    distance and therefore the fare, so the database refuses it.
+    """
     at = timezone.now()
     TripLocationPoint.objects.create(
         trip=trip, driver=driver, latitude=LAT, longitude=LNG,
-        recorded_at=at, sequence=1,
+        recorded_at=at, sequence=1, source_event_id='1758623456789-0',
     )
     with pytest.raises(IntegrityError):
         TripLocationPoint.objects.create(
             trip=trip, driver=driver, latitude=LAT, longitude=LNG,
-            recorded_at=at, sequence=1,
+            recorded_at=at, sequence=2, source_event_id='1758623456789-0',
         )
+
+
+@pytest.mark.django_db
+def test_backfilled_rows_without_an_event_id_coexist(trip, driver):
+    """Uniqueness must not block reconstructed history.
+
+    PostgreSQL allows unlimited NULLs in a unique index, so rows with no
+    originating stream event need no partial predicate to coexist.
+    """
+    at = timezone.now()
+    for i in range(3):
+        TripLocationPoint.objects.create(
+            trip=trip, driver=driver, latitude=LAT, longitude=LNG,
+            recorded_at=at + timedelta(seconds=i), sequence=i,
+            source=TripLocationPoint.SOURCE_BACKFILL, source_event_id=None,
+        )
+    assert TripLocationPoint.objects.filter(trip=trip).count() == 3
 
 
 @pytest.mark.django_db
@@ -383,3 +408,574 @@ def test_coordinate_keys_are_redacted_by_the_logging_filter():
     assert out['latitude'] == '***'
     assert out['longitude'] == '***'
     assert out['trip_id'] == 7, 'trip_id is not PII and must survive'
+
+
+# ---------------------------------------------------------------------------
+# The durable writer
+# ---------------------------------------------------------------------------
+
+def _event(entry_id, driver_id, lat=LAT, lng=LNG):
+    """One raw Redis stream entry, exactly as read_location_events returns it."""
+    return (entry_id, {'driver_id': str(driver_id), 'lat': str(lat), 'lng': str(lng)})
+
+
+def _eid(ms, seq=0):
+    return f'{ms}-{seq}'
+
+
+BASE_MS = 1_758_600_000_000
+
+
+@pytest.mark.django_db
+def test_writer_stores_points_for_an_active_trip(trip, driver):
+    from servers.ride.location_trail import persist_location_events
+
+    events = [_event(_eid(BASE_MS), driver.id)]
+    handled, stats = persist_location_events(events)
+
+    assert handled == [_eid(BASE_MS)]
+    assert stats['stored'] == 1
+    p = TripLocationPoint.objects.get(trip=trip)
+    assert p.driver_id == driver.id
+    assert p.source == TripLocationPoint.SOURCE_DRIVER_WS
+    assert p.source_event_id == _eid(BASE_MS)
+
+
+@pytest.mark.django_db
+def test_writer_stores_nothing_when_driver_has_no_active_trip(trip, driver):
+    """Off-trip driver location is never persisted.
+
+    The events are still HANDLED (so they get acknowledged), otherwise the
+    consumer-group backlog would grow without limit for every idle driver.
+    """
+    from servers.ride.location_trail import persist_location_events
+
+    trip.status_id = _status('completed')
+    trip.save(update_fields=['status_id'])
+
+    handled, stats = persist_location_events([_event(_eid(BASE_MS), driver.id)])
+
+    assert handled == [_eid(BASE_MS)], 'must still be acked, or the backlog grows forever'
+    assert stats['stored'] == 0
+    assert stats['no_active_trip'] == 1
+    assert TripLocationPoint.objects.count() == 0
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('status_code,stored', [
+    ('requested', 0), ('accepted', 1), ('reached', 1),
+    ('in_progress', 1), ('completed', 0), ('cancelled', 0),
+])
+def test_writer_collection_window_matches_durable_status(trip, driver, status_code, stored):
+    """Collection starts at accepted and stops the instant the trip is terminal."""
+    from servers.ride.location_trail import persist_location_events
+
+    trip.status_id = _status(status_code)
+    trip.save(update_fields=['status_id'])
+
+    _handled, stats = persist_location_events([_event(_eid(BASE_MS), driver.id)])
+    assert stats['stored'] == stored, f'{status_code} should store {stored}'
+
+
+@pytest.mark.django_db
+def test_writer_applies_sampling_across_a_batch(trip, driver):
+    """A stationary driver in one batch must yield one row, not many."""
+    from servers.ride.location_trail import persist_location_events
+
+    events = [_event(_eid(BASE_MS + 10_000 * i), driver.id) for i in range(20)]
+    _handled, stats = persist_location_events(events)
+
+    assert stats['received'] == 20
+    assert stats['stored'] == 1
+    assert stats['sampled_out'] == 19
+    assert TripLocationPoint.objects.filter(trip=trip).count() == 1
+
+
+@pytest.mark.django_db
+def test_writer_sampling_continues_across_batches(trip, driver):
+    """The threshold must not reset per batch.
+
+    Without loading the last stored point, each batch would treat its first
+    event as the trip's first point and a stationary driver would gain one row
+    per batch forever.
+    """
+    from servers.ride.location_trail import persist_location_events
+
+    persist_location_events([_event(_eid(BASE_MS), driver.id)])
+    _handled, stats = persist_location_events([_event(_eid(BASE_MS + 10_000), driver.id)])
+
+    assert stats['stored'] == 0, 'second batch re-stored a stationary point'
+    assert TripLocationPoint.objects.filter(trip=trip).count() == 1
+
+
+@pytest.mark.django_db
+def test_writer_stores_a_moving_driver(trip, driver):
+    from servers.ride.location_trail import persist_location_events
+
+    events = []
+    for i in range(6):
+        lat = Decimal('17.4450000') + Decimal('0.001') * i
+        events.append(_event(_eid(BASE_MS + 10_000 * i), driver.id, lat=lat))
+    _handled, stats = persist_location_events(events)
+
+    assert stats['stored'] == 6
+    seqs = list(
+        TripLocationPoint.objects.filter(trip=trip)
+        .order_by('recorded_at').values_list('source_event_id', flat=True)
+    )
+    assert seqs == [e[0] for e in events], 'points must be replayable in order'
+
+
+# --- idempotency / at-least-once -------------------------------------------
+
+@pytest.mark.django_db
+def test_reprocessing_the_same_batch_creates_no_duplicates(trip, driver):
+    """The core durability property: at-least-once delivery is safe.
+
+    Simulates a worker that committed rows then died before acknowledging, so
+    Redis redelivers the identical entries.
+    """
+    from servers.ride.location_trail import persist_location_events
+
+    events = [
+        _event(_eid(BASE_MS + 10_000 * i), driver.id,
+               lat=Decimal('17.4450000') + Decimal('0.001') * i)
+        for i in range(4)
+    ]
+    persist_location_events(events)
+    first_count = TripLocationPoint.objects.filter(trip=trip).count()
+    assert first_count == 4
+
+    persist_location_events(events)          # redelivery
+    persist_location_events(events)          # and again
+
+    assert TripLocationPoint.objects.filter(trip=trip).count() == first_count, \
+        'duplicate points would inflate actual distance and therefore the fare'
+
+
+@pytest.mark.django_db
+def test_partial_batch_overlap_stores_only_the_new_events(trip, driver):
+    from servers.ride.location_trail import persist_location_events
+
+    mk = lambda i: _event(_eid(BASE_MS + 10_000 * i), driver.id,  # noqa: E731
+                          lat=Decimal('17.4450000') + Decimal('0.001') * i)
+    persist_location_events([mk(0), mk(1)])
+    persist_location_events([mk(1), mk(2)])      # 1 overlaps
+
+    ids = set(
+        TripLocationPoint.objects.filter(trip=trip)
+        .values_list('source_event_id', flat=True)
+    )
+    assert ids == {_eid(BASE_MS), _eid(BASE_MS + 10_000), _eid(BASE_MS + 20_000)}
+
+
+# --- malformed input -------------------------------------------------------
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('fields', [
+    {'driver_id': 'abc', 'lat': '17.44', 'lng': '78.38'},
+    {'driver_id': '1', 'lat': 'nope', 'lng': '78.38'},
+    {'driver_id': '1', 'lat': '0', 'lng': '0'},
+    {'driver_id': '1', 'lat': '91', 'lng': '78.38'},
+    {'driver_id': '1'},
+])
+def test_writer_drops_malformed_events_but_still_handles_them(trip, driver, fields):
+    from servers.ride.location_trail import persist_location_events
+
+    handled, stats = persist_location_events([(_eid(BASE_MS), fields)])
+    assert handled == [_eid(BASE_MS)], 'malformed events must be acked, not retried forever'
+    assert stats['stored'] == 0
+    assert stats['invalid'] == 1
+    assert TripLocationPoint.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_writer_drops_an_unparseable_stream_id(trip, driver):
+    from servers.ride.location_trail import persist_location_events
+
+    handled, stats = persist_location_events([
+        ('not-a-stream-id', {'driver_id': str(driver.id), 'lat': str(LAT), 'lng': str(LNG)}),
+    ])
+    assert handled == ['not-a-stream-id']
+    assert stats['invalid'] == 1
+
+
+@pytest.mark.django_db
+def test_writer_handles_an_empty_batch(db):
+    from servers.ride.location_trail import persist_location_events
+
+    handled, stats = persist_location_events([])
+    assert handled == []
+    assert stats['received'] == 0
+
+
+# --- feature flag / drain orchestration ------------------------------------
+
+@pytest.mark.django_db
+def test_drain_is_a_noop_while_the_flag_is_off(settings, driver):
+    """Default-off means the writer can ship without changing behaviour."""
+    from servers.ride.location_trail import drain_location_stream
+
+    settings.GPS_TRAIL_ENABLED = False
+    assert drain_location_stream() == {'enabled': False}
+
+
+@pytest.mark.django_db
+def test_drain_reads_acks_and_stores_when_enabled(settings, trip, driver):
+    from servers.ride import location_trail as lt
+
+    settings.GPS_TRAIL_ENABLED = True
+    settings.GPS_TRAIL_BATCH_SIZE = 10
+    settings.GPS_TRAIL_MAX_EVENTS_PER_RUN = 10
+
+    events = [_event(_eid(BASE_MS), driver.id)]
+    acked = []
+
+    with mock.patch.object(rc, 'ensure_location_stream_group', return_value=True), \
+            mock.patch.object(rc, 'read_location_events', side_effect=[events, []]), \
+            mock.patch.object(rc, 'ack_location_events',
+                              side_effect=lambda ids: acked.extend(ids) or len(ids)):
+        out = lt.drain_location_stream()
+
+    assert out['enabled'] is True
+    assert out['stored'] == 1
+    assert acked == [_eid(BASE_MS)], 'entries must be acked only after rows commit'
+    assert TripLocationPoint.objects.filter(trip=trip).count() == 1
+
+
+@pytest.mark.django_db
+def test_drain_respects_the_per_run_event_budget(settings, trip, driver):
+    """A backlog must not turn one tick into unbounded work."""
+    from servers.ride import location_trail as lt
+
+    settings.GPS_TRAIL_ENABLED = True
+    settings.GPS_TRAIL_BATCH_SIZE = 2
+    settings.GPS_TRAIL_MAX_EVENTS_PER_RUN = 4
+
+    calls = {'n': 0}
+
+    def _read(count, consumer='worker-1', block_ms=None):
+        calls['n'] += 1
+        base = BASE_MS + calls['n'] * 100_000
+        return [_event(_eid(base + i), driver.id) for i in range(count)]
+
+    with mock.patch.object(rc, 'ensure_location_stream_group', return_value=True), \
+            mock.patch.object(rc, 'read_location_events', side_effect=_read), \
+            mock.patch.object(rc, 'ack_location_events', return_value=1):
+        out = lt.drain_location_stream()
+
+    assert out['received'] == 4, 'budget must cap total events consumed'
+
+
+@pytest.mark.django_db
+def test_drain_survives_redis_being_unavailable(settings, trip, driver):
+    """GPS persistence failure must not raise into anything upstream."""
+    from servers.ride import location_trail as lt
+
+    settings.GPS_TRAIL_ENABLED = True
+    with mock.patch.object(rc, 'ensure_location_stream_group', return_value=False), \
+            mock.patch.object(rc, 'read_location_events', return_value=[]):
+        out = lt.drain_location_stream()
+    assert out['received'] == 0
+    assert TripLocationPoint.objects.count() == 0
+
+
+# --- isolation from the live path ------------------------------------------
+
+def test_live_location_path_does_not_depend_on_the_trail():
+    """The hot path must not import or call the durable writer.
+
+    update_driver_location does the Redis XADD; persistence happens later in a
+    Celery task. If the writer were ever called inline, a database or Redis
+    problem in persistence would surface as a failed driver location ping and
+    could stall dispatch.
+    """
+    import inspect
+
+    from servers.driver import utils as driver_utils
+
+    src = inspect.getsource(driver_utils)
+    assert 'location_trail' not in src
+    assert 'TripLocationPoint' not in src
+
+
+def test_consumer_holds_no_trail_logic():
+    """Architecture rule: new domain behaviour does not go into consumers.py."""
+    import inspect
+
+    from servers import consumers
+
+    src = inspect.getsource(consumers)
+    assert 'TripLocationPoint' not in src
+    assert 'location_trail' not in src
+    assert 'persist_location_events' not in src
+
+
+def test_trail_task_is_idempotent_and_late_acking():
+    """Negative control on the task's delivery posture.
+
+    acks_late is only safe because persistence is idempotent on
+    (trip, source_event_id); if it were flipped off, a worker death would lose
+    the batch instead of repeating it.
+    """
+    import servers.ride.tasks  # noqa: F401  (registers the task)
+    from base.celery import app
+
+    t = app.tasks['ride.persist_location_trail']
+    assert t.acks_late is True
+
+
+def test_task_is_a_thin_adapter():
+    """The task must delegate, not implement.
+
+    Asserted against the compiled code object rather than the source text, so a
+    docstring that mentions a name cannot make this pass or fail spuriously.
+    """
+    from servers.ride import tasks
+
+    # shared_task wraps the function in a Task proxy; `run` is the original.
+    names = set(tasks.persist_location_trail.run.__code__.co_names)
+    assert 'drain_location_stream' in names, 'task should delegate to the service'
+    assert 'bulk_create' not in names, 'persistence logic belongs in the service'
+    assert 'TripLocationPoint' not in names, 'task should not touch the model'
+
+
+# --- privacy ---------------------------------------------------------------
+
+def test_no_public_or_authenticated_endpoint_exposes_the_trail():
+    """The trail must not be reachable over HTTP at all in this change."""
+    import servers.ride.urls as ride_urls
+    import servers.driver.urls as driver_urls
+    import servers.rider.urls as rider_urls
+
+    for mod in (ride_urls, driver_urls, rider_urls):
+        src = str([getattr(p, 'name', '') for p in mod.urlpatterns])
+        assert 'location_point' not in src
+        assert 'trail' not in src.lower()
+
+
+def test_trail_is_not_registered_in_django_admin():
+    """Deliberate: no browsable full-fleet location history by default."""
+    from django.contrib import admin as dj_admin
+    assert TripLocationPoint not in dj_admin.site._registry
+
+
+def test_celery_task_args_cannot_leak_coordinates():
+    """The trail task takes no arguments, so nothing to leak.
+
+    Celery logs task args, and the redaction filter now replaces them with
+    '***' -- but the stronger guarantee is that this task carries no payload.
+    """
+    import inspect
+
+    from servers.ride import tasks
+
+    sig = inspect.signature(tasks.persist_location_trail)
+    params = [p for p in sig.parameters if p != 'self']
+    assert params == [], f'trail task should take no args, got {params}'
+
+
+def test_writer_logs_counts_not_positions():
+    import inspect
+
+    from servers.ride import location_trail
+
+    src = inspect.getsource(location_trail.drain_location_stream)
+    assert '_log(' in src
+    assert 'latitude' not in src
+    assert 'longitude' not in src
+
+
+# ---------------------------------------------------------------------------
+# End-to-end against a REAL Redis stream and consumer group
+# ---------------------------------------------------------------------------
+#
+# The mocked tests above prove the policy. These prove the plumbing: consumer
+# group creation, XREADGROUP claiming, XACK, and the pending-entry behaviour
+# that makes at-least-once safe. Mocks cannot show any of that.
+
+@pytest.fixture
+def real_stream():
+    """A clean consumer group on the real location stream (Redis db 3)."""
+    client = rc._stream_client()
+    if client is None:
+        pytest.skip('Redis not available')
+    try:
+        client.delete(rc.LOCATION_STREAM)
+    except Exception:  # noqa: BLE001
+        pytest.skip('Redis not usable')
+    rc.ensure_location_stream_group()
+    yield client
+    try:
+        client.delete(rc.LOCATION_STREAM)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _xadd(driver_id, lat, lng, ms=None):
+    """Append a ping. `ms` sets an explicit stream id so tests can space events
+    in time -- the sampler's 5s interval filter is driven by the stream id, and
+    events appended in the same instant are correctly collapsed to one."""
+    client = rc._stream_client()
+    kwargs = {'maxlen': 100000}
+    if ms is not None:
+        kwargs['id'] = f'{ms}-0'
+    return client.xadd(
+        rc.LOCATION_STREAM,
+        {'driver_id': str(driver_id), 'lat': str(lat), 'lng': str(lng)},
+        **kwargs,
+    )
+
+
+@pytest.mark.django_db
+def test_end_to_end_real_stream_to_durable_rows(settings, real_stream, trip, driver):
+    """The whole pipeline: XADD -> consumer group -> sample -> rows -> XACK."""
+    from servers.ride.location_trail import drain_location_stream
+
+    settings.GPS_TRAIL_ENABLED = True
+    settings.GPS_TRAIL_BATCH_SIZE = 100
+    settings.GPS_TRAIL_MAX_EVENTS_PER_RUN = 100
+
+    # A driver moving away from the pickup, ~111m per step.
+    for i in range(5):
+        _xadd(driver.id, Decimal('17.4450000') + Decimal('0.001') * i, LNG,
+              ms=BASE_MS + 10_000 * i)
+
+    out = drain_location_stream(consumer='itest')
+
+    assert out['enabled'] is True
+    assert out['received'] == 5
+    assert out['stored'] == 5, out
+    assert out['acked'] == 5, 'entries must be acknowledged after the rows commit'
+    assert TripLocationPoint.objects.filter(trip=trip).count() == 5
+
+    # Every row carries the originating stream id, which is the idempotency key.
+    ids = set(
+        TripLocationPoint.objects.filter(trip=trip)
+        .values_list('source_event_id', flat=True)
+    )
+    assert all('-' in i for i in ids)
+
+    # Nothing left pending, and a second drain finds nothing to do.
+    assert rc.location_stream_pending() == 0
+    again = drain_location_stream(consumer='itest')
+    assert again['received'] == 0
+    assert TripLocationPoint.objects.filter(trip=trip).count() == 5
+
+
+@pytest.mark.django_db
+def test_unacked_entries_are_redelivered_and_stored_once(settings, real_stream, trip, driver):
+    """Worker dies after committing rows but before XACK.
+
+    Redis redelivers the entries to the next reader; the unique constraint means
+    the re-processing stores nothing new. This is the at-least-once guarantee
+    the design depends on.
+    """
+    from servers.ride.location_trail import (
+        drain_location_stream, persist_location_events,
+    )
+
+    settings.GPS_TRAIL_ENABLED = True
+    settings.GPS_TRAIL_BATCH_SIZE = 100
+    settings.GPS_TRAIL_MAX_EVENTS_PER_RUN = 100
+
+    for i in range(3):
+        _xadd(driver.id, Decimal('17.4450000') + Decimal('0.002') * i, LNG,
+              ms=BASE_MS + 20_000 * i)
+
+    # Claim and persist, but deliberately do NOT ack -- the crash.
+    events = rc.read_location_events(count=10, consumer='crashy')
+    assert len(events) == 3
+    persist_location_events(events)
+    assert TripLocationPoint.objects.filter(trip=trip).count() == 3
+    assert rc.location_stream_pending() == 3, 'entries should still be pending'
+
+    # Another worker reclaims the abandoned entries.
+    claimed = rc._stream_client().xautoclaim(
+        rc.LOCATION_STREAM, rc.LOCATION_STREAM_GROUP, 'recovery',
+        min_idle_time=0, start_id='0',
+    )
+    reclaimed = claimed[1] if isinstance(claimed, (list, tuple)) else []
+    assert reclaimed, 'redelivery should hand the entries to the new consumer'
+
+    redelivered = []
+    for entry_id, fields in reclaimed:
+        eid = entry_id.decode() if isinstance(entry_id, bytes) else str(entry_id)
+        clean = {(k.decode() if isinstance(k, bytes) else k):
+                 (v.decode() if isinstance(v, bytes) else v)
+                 for k, v in fields.items()}
+        redelivered.append((eid, clean))
+
+    handled, stats = persist_location_events(redelivered)
+    rc.ack_location_events(handled)
+
+    assert TripLocationPoint.objects.filter(trip=trip).count() == 3, \
+        'redelivery must not duplicate points'
+    assert stats['stored'] == 0 or TripLocationPoint.objects.filter(trip=trip).count() == 3
+
+
+@pytest.mark.django_db
+def test_off_trip_events_are_acked_so_the_backlog_drains(settings, real_stream, trip, driver):
+    """An idle driver's pings must not accumulate as pending entries forever."""
+    from servers.ride.location_trail import drain_location_stream
+
+    settings.GPS_TRAIL_ENABLED = True
+    trip.status_id = _status('completed')
+    trip.save(update_fields=['status_id'])
+
+    for i in range(4):
+        _xadd(driver.id, LAT, LNG, ms=BASE_MS + 10_000 * i)
+
+    out = drain_location_stream(consumer='itest')
+    assert out['stored'] == 0
+    assert out['no_active_trip'] == 4
+    assert out['acked'] == 4
+    assert rc.location_stream_pending() == 0, 'idle-driver pings must not pile up'
+    assert TripLocationPoint.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_consumer_group_survives_being_created_twice(real_stream):
+    """ensure_location_stream_group must be idempotent (BUSYGROUP)."""
+    assert rc.ensure_location_stream_group() is True
+    assert rc.ensure_location_stream_group() is True
+
+
+@pytest.mark.django_db
+def test_live_geo_update_still_works_while_trail_is_enabled(settings, real_stream, trip, driver):
+    """The live path must be unaffected by the trail existing.
+
+    update_driver_location does the XADD and returns; it must not wait on, or
+    fail because of, durable persistence.
+    """
+    from servers.driver.utils import update_driver_location
+
+    settings.GPS_TRAIL_ENABLED = True
+    resp = update_driver_location(driver_id=driver.id, lng=float(LNG), lat=float(LAT))
+    assert getattr(resp, 'status_code', 200) == 200
+    # The ping is in the stream, and nothing has been persisted yet.
+    assert rc._stream_client().xlen(rc.LOCATION_STREAM) >= 1
+    assert TripLocationPoint.objects.count() == 0, \
+        'persistence must be deferred, not inline on the hot path'
+
+
+def test_stream_helpers_use_the_same_redis_db_that_writes_the_stream():
+    """Regression: the writer read db 2 while the pings went to db 3.
+
+    servers/driver/utils.py builds its own client against REDIS_URL + '/3' and
+    XADDs there; servers/redis_client.py's own client is db 2. Reading the
+    stream through the db-2 client returns an empty result with no error, so the
+    durable trail would have silently persisted nothing in production. Caught
+    only because this suite talks to a real Redis.
+    """
+    from servers.driver import utils as driver_utils
+
+    client = rc._stream_client()
+    if client is None or driver_utils.redis_client is None:
+        pytest.skip('Redis not available')
+
+    assert client is driver_utils.redis_client, \
+        'stream helpers must borrow the exact client that writes the stream'
+    assert client.connection_pool.connection_kwargs.get('db') == 3
+    assert rc.redis_client.connection_pool.connection_kwargs.get('db') == 2, \
+        'geo client is a different db -- that is the whole point of this test'

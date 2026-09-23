@@ -1853,6 +1853,8 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
         "admin_pages/driver_onboarding.html",
         context,
     )
+
+@admin_required
 def payment_dashboard(request: HttpRequest) -> HttpResponse:
     """
     Financial Operations / Payment Gateway dashboard.
@@ -2749,6 +2751,7 @@ def payment_dashboard(request: HttpRequest) -> HttpResponse:
         },
     )
 
+@admin_required
 def executive_revenue(request: HttpRequest) -> HttpResponse:
     tz = timezone.get_current_timezone()
     start_date = (request.GET.get("start_date") or "").strip()
@@ -3042,6 +3045,8 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
         "revenue_growth": revenue_growth,
     }
     return render(request,"admin_pages/executive_revenue.html",context,)
+
+@admin_required
 def dispute_support(request: HttpRequest) -> HttpResponse:
 
     # =========================================================

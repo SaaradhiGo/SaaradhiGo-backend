@@ -341,3 +341,155 @@ def test_a_row_with_no_gross_still_reports_an_amount():
         rider_name='', driver_holds_cash=False,
     )
     assert row.to_api()['amount'] == '70.00'
+
+
+# ---------------------------------------------------------------------------
+# Merge review: the definitions are identities, and the endpoints are reads
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('method', ['cash', 'online'])
+@pytest.mark.django_db
+def test_net_is_always_gross_minus_commission(rider, driver, method):
+    """One definition, both payment methods.
+
+    The ledger represents cash and online settlement differently -- a commission
+    debit versus a net credit -- but the reported semantics must not differ, or a
+    driver who takes both cannot read their own earnings. GROSS is the rider fare
+    for the completed trip, COMMISSION is what settlement actually recorded, and
+    NET is the difference. Asserted as an identity rather than against fixed
+    numbers, so it holds at whatever commission rate applies.
+    """
+    credit_driver_wallet(_completed_trip(rider, driver, 400, method))
+
+    rows = settlement_rows(driver)
+    assert len(rows) == 1
+    row = rows[0]
+
+    assert row.gross == Decimal('400.00')
+    assert row.commission > 0
+    assert row.net == row.gross - row.commission
+
+    totals = summarise(rows)
+    assert totals['total_gross'] == row.gross
+    assert totals['total_commission'] == row.commission
+    assert totals['total_net'] == totals['total_gross'] - totals['total_commission']
+
+    # And the cash-specific requirement: the driver holds the fare, the debit is
+    # the commission, and the net earning is still visible rather than zero.
+    if method == 'cash':
+        assert row.driver_holds_cash is True
+        assert totals['cash_collected'] == Decimal('400.00')
+        assert totals['total_net'] > 0, 'a cash driver must see earnings, not zero'
+    else:
+        assert row.driver_holds_cash is False
+        assert totals['cash_collected'] == Decimal('0.00')
+
+
+@pytest.mark.django_db
+def test_reported_commission_does_not_follow_a_later_rate_card_change(rider, driver,
+                                                                     vehicle_type):
+    """Historical commission must come from the ledger, not from configuration.
+
+    A rate card edited after a trip settled must not rewrite what the driver was
+    told they earned. This seeds a deliberately absurd rate AFTER settlement and
+    asserts the reported commission does not move -- the test that fails if anyone
+    reintroduces `commission_percent_for_trip` into the reporting path.
+    """
+    from servers.pricing.models import RateCard, ServiceZone
+
+    trip = _completed_trip(rider, driver, 1000, 'online')
+    credit_driver_wallet(trip)
+
+    before = summarise(settlement_rows(driver))
+    settled_commission = before['total_commission']
+    assert settled_commission > 0
+
+    zone, _ = ServiceZone.objects.get_or_create(
+        code='EARN-TEST',
+        defaults={'name': 'Earnings test', 'zone_type': 'city',
+                  'state_code': 'TS', 'city': 'Hyderabad',
+                  'polygon_geojson': {
+                      'type': 'Polygon',
+                      'coordinates': [[[78.0, 17.0], [79.0, 17.0],
+                                       [79.0, 18.0], [78.0, 18.0],
+                                       [78.0, 17.0]]],
+                  }},
+    )
+    RateCard.objects.create(
+        zone=zone, vehicle_type=vehicle_type,
+        base_fare=Decimal('1.00'), per_km_fare=Decimal('1.00'),
+        per_min_fare=Decimal('1.00'), min_fare=Decimal('1.00'),
+        commission_percent=Decimal('91.00'), version=99, is_active=True,
+    )
+
+    after = summarise(settlement_rows(driver))
+    assert after['total_commission'] == settled_commission, \
+        'a later rate card must not rewrite settled commission'
+    assert after['effective_commission_percent'] == before['effective_commission_percent']
+
+
+@pytest.mark.django_db
+def test_both_endpoints_leave_every_financial_row_byte_identical(rider, driver):
+    """Proven at the API boundary, not only in the service layer.
+
+    Snapshots the driver's wallet balance, every WalletTransaction, every
+    TransactionHistory row and every trip's fare columns across real requests to
+    both endpoints. This is the assertion that makes the fix safe to merge without
+    reviewing settlement: if the presentation is still wrong it can be corrected
+    again with no data migration and no adjustment entries.
+    """
+    from rest_framework.test import APIClient
+
+    from servers.payments.models import TransactionHistory
+
+    credit_driver_wallet(_completed_trip(rider, driver, 250, 'cash'))
+    credit_driver_wallet(_completed_trip(rider, driver, 375, 'online'))
+
+    def snapshot():
+        return {
+            'wallet': Wallet.objects.order_by('id').values_list(
+                'id', 'user_id', 'scope', 'balance'),
+            'wallet_txns': list(WalletTransaction.objects.order_by('id').values()),
+            'history': list(TransactionHistory.objects.order_by('id').values()),
+            'trips': list(Trip.objects.order_by('id').values(
+                'id', 'estimated_fare', 'final_fare', 'actual_distance_km',
+                'actual_duration_min', 'payment_status', 'payment_method',
+                'surge_multiplier')),
+        }
+
+    before = snapshot()
+    before['wallet'] = list(before['wallet'])
+
+    api = APIClient()
+    api.force_authenticate(user=driver.user_id)
+    assert api.get('/api/v1/driver/earnings/').status_code == 200
+    assert api.get('/api/v1/driver/earnings/summary/').status_code == 200
+
+    after = snapshot()
+    after['wallet'] = list(after['wallet'])
+
+    assert after['wallet'] == before['wallet'], 'wallet balances must not move'
+    assert after['wallet_txns'] == before['wallet_txns'], 'no ledger entry may appear'
+    assert after['history'] == before['history'], 'settlement history is untouched'
+    assert after['trips'] == before['trips'], 'no fare value may change'
+
+
+@pytest.mark.django_db
+def test_summary_and_list_agree_with_each_other(rider, driver):
+    """Two endpoints, one definition. A drift between them is a support ticket."""
+    from rest_framework.test import APIClient
+
+    for fare, method in ((120, 'cash'), (240, 'online'), (60, 'cash')):
+        credit_driver_wallet(_completed_trip(rider, driver, fare, method))
+
+    api = APIClient()
+    api.force_authenticate(user=driver.user_id)
+    rows = api.get('/api/v1/driver/earnings/').json()
+    rows = rows.get('data', rows)['results']
+    summary = api.get('/api/v1/driver/earnings/summary/').json()
+    summary = summary.get('data', summary)
+
+    assert len(rows) == int(summary['total_trips'])
+    assert sum(Decimal(r['amount']) for r in rows) == Decimal(summary['total_earned'])
+    assert sum(Decimal(r['commission']) for r in rows) == Decimal(summary['total_commission'])
+    assert sum(Decimal(r['net_amount']) for r in rows) == Decimal(summary['total_net'])

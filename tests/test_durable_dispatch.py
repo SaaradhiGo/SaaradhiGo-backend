@@ -788,3 +788,45 @@ def test_snapshot_withholds_otp_from_everyone_but_the_rider(searching_trip, ride
     foreign = TripDetailSerializer(searching_trip, context={'request': _Ctx(other_rider)}).data
     assert own['otp'] == '123456'
     assert foreign['otp'] is None
+
+
+# ---------------------------------------------------------------------------
+# Crash durability of the timeout task (OPS-1)
+# ---------------------------------------------------------------------------
+
+def test_auto_cancel_trip_acknowledges_late():
+    """The timeout is the only durable bound on a driver search (ADR-0008).
+
+    With the project default `task_acks_late=False` the broker message was
+    acknowledged before execution, so a worker dying while holding it lost the
+    message and the trip would stay `requested` forever with nothing left to
+    time it out. Negative control: flip this back and that hole reopens.
+    """
+    from base.celery import app
+    assert app.tasks['servers.ride.tasks.auto_cancel_trip'].acks_late is True
+
+
+def test_dispatch_wave_acknowledges_late():
+    from base.celery import app
+    assert app.tasks['ride.dispatch_wave'].acks_late is True
+
+
+@pytest.mark.django_db
+def test_redelivered_timeout_cannot_restate_a_cancellation(searching_trip, channel_recorder):
+    """at-least-once delivery: the same timeout message twice.
+
+    This is what makes acks_late safe for this task.
+    """
+    from servers.ride.tasks import auto_cancel_trip
+
+    auto_cancel_trip(searching_trip.id)
+    first = Trip.objects.get(id=searching_trip.id)
+    first_at, first_by = first.cancelled_at, first.cancelled_by
+
+    auto_cancel_trip(searching_trip.id)          # redelivery
+    auto_cancel_trip(searching_trip.id)          # and again
+
+    again = Trip.objects.get(id=searching_trip.id)
+    assert again.cancelled_at == first_at, 'redelivery restated the cancellation'
+    assert again.cancelled_by == first_by
+    assert again.status_id.status_code == 'cancelled'

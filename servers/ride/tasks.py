@@ -88,7 +88,29 @@ def dispatch_wave(self, trip_id, wave_index, dispatch_epoch, radii):
         raise self.retry(exc=exc)
 
 
-@shared_task(bind=True, max_retries=0)
+@shared_task(
+    bind=True,
+    max_retries=0,
+    # The project default is task_acks_late=False, meaning the broker message
+    # is acknowledged BEFORE the task runs. For this task that was a real
+    # durability hole: it is the single durable bound on a driver search
+    # (ADR-0008), and if the worker died holding the message the message was
+    # already gone -- the trip would sit in `requested` forever with nothing
+    # left to time it out.
+    #
+    # acks_late is safe here specifically because the task is idempotent, which
+    # was verified against QA rather than assumed: a second delivery re-reads
+    # the row inside the lock, finds the trip already terminal and stands down
+    # ("auto_cancel_trip: trip 2 already cancelled, standing down"), leaving
+    # cancelled_at untouched. A duplicate delivery therefore cannot restate a
+    # cancellation or overwrite an acceptance.
+    #
+    # This protects against worker death only. An exception still acks and
+    # still ends the task, because max_retries is 0 -- deliberately unchanged
+    # here to keep this a one-line durability fix rather than also altering
+    # error handling. Adding retries is tracked in OPS-1.
+    acks_late=True,
+)
 def auto_cancel_trip(self, trip_id):
     """Cancel a trip that no driver accepted inside the accept timeout.
 

@@ -93,18 +93,18 @@ jobs:
         run: python manage.py makemigrations --check --dry-run
 
       - name: Run pytest
-        env:
-          # Test-only values — never reach production. SECRET_KEY just has
-          # to satisfy Django's startup checks; DEBUG_ENV=True keeps the
-          # boot-time guards (ALLOWED_HOSTS, DB_HOST) permissive for the
-          # suite and enables the fallback fare the pricing tests assert.
-          DJANGO_SECRET_KEY: ci-test-secret-not-for-prod
-          ALLOWED_HOSTS: localhost,127.0.0.1,testserver
-          DEBUG_ENV: 'True'
-          CASHFREE_WEBHOOK_SECRET: ci-test-secret
-          REDIS_URL: redis://localhost:6379
-          DJANGO_SETTINGS_MODULE: base.settings
-        run: pytest tests/ -q
+        # The canonical backend test command. Deliberately bare: `pytest`
+        # reads pytest.ini, which sets DJANGO_SETTINGS_MODULE=base.settings_ci
+        # and points `testpaths` at BOTH `tests/` and `servers/`. This step
+        # previously ran `pytest tests/ -q`, which silently excluded every
+        # test under `servers/**/tests/`.
+        #
+        # No `env:` block on purpose. The test-only values that used to live
+        # here now live in base/settings_ci.py, so a developer running
+        # `pytest` locally gets the identical configuration instead of having
+        # to export six variables. Setting DJANGO_SETTINGS_MODULE here would
+        # override pytest.ini and split the two paths apart again.
+        run: pytest
 
   deploy:
     needs: [test, lint]

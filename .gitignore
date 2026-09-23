@@ -10,7 +10,12 @@ staticfiles
 .agents
 openapi.yaml
 postman_collection.json
-pytest.ini
+# pytest.ini is the CANONICAL backend test config and MUST be committed:
+# it sets DJANGO_SETTINGS_MODULE and the `testpaths` that make `pytest`
+# discover both tests/ and servers/**/tests/. It was previously ignored,
+# which is why CI had to hardcode `pytest tests/` and inline its env vars.
+# Note pytest.ini outranks pyproject.toml/setup.cfg, so an ignored local
+# copy would silently override CI.
 SaaradhiGo_PRD.md
 VahanGo_API_Collection.json
 global-bundle.pem

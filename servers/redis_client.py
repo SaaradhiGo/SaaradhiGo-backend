@@ -125,6 +125,64 @@ def add_offered_drivers(trip_id, driver_ids):
         return False
 
 
+def _generation_offers_key(trip_id, epoch):
+    return f'{OFFERED_PREFIX}{trip_id}:gen:{epoch}'
+
+
+def add_generation_offers(trip_id, epoch, driver_ids):
+    """Record who one dispatch generation has already been offered to.
+
+    Distinct from `add_offered_drivers`, which keeps the union across the
+    whole trip and drives the `trip_taken` fanout. This set is scoped to a
+    single search generation so a rider-triggered retry re-reaches drivers
+    who ignored the first search — matching the previous behaviour, where
+    each dispatch call started with an empty in-process `offered` set.
+
+    Best-effort by design: losing this set can only cause a duplicate
+    notification, never a duplicate assignment.
+    """
+    if redis_client is None or not driver_ids:
+        return False
+    try:
+        key = _generation_offers_key(trip_id, epoch)
+        redis_client.sadd(key, *[str(d) for d in driver_ids])
+        redis_client.expire(key, OFFERED_TTL_SECONDS)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            'add_generation_offers failed for trip %s epoch %s: %s', trip_id, epoch, exc,
+        )
+        return False
+
+
+def get_generation_offers(trip_id, epoch):
+    """Driver ids already offered within this generation, as a set of str.
+
+    Returns an empty set when Redis is unavailable, so a wave degrades to
+    "might re-offer" rather than failing.
+    """
+    if redis_client is None:
+        return set()
+    try:
+        members = redis_client.smembers(_generation_offers_key(trip_id, epoch)) or set()
+        return {str(m) for m in members}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            'get_generation_offers failed for trip %s epoch %s: %s', trip_id, epoch, exc,
+        )
+        return set()
+
+
+def clear_generation_offers(trip_id, epoch):
+    if redis_client is None:
+        return False
+    try:
+        redis_client.delete(_generation_offers_key(trip_id, epoch))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def pop_offered_drivers(trip_id):
     """Read and delete the offer set. Returns a list of driver id strings."""
     if redis_client is None:

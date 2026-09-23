@@ -1007,6 +1007,16 @@ def driver_cancel_trip(request, trip_id):
         except Exception:  # noqa: BLE001
             logger.exception('clear_driver_active_trip failed for driver=%s', driver.id)
 
+        # Dismiss any candidate offer still outstanding for this trip. A
+        # driver cancelling an already-assigned trip normally has no
+        # candidates left, but a cancel racing a dispatch wave can, and the
+        # helper is a no-op when the set is empty.
+        try:
+            from servers.ride.dispatch import dismiss_outstanding_offers
+            dismiss_outstanding_offers(trip.id, reason='driver_cancelled')
+        except Exception:  # noqa: BLE001
+            logger.exception('offer dismissal failed for trip=%s', trip.id)
+
         try:
             Notification.objects.create(
                 user_id=trip.user_id,
@@ -1172,6 +1182,13 @@ def rider_cancel_trip(request, trip_id):
         try:
             from servers.redis_client import invalidate_trip
             invalidate_trip(trip.id)
+
+            # Candidate drivers were left holding a live request card by this
+            # path: it cleared neither the offer set nor the cards, so a
+            # cancelled trip stayed on screen until it timed out and the
+            # driver tapped a dead ride.
+            from servers.ride.dispatch import dismiss_outstanding_offers
+            dismiss_outstanding_offers(trip.id, reason='rider_cancelled')
         except Exception:
             logger.exception('invalidate_trip failed for trip=%s', trip.id)
 

@@ -1,9 +1,7 @@
-import asyncio
 import json
 import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
-from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 from django.core.cache import cache
 from base.utils import generate_otp
@@ -308,10 +306,25 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             'message': 'Rider connected, ready for ride requests',
         }))
 
+        # Reconnect recovery. Dispatch now outlives this socket, so a rider
+        # who dropped mid-search can come back to a trip that has already
+        # been accepted — and the real-time frame announcing it went to a
+        # socket that no longer existed. Replay authoritative state from
+        # PostgreSQL instead of assuming the original event was received.
+        snapshot = await self._current_trip_snapshot()
+        if snapshot is not None:
+            await self.send(text_data=json.dumps({
+                'type': 'current_trip',
+                'trip': snapshot,
+            }))
+
     async def disconnect(self, close_code):
-        task = getattr(self, '_dispatch_task', None)
-        if task is not None and not task.done():
-            task.cancel()
+        # Deliberately does NOT cancel dispatch. This method used to call
+        # `self._dispatch_task.cancel()`, which meant a rider losing network
+        # mid-search killed the remaining waves and the trip then timed out
+        # as `no_driver_accepted` though most drivers were never asked.
+        # Celery owns wave execution now; this socket going away is not an
+        # instruction to stop looking for a driver.
         if hasattr(self, 'rider_group'):
             await self.channel_layer.group_discard(self.rider_group, self.channel_name)
 
@@ -381,24 +394,22 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             # Log ride request to Redis Stream (for future analytics, not driver notification)
             await self._publish_ride_request(trip)
 
-            # Rolling fanout. Runs as a background task so this socket stays
-            # responsive (the rider can cancel mid-search) while the waves
-            # play out.
-            self._dispatch_task = asyncio.create_task(
-                self._run_dispatch(
-                    trip=trip,
-                    pickup_lng=float(pickup_lng),
-                    pickup_lat=float(pickup_lat),
-                    destination_lat=destination_lat,
-                    destination_lng=destination_lng,
-                    pickup_address=pickup_address,
-                    destination_address=destination_address,
-                    vehicle_type=vehicle_type,
-                    distance_km=distance_km,
-                    duration_min=duration_min,
-                    payment_method=payment_method
-                )
-            )
+            # Hand the driver search to Celery. This socket does not execute
+            # waves and is not required for the search to complete — see
+            # servers/ride/dispatch.py.
+            started = await self._start_dispatch(trip.id, reason='initial')
+            if not started.get('enqueued'):
+                # There is exactly one dispatch engine, so we do not fall
+                # back to running waves here. The trip stays committed and
+                # its durable auto_cancel_trip deadline still applies.
+                await self.send(text_data=json.dumps({
+                    'type': 'dispatch_failed',
+                    'trip_id': trip.id,
+                    'message': (
+                        'We could not start the driver search. Please retry '
+                        'in a moment.'
+                    ),
+                }))
 
         except json.JSONDecodeError:
             await self.send(text_data=json.dumps({
@@ -415,9 +426,14 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
     # -- Retry & shared helpers --
 
     async def _handle_retry(self, data):
-        """
-        Retry notifying nearby drivers for an existing pending trip.
-        Expected: {"action": "retry", "trip_id": int, "radius": int (optional, meters)}
+        """Re-run the driver search for a trip that is still unassigned.
+
+        Expected: {"action": "retry", "trip_id": int, "radius": int optional}
+
+        Routed through the same Celery entry point as the initial search so
+        there is exactly one dispatch execution architecture. This used to
+        `await` the wave loop inline on the socket, which made retry
+        socket-owned in the same way the initial search was.
         """
         trip_id = data.get('trip_id')
         radius = min(int(data.get('radius', 5000)), 5000)
@@ -437,6 +453,20 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             }))
             return
 
+        # A fresh generation. Its epoch scopes notification de-duplication so
+        # drivers who ignored the previous search are reachable again, which
+        # is what the old implementation did implicitly by starting each call
+        # with an empty in-process `offered` set.
+        started = await self._start_dispatch(trip.id, radius=radius, reason='retry')
+
+        if not started.get('enqueued'):
+            await self.send(text_data=json.dumps({
+                'type': 'dispatch_failed',
+                'trip_id': trip.id,
+                'message': 'Could not restart the driver search. Please try again.',
+            }))
+            return
+
         await self.send(text_data=json.dumps({
             'type': 'retry_started',
             'trip_id': trip.id,
@@ -444,141 +474,63 @@ class RideRequestConsumer(AsyncWebsocketConsumer):
             'message': 'Retrying — searching for nearby drivers...'
         }))
 
-        # Get vehicle type from the trip's requested_vehicle_type
-        vt_name = None
-        if trip.requested_vehicle_type:
-            vt_name = await database_sync_to_async(lambda: trip.requested_vehicle_type.type)()
+    @database_sync_to_async
+    def _start_dispatch(self, trip_id, radius=None, reason='initial'):
+        from servers.ride.dispatch import start_dispatch
+        return start_dispatch(trip_id, radius=radius, reason=reason)
 
-        await self._notify_nearby_drivers(
-            trip=trip,
-            pickup_lng=float(trip.pickup_long),
-            pickup_lat=float(trip.pickup_lat),
-            destination_lat=float(trip.destination_lat),
-            destination_lng=float(trip.destination_long),
-            pickup_address=trip.pickup_address or '',
-            destination_address=trip.destination_address or '',
-            radius=radius,
-            vehicle_type=vt_name,
-            distance_km=trip.estimated_distance_km,
-            duration_min=trip.estimated_duration_min,
-            payment_method=trip.payment_method
+    @database_sync_to_async
+    def _current_trip_snapshot(self):
+        """Authoritative current-trip state for this rider, or None.
+
+        Reuses TripDetailSerializer rather than inventing a second shape, so
+        the OTP rule it already enforces — only the trip's own rider ever
+        sees `otp` — continues to apply here, and the driver's phone number
+        is never part of that representation.
+        """
+        from servers.ride.models import Trip
+        from servers.ride.serializers import TripDetailSerializer
+
+        ACTIVE = ('requested', 'accepted', 'reached', 'in_progress')
+        trip = (
+            Trip.objects
+            .filter(user_id=self.user, status_id__status_code__in=ACTIVE)
+            .select_related('status_id', 'driver_id__user_id', 'vehicle_id__vehicle_type_id', 'user_id')
+            .prefetch_related('fare_pricing', 'ratings')
+            .order_by('-requested_at')
+            .first()
         )
+        if trip is None:
+            return None
 
-    async def _run_dispatch(self, **kwargs):
-        """Background wrapper around the fanout.
+        # Scoped to `user_id=self.user` above, so one rider can never be
+        # handed another rider's trip. The serializer's OTP gate reads
+        # request.user, so pass this rider through as the request identity.
+        class _Ctx:
+            user = self.user
 
-        A bare `create_task` swallows exceptions: if dispatch died halfway
-        the rider would just sit on "searching" with nothing in the logs.
-        """
-        try:
-            await self._notify_nearby_drivers(**kwargs)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                'Dispatch failed for trip %s: %s', getattr(kwargs.get('trip'), 'id', '?'), exc,
-            )
-            try:
-                await self.send(text_data=json.dumps({
-                    'type': 'error',
-                    'message': 'Could not reach nearby drivers. Please retry.',
-                }))
-            except Exception:  # noqa: BLE001
-                pass  # socket already gone
-
-    async def _notify_nearby_drivers(self, trip, pickup_lng, pickup_lat,
-                                      destination_lat, destination_lng,
-                                      pickup_address, destination_address,
-                                      radius=None, vehicle_type=None,distance_km=None,duration_min=None,payment_method=None):
-        """Rolling fanout: offer the trip in expanding waves.
-
-        Each wave queries a wider radius and offers the ride only to drivers
-        who have not already been offered it. Waves stop as soon as the trip
-        is accepted (or cancelled), so a driver 4km away is not woken for a
-        ride the driver 400m away is about to take.
-
-        The previous implementation blasted every driver inside a single 5km
-        radius at once and then left the request on their screens for the
-        whole 600s accept timeout.
-        """
-        waves = list(getattr(settings, 'DISPATCH_RADIUS_WAVES_M', (1500, 3000, 5000)))
-        if radius:  # explicit retry radius from the client
-            waves = [min(int(radius), 5000)]
-        wave_gap = float(getattr(settings, 'DISPATCH_WAVE_SECONDS', 20))
-
-        rider_name = await self._get_rider_name()
-        offered: set[str] = set()
-        total_notified = 0
-
-        for wave_index, wave_radius in enumerate(waves):
-            if wave_index > 0:
-                # Give the closer drivers their exclusive window first.
-                await asyncio.sleep(wave_gap)
-                if not await self._trip_still_open(trip.id):
-                    break
-
-            nearby = await self._find_nearby_drivers(
-                pickup_lng, pickup_lat, vehicle_type, radius=wave_radius,
-            ) or []
-
-            wave_ids = []
-            for driver_info in nearby:
-                driver_key = driver_info[0] if isinstance(driver_info, (list, tuple)) else driver_info
-                if isinstance(driver_key, str) and driver_key.startswith('driver:'):
-                    did = driver_key.split(':')[1]
-                    if did not in offered:
-                        wave_ids.append(did)
-
-            if not wave_ids:
-                continue
-
-            offered.update(wave_ids)
-            await self._record_offered(trip.id, wave_ids)
-
-            for driver_id in wave_ids:
-                await self.channel_layer.group_send(f'driver_{driver_id}', {
-                    'type': 'ride_request',
-                    'trip_id': trip.id,
-                    'rider_name': rider_name,
-                    'pickup_lat': str(pickup_lat),
-                    'pickup_lng': str(pickup_lng),
-                    'destination_lat': str(destination_lat),
-                    'destination_lng': str(destination_lng),
-                    'pickup_address': pickup_address,
-                    'destination_address': destination_address,
-                    'estimated_fare': str(trip.estimated_fare) if trip.estimated_fare else '',
-                    'distance_km': str(distance_km) if distance_km is not None else '',
-                    'duration_min': str(duration_min) if duration_min is not None else '',
-                    'payment_method': str(payment_method) if payment_method else '',
-                    'vehicle_type': str(vehicle_type) if vehicle_type else '',
-                })
-                total_notified += 1
-                await self._send_driver_push(
-                    driver_id,
-                    "New Ride Request",
-                    f"New ride request from {rider_name}",
-                    {"trip_id": str(trip.id), "type": "ride_request"},
-                )
-
-            await self.send(text_data=json.dumps({
-                'type': 'drivers_notified',
-                'trip_id': trip.id,
-                'wave': wave_index + 1,
-                'radius_m': wave_radius,
-                'drivers_notified': len(wave_ids),
-                'message': f'{len(wave_ids)} nearby driver(s) notified',
-            }))
-
-        if total_notified == 0:
-            await self.send(text_data=json.dumps({
-                'type': 'no_drivers',
-                'trip_id': trip.id,
-                'message': 'No nearby drivers found. Please try again shortly.'
-            }))
-
-        return total_notified
+        return TripDetailSerializer(trip, context={'request': _Ctx()}).data
 
     # -- Event handlers --
+
+    async def dispatch_progress(self, event):
+        """Search progress from a Celery dispatch wave.
+
+        Replaces the `drivers_notified` / `no_drivers` frames the consumer
+        used to emit while it owned the wave loop. Sent to the rider *group*
+        by servers.ride.dispatch, so it reaches whichever socket the rider
+        currently holds, or nobody at all if they are offline — dispatch does
+        not depend on anyone receiving it.
+        """
+        await self.send(text_data=json.dumps({
+            'type': 'dispatch_progress',
+            'trip_id': event['trip_id'],
+            'wave': event.get('wave'),
+            'waves_total': event.get('waves_total'),
+            'radius_m': event.get('radius_m'),
+            'drivers_notified': event.get('drivers_notified', 0),
+            'final_wave': event.get('final_wave', False),
+        }))
 
     async def trip_update(self, event):
         """Send trip status update to rider."""
@@ -908,11 +860,9 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                         )
                         self.in_trip_group = True
                     self.participation = 'assigned_driver'
-                    for loser_id in result.pop('notify_losers', []) or []:
-                        await self.channel_layer.group_send(
-                            f'driver_{loser_id}',
-                            {'type': 'trip_taken', 'trip_id': self.trip_id},
-                        )
+                    # Losing candidates were already dismissed inside
+                    # _accept_trip via dismiss_outstanding_offers(), which
+                    # owns that fanout for every terminal transition.
                 elif result.get('taken'):
                     # Lost the race. Tell the app to dismiss the request card
                     # and drop the socket so it cannot observe the trip.
@@ -1259,9 +1209,13 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
 
             # Every other driver who was offered this ride needs an explicit
             # dismissal, otherwise their request card sits on screen until it
-            # times out and they tap a dead trip.
-            from servers.redis_client import pop_offered_drivers
-            losers = [d for d in pop_offered_drivers(trip.id) if str(d) != str(driver.id)]
+            # times out and they tap a dead trip. Shared with every other
+            # terminal transition (rider/driver cancel, timeout) so the
+            # behaviour exists once — see servers.ride.dispatch.
+            from servers.ride.dispatch import dismiss_outstanding_offers
+            losers = dismiss_outstanding_offers(
+                trip.id, reason='accepted', exclude_driver_id=driver.id,
+            )
 
             # Update ride cache with accepted status and driver assignment
             from servers.redis_client import cache_trip as _cache_trip
@@ -1531,11 +1485,14 @@ class TripStatusConsumer(AsyncWebsocketConsumer):
                     def _clear_redis():
                         from servers.redis_client import (
                             clear_driver_active_trip, invalidate_trip,
-                            clear_offered_drivers,
                         )
+                        from servers.ride.dispatch import dismiss_outstanding_offers
                         if driver_pk:
                             clear_driver_active_trip(driver_pk)
-                        clear_offered_drivers(trip_pk)
+                        # Dismiss any candidate card still on screen as well
+                        # as dropping the key; clear_offered_drivers() alone
+                        # left candidates holding a dead offer.
+                        dismiss_outstanding_offers(trip_pk, reason=status_code)
                         invalidate_trip(trip_pk)
                     transaction.on_commit(_clear_redis)
                 else:

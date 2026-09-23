@@ -160,103 +160,88 @@ logger = logging.getLogger(__name__)
 @api_view(['GET'])
 @permission_classes([IsDriver])
 def driver_earnings(request):
-    """
-    Paginated list of driver transactions (earnings).
+    """Paginated settlement history for the driver.
 
-    Query params:
-        ?page=1         - Page number
-        ?page_size=10   - Items per page (max 50)
+    Thin adapter: the definition of an earning lives in `driver.earnings`.
+
+    Previously this filtered `txn_type='credit'`, which excluded every cash trip
+    -- cash settlement is recorded as a commission DEBIT -- so a cash-only driver
+    saw an empty list. It also reported `commission: 0.0` on every row.
+
+    Query params: ?page=1&page_size=10 (max 50)
     """
-    from servers.payments.models import TransactionHistory
     from rest_framework.pagination import PageNumberPagination
 
+    from servers.driver.earnings import settlement_rows
+
     driver = request.user.driver
-    # Get credit transactions (earnings) for the driver
-    transactions = TransactionHistory.objects.filter(
-        driver_id=driver,
-        txn_type='credit'
-    ).select_related('trip_id', 'user_id').order_by('-created_at')
+    rows = settlement_rows(driver)
 
     paginator = PageNumberPagination()
     paginator.page_size = 10
     paginator.page_size_query_param = 'page_size'
     paginator.max_page_size = 50
-    page = paginator.paginate_queryset(transactions, request)
-    
-    # Format response similar to old earnings format
-    data = []
-    for txn in page:
-        data.append({
-            'id': txn.id,
-            'trip_id_val': txn.trip_id.id if txn.trip_id else None,
-            'commission': 0.0,  # Commission not tracked in TransactionHistory
-            'net_amount': float(txn.amount),
-            'created_at': txn.created_at.isoformat() if txn.created_at else None,
-            'method': txn.method,
-            'user_name': txn.user_name,
-        })
-    
-    logger.info(f"Driver transactions: {len(data)} records")
+    page = paginator.paginate_queryset(rows, request)
+
+    data = [row.to_api() for row in page]
+    logger.info('Driver settlement rows returned: %s', len(data))
     return success_response(paginator.get_paginated_response(data).data, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
 @permission_classes([IsDriver])
 def driver_earnings_summary(request):
-    """
-    Aggregate earnings for the driver.
+    """Aggregate earnings for the driver.
 
-    Returns: total_earned, total_commission, total_trips, today_earned, today_trips
+    Thin adapter over `driver.earnings`. Three corrections live in that module
+    and are visible in this response:
+
+    * cash trips are counted at all (they were not);
+    * `total_earned` is the GROSS fare, which is what the driver app's own
+      `netEarned = total_earned - total_commission` requires -- summing the
+      credit rows put the NET there and deducted commission twice;
+    * `commission_percent` is the rate actually charged, derived from the
+      settlement ledger, not a hardcoded 20.
+
+    Response keys are unchanged; new ones are added alongside.
     """
-    from servers.payments.models import TransactionHistory
-    from servers.rider.models import Wallet
-    from django.db.models import Sum, Count
     from django.utils import timezone
 
+    from servers.driver.earnings import settlement_rows, summarise
+    from servers.rider.models import Wallet
+
     driver = request.user.driver
-    today = timezone.now().date()
+    rows = settlement_rows(driver)
+    totals = summarise(rows)
 
-    # Get total earnings from TransactionHistory (credits only)
-    total = TransactionHistory.objects.filter(
-        driver_id=driver,
-        txn_type='credit'
-    ).aggregate(
-        total_earned=Sum('amount'),
-        total_trips=Count('id'),
+    # Local calendar day, matching what a driver means by "today".
+    today_start = timezone.localtime(timezone.now()).replace(
+        hour=0, minute=0, second=0, microsecond=0,
     )
+    today = summarise([r for r in rows
+                       if r.created_at is not None and r.created_at >= today_start])
 
-    # Get today's earnings
-    today_qs = TransactionHistory.objects.filter(
-        driver_id=driver,
-        txn_type='credit',
-        created_at__date=today,
-    ).aggregate(
-        today_earned=Sum('amount'),
-        today_trips=Count('id'),
-    )
-
-    # Calculate commission (20% of total earnings)
-    total_earned = float(total['total_earned'] or 0)
-    commission_percent = 20  # 20% platform fee
-    total_commission = total_earned * (commission_percent / 100)
-
-    # Get wallet balance
-    try:
-        wallet = Wallet.objects.get(user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER)
-        wallet_balance = float(wallet.balance) if wallet.balance else 0.0
-    except Wallet.DoesNotExist:
-        wallet_balance = 0.0
-
-    from django.conf import settings
+    wallet = Wallet.objects.filter(
+        user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER,
+    ).first()
+    wallet_balance = wallet.balance if wallet and wallet.balance is not None else 0
 
     return success_response({
-        'total_earned': str(total_earned),
-        'total_commission': str(total_commission),
-        'total_trips': total['total_trips'] or 0,
-        'today_earned': str(today_qs['today_earned'] or 0),
-        'today_trips': today_qs['today_trips'] or 0,
-        'commission_percent': commission_percent,
+        # Existing contract.
+        'total_earned': str(totals['total_gross']),
+        'total_commission': str(totals['total_commission']),
+        'total_trips': totals['total_trips'],
+        'today_earned': str(today['total_gross']),
+        'today_trips': today['total_trips'],
+        'commission_percent': str(totals['effective_commission_percent']),
         'wallet_balance': str(wallet_balance),
+        # Additions. `cash_collected` is the number a driver reconciles against
+        # at the end of a shift; the wallet balance goes negative by the
+        # commission they owe on it, which is not the same thing.
+        'total_net': str(totals['total_net']),
+        'today_net': str(today['total_net']),
+        'cash_collected': str(totals['cash_collected']),
+        'unresolved_trips': totals['unresolved_trips'],
     }, status.HTTP_200_OK)
 
 

@@ -33,11 +33,10 @@ would break again the moment an operator changes the fallback or adds a
     is the test that fails if anyone reintroduces a hardcoded percentage —
     a literal 15%, 18% or 20% all break it.
 
-Out of scope here (PR 1.5 is test discovery only): `driver.views`
-`driver_earnings_summary` still hardcodes `commission_percent = 20` and
-reports `'commission': 0.0` from `TransactionHistory`. Those are real
-source-of-truth defects on the driver-facing side, tracked for PR 5
-(driver earnings correctness). Nothing in this file touches settlement or
+The driver-facing side of the same problem -- `driver_earnings_summary`
+hardcoding `commission_percent = 20` and reporting `'commission': 0.0` -- has
+since been fixed on the driver-earnings branch and is covered by
+`tests/test_driver_earnings.py`. Nothing in this file touches settlement or
 pricing behaviour.
 """
 

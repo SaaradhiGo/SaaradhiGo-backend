@@ -480,6 +480,11 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             duration_min = data.get('duration_min')
             vehicle_type = data.get('vehicle_type')
             payment_method = data.get('payment_method', 'deferred')
+            # Idempotency key for this booking. Optional, so older clients are
+            # unaffected; length-bounded because it reaches a CharField(64).
+            client_request_id = data.get('client_request_id')
+            if client_request_id is not None:
+                client_request_id = str(client_request_id).strip()[:64] or None
 
             # Validate required fields
             if not all([pickup_lat, pickup_lng, destination_lat, destination_lng, pickup_address, destination_address]):
@@ -490,7 +495,7 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 return
 
             # Create trip in database
-            trip = await self._create_trip(
+            trip, reused = await self._create_trip(
                 pickup_lat=pickup_lat,
                 pickup_lng=pickup_lng,
                 destination_lat=destination_lat,
@@ -501,6 +506,7 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 duration_min=duration_min,
                 vehicle_type=vehicle_type,
                 payment_method=payment_method,
+                client_request_id=client_request_id,
             )
 
             if not trip:
@@ -510,13 +516,23 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 }))
                 return
 
-            # Confirm trip creation to rider
+            # Confirm trip creation to rider. `reused` is additive and tells an
+            # app that its retry was recognised rather than duplicated.
             await self.send(text_data=json.dumps({
                 'type': 'trip_created',
                 'trip_id': trip.id,
                 'estimated_fare': str(trip.estimated_fare) if trip.estimated_fare else None,
-                'message': 'Searching for nearby drivers...'
+                'reused': reused,
+                'message': ('Reconnected to your existing request...' if reused
+                            else 'Searching for nearby drivers...'),
             }))
+
+            if reused:
+                # Everything below is a side effect of *booking*, and this request
+                # already booked. Re-running it would publish a second stream
+                # event and start a second dispatch chain competing for drivers on
+                # the same trip -- the duplicate this key exists to prevent.
+                return
 
             # Log ride request to Redis Stream (for future analytics, not driver notification)
             await self._publish_ride_request(trip)
@@ -706,12 +722,37 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     @database_sync_to_async
     def _create_trip(self, pickup_lat, pickup_lng, destination_lat, destination_lng,
                      pickup_address, destination_address,
-                     distance_km=None, duration_min=None, vehicle_type=None, payment_method='deferred'):
+                     distance_km=None, duration_min=None, vehicle_type=None,
+                     payment_method='deferred', client_request_id=None):
+        """Create the trip, or return the one this request already created.
+
+        Returns `(trip, reused)`. `reused=True` means `client_request_id` had
+        already produced a trip for this rider, so the caller must NOT re-run any
+        of the side effects that follow a booking -- dispatch, the ride-request
+        stream event, the surge demand record.
+
+        The lookup deliberately happens before the fare is computed, because
+        `estimate_amount(record_demand=True)` registers demand for surge pricing.
+        A double-tap that got as far as pricing would push the rider's own surge
+        multiplier up before quoting them.
+        """
         from decimal import Decimal
         from servers.ride.models import Trip, FarePricing
         from servers.ride.utils import estimate_amount, validate_distance
         from servers.driver.models import VehicleType
-        from django.db import transaction
+        from django.db import IntegrityError, transaction
+
+        if client_request_id:
+            existing = Trip.objects.filter(
+                user_id=self.user, client_request_id=client_request_id,
+            ).first()
+            if existing is not None:
+                logger.info('trip_request_reused', extra={
+                    'event': 'trip_request_reused',
+                    'trip_id': existing.id,
+                    'rider_id': self.user.id,
+                })
+                return existing, True
 
         try:
             # Parse distance and duration
@@ -769,6 +810,7 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             with transaction.atomic():
                 trip = Trip.objects.create(
                     user_id=self.user,
+                    client_request_id=client_request_id or None,
                     zone=pickup_zone,
                     pickup_lat=pickup_lat,
                     pickup_long=pickup_lng,
@@ -812,10 +854,27 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             from django.conf import settings
             auto_cancel_trip.apply_async((trip.id,), countdown=settings.TRIP_ACCEPT_TIMEOUT_SECONDS)
 
-            return trip
+            return trip, False
+        except IntegrityError:
+            # Two identical requests raced and the other one won. The unique index
+            # is the arbiter, so re-read rather than guess -- this is the branch a
+            # Redis-only check could not make safe.
+            if client_request_id:
+                existing = Trip.objects.filter(
+                    user_id=self.user, client_request_id=client_request_id,
+                ).first()
+                if existing is not None:
+                    logger.info('trip_request_raced', extra={
+                        'event': 'trip_request_raced',
+                        'trip_id': existing.id,
+                        'rider_id': self.user.id,
+                    })
+                    return existing, True
+            logger.exception('Failed to create trip (integrity)')
+            return None, False
         except Exception as e:
             logger.error(f"Failed to create trip: {str(e)}")
-            return None
+            return None, False
 
     @database_sync_to_async
     def _find_nearby_drivers(self, lng, lat, vehicle_type=None, radius=5000):

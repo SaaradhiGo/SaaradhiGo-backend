@@ -174,3 +174,124 @@ class WebhookEvent(models.Model):
 
     def __str__(self):
         return f'WebhookEvent {self.gateway}:{self.dedupe_key[:32]}'
+
+
+class TripSettlement(models.Model):
+    """Immutable economic evidence for one settled trip.
+
+    `WalletTransaction` stays the authoritative ledger: it says what money moved.
+    This says WHY, and it is the difference between being able to answer a dispute
+    and having to recompute one. Today `admin_dashboard` calls
+    `commission_percent_for_trip` at RENDER time, so editing a rate card silently
+    changes last month's reported platform revenue, and the driver-earnings report
+    has to infer commission from the ledger entry's direction. Both of those stop
+    once something reads this table.
+
+    Deliberately not columns on `WalletTransaction`. That model is generic -- rider
+    top-ups, refunds, promo credits, support credits, withdrawals and payouts all use
+    it -- so trip economics there would be null on the large majority of rows and
+    would put a commission rate on a rider's wallet top-up. The FK in this direction
+    keeps both models honest.
+
+    No tax field. GST is a rider-side tax on the fare and already lives on the
+    versioned `Receipt`; the platform commission's tax treatment is an accounting
+    matter nobody has stated a per-trip rule for, and inventing a column for it now
+    would be guessing.
+
+    **Corrections, and how this differs from the approved design.** That design
+    specified `trip` as a OneToOne ("one settlement per trip") and also `version`
+    for corrections written as new rows. Those two cannot both hold -- a OneToOne
+    permits exactly one row, so no correction could ever be inserted. Resolved in
+    favour of keeping corrections possible:
+
+      * `trip` is a ForeignKey;
+      * `(trip, version)` is unique, so a version cannot be written twice;
+      * a PARTIAL unique index guarantees exactly one row at `version=1` per trip,
+        which is the "one normal settlement per trip" guarantee the design wanted;
+      * corrections are `version + 1` and the current settlement is the highest
+        version. There is no update path.
+    """
+
+    SOURCE_NATIVE = 'native'
+    SOURCE_RECONSTRUCTED = 'reconstructed'
+    SOURCE_CHOICES = [
+        (SOURCE_NATIVE, 'Written at settlement time'),
+        (SOURCE_RECONSTRUCTED, 'Reconstructed from historical facts'),
+    ]
+
+    trip = models.ForeignKey(
+        'ride.Trip', on_delete=models.PROTECT, related_name='settlements',
+    )
+    # Denormalised on purpose: a trip's driver assignment is mutable, a settlement's
+    # is not. Who was paid for this ride is a fact about the past.
+    driver = models.ForeignKey(
+        'driver.Driver', on_delete=models.PROTECT, related_name='settlements',
+    )
+    # The ledger row that actually moved the money. Nullable only so a
+    # reconstructed row for a historical trip can point at nothing when the link
+    # cannot be established honestly.
+    wallet_transaction = models.ForeignKey(
+        'rider.WalletTransaction', on_delete=models.PROTECT,
+        null=True, blank=True, related_name='settlements',
+    )
+
+    # The fare the settlement was computed on.
+    gross_fare = models.DecimalField(max_digits=10, decimal_places=2)
+    # The rate AS APPLIED, not a pointer to a card that can be superseded.
+    commission_percent = models.DecimalField(max_digits=5, decimal_places=2)
+    # Stored rather than derived, because rounding is part of the answer.
+    commission_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    # gross_fare - commission_amount, stored so the identity is asserted at write
+    # time rather than recomputed by every reader.
+    driver_net = models.DecimalField(max_digits=10, decimal_places=2)
+
+    # Decides the ledger's direction and who is holding the fare meanwhile.
+    payment_method = models.CharField(max_length=32, blank=True, default='')
+
+    settled_at = models.DateTimeField()
+    version = models.PositiveIntegerField(default=1)
+    source = models.CharField(
+        max_length=16, choices=SOURCE_CHOICES, default=SOURCE_NATIVE, db_index=True,
+    )
+    # Free text, only for a reconstructed or corrected row: what was assumed.
+    provenance_note = models.CharField(max_length=255, blank=True, default='')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['trip', 'version'],
+                name='tripsettlement_unique_trip_version',
+            ),
+            # Exactly one ORIGINAL settlement per trip, enforced by the database
+            # rather than by the one function that writes it -- a management
+            # command, a data migration or a second worker all bypass application
+            # logic, and "this ride was settled once" has to survive that.
+            models.UniqueConstraint(
+                fields=['trip'],
+                condition=models.Q(version=1),
+                name='tripsettlement_one_original_per_trip',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(commission_amount__gte=0),
+                name='tripsettlement_commission_non_negative',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(gross_fare__gte=0),
+                name='tripsettlement_gross_non_negative',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['driver', '-settled_at'],
+                         name='tripsettlement_driver_idx'),
+            models.Index(fields=['-settled_at'], name='tripsettlement_recent_idx'),
+        ]
+
+    def __str__(self):
+        return (f'Settlement trip={self.trip_id} v{self.version} '
+                f'net={self.driver_net}')
+
+    @property
+    def is_reconstructed(self):
+        return self.source == self.SOURCE_RECONSTRUCTED

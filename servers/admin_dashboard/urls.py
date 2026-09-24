@@ -12,6 +12,7 @@ from .views import (
     global_search,
     global_search_api,
     login,
+    ops_mfa_challenge,
     payment_dashboard,
     predictive_heatmaps,
     ride,
@@ -27,6 +28,9 @@ from .views import (
 
 urlpatterns = [
     path("login/", login, name="login"),
+    # The second-factor challenge. Reached only by a session whose password
+    # already succeeded; @admin_required redirects here until it is cleared.
+    path("mfa/", ops_mfa_challenge, name="ops_mfa_challenge"),
     path("", dashboard, name="fleet_monitor"),
     path("driver_onboarding/", driver_onboarding, name="driver_onboarding"),
     path("dispute_support/", dispute_support, name="dispute_support"),

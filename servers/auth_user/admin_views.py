@@ -1,13 +1,18 @@
+import logging
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from base.utils import success_response, error_response
 from base.permissions import IsAdmin, is_operator
 from servers.admin_dashboard import login_guard
+from base import ops_mfa
+from servers.admin_audit.services import record_admin_action
 from django.contrib.auth import get_user_model
 from servers.auth_user.serializers import UserModelSerializer
 from rest_framework.pagination import PageNumberPagination
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
+
+logger = logging.getLogger(__name__)
 
 user_model = get_user_model()
 
@@ -131,7 +136,48 @@ def admin_login(request):
             login_guard.record_failure(request, phone_number)
             return _refuse()
 
+        # MFA at the point the credential is ISSUED.
+        #
+        # This is what stops MFA from being a login form. If the token were minted
+        # first and the factor demanded later, or demanded only by the console, then
+        # POSTing straight to /driver/admin/withdrawals/1/approve/ with this token
+        # would skip it entirely. A token from this endpoint therefore represents a
+        # session that has already presented two factors, and every downstream
+        # authorization check can trust it without knowing about MFA at all.
+        if ops_mfa.mfa_required_for(user):
+            # str() first: JSON allows a numeric literal, and a client that
+            # sends `"mfa_code": 123456` would otherwise 500 on .strip().
+            code = str(request.data.get('mfa_code') or '').strip()
+            if not ops_mfa.has_device(user):
+                # Enforced environment, operator with nothing enrolled. Refused
+                # rather than waved through, with the same generic message so this
+                # does not report which operators lack a second factor.
+                login_guard.record_failure(request, phone_number)
+                logger.warning('ops_api_login_refused_no_mfa_device user_id=%s',
+                               user.id)
+                return _refuse()
+            if not code:
+                # A distinct, non-terminal answer: the caller has proved the first
+                # factor and needs to be told to send the second. It deliberately
+                # carries no hint about whether the account exists -- it is only
+                # reachable AFTER a correct password for a real operator.
+                return error_response(
+                    code='AUTH_MFA_REQUIRED',
+                    message='An authentication code is required',
+                    field='mfa_code',
+                    issue='Second factor required',
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+            if not ops_mfa.verify_code(user, code):
+                login_guard.record_failure(request, phone_number)
+                return _refuse()
+
         login_guard.clear(request, phone_number)
+        record_admin_action(
+            request, action='ops_api_login', target_type='operator',
+            target_id=user.pk,
+            after={'mfa': bool(ops_mfa.mfa_required_for(user))},
+        )
         access_token = AccessToken.for_user(user)
         refresh_token = RefreshToken.for_user(user)
         user_serializer = UserModelSerializer(user)

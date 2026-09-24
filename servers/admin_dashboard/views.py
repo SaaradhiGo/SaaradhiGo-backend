@@ -44,7 +44,9 @@ logger = logging.getLogger(__name__)
 # expression; `base.permissions.is_operator` is now the only definition, and its
 # docstring records the four divergent copies that preceded it. Imported under the
 # same name so existing call sites and tests are unchanged.
+from base import ops_mfa  # noqa: E402
 from base.permissions import is_operator  # noqa: E402
+from servers.admin_audit.services import record_admin_action  # noqa: E402
 
 
 def admin_required(view_func):
@@ -57,7 +59,19 @@ def admin_required(view_func):
     """
     @wraps(view_func)
     def _wrapped(request: HttpRequest, *args, **kwargs) -> HttpResponse:
-        if not is_operator(request.user):
+        # Two different questions, and both must be yes.
+        #
+        #   is_operator            -- is this ACCOUNT allowed to operate
+        #   console_access_allowed -- and has this SESSION presented its factor
+        #
+        # Conflating them is how MFA becomes decorative: an account with a device
+        # enrolled is not the same as a browser that has ever proved it.
+        if not ops_mfa.console_access_allowed(request):
+            if is_operator(request.user):
+                # Signed in, authority fine, factor not yet presented in this
+                # session. Send them to the challenge rather than to the login
+                # form, or they would re-enter a password that already worked.
+                return redirect("ops_mfa_challenge")
             return redirect("login")
         return view_func(request, *args, **kwargs)
     return _wrapped
@@ -69,8 +83,12 @@ def login(request: HttpRequest) -> HttpResponse:
     `admin` role (or superusers) are allowed in.
     """
     if is_operator(request.user):
-        # Already logged in as admin -> go straight to the dashboard.
-        return redirect("fleet_monitor")
+        # Already signed in. Straight to the dashboard only if this session has
+        # also cleared MFA; otherwise to the challenge, because a valid session
+        # cookie is one factor, not two.
+        if ops_mfa.console_access_allowed(request):
+            return redirect("fleet_monitor")
+        return redirect("ops_mfa_challenge")
     error = None
     if request.method == "POST":
         phone_number = (request.POST.get("username") or "").strip()
@@ -104,11 +122,71 @@ def login(request: HttpRequest) -> HttpResponse:
                     # unthrottled oracle for password guessing.
                     login_guard.record_failure(request, phone_number)
                     error = "You do not have admin privileges."
+                elif ops_mfa.mfa_required_for(user) and not ops_mfa.has_device(user):
+                    # Enforced environment, operator with no factor enrolled.
+                    # Refused rather than waved through: "enforced" that yields to
+                    # "not enrolled yet" is not enforced, and this is what makes
+                    # enrolment happen instead of being deferred forever.
+                    #
+                    # The generic refusal, so this does not tell an attacker which
+                    # operator accounts lack a second factor.
+                    login_guard.record_failure(request, phone_number)
+                    logger.warning(
+                        'ops_login_refused_no_mfa_device user_id=%s', user.id)
+                    error = login_guard.GENERIC_REFUSAL
                 else:
                     login_guard.clear(request, phone_number)
                     auth_login(request, user)
+                    if ops_mfa.mfa_required_for(user):
+                        # The password was correct; the session is NOT yet
+                        # verified. auth_login started it, OTPMiddleware will
+                        # report is_verified() False, and every @admin_required
+                        # page therefore bounces to the challenge until a code is
+                        # presented.
+                        return redirect("ops_mfa_challenge")
                     return redirect("fleet_monitor")
     return render(request, 'admin_pages/login.html', {"error": error})
+def ops_mfa_challenge(request: HttpRequest) -> HttpResponse:
+    """Present a second factor for a session whose password already succeeded.
+
+    Deliberately NOT decorated with `@admin_required`: that decorator redirects
+    here, so decorating it would loop. It does its own narrower check -- a session
+    that is signed in as an operator -- which is exactly the state this page exists
+    to resolve.
+
+    Rate-limited through the same `login_guard` as the password form. A six-digit
+    code is 10^6 possibilities and a TOTP window is 30 seconds wide; without a
+    limit on attempts, MFA against an already-authenticated session is a
+    thirty-second brute force.
+    """
+    user = request.user
+    if not is_operator(user):
+        return redirect("login")
+    if ops_mfa.console_access_allowed(request):
+        return redirect("fleet_monitor")
+
+    error = None
+    if request.method == "POST":
+        code = (request.POST.get("code") or "").strip()
+        guard_key = getattr(user, 'phone_number', None) or str(user.pk)
+        if login_guard.is_locked(request, guard_key):
+            error = "Invalid code."
+        elif ops_mfa.verify_code(user, code):
+            login_guard.clear(request, guard_key)
+            ops_mfa.mark_session_verified(request, user)
+            record_admin_action(
+                request, action='ops_mfa_verified', target_type='operator',
+                target_id=user.pk, after={'method': 'console'},
+            )
+            return redirect("fleet_monitor")
+        else:
+            login_guard.record_failure(request, guard_key)
+            # One message for a wrong code, a reused code and a lockout.
+            error = "Invalid code."
+
+    return render(request, 'admin_pages/ops_mfa_challenge.html', {"error": error})
+
+
 @admin_required
 def dashboard(request: HttpRequest) -> HttpResponse:
     # Pull the same KPI payload the /api/v1/ride/admin/dashboard/ endpoint

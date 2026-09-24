@@ -59,6 +59,12 @@ INSTALLED_APPS = [
     'servers.sos',
     'servers.pricing',
     'servers.support',
+    # Operator MFA. django-otp is the established Django implementation: TOTP
+    # (RFC 6238) and single-use static recovery codes, with the cryptography done
+    # by the library. Nothing here implements an algorithm.
+    'django_otp',
+    'django_otp.plugins.otp_totp',
+    'django_otp.plugins.otp_static',
     'django_cleanup.apps.CleanupConfig',
 
 ]
@@ -70,6 +76,10 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # Must come after AuthenticationMiddleware: it reads request.user and adds
+    # `request.user.is_verified()`, which is how the console knows whether this
+    # SESSION has cleared MFA (as opposed to whether the account has a device).
+    'django_otp.middleware.OTPMiddleware',
     'base.middleware.ExceptionHandlingMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -298,6 +308,20 @@ OPS_LOGIN_MAX_ATTEMPTS = int(os.environ.get('OPS_LOGIN_MAX_ATTEMPTS', '8'))
 OPS_LOGIN_MAX_ATTEMPTS_PER_IP = int(os.environ.get(
     'OPS_LOGIN_MAX_ATTEMPTS_PER_IP', '15'))
 OPS_LOGIN_LOCKOUT_SECONDS = int(os.environ.get('OPS_LOGIN_LOCKOUT_SECONDS', '900'))
+
+# --- Operator MFA -----------------------------------------------------------
+#
+# A second factor for the accounts that approve driver KYC and release payouts.
+# Riders and drivers are untouched: their accounts book rides, and charging ten
+# thousand riders the friction to protect four operators would be paid by the
+# riders.
+#
+# In production this is ON and there is no variable that turns it off -- see
+# base/ops_mfa.py:mfa_enforced. That matches the boot guards above: a guard that
+# can be satisfied by setting a flag is a comment. Outside production it defaults
+# OFF so a fresh deployment can bootstrap an operator and enrol them, and any
+# operator who HAS enrolled is still required to present their factor.
+OPS_MFA_ENFORCED = os.environ.get('OPS_MFA_ENFORCED', 'False') == 'True'
 
 # --- Active-ride liveness -----------------------------------------------------
 # Operational thresholds for the stale-ride detector. Generous on purpose: these

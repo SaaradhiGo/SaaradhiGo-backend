@@ -373,6 +373,33 @@ def login(request):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
         
+        # An operator may not authenticate through the SMS-OTP path.
+        #
+        # This endpoint exchanges an SMS code for a token with no password and no
+        # second factor. If an operator could use it, every MFA control would be
+        # bypassable by anyone able to receive that operator's SMS -- one SIM swap,
+        # or one SS7 intercept, and the payout queue is open. It would also make the
+        # console's second factor pointless, since the API token is the stronger
+        # credential of the two.
+        #
+        # Operators sign in at /api/v1/auth/admin/login/ with a password and a TOTP
+        # code, or at the console form. Riders and drivers are unaffected.
+        #
+        # Refused with the ordinary invalid-OTP shape rather than a distinctive
+        # message, so this does not become a way to discover which phone numbers
+        # belong to operators.
+        from base.permissions import is_operator as _is_operator
+        if _is_operator(user):
+            logger.warning(
+                'sms_login_refused_for_operator user_id=%s', user.id)
+            return error_response(
+                code="AUTH_INVALID_OTP",
+                message='OTP is incorrect',
+                field='otp',
+                issue='Provided OTP does not match',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         # Register this device for push, if the client had a token to give.
         #
         # This used to be `user.fcm_token = device_token; user.save()`, which had

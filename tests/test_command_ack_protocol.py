@@ -550,3 +550,38 @@ async def test_the_greeting_carries_the_durable_trip_status():
         'after reconnecting, the client must be told the completion committed -- '
         'otherwise it cannot distinguish a lost ack from a lost command'
     )
+
+
+async def test_confirm_cash_acks_the_real_trip_status_not_an_invented_one():
+    """A QA ride caught this: the ack claimed `in_progress` for a completed trip.
+
+    `confirm_cash` records that the driver collected the fare. It does not move the
+    state machine -- the trip is already `completed` before it is allowed to run --
+    so there is no "target status" to report, and mapping it to one produced a
+    confidently wrong answer. That is precisely what this protocol exists to
+    eliminate, so a command with no state transition now reports the trip's actual
+    status.
+    """
+    rider = await asyncio.to_thread(_make_rider, 930)
+    driver = await asyncio.to_thread(_make_driver, 30930)
+    trip = await asyncio.to_thread(_make_trip, rider, driver, 'in_progress')
+
+    tws, _ = await _open_trip_socket(driver.user_id, trip.id)
+
+    done, _ = await _command(tws, 'complete')
+    assert done['status'] == 'committed', done
+
+    cash, _ = await _command(tws, 'confirm_cash')
+    status_in_db = await asyncio.to_thread(_trip_status, trip.id)
+    print(f'confirm_cash ack={cash} db_status={status_in_db}')
+    await _shutdown(tws)
+
+    assert cash is not None, 'confirm_cash must be acknowledged'
+    if cash['status'] == 'committed':
+        assert cash.get('trip_status') == status_in_db, (
+            f"the ack reported trip_status={cash.get('trip_status')!r} while the "
+            f'trip is actually {status_in_db!r}'
+        )
+        assert cash.get('trip_status') != 'in_progress', (
+            'a completed trip must never be acked as in_progress'
+        )

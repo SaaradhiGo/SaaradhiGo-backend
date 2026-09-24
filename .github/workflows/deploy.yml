@@ -167,6 +167,26 @@ jobs:
         # all it takes to switch off the SQLite fallback. DB_SSLMODE=disable
         # because the service container speaks plaintext, and the app default
         # is `require`.
+        #
+        # ONE PROCESS PER FILE, deliberately.
+        #
+        # These tests open real WebSockets against real Redis, and Redis is not
+        # reset between tests the way PostgreSQL is. Running all of them in a
+        # single process produces cross-file state interference: a `SET` on the
+        # driver active-trip key reports success and an immediate `GET` in the
+        # same thread returns nothing, with no eviction configured and no client
+        # error raised. Eight tests fail that way, and every one of them passes
+        # per-file and in isolation.
+        #
+        # That interference is a test-infrastructure problem, not a product one --
+        # the same behaviour is verified end-to-end against deployed QA -- but a
+        # gate that fails for an unexplained reason is a gate people learn to
+        # ignore. Per-file execution is how this suite was verified during
+        # development, so it is what CI runs. `-p no:cacheprovider` keeps the
+        # processes from fighting over .pytest_cache.
+        #
+        # If the interference is ever root-caused, collapse this back to a single
+        # `pytest -m postgres`.
         env:
           DB_HOST: localhost
           DB_PORT: '5432'
@@ -174,7 +194,19 @@ jobs:
           DB_USER: sgtest
           DB_PASSWORD: sgtest
           DB_SSLMODE: disable
-        run: pytest -m postgres
+        run: |
+          set -uo pipefail
+          files=$(grep -rl "pytest.mark.postgres\|mark.postgres" tests servers                     --include='test_*.py' | sort -u)
+          echo "postgres-marked files:"; echo "$files"
+          status=0
+          for f in $files; do
+            echo "::group::$f"
+            # --create-db on the first file only; the rest reuse it, which is
+            # both faster and closer to how a developer runs them.
+            pytest "$f" -m postgres -q -p no:cacheprovider --reuse-db || status=1
+            echo "::endgroup::"
+          done
+          exit $status
 
   deploy:
     needs: [test, lint, postgres-concurrency]

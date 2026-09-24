@@ -205,3 +205,84 @@ def test_the_money_sweeps_are_scheduled(financial_task):
         f'{financial_task} is not in the beat schedule; a missed webhook or a '
         'stuck payout would never be swept up'
     )
+
+
+# ---------------------------------------------------------------------------
+# How long a lost task stays lost
+#
+# The two settings above say a killed worker's task is not lost. They say nothing
+# about when it comes back, and with the Redis transport that is a different
+# number entirely: a reserved message is moved into an `unacked` hash and is
+# invisible to every other worker until `visibility_timeout` elapses.
+#
+# Measured in qa/celery_worker_loss_drill.py, on Linux, with a real SIGKILL:
+#
+#   visibility_timeout = 30 s  ->  redelivered 105 s after the kill
+#
+# The extra 75 s is restore-poll granularity. kombu's restore_visible() returns
+# early unless `(count - 1) % 10 == 0` (kombu/transport/redis.py:410) and the
+# event loop calls it every 10 s (redis.py:1383), so a real attempt happens about
+# every 100 s. Recovery is therefore visibility_timeout + up to ~100 s.
+#
+# Unset, visibility_timeout defaults to 3600. These tests exist because that
+# default was in force and nothing pointed at it.
+# ---------------------------------------------------------------------------
+
+# From base/settings.py: the longest a message can legitimately sit unacked is
+# the longest countdown plus the longest execution.
+LONGEST_COUNTDOWN_SECONDS = 180          # TRIP_ACTUALS_DELAY_SECONDS
+UNACKED_FLOOR_SECONDS = LONGEST_COUNTDOWN_SECONDS + 360   # + CELERY_TASK_TIME_LIMIT
+
+
+def _visibility_timeout():
+    opts = getattr(settings, 'CELERY_BROKER_TRANSPORT_OPTIONS', None) or {}
+    return opts.get('visibility_timeout')
+
+
+def test_the_visibility_timeout_is_configured_rather_than_defaulted():
+    """Unset means an hour, and an hour is the recovery time for every lost task.
+
+    auto_cancel_trip is scheduled to fire 90 seconds after a trip is created. On
+    the default it could be an hour late, with the rider still watching a search
+    that had already been abandoned.
+    """
+    assert _visibility_timeout() is not None, (
+        'CELERY_BROKER_TRANSPORT_OPTIONS["visibility_timeout"] is unset, so '
+        "kombu's 3600 s default applies and a task whose worker died is not "
+        'redelivered for an hour'
+    )
+
+
+def test_the_visibility_timeout_clears_the_longest_legitimate_unacked_wait():
+    """Too low turns recovery into duplicate execution.
+
+    An ETA message is held in worker memory, unacked, for the whole countdown,
+    and then executes for up to the hard time limit. If the timeout is shorter
+    than that sum, a second worker picks the message up while the first is still
+    legitimately working on it.
+    """
+    vt = _visibility_timeout()
+    assert vt is not None
+    assert vt > UNACKED_FLOOR_SECONDS, (
+        f'visibility_timeout={vt} s does not clear the {UNACKED_FLOOR_SECONDS} s '
+        f'floor ({LONGEST_COUNTDOWN_SECONDS} s countdown + '
+        f'{settings.CELERY_TASK_TIME_LIMIT} s hard time limit). A message still '
+        'being worked on would be redelivered to a second worker.'
+    )
+
+
+def test_the_hard_time_limit_and_longest_countdown_still_match_the_floor():
+    """The floor is derived from two other settings. Moving either moves the floor.
+
+    Without this, raising CELERY_TASK_TIME_LIMIT or TRIP_ACTUALS_DELAY_SECONDS
+    would quietly invalidate the visibility timeout above and nothing would say so.
+    """
+    assert settings.CELERY_TASK_TIME_LIMIT == 360, (
+        'CELERY_TASK_TIME_LIMIT changed; recompute UNACKED_FLOOR_SECONDS here and '
+        'the visibility_timeout in base/settings.py'
+    )
+    assert getattr(settings, 'TRIP_ACTUALS_DELAY_SECONDS', 180) <= \
+        LONGEST_COUNTDOWN_SECONDS, (
+        'TRIP_ACTUALS_DELAY_SECONDS is now the longest countdown and exceeds the '
+        'value the visibility_timeout floor was derived from'
+    )

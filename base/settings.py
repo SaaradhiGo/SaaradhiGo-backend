@@ -195,6 +195,41 @@ CELERY_TASK_TIME_LIMIT = 360
 # countdown elapses, so a crash discards a scheduled cancellation.
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
+# How long a lost task stays lost.
+#
+# acks_late means "not lost". It does not mean "redelivered promptly", and the
+# difference is the Redis transport. A worker that reserves a message moves it out
+# of the queue into an `unacked` hash and records a deadline in `unacked_index`.
+# If that worker is killed, the message still exists but is invisible to every
+# other worker until the deadline passes. That deadline is visibility_timeout,
+# and kombu's default is 3600 seconds.
+#
+# Measured in qa/celery_worker_loss_drill.py: killing a worker mid-task leaves the
+# message in the unacked hash, and a replacement worker does not touch it until the
+# timeout elapses. Unset, that meant auto_cancel_trip — scheduled to fire 90 seconds
+# after a trip is created — could be an hour late, with the rider still watching a
+# search that had already been given up on.
+#
+# The floor is set by how long a message can legitimately sit unacked:
+#
+#   longest countdown   180 s   TRIP_ACTUALS_DELAY_SECONDS; an ETA message is held
+#                               in worker memory, still unacked, until it fires
+#   longest execution   360 s   CELERY_TASK_TIME_LIMIT
+#                     -------
+#   worst case          540 s
+#
+# Below that floor a still-legitimate task gets redelivered to a second worker while
+# the first is working on it, turning a recovery mechanism into a duplicate-execution
+# generator. 900 s clears the floor with margin and still recovers a lost task in
+# fifteen minutes instead of sixty.
+#
+# Raising TRIP_ACTUALS_DELAY_SECONDS or CELERY_TASK_TIME_LIMIT means raising this.
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'visibility_timeout': int(
+        os.environ.get('CELERY_VISIBILITY_TIMEOUT_SECONDS', '900')
+    ),
+}
+
 # Celery Beat — periodic tasks.
 # The compose `celery` service runs with `-B` so beat is embedded in the
 # worker. That's fine while we run a single celery instance; when we

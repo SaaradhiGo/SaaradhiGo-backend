@@ -23,6 +23,46 @@ collect_ignore = [
 User = get_user_model()
 
 @pytest.fixture(autouse=True)
+def clear_driver_redis_state():
+    """Clear per-driver Redis keys between tests.
+
+    pytest-django flushes PostgreSQL between tests, so primary keys restart from 1
+    and each test's "fresh" driver reuses an id a previous test already used. Redis
+    is NOT flushed, so `driver:active_trip:<id>` survives -- and the next test's
+    driver silently inherits the previous test's trip.
+
+    The symptom is nasty and order-dependent: `add_driver_location` reports the
+    STALE trip id, so every location frame fans out to the wrong trip group and the
+    rider of the current trip receives nothing. It made a WebSocket test that passes
+    in isolation fail once inside the full suite, which is the worst kind of CI
+    flake -- it looks like a product defect.
+
+    Scoped to the driver presence keys rather than a FLUSHDB, so a developer running
+    the suite against a Redis instance that holds anything else does not lose it.
+    """
+    def _clear():
+        try:
+            from servers.redis_client import redis_client
+        except Exception:  # noqa: BLE001
+            return
+        if redis_client is None:
+            return
+        for pattern in ('driver:active_trip:*', 'driver:heartbeat:*',
+                        'drivers:geo:*', 'driver:vehicle_type:*',
+                        'trip:offered:*', 'active_rider:*'):
+            try:
+                keys = list(redis_client.scan_iter(match=pattern, count=500))
+                if keys:
+                    redis_client.delete(*keys)
+            except Exception:  # noqa: BLE001 -- no Redis is fine for unit tests
+                pass
+
+    _clear()
+    yield
+    _clear()
+
+
+@pytest.fixture(autouse=True)
 def use_dummy_cache(settings):
     settings.CACHES = {
         'default': {

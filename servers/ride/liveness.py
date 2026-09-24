@@ -305,19 +305,25 @@ def reconcile_driver_active_trip(driver_id):
 # Detection -- flag, never act
 # ---------------------------------------------------------------------------
 
-def stale_candidates(now=None, limit=200):
-    """Active trips that have gone quiet for longer than the stale threshold.
+def stale_candidates_queryset(now=None, limit=200):
+    """The queryset behind `stale_candidates`, unevaluated.
 
-    Ordered oldest-silence-first so an operator queue shows the worst case at the
-    top, and bounded so one sweep cannot become an unbounded unit of work.
+    Split out so `qa/query_plan_audit.py` can EXPLAIN the query this sweep really
+    runs instead of a paraphrase of it. That distinction was not academic: an
+    approximation written by hand for the audit -- one that dropped the timestamp
+    predicates -- reported a sequential scan over the whole trip table, while the
+    real query uses an incremental sort over the `last_driver_activity_at` index.
+    The paraphrase was wrong, not the code, and auditing the paraphrase would have
+    produced an index nobody needed.
     """
+    from django.db.models import Q
+
     from servers.ride.models import DRIVER_ACTIVE_TRIP_STATUSES, Trip
 
     now = now or timezone.now()
     cutoff = now - timezone.timedelta(seconds=stale_after_seconds())
 
-    from django.db.models import Q
-    return list(
+    return (
         Trip.objects
         .filter(status_id__status_code__in=DRIVER_ACTIVE_TRIP_STATUSES)
         .filter(
@@ -329,6 +335,15 @@ def stale_candidates(now=None, limit=200):
         .select_related('status_id', 'driver_id', 'driver_id__user_id')
         .order_by('last_driver_activity_at', 'accepted_at')[:limit]
     )
+
+
+def stale_candidates(now=None, limit=200):
+    """Active trips that have gone quiet for longer than the stale threshold.
+
+    Ordered oldest-silence-first so an operator queue shows the worst case at the
+    top, and bounded so one sweep cannot become an unbounded unit of work.
+    """
+    return list(stale_candidates_queryset(now=now, limit=limit))
 
 
 def flag_stale_trips(now=None, limit=200):

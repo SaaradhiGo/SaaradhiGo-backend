@@ -266,6 +266,15 @@ class WithdrawalRequest(models.Model):
         ('processed', 'Processed'),
         ('completed', 'Completed'),
         ('failed', 'Failed'),
+        # The provider request was issued and we never learned the outcome -- a
+        # timeout or a 5xx. Distinct from 'failed', which asserts no money moved.
+        #
+        # Money stays held: the wallet is NOT refunded, because Cashfree may have
+        # paid the driver and a refund on top of that is a double credit. The row
+        # waits for a human to check the provider and move it to 'processed' or
+        # 'failed'. There is no automated resolution because no provider status
+        # call has been verified against the sandbox.
+        ('unresolved', 'Unresolved - provider outcome unknown'),
     ]
     PAYOUT_METHOD_CHOICES = [
         ('bank', 'Bank Transfer'),

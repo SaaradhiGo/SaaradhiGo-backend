@@ -1169,6 +1169,10 @@ def trigger_payout_creation(withdrawal):
 
     from django.db import transaction
     from django.utils import timezone
+
+    from servers.payments.payment_gateways.cashfree_gateway import (
+        PayoutDispatchUnknown,
+    )
     from servers.rider.models import Wallet, WalletTransaction
 
     logger = logging.getLogger(__name__)
@@ -1267,7 +1271,39 @@ def trigger_payout_creation(withdrawal):
         # UPI PAYOUT
         # ---------------------------------------------------------
         if withdrawal.payout_method == "upi":
-            payout_success = initiate_upi_payout(withdrawal, driver)
+            try:
+                payout_success = initiate_upi_payout(withdrawal, driver)
+            except PayoutDispatchUnknown as exc:
+                # The request reached the network and the answer did not come
+                # back. Cashfree may have paid this driver.
+                #
+                # The money stays where it is. Refunding the wallet here -- which
+                # is what the old code did, via the shared failure path below --
+                # credits a driver who may already have received the transfer.
+                # Marking it 'processed' would be the opposite lie.
+                #
+                # So: hold, record, and surface for a human. There is no automated
+                # resolution because no Cashfree status call has been verified
+                # against the sandbox, and retrying depends on transferId
+                # idempotency that is likewise unverified.
+                withdrawal.status = "unresolved"
+                withdrawal.failure_reason = (
+                    "Provider outcome unknown - payout request was issued but no "
+                    "response was received. Wallet NOT refunded. A human must "
+                    "check Cashfree for this transferId before this row moves to "
+                    "processed or failed."
+                )
+                withdrawal.processed_at = timezone.now()
+                withdrawal.save(
+                    update_fields=["status", "failure_reason", "processed_at"],
+                )
+                logger.error(
+                    "payout_unresolved withdrawal=%s driver=%s amount=%s "
+                    "reason=provider_outcome_unknown wallet_refunded=false "
+                    "detail=%s",
+                    withdrawal.id, driver.id, withdrawal.amount, exc,
+                )
+                return False
         else:
             withdrawal.status = "failed"
             withdrawal.failure_reason = (
@@ -1381,6 +1417,11 @@ def trigger_payout_creation(withdrawal):
             )
 
         return False
+from servers.payments.payment_gateways.cashfree_gateway import (  # noqa: E402
+    PayoutDispatchUnknown,
+)
+
+
 def initiate_upi_payout(withdrawal, driver):
     """
     Initiate UPI payout through the configured payment gateway.
@@ -1542,6 +1583,11 @@ def initiate_upi_payout(withdrawal, driver):
         )
 
         if not payout_result:
+            # Reached only for a DEFINITE rejection now. An unknown outcome --
+            # request issued, answer lost -- raises PayoutDispatchUnknown from the
+            # gateway and is handled by trigger_payout_creation, which must not
+            # refund. Flattening both into False is what caused a driver to be
+            # refunded on top of a transfer that may have succeeded.
             withdrawal.failure_count += 1
             withdrawal.last_failure_at = timezone.now()
             withdrawal.failure_reason = (
@@ -1678,6 +1724,17 @@ def initiate_upi_payout(withdrawal, driver):
             )
 
         return True
+
+    except PayoutDispatchUnknown:
+        # Deliberately re-raised. This is the one failure that must NOT be
+        # flattened into "the payout failed": the request was issued and the
+        # answer was lost, so Cashfree may have paid this driver.
+        #
+        # The broad handler below records a failure and lets the caller refund the
+        # wallet. Doing that here would credit a driver who may already have the
+        # money. trigger_payout_creation holds the funds and marks the row
+        # 'unresolved' instead.
+        raise
 
     except Exception as e:
         logger.exception(

@@ -19,6 +19,27 @@ from .base_gateway import BasePaymentGateway
 
 logger = logging.getLogger(__name__)
 
+
+class PayoutDispatchUnknown(Exception):
+    """The payout request may or may not have reached the provider.
+
+    Raised only for failures that happen *after* the HTTP request was issued: a
+    network timeout, a dropped connection, or a 5xx. In those cases Cashfree may
+    have created the transfer and we simply did not learn the outcome.
+
+    This is deliberately NOT the same as a rejection. A validation error, a
+    missing token, or a 4xx is a definite "no money moved", and the caller may
+    safely refund the driver's wallet. An unknown outcome must not be refunded,
+    because the driver may already have been paid -- refunding on top of that is
+    a double credit, and there is no provider status call proven to tell us
+    which happened.
+
+    Whether the provider honours transferId idempotency on a retry is unverified
+    (see the Cashfree sandbox verification requirement), so a retry is not a
+    safe substitute for asking a human to check.
+    """
+
+
 # Cashfree PG SDK (v3.2.12)
 try:
     import cashfree_pg
@@ -421,10 +442,32 @@ class CashfreeGateway(BasePaymentGateway):
             )
             data = resp.json() if resp.content else {}
         except Exception as e:
-            logger.error(f"create_upi_payout: network failure: {e}")
-            return None
+            # The request WAS issued. Cashfree may have created the transfer and
+            # we lost the answer. Returning None here made this indistinguishable
+            # from "no money moved", and the caller refunded the wallet on top of
+            # a transfer that may already have happened.
+            logger.error(
+                "create_upi_payout: outcome UNKNOWN for transferId %s after "
+                "network failure: %s", transfer_id, e,
+            )
+            raise PayoutDispatchUnknown(
+                f'transferId {transfer_id}: request issued, outcome unknown ({e})'
+            ) from e
+
+        if resp.status_code >= 500:
+            # The provider answered, but with its own failure. It may have
+            # accepted the transfer before failing, so this is also unknown.
+            logger.error(
+                "create_upi_payout: outcome UNKNOWN for transferId %s: "
+                "HTTP %s from Cashfree", transfer_id, resp.status_code,
+            )
+            raise PayoutDispatchUnknown(
+                f'transferId {transfer_id}: provider returned {resp.status_code}'
+            )
 
         if resp.status_code not in (200, 201):
+            # A 4xx is a definite rejection: the provider understood the request
+            # and declined it. No money moved, so a refund is safe.
             logger.error(
                 f"create_upi_payout: HTTP {resp.status_code} from Cashfree: {data}"
             )

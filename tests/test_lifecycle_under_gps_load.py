@@ -820,6 +820,29 @@ async def test_the_driver_does_not_receive_its_own_location_echo():
     driver_tws = await _open_trip_socket(driver.user_id, trip.id)
     rider_tws = await _open_trip_socket(rider, trip.id)
 
+    # Precondition. The fan-out to the trip group only happens when Redis reports
+    # this driver as being on this trip, so if that is wrong the test measures
+    # nothing and should say so rather than looking like a product failure.
+    from servers.redis_client import get_driver_active_trip, set_driver_active_trip
+    active = await asyncio.to_thread(get_driver_active_trip, driver.id)
+    if str(active) != str(trip.id):
+        # Diagnose rather than just fail: re-set and read back immediately, in one
+        # thread, so we learn whether the round-trip works at all or whether
+        # something is clearing the key after `_make_trip` set it.
+        def _probe():
+            ok = set_driver_active_trip(driver.id, trip.id)
+            return ok, get_driver_active_trip(driver.id)
+        ok, readback = await asyncio.to_thread(_probe)
+        print(f'PROBE driver={driver.id} trip={trip.id} first_read={active!r} '
+              f'reset_ok={ok} readback={readback!r}')
+        active = readback
+    assert str(active) == str(trip.id), (
+        f'precondition failed: Redis says driver {driver.id} is on trip {active!r}, '
+        f'not {trip.id}. Without that the location fan-out never targets this '
+        'trip group, so neither party would receive anything for reasons unrelated '
+        'to the echo fix.'
+    )
+
     await _send_gps(dws, 12)
     await asyncio.sleep(4)
 

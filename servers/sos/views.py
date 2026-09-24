@@ -13,11 +13,13 @@ SOSEventUpdate row inside the same transaction as the parent state flip.
 """
 
 import logging
+from datetime import timedelta
 
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
+from django.utils import timezone
 from django.db.models import Q
 
 from base.utils import success_response, error_response
@@ -26,6 +28,13 @@ from base.permissions import IsAdmin
 from .models import SOSEvent, SOSEventUpdate
 
 logger = logging.getLogger(__name__)
+
+# How long an identical, still-open SOS suppresses a repeat.
+#
+# Short on purpose. The cost of being too long is a real second
+# emergency being silently folded into the first; the cost of being too
+# short is ops seeing two alerts. Those are not symmetric.
+SOS_DEDUPE_WINDOW_SECONDS = 120
 
 
 def _client_ip(request):
@@ -93,6 +102,45 @@ def raise_sos(request):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+    # A panic button gets pressed more than once, and a reconnecting app retries.
+    # Each repeat used to create another SOSEvent and another fan-out: ops paged
+    # repeatedly for one emergency, which is how a real alert gets tuned out.
+    #
+    # Collapsed only when ALL of these hold, so a genuine escalation is never
+    # suppressed:
+    #   * same user, same trip, same event type -- a different type is a new event;
+    #   * the original is still `open` -- once ops have acknowledged or resolved it,
+    #     a new SOS means something new is happening;
+    #   * inside a short window -- minutes later is a new emergency, not a retry.
+    #
+    # Deliberately decided in PostgreSQL rather than Redis: a cache miss must never
+    # be the reason a safety event is recorded twice, and a cache HIT must never be
+    # the reason one is dropped.
+    existing = SOSEvent.objects.filter(
+        user=request.user,
+        trip=trip,
+        event_type=event_type if event_type in dict(SOSEvent.EVENT_TYPE_CHOICES) else 'panic',
+        status='open',
+        created_at__gte=timezone.now() - timedelta(seconds=SOS_DEDUPE_WINDOW_SECONDS),
+    ).order_by('-created_at').first()
+    if existing is not None:
+        logger.warning('sos_repeat_collapsed', extra={
+            'event': 'sos_repeat_collapsed',
+            'sos_id': existing.id,
+            'user_id': request.user.id,
+            'trip_id': trip.id if trip else None,
+            'event_type': existing.event_type,
+        })
+        return success_response(
+            {
+                'sos_id': existing.id,
+                'status': existing.status,
+                'repeat_of': existing.id,
+                'message': 'SOS already recorded. Help is on the way.',
+            },
+            status.HTTP_200_OK,
+        )
+
     try:
         with transaction.atomic():
             event = SOSEvent.objects.create(
@@ -118,11 +166,18 @@ def raise_sos(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-    logger.warning(
-        f"SOS RAISED id={event.id} by={initiated_by} user={request.user.id} "
-        f"trip={trip.id if trip else None} type={event.event_type} "
-        f"lat={event.latitude} lng={event.longitude}"
-    )
+    # Deliberately no coordinates. SOS is where location is most sensitive, and a
+    # log line is retained, shipped and searchable; the event id is enough for
+    # anyone entitled to the position to read it from the database.
+    logger.warning('sos_raised', extra={
+        'event': 'sos_raised',
+        'sos_id': event.id,
+        'initiated_by': initiated_by,
+        'user_id': request.user.id,
+        'trip_id': trip.id if trip else None,
+        'event_type': event.event_type,
+        'has_location': event.latitude is not None and event.longitude is not None,
+    })
 
     # Dispatch the fan-out (ops push, SMS to emergency contact, ops live
     # board) on commit so a rollback can't trigger phantom alerts. The

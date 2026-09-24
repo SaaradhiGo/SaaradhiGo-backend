@@ -71,7 +71,10 @@ def test_receipt_pdf_bytes_are_built(auth_client_rider, auth_client_driver):
     pdf_bytes = _build_receipt_pdf(receipt)
     assert pdf_bytes is not None
     assert pdf_bytes.startswith(b'%PDF')
-    assert b'VahanGo' in pdf_bytes or b'SaaradhiGo' in pdf_bytes
+    # Was 'either brand', which is exactly how the inconsistency survived.
+    from django.conf import settings
+    assert settings.PLATFORM_BRAND_NAME.encode() in pdf_bytes
+    assert b'VahanGo' not in pdf_bytes, 'the retired brand is still on the PDF'
 
 
 @pytest.mark.django_db

@@ -6,6 +6,18 @@ from .models import Driver, WithdrawalRequest
 from servers.rider.models import Wallet
 
 
+def _contact_domain():
+    """Domain for the operational contacts shown to drivers.
+
+    Configurable because these were hardcoded to a domain this platform
+    does not use, which meant a driver's grievance email went nowhere.
+    """
+    from django.conf import settings
+
+    return getattr(settings, 'PLATFORM_CONTACT_DOMAIN', 'saaradhigo.in')
+
+
+
 def calculate_available_balance(driver):
     """
     Calculate the driver's available wallet balance for withdrawal.
@@ -1121,10 +1133,20 @@ def generate_upi_compliance_handbook():
             {'function': 'generate_npci_compliance_report', 'purpose': 'NPCI compliance reporting'}
         ],
         'contact_points': [
-            {'role': 'Technical Support', 'contact': 'tech-support@vahango.com'},
-            {'role': 'Fraud Investigation', 'contact': 'fraud-team@vahango.com'},
-            {'role': 'Compliance Officer', 'contact': 'compliance@vahango.com'},
-            {'role': 'Operations Manager', 'contact': 'operations@vahango.com'}
+            # Built from PLATFORM_CONTACT_DOMAIN rather than hardcoded. These
+            # were pointing at vahango.com, which this platform does not use, so
+            # a driver's grievance or fraud report went to a domain nobody reads.
+            # A human still has to confirm these mailboxes exist and are
+            # monitored -- the MVA-2020 grievance obligation is not satisfied by
+            # an address that merely resolves.
+            {'role': 'Technical Support',
+             'contact': f'tech-support@{_contact_domain()}'},
+            {'role': 'Fraud Investigation',
+             'contact': f'fraud-team@{_contact_domain()}'},
+            {'role': 'Compliance Officer',
+             'contact': f'compliance@{_contact_domain()}'},
+            {'role': 'Operations Manager',
+             'contact': f'operations@{_contact_domain()}'}
         ]
     }
     

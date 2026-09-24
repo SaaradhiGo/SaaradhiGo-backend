@@ -207,7 +207,7 @@ def should_keep(candidate, last_kept):
     return True, 'kept'
 
 
-def sample(candidates, last_kept=None):
+def sample(candidates, last_kept=None, already_stored=0):
     """Reduce a batch of candidates to the points worth storing.
 
     Pure: takes and returns plain objects, touches no database and no Redis, so
@@ -216,6 +216,10 @@ def sample(candidates, last_kept=None):
     rather than one at a time.
 
     Returns (kept, stats) where stats counts each drop reason.
+
+    `already_stored` is how many points the trip already has durably. The per-trip
+    cap is meaningless without it -- checking only this batch's length caps the
+    batch, not the trip, which is exactly the defect this parameter fixes.
     """
     kept = []
     stats = {'received': 0, 'kept': 0}
@@ -225,7 +229,7 @@ def sample(candidates, last_kept=None):
         stats['received'] += 1
         keep, reason = should_keep(raw, previous)
         if keep:
-            if len(kept) >= max_points_per_trip():
+            if already_stored + len(kept) >= max_points_per_trip():
                 stats['over_trip_cap'] = stats.get('over_trip_cap', 0) + 1
                 continue
             kept.append(raw)
@@ -399,6 +403,25 @@ def _last_point_for_trips(trip_ids):
     return out
 
 
+def _point_count_for_trips(trip_ids):
+    """How many durable points each trip already has.
+
+    One aggregate query for the whole batch, not one per trip: this runs on
+    every drain, so an N+1 here would scale with the number of active rides.
+    """
+    from django.db.models import Count
+
+    from servers.ride.models import TripLocationPoint
+
+    if not trip_ids:
+        return {}
+    rows = (TripLocationPoint.objects
+            .filter(trip_id__in=trip_ids)
+            .values('trip_id')
+            .annotate(n=Count('id')))
+    return {r['trip_id']: r['n'] for r in rows}
+
+
 def persist_location_events(events):
     """Turn raw stream events into durable points. Returns (handled_ids, stats).
 
@@ -447,9 +470,18 @@ def persist_location_events(events):
         return handled, stats
 
     trips_by_driver = _resolve_candidate_trips({p[1] for p in parsed})
-    last_points = _last_point_for_trips(
-        {t.id for trips in trips_by_driver.values() for t in trips}
-    )
+    candidate_trip_ids = {t.id for trips in trips_by_driver.values() for t in trips}
+    last_points = _last_point_for_trips(candidate_trip_ids)
+
+    # The per-trip cap is defence against a broken or hostile client writing an
+    # unbounded number of rows for one ride.
+    #
+    # It was previously checked only inside `sample()`, against the length of the
+    # CURRENT BATCH -- and `sample()` is not on this path at all. Batches are 500,
+    # so a 5000 cap could never be reached and the bound did not exist: a soak
+    # wrote 5400 eligible events for one trip and stored all 5400.
+    stored_counts = _point_count_for_trips(candidate_trip_ids)
+    trip_cap = max_points_per_trip()
 
     to_create = []
     for entry_id, driver_id, lat, lon, recorded_at in parsed:
@@ -466,6 +498,21 @@ def persist_location_events(events):
             stats['sampled_out'] += 1
             stats[reason] = stats.get(reason, 0) + 1
             continue
+
+        if stored_counts.get(trip.id, 0) >= trip_cap:
+            # Counted and logged rather than silently dropped: hitting this means
+            # either a client transmitting far faster than it should, or a ride
+            # that has run about seven hours of honest 5-second sampling. Both are
+            # worth seeing.
+            stats['over_trip_cap'] = stats.get('over_trip_cap', 0) + 1
+            if stats['over_trip_cap'] == 1:
+                logger.warning('trip_location_cap_reached', extra={
+                    'event': 'trip_location_cap_reached',
+                    'trip_id': trip.id,
+                    'cap': trip_cap,
+                })
+            continue
+        stored_counts[trip.id] = stored_counts.get(trip.id, 0) + 1
 
         point = TripLocationPoint(
             trip=trip, driver_id=driver_id,

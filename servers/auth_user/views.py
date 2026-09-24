@@ -25,7 +25,14 @@ logger = logging.getLogger(__name__)
 user_model = get_user_model()
 
 # Valid roles for user accounts
+# Every role the system knows about.
 VALID_ROLES = ['rider', 'driver', 'admin']
+
+# The roles a CLIENT may ask to be created as. 'admin' is deliberately absent:
+# an operator account approves driver KYC and releases payouts, so it cannot be
+# self-served by anyone who can receive an SMS. See the comment at the role check
+# in `request_otp` for what this used to allow.
+SELF_SERVICE_ROLES = ['rider', 'driver']
 PHONE_REGEX = re.compile(r'^\+?1?\d{9,15}$')
 OTP_EXPIRY = 600  # 10 minutes
 MAX_OTP_ATTEMPTS = 5
@@ -94,12 +101,26 @@ def request_otp(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Validate role
-        if role not in VALID_ROLES:
+        # Validate role.
+        #
+        # SELF_SERVICE_ROLES, not VALID_ROLES. 'admin' is a role the system has;
+        # it is not a role a client may ASK FOR. Accepting it here was a
+        # privilege escalation: this endpoint caches the requested role, /login/
+        # creates the user with it, and IsAdmin then granted operator access on
+        # role alone. Demonstrated end to end before the fix -- a fresh phone
+        # number requesting role=admin reached the KYC queue, the withdrawal
+        # queue, every trip, live driver locations and the operations dashboard,
+        # all HTTP 200.
+        #
+        # Operator accounts are created by `manage.py bootstrap_qa_operator` or
+        # by an existing operator. Never by asking.
+        if role not in SELF_SERVICE_ROLES:
+            # Deliberately the same shape of refusal as any other bad role, so
+            # this does not become a probe for which privileged roles exist.
             logger.warning(f"Invalid role requested: {role}")
             return error_response(
                 code="AUTH_INVALID_ROLE",
-                message=f'Role must be one of {VALID_ROLES}',
+                message=f'Role must be one of {SELF_SERVICE_ROLES}',
                 field='role',
                 issue='Invalid role specified',
                 status=status.HTTP_400_BAD_REQUEST
@@ -281,6 +302,25 @@ def login(request):
                     created = False
                 except user_model.DoesNotExist:
                     # Password not accepted — see docstring.
+                    #
+                    # Re-checked here rather than trusted. `role` arrives from the
+                    # OTP cache, which is a different request, and this is the
+                    # line that actually mints the account. Defence in depth: if
+                    # a privileged role ever reaches this point -- a stale cache
+                    # entry written before the guard, a future code path, an
+                    # operator error -- it is refused rather than granted.
+                    if role not in SELF_SERVICE_ROLES:
+                        logger.error(
+                            'refusing to create a user with non-self-service '
+                            'role %r', role,
+                        )
+                        return error_response(
+                            code="AUTH_INVALID_ROLE",
+                            message=f'Role must be one of {SELF_SERVICE_ROLES}',
+                            field='role',
+                            issue='Invalid role specified',
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
                     user = user_model.objects.create_user(
                         phone_number=phone_number,
                         role=role,

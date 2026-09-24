@@ -40,6 +40,28 @@ from django.contrib.auth import get_user_model
 import json
 import logging
 logger = logging.getLogger(__name__)
+def is_operator(user) -> bool:
+    """Is this user allowed to operate the console?
+
+    One definition, used by the login view and by `admin_required`, because three
+    copies of this expression is how two of them end up disagreeing. The DRF side
+    has the same rule in `base.permissions.IsAdmin`, and that docstring records
+    why `is_staff` is part of it: a `role` a client could ask for was enough to
+    reach operator APIs without it.
+
+    `is_staff` is the gate that cannot be self-served. It is set by
+    `bootstrap_qa_operator` and the Django admin, and by no request.
+    """
+    if not (user and getattr(user, "is_authenticated", False)):
+        return False
+    if getattr(user, "is_superuser", False):
+        return True
+    return (
+        getattr(user, "role", None) == "admin"
+        and getattr(user, "is_staff", False)
+    )
+
+
 def admin_required(view_func):
     """
     Decorator for admin dashboard views.
@@ -50,12 +72,7 @@ def admin_required(view_func):
     """
     @wraps(view_func)
     def _wrapped(request: HttpRequest, *args, **kwargs) -> HttpResponse:
-        user = request.user
-        is_admin = (
-            user.is_authenticated
-            and (getattr(user, "role", None) == "admin" or getattr(user, "is_superuser", False))
-        )
-        if not is_admin:
+        if not is_operator(request.user):
             return redirect("login")
         return view_func(request, *args, **kwargs)
     return _wrapped
@@ -66,10 +83,7 @@ def login(request: HttpRequest) -> HttpResponse:
     against the custom user model, and starts a session. Only users with the
     `admin` role (or superusers) are allowed in.
     """
-    if request.user.is_authenticated and (
-        getattr(request.user, "role", None) == "admin"
-        or getattr(request.user, "is_superuser", False)
-    ):
+    if is_operator(request.user):
         # Already logged in as admin -> go straight to the dashboard.
         return redirect("fleet_monitor")
     error = None
@@ -99,7 +113,7 @@ def login(request: HttpRequest) -> HttpResponse:
                 if user is None:
                     login_guard.record_failure(request, phone_number)
                     error = login_guard.GENERIC_REFUSAL
-                elif not (getattr(user, "role", None) == "admin" or getattr(user, "is_superuser", False)):
+                elif not is_operator(user):
                     # A real password for a non-operator account. Still a failure
                     # for guard purposes -- otherwise a rider account becomes an
                     # unthrottled oracle for password guessing.

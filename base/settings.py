@@ -362,6 +362,76 @@ if _test_phones_raw:
                 TEST_PHONE_NUMBERS[_phone] = _otp
 
 logger.info(f"Loaded {len(TEST_PHONE_NUMBERS)} test phone numbers for OTP bypass.")
+
+# --- Production configuration guards -----------------------------------------
+#
+# The production environment is configured by copying QA's variable set, which is
+# the right way to avoid missing one -- and the wrong way to handle the three QA
+# variables that are an authentication bypass and a back door. These guards refuse
+# to boot rather than trusting anyone to remember.
+#
+# Keyed on ENVIRONMENT rather than `not DEBUG`, because QA also runs DEBUG=False
+# and legitimately needs its test phones. The default mirrors the Sentry block
+# below, so a deployment with DEBUG=False and no ENVIRONMENT is treated as
+# production -- the conservative reading.
+#
+# Nothing here is weakened to make a boot succeed. A guard that can be satisfied
+# by setting a flag is not a guard.
+ENVIRONMENT = os.environ.get('ENVIRONMENT', 'production' if not DEBUG else 'development')
+IS_PRODUCTION = ENVIRONMENT.strip().lower() == 'production'
+
+if IS_PRODUCTION:
+    from django.core.exceptions import ImproperlyConfigured as _Improper
+
+    _production_faults = []
+
+    if DEBUG:
+        _production_faults.append(
+            'DEBUG is True. Django serves tracebacks with settings and local '
+            'variables to anyone who can trigger an error.'
+        )
+
+    if not SECRET_KEY:
+        # Previously read with a bare os.environ.get and no check, so an unset
+        # key surfaced later as a confusing signing error rather than at boot.
+        _production_faults.append(
+            'DJANGO_SECRET_KEY is not set. Sessions, password resets and every '
+            'signed value depend on it.'
+        )
+
+    if TEST_PHONE_NUMBERS:
+        _production_faults.append(
+            f'TEST_PHONE_NUMBERS is set ({len(TEST_PHONE_NUMBERS)} entries). '
+            'Each entry is a phone number that logs in with a fixed OTP and '
+            'skips SMS delivery and throttling -- an authentication bypass.'
+        )
+
+    for _qa_only in ('QA_ADMIN_BOOTSTRAP_PHONE', 'QA_ADMIN_BOOTSTRAP_CODE',
+                     'QA_ADMIN_BOOTSTRAP_PASSWORD'):
+        if os.environ.get(_qa_only):
+            _production_faults.append(
+                f'{_qa_only} is set. It exists to create an admin account in QA, '
+                'and in production it is a back door into payout approval and KYC.'
+            )
+
+    # A production deployment still pointing at QA infrastructure writes real
+    # customer data into a test system, or reads test data as if it were real.
+    for _name in ('BACKEND_URL', 'FRONTEND_URL'):
+        _url = (os.environ.get(_name) or '').lower()
+        if any(marker in _url for marker in ('-qa-', 'qa.', 'staging', 'localhost',
+                                             '127.0.0.1')):
+            _production_faults.append(
+                f'{_name} points at a non-production host. Receipts and '
+                'notifications would carry links into QA.'
+            )
+
+    if _production_faults:
+        _joined = chr(10).join('  - ' + f for f in _production_faults)
+        raise _Improper(
+            'Refusing to start in production with these faults:'
+            + chr(10) + _joined + chr(10) + chr(10)
+            + 'Fix the configuration. Do not relax these checks to boot.'
+        )
 #URLS
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 BACKEND_URL  = os.environ.get("BACKEND_URL", "http://localhost:8000")

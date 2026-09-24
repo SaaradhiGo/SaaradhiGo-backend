@@ -361,16 +361,28 @@ def sweep_stale_drivers():
     return evicted
 
 
+class DriverTripStateUnavailable(RuntimeError):
+    """Redis could not answer whether a driver is on a trip.
+
+    Distinct from "the driver is free", which is what the old code returned for
+    both cases. Callers must choose a conservative default rather than inherit a
+    silent one -- see the three call sites in this module.
+    """
+
+
 def set_driver_active_trip(driver_id, trip_id):
     """
     Set the active trip for a driver to mark them as busy.
+
+    Returns True only if Redis confirmed the write. It used to return True
+    unconditionally after calling `set()`, without looking at the result, so a
+    caller could not tell a stored key from a lost one.
     """
     if redis_client is None:
         return False
     try:
         key = f"{ACTIVE_TRIP_PREFIX}{driver_id}"
-        redis_client.set(key, str(trip_id))
-        return True
+        return bool(redis_client.set(key, str(trip_id)))
     except Exception as e:
         logger.error(f"Failed to set active trip for driver {driver_id}: {str(e)}")
         return False
@@ -379,16 +391,46 @@ def set_driver_active_trip(driver_id, trip_id):
 def get_driver_active_trip(driver_id):
     """
     Get the active trip for a driver. Returns trip_id if busy, None if available.
+
+    Raises DriverTripStateUnavailable if Redis could not answer.
+
+    This used to catch every exception and return None, which every caller reads
+    as "this driver is free". The consequences were all silent:
+
+      * add_driver_location() skips the `zrem` that takes a busy driver out of
+        the geo index, so a driver already on a trip stays discoverable as
+        nearby and available.
+      * find_nearby_drivers() reports status 'online' instead of 'busy'.
+      * the admin driver listing shows a driver on a trip as online.
+
+    So a Redis blip quietly degraded driver exclusivity and showed operators the
+    wrong state, with nothing in the logs above DEBUG to say so. The row lock in
+    the trip-accept path is what actually prevents a double assignment from
+    committing, but a driver being offered rides it cannot take, and a console
+    that disagrees with reality, are both real failures.
     """
     if redis_client is None:
         return None
+    key = f"{ACTIVE_TRIP_PREFIX}{driver_id}"
     try:
-        key = f"{ACTIVE_TRIP_PREFIX}{driver_id}"
         trip_id = redis_client.get(key)
-        return int(trip_id) if trip_id else None
     except Exception as e:
-        logger.error(f"Failed to get active trip for driver {driver_id}: {str(e)}")
+        logger.error(
+            "Redis could not report active trip for driver %s: %s", driver_id, e,
+        )
+        raise DriverTripStateUnavailable(str(e)) from e
+    if not trip_id:
         return None
+    try:
+        return int(trip_id)
+    except (TypeError, ValueError) as e:
+        # A non-numeric value here means something else wrote this key. Treating
+        # it as "free" would be the same mistake in a different disguise.
+        logger.error(
+            "Active-trip key for driver %s holds a non-numeric value %r",
+            driver_id, trip_id,
+        )
+        raise DriverTripStateUnavailable(f'corrupt active-trip value: {trip_id!r}') from e
 
 
 def clear_driver_active_trip(driver_id):
@@ -580,8 +622,21 @@ def add_driver_location(driver_id, lng, lat):
 
         update_driver_location(driver_id=driver_id, lat=lat, lng=lng)
 
-        # Check if driver is on an active trip
-        active_trip_id = get_driver_active_trip(driver_id)
+        # Check if driver is on an active trip.
+        #
+        # If Redis cannot say, treat the driver as busy. That keeps them out of
+        # the geo index for this tick, so dispatch does not offer a ride to a
+        # driver who may already be on one; the next successful tick puts them
+        # back. The opposite default -- assuming free -- is what the swallowed
+        # exception used to do, and it is the one that breaks exclusivity.
+        try:
+            active_trip_id = get_driver_active_trip(driver_id)
+        except DriverTripStateUnavailable:
+            logger.warning(
+                "Treating driver %s as busy: active-trip state unavailable.",
+                driver_id,
+            )
+            active_trip_id = 'unknown'
         if active_trip_id:
             # Driver is busy, remove from geo index but return trip_id for streaming
             redis_client.zrem(geo_key, member)
@@ -793,7 +848,16 @@ def get_all_online_drivers():
                     pos = redis_client.geopos(key, member)
                     if pos and pos[0]:
                         lng, lat = pos[0]
-                        active_trip_id = get_driver_active_trip(driver_id)
+                        # Unknown state means skip, not offer. An unavailable
+                        # answer used to read as 'online'.
+                        try:
+                            active_trip_id = get_driver_active_trip(driver_id)
+                        except DriverTripStateUnavailable:
+                            logger.warning(
+                                "Skipping driver %s in nearby search: "
+                                "active-trip state unavailable.", driver_id,
+                            )
+                            continue
                         vehicle_type = parts[2] if len(parts) >= 3 else get_driver_vehicle_type(driver_id)
                         seen_driver_ids.add(driver_id)
                         drivers.append({
@@ -970,14 +1034,24 @@ def get_all_active_drivers():
                     if driver:
                         u = driver.user_id
                         v = driver.active_vehicle
-                        active_trip_id = get_driver_active_trip(did) if did else None
+                        # An operator is better served by "unknown" than by a
+                        # confident "online" that is really a Redis failure.
+                        trip_state_known = True
+                        try:
+                            active_trip_id = get_driver_active_trip(did) if did else None
+                        except DriverTripStateUnavailable:
+                            active_trip_id = None
+                            trip_state_known = False
                         item.update({
                             'driver_name': str(u.full_name or u.phone_number or f'Driver {driver.id}') if u else f'Driver {driver.id}',
                             'phone_number': str(u.phone_number or '') if u else '',
                             'ratings': str(driver.ratings or '0.00'),
                             'vehicle_model': str(v.model if v else ''),
                             'vehicle_number': str(v.vehicle_number if v else ''),
-                            'status': 'busy' if active_trip_id else 'online',
+                            'status': (
+                                'busy' if active_trip_id
+                                else ('online' if trip_state_known else 'unknown')
+                            ),
                             'active_trip_id': active_trip_id,
                         })
                     else:

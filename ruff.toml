@@ -16,8 +16,11 @@ line-length = 120
 exclude = [
     ".git",
     "__pycache__",
-    ".venv",
-    "venv",
+    # Any local virtualenv, not just the two canonical names. A bare
+    # `ruff check .` in a checkout with a `.venv-local` reported 7859 errors
+    # from site-packages, which is how a clean lint gate stops being trusted.
+    ".venv*",
+    "venv*",
     "staticfiles",
     "*/migrations/*",
 ]

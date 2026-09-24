@@ -168,25 +168,37 @@ jobs:
         # because the service container speaks plaintext, and the app default
         # is `require`.
         #
-        # ONE PROCESS PER FILE, deliberately.
+        # ONE PROCESS for everything except one file. This used to be one
+        # process per file, across ten files, because the cross-file
+        # interference was unexplained. It has now been root-caused.
         #
-        # These tests open real WebSockets against real Redis, and Redis is not
-        # reset between tests the way PostgreSQL is. Running all of them in a
-        # single process produces cross-file state interference: a `SET` on the
-        # driver active-trip key reports success and an immediate `GET` in the
-        # same thread returns nothing, with no eviction configured and no client
-        # error raised. Eight tests fail that way, and every one of them passes
-        # per-file and in isolation.
+        # The cause was NOT what the old comment here guessed. It was the
+        # Channels channel layer: `channels.layers.channel_layers` caches one
+        # RedisChannelLayer per alias for the life of the process, and a
+        # RedisChannelLayer binds its connections and pending futures to
+        # whichever event loop first touched it. Every async test gets a fresh
+        # loop, so the second async test in a process inherited a layer wired to
+        # the first test's dead loop and channels_redis raised "Two event loops
+        # are trying to receive() on one channel layer at once!". Consumer tasks
+        # outliving their test (LocationBroadcastMixin._location_pump sitting in
+        # `await queue.get()`) made it worse by keeping a receive() outstanding
+        # against the shared layer.
         #
-        # That interference is a test-infrastructure problem, not a product one --
-        # the same behaviour is verified end-to-end against deployed QA -- but a
-        # gate that fails for an unexplained reason is a gate people learn to
-        # ignore. Per-file execution is how this suite was verified during
-        # development, so it is what CI runs. `-p no:cacheprovider` keeps the
-        # processes from fighting over .pytest_cache.
+        # The root conftest.py now clears that cache around every test. In a
+        # single process this took the suite from 22 failures to 1.
         #
-        # If the interference is ever root-caused, collapse this back to a single
-        # `pytest -m postgres`.
+        # The remaining 1 is test_lifecycle_under_gps_load.py's
+        # test_the_driver_does_not_receive_its_own_location_echo, which still
+        # fails when that file runs after test_driver_active_trip_contention.py
+        # -- reproducible in ~100s with just those two files, which is a lot
+        # better than "only in the full suite". Its active-trip key is deleted
+        # between a confirmed SET and an immediate GET in the same thread, so
+        # something outside the test is clearing it; the file passes on its own
+        # (27 passed). Until that is closed, this one file gets its own process
+        # rather than the whole suite paying for it.
+        #
+        # `-p no:cacheprovider` keeps the two processes from fighting over
+        # .pytest_cache.
         env:
           DB_HOST: localhost
           DB_PORT: '5432'
@@ -196,16 +208,19 @@ jobs:
           DB_SSLMODE: disable
         run: |
           set -uo pipefail
-          files=$(grep -rl "pytest.mark.postgres\|mark.postgres" tests servers                     --include='test_*.py' | sort -u)
-          echo "postgres-marked files:"; echo "$files"
           status=0
-          for f in $files; do
-            echo "::group::$f"
-            # --create-db on the first file only; the rest reuse it, which is
-            # both faster and closer to how a developer runs them.
-            pytest "$f" -m postgres -q -p no:cacheprovider --reuse-db || status=1
-            echo "::endgroup::"
-          done
+
+          # The one file with an open cross-file interaction, on its own.
+          QUARANTINED=tests/test_lifecycle_under_gps_load.py
+
+          echo "::group::$QUARANTINED (separate process)"
+          pytest "$QUARANTINED" -m postgres -q -p no:cacheprovider || status=1
+          echo "::endgroup::"
+
+          echo "::group::all other postgres-marked tests (one process)"
+          pytest -m postgres -q -p no:cacheprovider --reuse-db             --ignore="$QUARANTINED" || status=1
+          echo "::endgroup::"
+
           exit $status
 
   deploy:

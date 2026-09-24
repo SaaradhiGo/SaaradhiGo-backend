@@ -25,6 +25,10 @@ global-bundle.pem
 .planning/
 .venv-qa/
 .venv/
+# Any local virtualenv, not only the two canonical names -- the backend
+# suite runs with a bare `pytest` and no Docker, so developers make these.
+.venv*/
+venv*/
 db.sqlite3
 celerybeat-schedule
 opencode.json

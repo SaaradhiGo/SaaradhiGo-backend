@@ -907,10 +907,39 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 payment_method=payment_method or 'cash',
             )
 
-            # Schedule auto-cancel task
+            # Schedule auto-cancel task.
+            #
+            # Guarded separately from trip creation, and deliberately so. The trip
+            # is COMMITTED by the time this runs -- the atomic block above has
+            # closed. Celery's broker is Redis, so an unreachable Redis made
+            # apply_async raise, the broad `except Exception` below caught it, and
+            # this method returned (None, False): its "creation failed" answer, for
+            # a trip that exists. The rider was told their booking failed while a
+            # `requested` row sat in PostgreSQL with no timeout scheduled, so
+            # nothing would ever move it out of `requested`.
+            #
+            # Now the booking succeeds, because it did, and the enqueue failure is
+            # reported as its own event.
+            #
+            # Residual risk, stated rather than hidden: a trip created while the
+            # broker is unreachable has NO scheduled timeout. Dispatch needs Redis
+            # too, so no driver is offered the trip either -- the rider sees a
+            # booking that finds no drivers rather than a phantom, and an operator
+            # can cancel it. The alternative, rolling the trip back from out here,
+            # cannot be done after commit.
             from servers.ride.tasks import auto_cancel_trip
             from django.conf import settings
-            auto_cancel_trip.apply_async((trip.id,), countdown=settings.TRIP_ACCEPT_TIMEOUT_SECONDS)
+            try:
+                auto_cancel_trip.apply_async(
+                    (trip.id,), countdown=settings.TRIP_ACCEPT_TIMEOUT_SECONDS,
+                )
+            except Exception as enqueue_error:  # noqa: BLE001
+                logger.error('trip_autocancel_enqueue_failed', extra={
+                    'event': 'trip_autocancel_enqueue_failed',
+                    'trip_id': trip.id,
+                    'rider_id': self.user.id,
+                    'error': type(enqueue_error).__name__,
+                })
 
             return trip, False
         except IntegrityError:

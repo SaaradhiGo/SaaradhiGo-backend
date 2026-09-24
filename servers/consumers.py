@@ -176,6 +176,15 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         }))
         await self._start_location_pump()
 
+        # GPS ingestion health for this connection. Two integers, not a log line
+        # per frame: the question these answer is the operational one -- "why did
+        # this ride's GPS trail stop?" -- and before this there was no answer,
+        # because a frame that failed to reach Redis produced one warning among
+        # hundreds of identical ones and no aggregate anywhere.
+        self._gps_accepted = 0
+        self._gps_rejected = 0
+        self._gps_reject_reason = None
+
         # Perform slower database/redis operations in the background of the connection
         await self._active_the_driver()
         
@@ -199,6 +208,7 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         await self._stop_location_pump()
+        self._log_gps_session(close_code)
         if hasattr(self, 'driver_id'):
             await self._deactive_the_driver()
             # Remove from groups
@@ -213,6 +223,32 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 'status': 'offline',
             })
             logger.info(f"Driver {self.driver_id} disconnected")
+
+
+    def _log_gps_session(self, close_code):
+        """One line per connection describing what happened to its GPS.
+
+        Emitted at WARNING when any frame was lost, so it survives
+        production's log level, and at INFO otherwise. Carries counts and a
+        reason code only -- never a coordinate.
+        """
+        accepted = getattr(self, '_gps_accepted', 0)
+        rejected = getattr(self, '_gps_rejected', 0)
+        if not accepted and not rejected:
+            return
+        payload = {
+            'event': 'gps_session_summary',
+            'driver_id': getattr(self, 'driver_id', None),
+            'accepted': accepted,
+            'rejected': rejected,
+            'close_code': close_code,
+        }
+        if getattr(self, '_gps_reject_reason', None):
+            payload['first_reject_reason'] = self._gps_reject_reason
+        if rejected:
+            logger.warning('gps_session_summary', extra=payload)
+        else:
+            logger.info('gps_session_summary', extra=payload)
 
     async def receive(self, text_data):
         """
@@ -235,6 +271,7 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             result = await self._add_driver_location(lng, lat)
 
             if result.get('success'):
+                self._gps_accepted = getattr(self, '_gps_accepted', 0) + 1
                 # Queued, not sent: this acknowledgement is emitted per GPS frame,
                 # so a driver app that does not read it would otherwise block
                 # `receive` once its buffer filled -- silently ending GPS
@@ -267,6 +304,22 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'driver_id': self.driver_id,
                     })
             else:
+                # A rejected location frame is silent data loss: the driver is
+                # still driving, the ride still needs its distance evidence, and
+                # nothing downstream will notice the gap. Log the FIRST failure
+                # per connection at warning level and count the rest, so a
+                # degraded Redis shows up as one event plus a total rather than
+                # hundreds of identical lines.
+                self._gps_rejected = getattr(self, '_gps_rejected', 0) + 1
+                reason = str(result.get('error') or 'unknown')[:120]
+                if getattr(self, '_gps_reject_reason', None) is None:
+                    self._gps_reject_reason = reason
+                    logger.warning('gps_frame_rejected', extra={
+                        'event': 'gps_frame_rejected',
+                        'driver_id': getattr(self, 'driver_id', None),
+                        'reason': reason,
+                        'accepted_before': getattr(self, '_gps_accepted', 0),
+                    })
                 await self.send(text_data=json.dumps({
                     'type': 'error',
                     'message': result.get('error', 'Failed to update location')

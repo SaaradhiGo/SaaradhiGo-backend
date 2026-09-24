@@ -17,6 +17,20 @@ logger = logging.getLogger(__name__)
 TRIP_OTP_MAX_ATTEMPTS = 5
 TRIP_OTP_ATTEMPT_TTL_SECONDS = 5 * 60
 
+# The trip status each lifecycle command produces. The wire protocol has always
+# echoed the *verb* back in `trip_status_update.status` ('complete'), which is not
+# the status stored in PostgreSQL ('completed'). `command_ack.trip_status` reports
+# the durable value instead, so a client can compare an ack against what it reads
+# back from the API without translating.
+_TARGET_STATUS = {
+    'accept': 'accepted',
+    'reached': 'reached',
+    'start': 'in_progress',
+    'complete': 'completed',
+    'cancel': 'cancelled',
+    'confirm_cash': 'in_progress',
+}
+
 
 
 class LocationBroadcastMixin:
@@ -916,10 +930,21 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             self.in_trip_group = True
 
         await self.accept()
+        # Reconnect recovery. A client that lost its acknowledgement -- or its
+        # socket -- must be able to discover durable truth immediately rather than
+        # infer it, so the greeting carries the committed status. Read from
+        # PostgreSQL, never the Redis cache: a stale cache is precisely how a
+        # completed ride would look unfinished.
+        current_status = None
+        try:
+            current_status = await self._current_trip_status()
+        except Exception:  # noqa: BLE001 -- a greeting must not fail the connect
+            logger.exception('trip_status_on_connect_failed')
         await self.send(text_data=json.dumps({
             'type': 'connection_established',
             'trip_id': self.trip_id,
             'subscribed': self.in_trip_group,
+            'trip_status': current_status,
             'message': 'Connected to trip updates',
         }))
         await self._start_location_pump()
@@ -959,15 +984,83 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         return (Trip.objects.filter(id=self.trip_id)
                 .values_list('status_id__status_code', flat=True).first())
 
+
+    # -- Application-level command acknowledgement --
+    #
+    # A successful `send()` on a WebSocket proves only that bytes left the client.
+    # It does not prove the command reached the server, and it certainly does not
+    # prove anything committed -- a resolved pilot blocker turned on exactly that
+    # distinction, where a driver app reported a finished ride whose trip was still
+    # `in_progress`.
+    #
+    # Worse, and reachable with no transport failure at all: before this the ONLY
+    # success signal for every lifecycle command was the `trip_status_update`
+    # broadcast, sent with `channel_layer.group_send`. channels_redis *silently
+    # drops* messages to a channel that is over capacity (default 100), logging
+    # only "N of M channels over capacity in group G". So a committed completion
+    # could go unacknowledged by design, while the driver app sat waiting for a
+    # frame that had already been discarded.
+    #
+    # `command_ack` is a DIRECT send to the socket that issued the command, emitted
+    # only after the database transaction has returned. It is purely additive:
+    # `trip_status_update` and `error` are unchanged, so a client that has never
+    # heard of `command_ack` behaves exactly as it did before.
+
+    ACK_COMMITTED = 'committed'         # this call performed the transition
+    ACK_ALREADY_DONE = 'already_done'   # durable state already satisfies it
+    ACK_REJECTED = 'rejected'           # refused; nothing changed
+
+    async def _ack(self, command, status, command_id=None, trip_status=None,
+                   reason=None, detail=None):
+        """Acknowledge one command, directly and after the fact.
+
+        `command_id` is echoed straight back so the client can match a reply to
+        the command it sent. It is client-generated and opaque to us; the server
+        never invents one, because a correlation id the client did not choose
+        correlates nothing.
+        """
+        frame = {
+            'type': 'command_ack',
+            'command': command,
+            'status': status,
+            'trip_id': self.trip_id,
+        }
+        if command_id is not None:
+            frame['command_id'] = command_id
+        if trip_status is not None:
+            frame['trip_status'] = trip_status
+        if reason:
+            frame['reason'] = reason
+        if detail:
+            frame['detail'] = detail
+        await self.send(text_data=json.dumps(frame))
+
+    async def _ack_rejected(self, command, command_id, reason, detail=None,
+                            trip_status=None):
+        """Refusals that never reach the state machine still deserve an ack.
+
+        An authorisation failure, a missing OTP, an exhausted attempt lock: from
+        the client's point of view these are answers, and a client waiting for one
+        must not time out and retry a command that will never be accepted.
+        """
+        await self._ack(command, self.ACK_REJECTED, command_id=command_id,
+                        reason=reason, detail=detail, trip_status=trip_status)
+
     async def receive(self, text_data):
         """
         Receive trip actions from driver.
-        Expected: {"action": "accept|reached|start|complete|cancel"}
+        Expected: {"action": "accept|reached|start|complete|cancel",
+                   "command_id": "<optional client-generated correlation id>"}
         """
         try:
             data = json.loads(text_data)
             action = data.get('action')
             otp_input = data.get('otp')
+            # Opaque, client-generated, echoed verbatim. Length-bounded so it
+            # cannot be used to push arbitrary payload back out through us.
+            command_id = data.get('command_id')
+            if command_id is not None:
+                command_id = str(command_id)[:64]
 
             if action == 'ping':
                 # The driver app keeps this socket warm with a 25-second
@@ -985,6 +1078,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     'type': 'error',
                     'message': 'Invalid action. Must be: accept, reached, start, complete, cancel, confirm_cash, or ping'
                 }))
+                await self._ack_rejected(str(action)[:32], command_id,
+                                         'unknown_command')
                 return
 
             # Authorisation ladder:
@@ -1007,6 +1102,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'type': 'error',
                         'message': 'Only drivers can accept rides'
                     }))
+                    await self._ack_rejected(action, command_id,
+                                             'not_a_driver')
                     return
                 result = await self._accept_trip()
                 if result.get('success'):
@@ -1029,6 +1126,7 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'trip_id': self.trip_id,
                         'message': 'This ride was accepted by another driver.',
                     }))
+                    await self._ack_rejected(action, command_id, 'trip_taken')
                     await self.close(code=4005)
                     return
             elif action == 'reached':
@@ -1037,6 +1135,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'type': 'error',
                         'message': 'Only the assigned driver can mark this trip as reached'
                     }))
+                    await self._ack_rejected(action, command_id,
+                                             'not_assigned_driver')
                     return
                 result = await self._update_trip_status('reached')
             elif action == 'start':
@@ -1045,12 +1145,16 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'type': 'error',
                         'message': 'Only the assigned driver can start this trip'
                     }))
+                    await self._ack_rejected(action, command_id,
+                                             'not_assigned_driver')
                     return
                 if not otp_input:
                     await self.send(text_data=json.dumps({
                         'type': 'error',
                         'message': 'OTP is required to start the ride'
                     }))
+                    await self._ack_rejected(action, command_id,
+                                             'otp_required')
                     return
                 # Brute-force lock: refuse start if too many wrong OTPs have
                 # been submitted for this trip recently.
@@ -1061,6 +1165,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'type': 'error',
                         'message': 'Too many invalid OTP attempts. Ask the rider for the OTP again.'
                     }))
+                    await self._ack_rejected(action, command_id,
+                                             'otp_attempts_exhausted')
                     return
                 result = await self._update_trip_status('in_progress', otp_input=otp_input)
                 if not result.get('success') and 'OTP' in (result.get('error') or ''):
@@ -1077,6 +1183,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'type': 'error',
                         'message': 'Only the assigned driver can complete this trip'
                     }))
+                    await self._ack_rejected(action, command_id,
+                                             'not_assigned_driver')
                     return
                 result = await self._update_trip_status('completed')
             elif action == 'confirm_cash':
@@ -1085,6 +1193,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'type': 'error',
                         'message': 'Only the assigned driver can confirm cash payment'
                     }))
+                    await self._ack_rejected(action, command_id,
+                                             'not_assigned_driver')
                     return
                 result = await self._confirm_cash_payment()
             elif action == 'cancel':
@@ -1095,6 +1205,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'type': 'error',
                         'message': 'Only the rider or assigned driver can cancel this trip'
                     }))
+                    await self._ack_rejected(action, command_id,
+                                             'not_authorised_to_cancel')
                     return
                 # Record WHO cancelled. Ops, refunds, driver-penalty and the
                 # MVA-2020 cancellation policy all need this; collapsing every
@@ -1144,6 +1256,14 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         })
 
                     await self.channel_layer.group_send(f'rider_{rider_id}', rider_event)
+
+                # Direct, post-commit, correlated. `_update_trip_status` and
+                # `_accept_trip` both wrap `transaction.atomic()`, so by the time
+                # they have returned the write is durable -- which is what lets
+                # this ack mean "committed" rather than "parsed".
+                await self._ack(action, self.ACK_COMMITTED,
+                                command_id=command_id,
+                                trip_status=_TARGET_STATUS.get(action, action))
             else:
                 # Sent only to the acting driver's own socket, never to the
                 # trip group, so a rejection cannot disclose anything about
@@ -1151,13 +1271,31 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 # code the driver app can branch on (e.g.
                 # 'driver_already_on_trip'); it is additive, so clients that
                 # only read `message` are unaffected.
-                error_frame = {
-                    'type': 'error',
-                    'message': result.get('error', 'Action failed'),
-                }
-                if result.get('reason'):
-                    error_frame['reason'] = result['reason']
-                await self.send(text_data=json.dumps(error_frame))
+                reason = result.get('reason')
+
+                if reason == 'already_in_target_state':
+                    # A retry that landed after the original attempt committed.
+                    # The durable state already satisfies the command, so this is
+                    # a SUCCESS for the caller, and nothing ran twice. Replying
+                    # with an `error` frame here is exactly what would make a
+                    # correct retry look like a failure.
+                    await self._ack(action, self.ACK_ALREADY_DONE,
+                                    command_id=command_id,
+                                    trip_status=result.get('current_status'),
+                                    reason=reason)
+                else:
+                    error_frame = {
+                        'type': 'error',
+                        'message': result.get('error', 'Action failed'),
+                    }
+                    if reason:
+                        error_frame['reason'] = reason
+                    await self.send(text_data=json.dumps(error_frame))
+                    await self._ack_rejected(
+                        action, command_id, reason or 'rejected',
+                        detail=result.get('error'),
+                        trip_status=result.get('current_status'),
+                    )
 
         except json.JSONDecodeError:
             await self.send(text_data=json.dumps({
@@ -1625,16 +1763,34 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     if current_status not in allowed_transitions[status_code]:
                         return {
                             'success': False, 
+                            'current_status': current_status,
+                            # `already_in_target_state` is the retry case and the
+                            # whole point of these codes: a driver whose ack was
+                            # lost retries, and must be told the command already
+                            # succeeded rather than that it failed. No transition
+                            # runs twice either way.
+                            'reason': ('already_in_target_state'
+                                       if current_status == status_code
+                                       else 'invalid_transition'),
                             'error': f'Invalid status transition: cannot change from {current_status} to {status_code}'
                         }
 
                 if status_code == 'cancelled' and current_status in ['completed', 'cancelled']:
-                    return {'success': False, 'error': f'Trip is already {current_status}'}
+                    return {
+                        'success': False,
+                        'current_status': current_status,
+                        'reason': ('already_in_target_state'
+                                   if current_status == 'cancelled'
+                                   else 'trip_already_completed'),
+                        'error': f'Trip is already {current_status}',
+                    }
 
                 if status_code == 'in_progress':
                     if str(trip.otp) != str(otp_input):
                         return {
                             'success': False,
+                            'current_status': current_status,
+                            'reason': 'invalid_otp',
                             'error': 'Invalid OTP provided'
                         }
                         

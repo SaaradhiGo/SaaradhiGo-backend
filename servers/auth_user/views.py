@@ -333,10 +333,42 @@ def login(request):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
         
+        # Register this device for push, if the client had a token to give.
+        #
+        # This used to be `user.fcm_token = device_token; user.save()`, which had
+        # two defects on the most-travelled path in the product.
+        #
+        # 1. `device_token` is optional and defaults to None, so ANY login without
+        #    one wiped the stored token. The driver app omits the key whenever
+        #    FCM is unavailable -- no Play Services, permission not yet granted,
+        #    no network at launch, Firebase not configured -- all of which are
+        #    documented, survivable states in its own PushService. A driver who
+        #    hit one of them and logged in lost push until they happened to log
+        #    in again with a working token, and nothing reported it. Push is the
+        #    fallback channel for ride offers when the socket is down, so the
+        #    failure is invisible until a driver misses rides in the background.
+        #
+        # 2. A bare `save()` writes every column from the in-memory instance.
+        #    On the error path above, `user` is re-fetched after a failed create,
+        #    so it can be stale -- and a full-row write from a stale instance is
+        #    exactly the defect that cancelled trips a driver had already
+        #    accepted. Narrow write instead.
+        #
+        # Deliberately not fatal: a login must not fail because a push
+        # registration could not be stored. Push is redundant to the WebSocket.
+        if device_token:
+            try:
+                user.fcm_token = device_token
+                user.save(update_fields=['fcm_token'])
+            except Exception as exc:  # noqa: BLE001
+                # No token in the log line: it is a device credential, and
+                # anyone holding one can push to that device.
+                logger.error(
+                    'push registration failed for user %s: %s', user.id, exc,
+                )
+
         # Generate tokens
         try:
-            user.fcm_token=device_token
-            user.save()
             access_token = AccessToken.for_user(user)
             refresh_token = RefreshToken.for_user(user)
         except Exception as e:

@@ -22,5 +22,14 @@ class UserModelSerializer(ModelSerializer):
             'phone_number',
         ]
         extra_kwargs = {
-            'password': {'write_only': True}
+            'password': {'write_only': True},
+            # An FCM token is a device credential: anyone holding one can send
+            # notifications to that handset. It was being echoed back in every
+            # payload this serializer renders -- including the login response and
+            # any admin view of a driver's profile -- so a push credential
+            # travelled further than it needed to. Write-only: clients still
+            # register a token, nothing reads one back. Verified against all
+            # three clients (driver, rider, ops web): none of them read the
+            # field, so removing it from responses breaks nothing.
+            'fcm_token': {'write_only': True},
         }

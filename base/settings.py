@@ -161,6 +161,40 @@ SIMPLE_JWT = {
 # celery
 CELERY_BROKER_URL = REDIS_URL + '/0'
 
+# Task durability under worker loss.
+#
+# Both default to False, and 5 of the 12 registered tasks did not set acks_late
+# themselves: auto_cancel_trip, block_expired_driver_licenses,
+# reconcile_stuck_payments, reconcile_stuck_withdrawals and
+# sweep_stale_driver_presence. With early ack, the broker forgets a task the
+# moment a worker picks it up, so a worker killed mid-task loses it silently --
+# no error, no retry, no trace. For auto_cancel_trip that means a trip nobody
+# accepted is never cancelled and the rider waits forever; for
+# reconcile_stuck_withdrawals it means stuck payouts stop being surfaced.
+#
+# acks_late alone is not enough: a SIGKILLed worker never gets to reject the
+# message either. task_reject_on_worker_lost is what returns it to the queue.
+#
+# The trade is that a redelivered task runs twice, so every task must tolerate
+# re-execution. All 12 do: the ride tasks re-check state inside a row lock
+# (auto_cancel_trip takes select_for_update and stands down if a driver has since
+# accepted), the money tasks are keyed by idempotency key, and the rest are
+# sweeps that converge.
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+
+# Bound a wedged task rather than letting it hold a worker slot forever. The
+# longest legitimate task here is a sweep over completed trips, well inside
+# these limits; soft first so a task gets a chance to log before it is killed.
+CELERY_TASK_SOFT_TIME_LIMIT = 300
+CELERY_TASK_TIME_LIMIT = 360
+
+# One task at a time per worker process. The default of 4 prefetches work that a
+# crashing worker then loses -- and with ETA tasks (auto_cancel_trip,
+# compute_trip_actuals) a prefetched message is held in worker memory until its
+# countdown elapses, so a crash discards a scheduled cancellation.
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
 # Celery Beat — periodic tasks.
 # The compose `celery` service runs with `-B` so beat is embedded in the
 # worker. That's fine while we run a single celery instance; when we

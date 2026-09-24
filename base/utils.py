@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from celery import shared_task
+from celery.exceptions import Retry
 from botocore.exceptions import ClientError, BotoCoreError
 
 logger = logging.getLogger(__name__)
@@ -117,17 +118,46 @@ def generate_otp(n: int) -> str:
     return ''.join(secrets.choice(digits) for _ in range(n))
 
 
-@shared_task
-def send_otp_via_sns(phone_number: str, message: str) -> Dict[str, Any]:
+# Transient AWS conditions worth another attempt. An invalid phone number will
+# not become valid, so those stay terminal and are not retried.
+_SNS_TERMINAL_ERROR_CODES = frozenset({
+    'InvalidParameter',
+    'InvalidParameterValue',
+    'OptedOut',          # the recipient has opted out of SMS
+    'AuthorizationError',
+})
+
+
+@shared_task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=5,
+    retry_backoff=True,
+    retry_jitter=True,
+)
+def send_otp_via_sns(self, phone_number: str, message: str) -> Dict[str, Any]:
     """
     Send OTP via AWS SNS service.
-    
+
+    This is the first step of every rider and driver session, and it is also used
+    to notify an SOS. It used to catch every failure and return a dict, which made
+    Celery record the task as SUCCEEDED even when no SMS was sent -- and there was
+    no retry, so a moment of SNS throttling or a credentials blip meant the OTP
+    was silently never delivered and the user simply could not log in.
+
+    Transient failures now raise so Celery retries them, with backoff. Terminal
+    failures (a malformed number, an opted-out recipient) still return a dict,
+    because retrying those only delays the same answer.
+
     Args:
         phone_number: Recipient phone number (E.164 format)
         message: OTP message content
-    
+
     Returns:
-        dict: Status and response or error details
+        dict: Status and response, or terminal error details.
+
+    Raises:
+        Retry: transient AWS or network failure; Celery will try again.
     """
     try:
         # Validate inputs
@@ -140,11 +170,14 @@ def send_otp_via_sns(phone_number: str, message: str) -> Dict[str, Any]:
         
         client = get_sns_client()
         if client is None:
-            logger.error("SNS client initialization failed")
-            return {
-                "success": False,
-                "error": "AWS SNS service unavailable"
-            }
+            # Configuration or credentials. Retry: this is commonly transient
+            # (a credential refresh, a metadata endpoint hiccup) and returning
+            # "success: False" here told Celery the task had completed.
+            logger.error(
+                "otp_send_failure reason=sns_client_unavailable retry=%s/%s",
+                self.request.retries, self.max_retries,
+            )
+            raise self.retry(exc=RuntimeError('SNS client unavailable'))
         
         resp = client.publish(
             PhoneNumber=phone_number,
@@ -168,23 +201,40 @@ def send_otp_via_sns(phone_number: str, message: str) -> Dict[str, Any]:
         }
     
     except ClientError as e:
-        logger.error(f"AWS ClientError sending OTP: {str(e)}")
-        return {
-            "success": False,
-            "error": f"AWS error: {e.response.get('Error', {}).get('Message', str(e))}"
-        }
+        code = (e.response or {}).get('Error', {}).get('Code', '')
+        if code in _SNS_TERMINAL_ERROR_CODES:
+            # Retrying will not help. Terminal, and reported as such.
+            logger.error(
+                "otp_send_terminal reason=sns_client_error code=%s", code,
+            )
+            return {
+                "success": False,
+                "error": f"AWS error: {e.response.get('Error', {}).get('Message', str(e))}",
+                "terminal": True,
+            }
+        logger.error(
+            "otp_send_failure reason=sns_client_error code=%s retry=%s/%s",
+            code, self.request.retries, self.max_retries,
+        )
+        raise self.retry(exc=e)
     except BotoCoreError as e:
-        logger.error(f"BotoCoreError sending OTP: {str(e)}")
-        return {
-            "success": False,
-            "error": f"AWS service error: {str(e)}"
-        }
+        # Connection, endpoint and timeout errors all land here. Always worth
+        # another attempt.
+        logger.error(
+            "otp_send_failure reason=botocore_error retry=%s/%s",
+            self.request.retries, self.max_retries,
+        )
+        raise self.retry(exc=e)
+    except Retry:
+        # self.retry() signals by raising. Never swallow it into the generic
+        # handler below, which is what would turn a retry into a silent success.
+        raise
     except Exception as e:
-        logger.error(f"Unexpected error sending OTP via SNS: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Unexpected error: {str(e)}"
-        }
+        logger.exception(
+            "otp_send_failure reason=unexpected retry=%s/%s",
+            self.request.retries, self.max_retries,
+        )
+        raise self.retry(exc=e)
 
 
 def wallet_payment(user, amount, purpose='Trip payment', reference_id=None, idempotency_key=None):

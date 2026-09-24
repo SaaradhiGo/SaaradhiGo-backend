@@ -106,7 +106,19 @@ def credit_driver_wallet(trip):
                     idempotency_key=f'TRIP_{trip.id}_EARNING'
                 )
         except IntegrityError:
-            # Duplicate webhook/retry: already processed
+            # Duplicate webhook/retry: already processed. The idempotency key
+            # TRIP_<id>_EARNING is what refuses it, and returning here is what
+            # stops the balance being credited twice -- so this branch working
+            # is load-bearing for the ledger.
+            #
+            # Logged because a rising rate here means something upstream is
+            # retrying settlement more than expected, and that is worth knowing
+            # before it turns into a support question about a missing payment.
+            logger.info('driver_earning_duplicate_suppressed', extra={
+                'event': 'driver_earning_duplicate_suppressed',
+                'trip_id': trip.id,
+                'idempotency_key': f'TRIP_{trip.id}_EARNING',
+            })
             return
 
         wallet.balance = new_balance

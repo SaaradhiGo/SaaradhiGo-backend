@@ -2,7 +2,8 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from base.utils import success_response, error_response
-from base.permissions import IsAdmin
+from base.permissions import IsAdmin, is_operator
+from servers.admin_dashboard import login_guard
 from django.contrib.auth import get_user_model
 from servers.auth_user.serializers import UserModelSerializer
 from rest_framework.pagination import PageNumberPagination
@@ -52,8 +53,30 @@ def admin_list_users(request):
 
 @api_view(['POST'])
 def admin_login(request):
-    """
-    Admin login using phone number and password.
+    """Password sign-in for an operator, issuing a JWT pair.
+
+    THREE DEFECTS THIS VIEW HAD
+    ---------------------------
+    **It was completely unthrottled.** No `throttle_classes`, and the project sets
+    `DEFAULT_THROTTLE_RATES` without `DEFAULT_THROTTLE_CLASSES`, so nothing applied.
+    The Django console form at `/login/` was measured at 12 failed logins in 7.8
+    seconds before `login_guard` was added; this endpoint had exactly that exposure
+    and no guard at all -- an unmetered password oracle for the accounts that
+    approve KYC and release payouts. It now shares `login_guard` with the console,
+    so the two operator sign-in surfaces cannot have different brute-force
+    resistance.
+
+    **Its authorization gate was the weakest of four.** It refused only when
+    `role != 'admin' AND not is_staff AND not is_superuser` -- an "any of three"
+    gate, so `is_staff` alone was enough. A rider carrying `is_staff` could mint an
+    operator token here while `IsAdmin` refused them everywhere else. Now
+    `is_operator`, which is the one definition.
+
+    **It enumerated users.** An unknown phone returned `issue='User not found'` and
+    a wrong password returned `issue='Incorrect password'` -- two distinguishable
+    401s, which is a clean oracle for which numbers hold accounts. A third distinct
+    403 (`AUTH_NOT_ADMIN`) then told an attacker which of those accounts are
+    operators. All three are now one identical refusal.
     """
     try:
         phone_number = request.data.get('phone_number')
@@ -76,36 +99,39 @@ def admin_login(request):
             elif phone_number.startswith('91') and len(phone_number) == 12:
                 phone_number = f'+{phone_number}'
 
+        # One refusal for every failure below: unknown phone, wrong password,
+        # correct password on a non-operator account, and locked out. Anything
+        # that distinguishes them is an oracle.
+        def _refuse():
+            return error_response(
+                code='AUTH_INVALID_CREDENTIALS',
+                message='Invalid phone number or password',
+                field='general',
+                issue='Invalid credentials',
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        if login_guard.is_locked(request, phone_number):
+            return _refuse()
+
         try:
             user = user_model.objects.get(phone_number=phone_number)
         except user_model.DoesNotExist:
-            return error_response(
-                code='AUTH_INVALID_CREDENTIALS',
-                message='Invalid phone number or password',
-                field='general',
-                issue='User not found',
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            login_guard.record_failure(request, phone_number)
+            return _refuse()
 
         if not user.check_password(password):
-            return error_response(
-                code='AUTH_INVALID_CREDENTIALS',
-                message='Invalid phone number or password',
-                field='general',
-                issue='Incorrect password',
-                status=status.HTTP_401_UNAUTHORIZED
-            )
+            login_guard.record_failure(request, phone_number)
+            return _refuse()
 
-        # Verify if the user is an admin
-        if user.role != 'admin' and not user.is_staff and not user.is_superuser:
-            return error_response(
-                code='AUTH_NOT_ADMIN',
-                message='User does not have admin privileges',
-                field='general',
-                issue='Unauthorized access',
-                status=status.HTTP_403_FORBIDDEN
-            )
+        # A CORRECT password on a non-operator account still counts as a failure.
+        # Otherwise every rider and driver account is an unthrottled oracle for
+        # password guessing -- the attacker simply aims at a non-operator.
+        if not is_operator(user):
+            login_guard.record_failure(request, phone_number)
+            return _refuse()
 
+        login_guard.clear(request, phone_number)
         access_token = AccessToken.for_user(user)
         refresh_token = RefreshToken.for_user(user)
         user_serializer = UserModelSerializer(user)

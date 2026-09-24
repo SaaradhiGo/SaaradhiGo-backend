@@ -40,26 +40,11 @@ from django.contrib.auth import get_user_model
 import json
 import logging
 logger = logging.getLogger(__name__)
-def is_operator(user) -> bool:
-    """Is this user allowed to operate the console?
-
-    One definition, used by the login view and by `admin_required`, because three
-    copies of this expression is how two of them end up disagreeing. The DRF side
-    has the same rule in `base.permissions.IsAdmin`, and that docstring records
-    why `is_staff` is part of it: a `role` a client could ask for was enough to
-    reach operator APIs without it.
-
-    `is_staff` is the gate that cannot be self-served. It is set by
-    `bootstrap_qa_operator` and the Django admin, and by no request.
-    """
-    if not (user and getattr(user, "is_authenticated", False)):
-        return False
-    if getattr(user, "is_superuser", False):
-        return True
-    return (
-        getattr(user, "role", None) == "admin"
-        and getattr(user, "is_staff", False)
-    )
+# Re-exported, not reimplemented. The console used to carry its own copy of this
+# expression; `base.permissions.is_operator` is now the only definition, and its
+# docstring records the four divergent copies that preceded it. Imported under the
+# same name so existing call sites and tests are unchanged.
+from base.permissions import is_operator  # noqa: E402
 
 
 def admin_required(view_func):

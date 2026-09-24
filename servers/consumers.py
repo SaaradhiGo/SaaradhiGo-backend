@@ -28,7 +28,12 @@ _TARGET_STATUS = {
     'start': 'in_progress',
     'complete': 'completed',
     'cancel': 'cancelled',
-    'confirm_cash': 'in_progress',
+    # `confirm_cash` deliberately absent. It records that the driver collected the
+    # fare; it does NOT move the trip's state machine, which is already
+    # `completed` by the time it is allowed to run. Mapping it to a status was a
+    # mistake caught in QA: the ack reported `trip_status: in_progress` for a trip
+    # that was completed, which is exactly the kind of confident wrong answer this
+    # protocol exists to eliminate. Its ack now reports the trip's real status.
 }
 
 
@@ -1373,9 +1378,19 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 # `_accept_trip` both wrap `transaction.atomic()`, so by the time
                 # they have returned the write is durable -- which is what lets
                 # this ack mean "committed" rather than "parsed".
+                # For a command that moves the state machine, the target status is
+                # known. For one that does not (`confirm_cash`), read the trip's
+                # real status rather than inventing one -- an ack that reports a
+                # status the trip is not in is worse than no ack.
+                acked_status = _TARGET_STATUS.get(action)
+                if acked_status is None:
+                    try:
+                        acked_status = await self._current_trip_status()
+                    except Exception:  # noqa: BLE001 -- never fail the ack on this
+                        acked_status = None
                 await self._ack(action, self.ACK_COMMITTED,
                                 command_id=command_id,
-                                trip_status=_TARGET_STATUS.get(action, action))
+                                trip_status=acked_status)
             else:
                 # Sent only to the acting driver's own socket, never to the
                 # trip group, so a rejection cannot disclose anything about

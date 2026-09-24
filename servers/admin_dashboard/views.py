@@ -6618,3 +6618,140 @@ def notifications(request: HttpRequest) -> HttpResponse:
         request,
         "admin_pages/notifications.html",
     )
+
+
+@admin_required
+@require_http_methods(["GET", "POST"])
+def stale_rides(request: HttpRequest) -> HttpResponse:
+    """Operator queue for active rides that have stopped looking alive.
+
+    Exists because QA trip 42 stranded a driver's supply and there was no way for
+    anyone without a shell to see it, let alone act on it.
+
+    WHAT AN OPERATOR CAN DO HERE, AND WHAT THEY DELIBERATELY CANNOT
+    --------------------------------------------------------------
+    Available:
+
+      mark_reviewed   Records that a human looked and judged the ride legitimate.
+                      Clears the flag. Changes nothing about the trip.
+      release_driver  Clears the ephemeral driver active-trip marker for a driver
+                      whose trip PostgreSQL already considers finished. A cache
+                      repair, not a business decision -- reconcile consults the
+                      database and only clears when the two disagree, so it cannot
+                      free a driver who is genuinely mid-ride.
+
+    NOT available, on purpose:
+
+      admin_complete  Completing a ride creates settlement, a wallet movement, a
+                      commission and a receipt. Whether an abandoned ride may be
+                      completed, and at what fare, is a business policy decision
+                      nobody has made. A button for it would invent that policy.
+      admin_cancel    Terminating a started ride has the same problem from the
+                      other side: what the rider owes, if anything, is undecided.
+
+    So this page is DETECTION plus the two safe actions. Termination stays blocked
+    until the money policy is decided, and the page says so rather than hiding it.
+    """
+    from servers.admin_audit.services import record_admin_action
+    from servers.ride.liveness import (
+        attention_after_seconds, classify, reconcile_driver_active_trip,
+        stale_after_seconds, stale_candidates,
+    )
+    from servers.ride.models import Trip
+
+    if request.method == "POST":
+        action = (request.POST.get("action") or "").strip()
+        trip_id = (request.POST.get("trip_id") or "").strip()
+        reason = (request.POST.get("reason") or "").strip()
+
+        if not reason:
+            messages.error(request, "A reason is required for any action here.")
+            return redirect("stale_rides")
+
+        trip = Trip.objects.filter(id=trip_id).select_related(
+            "status_id", "driver_id").first()
+        if trip is None:
+            messages.error(request, "Trip not found.")
+            return redirect("stale_rides")
+
+        if action == "mark_reviewed":
+            before = {
+                "stale_flagged_at": str(trip.stale_flagged_at),
+                "stale_reason": trip.stale_reason,
+            }
+            Trip.objects.filter(id=trip.id).update(
+                stale_flagged_at=None, stale_reason="")
+            record_admin_action(
+                request, action="stale_ride_marked_reviewed",
+                target_type="Trip", target_id=trip.id,
+                before=before, after={"stale_flagged_at": None},
+                reason=reason,
+            )
+            messages.success(
+                request,
+                f"Ride #{trip.id} marked reviewed. Trip status unchanged.")
+
+        elif action == "release_driver":
+            if trip.driver_id is None:
+                messages.error(request, "That ride has no assigned driver.")
+                return redirect("stale_rides")
+            outcome = reconcile_driver_active_trip(trip.driver_id_id)
+            record_admin_action(
+                request, action="driver_availability_reconciled",
+                target_type="Driver", target_id=trip.driver_id_id,
+                before={"trip_id": trip.id,
+                        "trip_status": trip.status_id.status_code},
+                after={"outcome": outcome},
+                reason=reason,
+            )
+            if outcome == "repaired_cleared":
+                messages.success(
+                    request,
+                    f"Driver #{trip.driver_id_id} released: the stale active-trip "
+                    "marker was cleared and they can be dispatched again.")
+            elif outcome == "ok":
+                messages.info(
+                    request,
+                    f"Nothing to repair for driver #{trip.driver_id_id}. The "
+                    "database and the live state already agree, which means this "
+                    "ride is still genuinely active.")
+            else:
+                messages.warning(
+                    request,
+                    f"Reconciliation for driver #{trip.driver_id_id} reported "
+                    f"'{outcome}'.")
+        else:
+            messages.error(request, "Unsupported action.")
+        return redirect("stale_rides")
+
+    # ---------------------------------------------------------------- the queue
+    now = timezone.now()
+    rows = []
+    for trip in stale_candidates(now=now, limit=200):
+        classification, silent, reason = classify(trip, now=now)
+        driver = trip.driver_id
+        anchor = trip.started_at or trip.accepted_at or trip.requested_at
+        rows.append({
+            "trip_id": trip.id,
+            "status": trip.status_id.status_code,
+            "classification": classification,
+            "silent_minutes": round(silent / 60) if silent else None,
+            "reason": trip.stale_reason or reason,
+            "started_at": trip.started_at or trip.accepted_at,
+            "elapsed_minutes": round((now - anchor).total_seconds() / 60),
+            "last_driver_activity_at": trip.last_driver_activity_at,
+            "last_rider_activity_at": trip.last_rider_activity_at,
+            "driver_id": driver.id if driver else None,
+            # A stable, non-identifying label. An operator who needs to phone the
+            # rider opens the trip; a queue does not need a phone number in it.
+            "rider_ref": f"R{trip.user_id_id}",
+            "flagged_at": trip.stale_flagged_at,
+        })
+
+    context = {
+        "rows": rows,
+        "stale_after_minutes": round(stale_after_seconds() / 60),
+        "attention_after_minutes": round(attention_after_seconds() / 60),
+        "termination_blocked": True,
+    }
+    return render(request, "admin_pages/stale_rides.html", context)

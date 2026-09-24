@@ -272,3 +272,43 @@ def auto_cancel_trip(self, trip_id):
     except Exception as e:
         logger.error('Error auto-cancelling trip %s: %s', trip_id, e)
         raise
+
+
+@shared_task(
+    name='ride.flag_stale_active_trips',
+    bind=True,
+    acks_late=True,
+    max_retries=3,
+    default_retry_delay=30,
+)
+def flag_stale_active_trips(self):
+    """Flag active trips that have gone quiet. Changes no trip status.
+
+    This is the DETECTION half of the answer to an abandoned in-progress ride. It
+    exists because QA trip 42 stranded its driver's supply with no way for anyone
+    without a shell to see it, let alone fix it.
+
+    It deliberately does NOT cancel anything. Absence of connectivity is not
+    evidence of abandonment -- a legitimate ride can cross a tunnel, run for hours,
+    or be backgrounded by an OEM battery manager -- so an automatic cancel would
+    abandon real rides mid-journey. The task raises a flag; an operator decides.
+
+    `acks_late` is safe because the work is idempotent: a trip already flagged is
+    skipped rather than re-flagged, and the flag is set under `select_for_update`
+    with the status re-checked inside the lock, so a redelivery after a worker
+    death converges on the same state and does not re-alert.
+    """
+    from servers.ride.liveness import flag_stale_trips
+
+    try:
+        summary = flag_stale_trips()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception('flag_stale_active_trips failed: %s', exc)
+        raise self.retry(exc=exc)
+
+    if summary['flagged'] or summary['already_flagged']:
+        logger.info(
+            'stale_ride_sweep flagged=%s already_flagged=%s reasons=%s',
+            summary['flagged'], summary['already_flagged'], summary['reasons'],
+        )
+    return summary

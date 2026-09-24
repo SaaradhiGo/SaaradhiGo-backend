@@ -149,6 +149,12 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # module, so Celery registers the full dotted path. Nothing references
         # it by string, so this is a naming inconsistency rather than a bug.
         'servers.ride.tasks.auto_cancel_trip',
+        # Stale-ride DETECTOR. acks_late is safe because flagging is idempotent:
+        # an already-flagged trip is skipped, and the flag is written under
+        # select_for_update with the status re-checked inside the lock, so a
+        # redelivery converges on the same state and does not re-alert. It
+        # changes no trip status, no fare and no settlement.
+        'ride.flag_stale_active_trips',
         'ride.compute_trip_actuals',
         'ride.dispatch_wave',
         'ride.issue_receipt_for_trip',

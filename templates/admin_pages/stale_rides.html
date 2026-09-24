@@ -1,0 +1,138 @@
+{% extends "admin_pages/base.html" %}
+
+{% block title %}Stale rides | SaaradhiGo Admin{% endblock %}
+
+{% block content %}
+<div class="p-6 lg:p-8 space-y-6">
+
+    <div>
+        <p class="text-warning text-xs font-bold uppercase tracking-[0.24em]">Ride operations</p>
+        <h1 class="font-headline text-3xl font-black mt-2">Stale active rides</h1>
+        <p class="text-sm text-on-surface-variant mt-1">
+            Rides that are still active but have gone quiet. Flagged after
+            {{ stale_after_minutes }} minutes of silence; escalated after
+            {{ attention_after_minutes }}.
+        </p>
+    </div>
+
+    {# The single most important thing on this page is what it does NOT do. #}
+    <div class="border border-outline-variant/40 bg-surface-container rounded-lg px-4 py-3 text-sm space-y-2">
+        <p class="font-bold">A flag is not a verdict.</p>
+        <p class="text-on-surface-variant">
+            Silence is not proof a ride was abandoned. A legitimate trip can cross a
+            tunnel, sit in a basement car park, run for hours in traffic, be
+            backgrounded by the phone, or end with a flat battery while the driver is
+            still carrying the passenger. Nothing on this page has changed any ride's
+            status, fare or settlement.
+        </p>
+        <p class="text-on-surface-variant">
+            Judge each row: a <strong>normal long ride</strong> keeps moving and
+            reappears healthy on its own; a <strong>temporary disconnect</strong>
+            clears itself the moment the driver returns; a
+            <strong>likely abandoned ride</strong> stays silent and keeps climbing.
+        </p>
+    </div>
+
+    {% if messages %}
+        {% for message in messages %}
+        <div class="rounded-lg px-4 py-3 text-sm border
+            {% if message.tags == 'success' %}border-primary/40 bg-primary/10
+            {% elif message.tags == 'error' %}border-error/40 bg-error/10 text-error
+            {% else %}border-outline-variant/40 bg-surface-container{% endif %}">
+            {{ message }}
+        </div>
+        {% endfor %}
+    {% endif %}
+
+    {% if not rows %}
+        <div class="bg-surface-container rounded-lg border border-outline-variant/30 p-8 text-center">
+            <p class="font-bold">No stale rides.</p>
+            <p class="text-sm text-on-surface-variant mt-1">
+                Every active ride has reported driver activity inside the last
+                {{ stale_after_minutes }} minutes.
+            </p>
+        </div>
+    {% else %}
+    <div class="bg-surface-container rounded-lg border border-outline-variant/30 overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="text-left text-on-surface-variant border-b border-outline-variant/30">
+                <tr>
+                    <th class="px-4 py-3">Ride</th>
+                    <th class="px-4 py-3">Status</th>
+                    <th class="px-4 py-3">Assessment</th>
+                    <th class="px-4 py-3">Silent</th>
+                    <th class="px-4 py-3">Ride length</th>
+                    <th class="px-4 py-3">Last driver activity</th>
+                    <th class="px-4 py-3">Last rider activity</th>
+                    <th class="px-4 py-3">Driver</th>
+                    <th class="px-4 py-3">Rider</th>
+                    <th class="px-4 py-3">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for row in rows %}
+                <tr class="border-b border-outline-variant/10 align-top">
+                    <td class="px-4 py-3 font-bold">
+                        <a href="/ride/{{ row.trip_id }}/" class="underline">#{{ row.trip_id }}</a>
+                    </td>
+                    <td class="px-4 py-3">{{ row.status }}</td>
+                    <td class="px-4 py-3">
+                        <span class="{% if row.classification == 'operator_attention' %}text-error font-bold{% elif row.classification == 'stale' %}text-warning{% endif %}">
+                            {{ row.classification }}
+                        </span>
+                        <div class="text-xs text-on-surface-variant">{{ row.reason }}</div>
+                    </td>
+                    <td class="px-4 py-3">{{ row.silent_minutes }} min</td>
+                    <td class="px-4 py-3">{{ row.elapsed_minutes }} min</td>
+                    <td class="px-4 py-3 text-xs">{{ row.last_driver_activity_at|default:"never" }}</td>
+                    <td class="px-4 py-3 text-xs">{{ row.last_rider_activity_at|default:"never" }}</td>
+                    <td class="px-4 py-3">
+                        {% if row.driver_id %}
+                        <a href="/driver_profile/{{ row.driver_id }}/" class="underline">#{{ row.driver_id }}</a>
+                        {% else %}&mdash;{% endif %}
+                    </td>
+                    {# A stable reference, not a name or a phone number. Open the ride
+                       if you need to contact someone. #}
+                    <td class="px-4 py-3 text-xs">{{ row.rider_ref }}</td>
+                    <td class="px-4 py-3">
+                        <form method="post" class="space-y-2">
+                            {% csrf_token %}
+                            <input type="hidden" name="trip_id" value="{{ row.trip_id }}">
+                            <input name="reason" required placeholder="Reason (required)"
+                                   class="w-44 bg-surface-container-high border border-outline-variant/30 rounded px-2 py-1 text-xs">
+                            <div class="flex gap-2">
+                                <button type="submit" name="action" value="mark_reviewed"
+                                        onclick="return confirm('Mark ride #{{ row.trip_id }} reviewed? This clears the flag and changes nothing about the ride.')"
+                                        class="px-2 py-1 rounded bg-surface-container-high border border-outline-variant/30 text-xs">
+                                    Mark reviewed
+                                </button>
+                                <button type="submit" name="action" value="release_driver"
+                                        onclick="return confirm('Release driver #{{ row.driver_id }}? This only clears a stale availability marker when the database already shows the ride finished. It cannot free a driver who is genuinely mid-ride.')"
+                                        class="px-2 py-1 rounded bg-warning/10 border border-warning/40 text-xs">
+                                    Release driver
+                                </button>
+                            </div>
+                        </form>
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {% if termination_blocked %}
+    <div class="border border-error/30 bg-error/5 rounded-lg px-4 py-3 text-sm space-y-1">
+        <p class="font-bold text-error">Terminating a started ride is not available here.</p>
+        <p class="text-on-surface-variant">
+            Completing a ride creates a settlement, a wallet movement, a commission
+            and a receipt. Cancelling a started one raises the question of what the
+            rider owes. Neither policy has been decided for abandoned rides, so no
+            button exists for them &mdash; a control that invents money policy is
+            worse than no control. Escalate to engineering and the business together.
+        </p>
+    </div>
+    {% endif %}
+
+</div>
+{% endblock %}

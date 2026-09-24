@@ -29,6 +29,44 @@ class Trip(models.Model):
     started_at=models.DateTimeField(blank=True,null=True)
     completed_at=models.DateTimeField(blank=True,null=True, db_index=True)
     cancelled_at=models.DateTimeField(blank=True,null=True)
+
+    # --- Operational liveness -------------------------------------------------
+    #
+    # Added because an abandoned in-progress ride was unrecoverable without an
+    # engineer. A trip reached `in_progress`, both clients disappeared, and the
+    # only liveness evidence that existed was `driver:heartbeat:<id>` in Redis
+    # with a 45 second TTL. Once that expired there was nothing left to say WHEN
+    # activity stopped, so nothing could tell "the driver dropped out a minute
+    # ago" from "the driver has been gone for three hours" -- and the driver's
+    # `driver:active_trip:` key, which has no TTL, kept them out of dispatch
+    # permanently.
+    #
+    # These are deliberately operational, not financial. Nothing here may change
+    # a trip's status, its fare, or any settlement. Absence of connectivity is
+    # not evidence of abandonment: a legitimate ride can cross a tunnel, run for
+    # hours, or sit on a phone whose battery died.
+    last_driver_activity_at=models.DateTimeField(
+        blank=True, null=True, db_index=True,
+        help_text='Server clock, last time the assigned driver was seen alive on '
+                  'this trip. Written coalesced -- see servers.ride.liveness -- so '
+                  'a 12-ping minute costs one UPDATE, not twelve.',
+    )
+    last_rider_activity_at=models.DateTimeField(
+        blank=True, null=True,
+        help_text='Server clock, last time the rider was seen on this trip. '
+                  'Advisory only: a rider whose app is closed must never block '
+                  'the driver from completing a legitimate ride.',
+    )
+    stale_flagged_at=models.DateTimeField(
+        blank=True, null=True, db_index=True,
+        help_text='Set by the stale-ride detector when a trip stops looking '
+                  'alive. A FLAG, not a decision -- it never changes status. '
+                  'Cleared automatically when activity resumes.',
+    )
+    stale_reason=models.CharField(
+        max_length=64, blank=True, default='',
+        help_text='Why the detector flagged this trip, for the operator queue.',
+    )
     pickup_address=models.CharField(max_length=512,blank=True,null=True)
     pickup_lat=models.DecimalField(max_digits=10,decimal_places=7)
     pickup_long=models.DecimalField(max_digits=10,decimal_places=7)

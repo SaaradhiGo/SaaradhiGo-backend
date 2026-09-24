@@ -192,7 +192,23 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
 
         # Perform slower database/redis operations in the background of the connection
         await self._active_the_driver()
-        
+
+        # Repair ephemeral state against the database before announcing presence.
+        # A driver whose app died mid-ride kept a `driver:active_trip:` key with no
+        # TTL; add_driver_location() removes such a driver from the geo index, so
+        # reconnecting and pinging could never restore them to supply. PostgreSQL
+        # decides, and this is where the cache is corrected.
+        try:
+            outcome = await self._reconcile_active_trip()
+            if outcome and outcome != 'ok':
+                logger.warning(
+                    'driver_active_trip_reconciled driver=%s outcome=%s',
+                    self.driver_id, outcome,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception('active-trip reconciliation failed for driver %s',
+                             self.driver_id)
+
         await self._add_driver_location(lng, lat)
         
         # Join driver's personal group (for receiving ride requests)
@@ -289,6 +305,15 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 
                 # Stream location to admin dashboard for real-time fleet monitor
                 active_trip_id = result.get('active_trip_id')
+
+                # Durable liveness evidence for the active trip, coalesced to at
+                # most one write per interval. Before this, the only record that a
+                # ride was alive was a 45-second Redis TTL, so once it expired
+                # nothing could distinguish a driver who dropped out a minute ago
+                # from one gone for hours -- and an abandoned trip stranded the
+                # driver's supply with no way for operations to see it.
+                if active_trip_id and active_trip_id != 'unknown':
+                    await self._record_trip_liveness(active_trip_id)
                 driver_details = await self._get_driver_broadcast_info()
                 driver_details.update({
                     'type': 'driver_location_update',
@@ -457,6 +482,23 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     def _add_driver_location(self, lng, lat):
         from servers.redis_client import add_driver_location
         return add_driver_location(self.driver_id, lng=lng, lat=lat)
+
+    @database_sync_to_async
+    def _record_trip_liveness(self, trip_id):
+        from servers.ride.liveness import record_driver_activity
+        return record_driver_activity(trip_id)
+
+    @database_sync_to_async
+    def _reconcile_active_trip(self):
+        """Make Redis agree with the database about this driver's active trip.
+
+        Runs once per socket connect, not per ping. This is what lets a driver who
+        crashed mid-ride become dispatchable again on their own: the stale
+        `driver:active_trip:` key that kept them out of the geo index is cleared
+        here, because PostgreSQL says the trip is over.
+        """
+        from servers.ride.liveness import reconcile_driver_active_trip
+        return reconcile_driver_active_trip(self.driver_id)
 
 class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     """

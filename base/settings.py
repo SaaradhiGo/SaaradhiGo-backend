@@ -234,6 +234,14 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'ride.persist_location_trail',
         'schedule': 60.0,
     },
+    'stale-active-ride-sweep-every-2-min': {
+        # DETECTION only. Flags active trips that have gone quiet so operations
+        # can look; it never cancels, completes or charges anything. An abandoned
+        # in-progress ride previously stranded its driver's supply with nothing to
+        # surface it -- see servers/ride/liveness.py.
+        'task': 'ride.flag_stale_active_trips',
+        'schedule': 120.0,
+    },
     'driver-presence-sweep-every-minute': {
         # Evict drivers whose heartbeat lapsed (app killed, worker crashed)
         # from the geo index. Heartbeat TTL is 45s, so a ghost is matchable
@@ -242,6 +250,21 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 60.0,
     },
 }
+# --- Active-ride liveness -----------------------------------------------------
+# Operational thresholds for the stale-ride detector. Generous on purpose: these
+# decide when a human LOOKS, never when the system acts. The driver presence
+# heartbeat TTL is 45s, so a driver in a tunnel is already invisible to dispatch
+# long before any of these fire.
+#
+# Raising them makes operations slower to notice an abandoned ride. Lowering them
+# puts legitimate long rides in front of an operator for no reason. Neither
+# setting can cancel a trip.
+TRIP_LIVENESS_WRITE_INTERVAL_SECONDS = int(os.environ.get(
+    'TRIP_LIVENESS_WRITE_INTERVAL_SECONDS', '60'))
+TRIP_STALE_AFTER_SECONDS = int(os.environ.get('TRIP_STALE_AFTER_SECONDS', '600'))
+TRIP_OPERATOR_ATTENTION_AFTER_SECONDS = int(os.environ.get(
+    'TRIP_OPERATOR_ATTENTION_AFTER_SECONDS', '1800'))
+
 CELERY_TIMEZONE = 'Asia/Kolkata'
 
 # Let Django's LOGGING own worker output.

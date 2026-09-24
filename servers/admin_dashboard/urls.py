@@ -19,6 +19,7 @@ from .views import (
     riders,
     promo_codes,
     emergency_dashboard,
+    stale_rides,
     transaction_dashboard,
     update_global_config,
     notifications,
@@ -37,6 +38,10 @@ urlpatterns = [
     path("riders/", riders, name="riders"),
     path("promo-codes/", promo_codes, name="promo_codes"),
     path("emergency/", emergency_dashboard, name="emergency_dashboard"),
+    # Operator queue for active rides that stopped looking alive. Detection plus
+    # two safe actions only; see the view docstring on why termination is not
+    # exposed.
+    path("stale-rides/", stale_rides, name="stale_rides"),
     path("transactions/", transaction_dashboard, name="transaction_dashboard"),
     path("fare_surge/", fare_surge, name="fare_surge"),
     path("api/global-config/", update_global_config, name="update_global_config"),

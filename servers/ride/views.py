@@ -133,6 +133,19 @@ def estimate_fare(request):
             'surge_multiplier': str(fare['surge_multiplier']),
             'min_fare_applied': fare['min_fare_applied'],
         },
+        # Named lines that close the gap between the metered components and the
+        # amount charged -- the surge uplift, a minimum-fare uplift, and at most a
+        # paisa of rounding.
+        #
+        # This view builds its own response dict, so forwarding the field in
+        # quote_fare and again in estimate_amount was not enough: the API still
+        # returned three components beside a total they did not sum to. Verified
+        # against the live QA quote, where base+distance+time came to 135.21 next
+        # to a charged 169.02 and `fare_adjustments` was absent entirely.
+        'fare_adjustments': [
+            {'code': a['code'], 'label': a['label'], 'amount': str(a['amount'])}
+            for a in fare.get('fare_adjustments', [])
+        ],
         'vehicle_type': fare['vehicle_type'],
         'pricing_source': fare['source'],
         'distance_km': distance_km,

@@ -195,6 +195,11 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=Non
         'base_fare': fare['base_fare'],
         'distance_fare': fare['distance_fare'],
         'time_fare': fare['time_fare'],
+        # Named lines that close the gap between the metered components and the
+        # amount charged. Without forwarding these the API would keep showing a
+        # decomposition that does not add up -- QA trip 45 displayed
+        # 60.00 + 55.59 + 19.62 beside a charged total of 135.22.
+        'fare_adjustments': fare.get('fare_adjustments', []),
         'surge_multiplier': fare['surge_multiplier'],
         'min_fare_applied': fare['min_fare_applied'],
         'vehicle_type': fare['vehicle_type'],

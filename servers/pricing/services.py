@@ -521,11 +521,65 @@ def quote_fare(
 
     total_fare = round(subtotal, 2)
 
+    # --- Make the displayed decomposition add up exactly ---------------------
+    #
+    # `total_fare` is authoritative and unchanged: it is what the rider is charged.
+    # What was wrong was the DECOMPOSITION shown beside it.
+    #
+    # Each component was rounded on its own while the total was rounded from the
+    # unrounded subtotal, so round(a) + round(b) + round(c) != round(a + b + c).
+    # QA trip 45 charged 135.22 while its three lines read 60.00 + 55.59 + 19.62 =
+    # 135.21. A rider who adds up an itemised fare and gets a different number from
+    # the one they paid has been given a reason to distrust the whole receipt.
+    #
+    # Surge and the minimum fare break the sum too, and by design: surge multiplies
+    # the subtotal and the minimum fare replaces it. Pretending three line items
+    # explain such a total would be a different lie. So the uplifts are stated as
+    # their own lines, and only what remains after them is called rounding -- which
+    # is then at most one paisa.
+    #
+    # Every value is Decimal throughout. No float touches money.
+    _base_r = round(base_fare, 2)
+    _dist_r = round(distance_fare, 2)
+    _time_r = round(time_fare, 2)
+    _pre_surge = base_fare + distance_fare + time_fare
+
+    adjustments = []
+    if surge_multiplier != Decimal('1.00'):
+        adjustments.append({
+            'code': 'surge',
+            'label': 'Busy-time surcharge',
+            'amount': round(_pre_surge * surge_multiplier - _pre_surge, 2),
+        })
+    if min_fare_applied:
+        # The uplift from whatever the metered lines came to, up to the minimum.
+        _after_surge = _pre_surge * surge_multiplier
+        adjustments.append({
+            'code': 'minimum_fare',
+            'label': 'Minimum fare adjustment',
+            'amount': round(min_fare - _after_surge, 2),
+        })
+
+    _explained = _base_r + _dist_r + _time_r + sum(
+        (a['amount'] for a in adjustments), Decimal('0.00'))
+    _residual = round(total_fare - _explained, 2)
+    if _residual != Decimal('0.00'):
+        adjustments.append({
+            'code': 'rounding',
+            'label': 'Rounding',
+            'amount': _residual,
+        })
+
     return {
         'total_fare': total_fare,
-        'base_fare': round(base_fare, 2),
-        'distance_fare': round(distance_fare, 2),
-        'time_fare': round(time_fare, 2),
+        'base_fare': _base_r,
+        'distance_fare': _dist_r,
+        'time_fare': _time_r,
+        # Named lines that close the gap between the metered components and the
+        # amount charged. Additive to the payload: existing clients that do not
+        # read it are unaffected, and one that does can show a decomposition that
+        # sums exactly.
+        'fare_adjustments': adjustments,
         'surge_multiplier': round(surge_multiplier, 2),
         'night_surge_applied': night_applied,
         'min_fare_applied': min_fare_applied,

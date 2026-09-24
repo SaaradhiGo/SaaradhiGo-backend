@@ -35,6 +35,18 @@ from django.db import IntegrityError, transaction
 
 from servers.rider.models import Notification, Wallet, WalletTransaction
 
+
+def _brand():
+    """The customer-facing product name.
+
+    A helper rather than an inline getattr so the brand can be interpolated
+    without nesting quotes inside an f-string, which is a syntax error before
+    Python 3.12.
+    """
+    from django.conf import settings
+
+    return getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo')
+
 logger = logging.getLogger(__name__)
 
 User = get_user_model()
@@ -157,7 +169,7 @@ def _issue_credit(
 
 
 def issue_refund_credit(user, amount, trip_id, idempotency_key) -> CreditResult:
-    """Credit a rider for a cancelled/refunded trip as VahanGo Credits.
+    """Credit a rider for a cancelled/refunded trip as wallet credits.
 
     Prefer this over `gateway.create_refund(...)` when the rider has opted
     in to "instant credit" (vs the 5-7 day refund-to-original-method).
@@ -171,9 +183,10 @@ def issue_refund_credit(user, amount, trip_id, idempotency_key) -> CreditResult:
         purpose='refund',
         idempotency_key=idempotency_key,
         reference_id=f'TRIP_{trip_id}',
-        notify_title='Refund credited as VahanGo Credits',
+        notify_title='Refund credited as ' + _brand() + ' Credits',
         notify_message=(
-            f"Rs.{amt} for Trip #{trip_id} has been added to your VahanGo "
+            f"Rs.{amt} for Trip #{trip_id} has been added to your "
+            f"{_brand()} "
             f"Credits. Use the balance towards your next ride."
         ),
     )
@@ -190,9 +203,10 @@ def issue_promo_credit(user, amount, campaign, idempotency_key) -> CreditResult:
         purpose=f'promo:{campaign}',
         idempotency_key=idempotency_key,
         reference_id=campaign,
-        notify_title='You got VahanGo Credits!',
+        notify_title='You got ' + _brand() + ' Credits!',
         notify_message=(
-            f"Rs.{amt} promo credit added to your VahanGo Credits. "
+            f"Rs.{amt} promo credit added to your "
+            f"{_brand()} Credits. "
             f"Apply at checkout on your next ride."
         ),
     )
@@ -209,7 +223,7 @@ def issue_support_credit(user, amount, ticket_ref, idempotency_key, reason_note=
         purpose=f'support:{ticket_ref}',
         idempotency_key=idempotency_key,
         reference_id=ticket_ref,
-        notify_title='VahanGo Credits added by Support',
+        notify_title=_brand() + ' Credits added by Support',
         notify_message=(
             f"Rs.{amt} credit applied to your account."
             + (f" ({reason_note})" if reason_note else "")

@@ -27,7 +27,7 @@ def setup_user_and_otp(db):
     role = "rider"
     
     # Pre-create the user in the database
-    # In VahanGo logic, the user might be created ON login if DoesNotExist, 
+    # In SaaradhiGo logic, the user might be created ON login if DoesNotExist, 
     # but let's pre-create one to prove we aren't creating a new one (or we let it create). 
     # Let's let the login view handle creation as it does in `views.py` `try... except user_model.DoesNotExist: user_model.objects.create_user()`
     

@@ -123,6 +123,32 @@ from datetime import timedelta
 # SECRET_KEY only so an existing deploy keeps booting — set
 # JWT_SIGNING_KEY in prod (rotating it logs everyone out once).
 JWT_SIGNING_KEY = os.environ.get('JWT_SIGNING_KEY') or SECRET_KEY
+# --- Brand ------------------------------------------------------------------
+#
+# One source of truth, because the platform was shipping two names at once: the
+# OTP SMS said VahanGo, the Android label said SaaradhiGo, the iOS bundle said
+# Vahango, and the rider's wallet said "VahanGo Credits". A rider was told one
+# name by SMS and shown another by the app.
+#
+# Customer-facing copy must read these rather than hardcode a name.
+PLATFORM_BRAND_NAME = os.environ.get('PLATFORM_BRAND_NAME', 'SaaradhiGo')
+
+# The registered entity, which is NOT the same thing as the brand and appears on
+# the GST receipt. Left exactly as it was found; whether this is the correct
+# registered name, and whether a GSTIN and registered address must also appear,
+# is a question for the business and its accountants -- see the compliance list.
+PLATFORM_LEGAL_ENTITY = os.environ.get(
+    'PLATFORM_LEGAL_ENTITY', 'SaaradhiGo Mobility',
+)
+
+# Domain used to build the operational contact addresses shown to drivers.
+# Previously hardcoded to vahango.com, a domain this platform does not appear to
+# use -- so a driver's grievance email would have gone nowhere. Still needs a
+# human to confirm these mailboxes actually exist and are monitored.
+PLATFORM_CONTACT_DOMAIN = os.environ.get(
+    'PLATFORM_CONTACT_DOMAIN', 'saaradhigo.in',
+)
+
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=14),

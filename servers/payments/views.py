@@ -1335,7 +1335,7 @@ def refund_payment(request):
 
     mode="original" -- refund goes back to the card/UPI/bank that paid for
         the trip. Settles in 5-7 business days via the payment gateway.
-    mode="credit"   -- amount is added instantly to the rider's VahanGo
+    mode="credit"   -- amount is added instantly to the rider's wallet
         Credits (closed-loop wallet). Subject to the credit balance cap.
         The original payment is still marked refunded on our side so the
         driver wallet is reversed as usual; the rider keeps the value as
@@ -1601,7 +1601,7 @@ def refund_payment(request):
 
     if refund_mode == 'credit':
         return success_response({
-            'message': 'Refund credited as VahanGo Credits',
+            'message': f'Refund credited as {settings.PLATFORM_BRAND_NAME} Credits',
             'mode': 'credit',
             'amount': str(locked_payment.amount),
             'trip_id': trip.id,

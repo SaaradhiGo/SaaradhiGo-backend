@@ -268,7 +268,10 @@ def test_issue_receipt_creates_row_and_sends_mail(auth_client_rider, auth_client
     assert Receipt.objects.filter(trip_id=trip).count() == 1
     assert len(mail.outbox) == 1
     assert mail.outbox[0].to == ['rider@example.test']
-    assert 'VahanGo' in mail.outbox[0].subject
+    # Asserted against the brand SETTING rather than a literal: this test used
+    # to pin 'VahanGo', which is how the platform kept shipping two names.
+    from django.conf import settings
+    assert settings.PLATFORM_BRAND_NAME in mail.outbox[0].subject
     assert 'Receipt' in mail.outbox[0].alternatives[0][0] or 'Trip' in mail.outbox[0].alternatives[0][0]
 
 

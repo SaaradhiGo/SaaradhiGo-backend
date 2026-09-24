@@ -145,7 +145,8 @@ def request_otp(request):
                 # Send OTP via SNS (async task)
                 task_id = send_otp_via_sns.delay(
                     phone_number,
-                    f"Your OTP for VahanGo is {otp}. It will expire in 10 minutes."
+                    f"Your OTP for {settings.PLATFORM_BRAND_NAME} is {otp}. "
+                    f"It will expire in 10 minutes."
                 )
                 logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id}")
             except Exception as e:

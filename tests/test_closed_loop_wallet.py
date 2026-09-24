@@ -35,7 +35,10 @@ def test_public_config_reports_closed_loop_posture(api_client):
     wallet = data['wallet']
     assert wallet['topups_enabled'] is False
     assert wallet['credits_only'] is True
-    assert wallet['display_name'] == 'VahanGo Credits'
+    # The rider's wallet label is served by the backend, so this is where a
+    # wrong brand reached the app. Asserted against the setting.
+    from django.conf import settings
+    assert wallet['display_name'] == f'{settings.PLATFORM_BRAND_NAME} Credits'
     assert 'credit' in wallet['refund_modes']
     assert 'original' in wallet['refund_modes']
 

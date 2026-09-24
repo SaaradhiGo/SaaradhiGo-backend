@@ -39,12 +39,50 @@ logger = logging.getLogger(__name__)
 # clients (Gmail, Outlook, Apple Mail). Intentionally minimal CSS so
 # we do not depend on a styling pipeline.
 
+def _brand():
+    """The customer-facing product name.
+
+    Read from settings rather than hardcoded. This file used to name two different
+    brands in the same document: the HTML heading said "SaaradhiGo / VahanGo" and the
+    body thanked the rider for riding with VahanGo.
+
+    A helper rather than an inline getattr so the value can be interpolated without
+    nesting quotes inside an f-string.
+    """
+    return getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo')
+
+
+def _legal_entity():
+    """The registered entity, which is not the same thing as the brand.
+
+    Appears on the GST receipt beside the MVA-2020 aggregator statement. The name
+    itself is unchanged from what was already shipping -- only the "(operating
+    VahanGo)" parenthetical was removed. Whether this is the correct registered name,
+    and whether a GSTIN and registered address must also appear, is a question for the
+    business and its accountants.
+    """
+    return getattr(settings, 'PLATFORM_LEGAL_ENTITY', 'SaaradhiGo Mobility')
+
+
+def _default_from_email():
+    """Sender for the receipt email.
+
+    The fallback used to be an address on a domain this platform does not use, so a
+    bounce would have gone somewhere nobody reads.
+    """
+    explicit = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
+    if explicit:
+        return explicit
+    domain = getattr(settings, 'PLATFORM_CONTACT_DOMAIN', 'saaradhigo.in')
+    return f'no-reply@{domain}'
+
+
 _RECEIPT_TEMPLATE = """\
 <html>
 <body style="font-family: Arial, sans-serif; color: #1f2937; max-width: 640px;">
-  <h2 style="color: #EEBD2B;">SaaradhiGo / VahanGo</h2>
+  <h2 style="color: #EEBD2B;">{brand}</h2>
   <p>Hi {rider_name},</p>
-  <p>Thank you for riding with VahanGo. Here is your receipt.</p>
+  <p>Thank you for riding with {brand}. Here is your receipt.</p>
 
   <table cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; border: 1px solid #e5e7eb;">
     <tr><td><b>Receipt number</b></td><td>{receipt_number}</td></tr>
@@ -70,7 +108,7 @@ _RECEIPT_TEMPLATE = """\
   <p style="margin-top: 16px;"><b>Payment method:</b> {payment_method} &nbsp; <b>Status:</b> {payment_status}</p>
 
   <p style="margin-top: 24px; color: #6b7280; font-size: 12px;">
-    SaaradhiGo Mobility (operating VahanGo) is an aggregator under the
+    {legal_entity} is an aggregator under the
     Motor Vehicles Aggregator Guidelines 2020 issued by the Ministry of
     Road Transport &amp; Highways, Government of India. For any dispute
     about this fare, please contact support within 30 days quoting the
@@ -134,6 +172,11 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount, fare
     date_str = (trip.completed_at or timezone.now()).strftime('%d %b %Y, %H:%M')
 
     return _RECEIPT_TEMPLATE.format(
+        # Read from settings, never hardcoded: this document used to name two
+        # different brands in the same page.
+        brand=escape(str(getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo'))),
+        legal_entity=escape(str(
+            getattr(settings, 'PLATFORM_LEGAL_ENTITY', 'SaaradhiGo Mobility'))),
         rider_name=escape(str(rider_name)),
         receipt_number=escape(receipt_number),
         trip_id=trip.id,
@@ -180,7 +223,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         buf, pagesize=A4,
         leftMargin=18 * mm, rightMargin=18 * mm,
         topMargin=18 * mm, bottomMargin=18 * mm,
-        title=f'VahanGo receipt {receipt.receipt_number}',
+        title=f'{_brand()} receipt {receipt.receipt_number}',
         author='SaaradhiGo Mobility',
     )
     styles = getSampleStyleSheet()
@@ -201,7 +244,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         vehicle = f"{v.brand or ''} {v.model or ''} ({v.vehicle_number or ''})".strip()
 
     story = []
-    story.append(Paragraph('VahanGo / SaaradhiGo Mobility', h1))
+    story.append(Paragraph(f'{_brand()} / {_legal_entity()}', h1))
     story.append(Paragraph('Tax invoice / Trip receipt', h2))
     story.append(Spacer(1, 6))
 
@@ -273,7 +316,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     ))
     story.append(Spacer(1, 16))
     story.append(Paragraph(
-        'SaaradhiGo Mobility (operating VahanGo) is an aggregator under the '
+        f'{_legal_entity()} is an aggregator under the '
         'Motor Vehicles Aggregator Guidelines 2020 issued by the Ministry of '
         'Road Transport &amp; Highways, Government of India. For any dispute '
         'about this fare, please contact support within 30 days quoting the '
@@ -322,9 +365,9 @@ def _send_receipt_email(receipt):
         return False, 'no_email'
     try:
         msg = EmailMultiAlternatives(
-            subject=f'Your VahanGo receipt {receipt.receipt_number}',
-            body='Your VahanGo trip receipt is enclosed (HTML + PDF).',
-            from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'no-reply@vahango.in'),
+            subject=f'Your {_brand()} receipt {receipt.receipt_number}',
+            body=f'Your {_brand()} trip receipt is enclosed (HTML + PDF).',
+            from_email=_default_from_email(),
             to=[to_addr],
         )
         msg.attach_alternative(receipt.html_body, 'text/html')

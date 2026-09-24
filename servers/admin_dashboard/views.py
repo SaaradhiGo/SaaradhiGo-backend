@@ -26,6 +26,8 @@ from decimal import Decimal, InvalidOperation
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST,require_http_methods
 from django.contrib.admin.views.decorators import staff_member_required
+
+from servers.admin_dashboard import login_guard
 from servers.payments.models import Payment,TransactionHistory
 from servers.rider.models import (
     Rider, FavoritePlace, Wallet, WalletTransaction, Notification,
@@ -83,14 +85,30 @@ def login(request: HttpRequest) -> HttpResponse:
                     phone_number = f"+91{phone_number}"
                 elif phone_number.startswith("91") and len(phone_number) == 12:
                     phone_number = f"+{phone_number}"
-            user = authenticate(request, username=phone_number, password=password)
-            if user is None:
-                error = "Invalid phone number or password."
-            elif not (getattr(user, "role", None) == "admin" or getattr(user, "is_superuser", False)):
-                error = "You do not have admin privileges."
+            # Brute-force guard. Measured against QA before this existed: 12
+            # consecutive failed logins in 7.8 seconds with no throttling at all,
+            # on the console that approves KYC and releases payouts.
+            #
+            # Checked BEFORE authenticate() so a locked account costs no password
+            # verification, and the refusal text is the generic one so a lockout
+            # cannot be used to discover which phone numbers are real.
+            if login_guard.is_locked(request, phone_number):
+                error = login_guard.GENERIC_REFUSAL
             else:
-                auth_login(request, user)
-                return redirect("fleet_monitor")
+                user = authenticate(request, username=phone_number, password=password)
+                if user is None:
+                    login_guard.record_failure(request, phone_number)
+                    error = login_guard.GENERIC_REFUSAL
+                elif not (getattr(user, "role", None) == "admin" or getattr(user, "is_superuser", False)):
+                    # A real password for a non-operator account. Still a failure
+                    # for guard purposes -- otherwise a rider account becomes an
+                    # unthrottled oracle for password guessing.
+                    login_guard.record_failure(request, phone_number)
+                    error = "You do not have admin privileges."
+                else:
+                    login_guard.clear(request, phone_number)
+                    auth_login(request, user)
+                    return redirect("fleet_monitor")
     return render(request, 'admin_pages/login.html', {"error": error})
 @admin_required
 def dashboard(request: HttpRequest) -> HttpResponse:

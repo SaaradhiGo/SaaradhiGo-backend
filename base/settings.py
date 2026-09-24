@@ -250,6 +250,20 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': 60.0,
     },
 }
+# --- Operations console login guard ------------------------------------------
+# Brute-force bounds for the operator console. Measured on QA before these existed:
+# 12 failed logins in 7.8 seconds, unthrottled, on the console that approves KYC and
+# releases payouts.
+#
+# Per-phone is the gentler bound; per-IP is tighter because one host working through
+# a list of numbers is more clearly hostile than repeated failures on one account.
+# Locking only on phone would let an attacker deliberately lock a known operator out
+# of their own console.
+OPS_LOGIN_MAX_ATTEMPTS = int(os.environ.get('OPS_LOGIN_MAX_ATTEMPTS', '8'))
+OPS_LOGIN_MAX_ATTEMPTS_PER_IP = int(os.environ.get(
+    'OPS_LOGIN_MAX_ATTEMPTS_PER_IP', '15'))
+OPS_LOGIN_LOCKOUT_SECONDS = int(os.environ.get('OPS_LOGIN_LOCKOUT_SECONDS', '900'))
+
 # --- Active-ride liveness -----------------------------------------------------
 # Operational thresholds for the stale-ride detector. Generous on purpose: these
 # decide when a human LOOKS, never when the system acts. The driver presence

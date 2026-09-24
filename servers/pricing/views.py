@@ -13,6 +13,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from base.utils import error_response, success_response
+from servers.admin_audit.services import record_admin_action
 from servers.pricing.models import RateCard, ServiceZone
 from servers.pricing.permissions import IsPlatformAdmin
 from servers.pricing.serializers import RateCardSerializer, ServiceZoneSerializer
@@ -25,14 +26,91 @@ from servers.pricing.services import (
 logger = logging.getLogger(__name__)
 
 
-class ServiceZoneViewSet(viewsets.ModelViewSet):
+class _AuditedPricingMixin:
+    """Record every pricing mutation in the admin audit log.
+
+    A pricing change is the only operator action that alters what a rider is
+    charged, and it was the one privileged action with no audit trail at all --
+    KYC, payouts, driver deletion and DPDP erasure all had one, and SOS
+    transitions keep their own immutable `SOSEventUpdate` trail.
+
+    Recorded on create, update and delete, with the serialised before/after so a
+    fare dispute can be answered with "the card in force at that moment was this,
+    and this person changed it at this time". Reads are not recorded: an operator
+    looking at a rate card is not an event, and logging it would bury the changes.
+
+    `record_admin_action` swallows its own failures by design, so an audit problem
+    cannot block a pricing correction.
+    """
+
+    audit_target_type = 'pricing'
+
+    def _audit(self, request, action, instance, before=None, after=None):
+        # Guarded here as well as inside `record_admin_action`.
+        #
+        # The recorder swallows its own exceptions, so this looks redundant -- but
+        # a test that replaced the recorder with a raising stub produced a 500 on
+        # the pricing change, which is exactly the outcome the docstring above
+        # promises cannot happen. The promise has to be kept by the caller, because
+        # the caller is what a future refactor, a failed import or a serialisation
+        # error inside this method would break.
+        try:
+            record_admin_action(
+                request,
+                action=action,
+                target_type=self.audit_target_type,
+                target_id=getattr(instance, 'pk', None),
+                before=before or {},
+                after=after or {},
+                reason=(request.data.get('reason', '')
+                        if hasattr(request, 'data') and hasattr(request.data, 'get')
+                        else ''),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                'pricing audit write failed action=%s target=%s#%s detail=%s',
+                action, self.audit_target_type, getattr(instance, 'pk', None), exc,
+            )
+
+    def _snapshot(self, instance):
+        if instance is None:
+            return {}
+        try:
+            return self.get_serializer(instance).data
+        except Exception:      # noqa: BLE001 -- a snapshot must never block the write
+            return {'pk': getattr(instance, 'pk', None)}
+
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        self._audit(self.request, f'{self.audit_target_type}_created',
+                    serializer.instance, after=self._snapshot(serializer.instance))
+
+    def perform_update(self, serializer):
+        before = self._snapshot(serializer.instance)
+        super().perform_update(serializer)
+        self._audit(self.request, f'{self.audit_target_type}_updated',
+                    serializer.instance, before=before,
+                    after=self._snapshot(serializer.instance))
+
+    def perform_destroy(self, instance):
+        before = self._snapshot(instance)
+        pk = instance.pk
+        super().perform_destroy(instance)
+        instance.pk = pk           # keep the id readable for the audit row
+        self._audit(self.request, f'{self.audit_target_type}_deleted',
+                    instance, before=before)
+
+
+class ServiceZoneViewSet(_AuditedPricingMixin, viewsets.ModelViewSet):
+    audit_target_type = 'service_zone'
     queryset = ServiceZone.objects.all().order_by('-priority', 'code')
     serializer_class = ServiceZoneSerializer
     permission_classes = [IsPlatformAdmin]
     lookup_field = 'pk'
 
 
-class RateCardViewSet(viewsets.ModelViewSet):
+class RateCardViewSet(_AuditedPricingMixin, viewsets.ModelViewSet):
+    audit_target_type = 'rate_card'
     queryset = RateCard.objects.select_related('zone', 'vehicle_type').all()
     serializer_class = RateCardSerializer
     permission_classes = [IsPlatformAdmin]

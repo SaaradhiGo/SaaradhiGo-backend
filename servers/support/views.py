@@ -22,7 +22,9 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.pagination import PageNumberPagination
 
-from base.permissions import IsAdmin
+from base.permissions import (
+    CAP_SUPPORT_REPLY, IsAdmin, RequiresCapability,
+)
 from base.utils import error_response, success_response
 from servers.support.models import SupportMessage, SupportTicket
 from servers.support.serializers import SupportMessageSerializer, SupportTicketSerializer
@@ -178,7 +180,7 @@ def admin_list_tickets(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, RequiresCapability(CAP_SUPPORT_REPLY)])
 def admin_reply(request, ticket_id):
     body = (request.data.get('body') or '').strip()
     next_status = (request.data.get('status') or '').strip()  # optional state change
@@ -213,7 +215,7 @@ def admin_reply(request, ticket_id):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, RequiresCapability(CAP_SUPPORT_REPLY)])
 def admin_assign(request, ticket_id):
     staff_user_id = request.data.get('assigned_to')
     if not staff_user_id:

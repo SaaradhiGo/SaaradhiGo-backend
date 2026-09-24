@@ -26,6 +26,28 @@ class customUser(AbstractUser):
         validators=[validate_image_file, validate_file_size],
     )
     fcm_token = models.CharField(max_length=255, blank=True, null=True)
+
+    # Which authority an OPERATOR holds. Meaningless on a rider or driver account:
+    # `base.permissions.ops_role_of` returns None unless the account is already an
+    # operator (role admin AND is_staff), so this field grants nothing on its own
+    # and cannot be used to escalate.
+    #
+    # Defaults to 'admin' deliberately. Every account this field can affect is one
+    # that already has full operator authority today, so defaulting to
+    # least-privilege would not be a safer default -- it would be a silent
+    # behaviour change that strips authority from operators created by existing
+    # code paths, dressed up as a default. The RBAC split is opt-in per account,
+    # and the migration backfills 'admin' for the same reason.
+    ops_role = models.CharField(
+        max_length=20, blank=True, default='admin',
+        choices=[
+            ('support', 'Support'),
+            ('driver_ops', 'Driver operations'),
+            ('finance', 'Finance'),
+            ('admin', 'Administrator'),
+        ],
+        help_text='Operator authority. Ignored unless the account is an operator.',
+    )
     updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_updated = models.BooleanField(default=False)

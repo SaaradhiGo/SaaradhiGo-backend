@@ -3,7 +3,9 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from base.utils import success_response, error_response
-from base.permissions import IsAdmin
+from base.permissions import (
+    CAP_DRIVER_KYC, CAP_FINANCE_PAYOUT, IsAdmin, RequiresCapability,
+)
 from servers.driver.models import Driver,Vehicle
 from servers.driver.serializers import DriverAdminListSerializer, DriverAdminDetailSerializer, KYCApprovalSerializer, VehicleSerializer
 from rest_framework.pagination import PageNumberPagination
@@ -270,7 +272,7 @@ def driver_full_detail_admin(request, driver_id):
     return success_response(payload, status.HTTP_200_OK)
 
 @api_view(['PATCH'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, RequiresCapability(CAP_DRIVER_KYC)])
 def update_kyc_status_admin(request, driver_id):
     """
     Approve or reject KYC for a driver (updates 'approved' and/or 'status').
@@ -320,7 +322,7 @@ def update_kyc_status_admin(request, driver_id):
         )
 
 @api_view(['DELETE'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, RequiresCapability(CAP_DRIVER_KYC)])
 def delete_driver_admin(request, driver_id):
     """
     Delete a driver profile and their associated objects.
@@ -428,7 +430,7 @@ def list_withdrawals_admin(request):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, RequiresCapability(CAP_FINANCE_PAYOUT)])
 def approve_withdrawal_admin(request, withdrawal_id):
     """
     POST /api/admin/withdrawals/{id}/approve/
@@ -513,7 +515,7 @@ def approve_withdrawal_admin(request, withdrawal_id):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, RequiresCapability(CAP_FINANCE_PAYOUT)])
 def reject_withdrawal_admin(request, withdrawal_id):
     """
     POST /api/admin/withdrawals/{id}/reject/
@@ -718,7 +720,7 @@ def reject_withdrawal_admin(request, withdrawal_id):
     )
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, RequiresCapability(CAP_FINANCE_PAYOUT)])
 def bulk_action_withdrawal_admin(request):
     """
     POST /api/admin/withdrawals/bulk-action/

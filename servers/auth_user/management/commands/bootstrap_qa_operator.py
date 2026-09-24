@@ -112,6 +112,12 @@ class Command(BaseCommand):
                     'role': 'admin',
                     'is_staff': True,
                     'is_superuser': True,
+                    # Explicit rather than relying on the field default. This is
+                    # the QA operator, and it is meant to hold every authority so
+                    # every workflow can be rehearsed from one account. A
+                    # support-only or finance-only account is created from the
+                    # Django admin by setting ops_role, not from here.
+                    'ops_role': 'admin',
                 },
             )
 
@@ -129,6 +135,9 @@ class Command(BaseCommand):
                 if not user.is_superuser:
                     user.is_superuser = True
                     changed.append('is_superuser')
+                if user.ops_role != 'admin':
+                    user.ops_role = 'admin'
+                    changed.append('ops_role')
 
             if created or options['reset_password']:
                 user.set_password(password)

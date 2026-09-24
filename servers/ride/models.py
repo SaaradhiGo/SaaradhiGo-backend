@@ -46,6 +46,23 @@ class Trip(models.Model):
     payment_status=models.CharField(max_length=50,blank=True,null=True)
     otp=models.CharField(max_length=6,blank=True,null=True)
 
+    # Client-generated idempotency key for the booking request.
+    #
+    # A rider who double-taps Book, or whose app retries after a timeout or a
+    # reconnect, used to get two trips -- two dispatch chains, two surge demand
+    # records, two auto-cancel deadlines. The client now sends a stable id per
+    # logical booking and reuses it on every retry, and the partial unique index
+    # below makes PostgreSQL the arbiter rather than a Redis check that can be
+    # lost or raced.
+    #
+    # Nullable and unindexed when null, so a client that has never heard of this
+    # field keeps working exactly as before during rollout.
+    client_request_id=models.CharField(
+        max_length=64, blank=True, null=True, default=None,
+        help_text='Client-generated idempotency key for the booking request. '
+                  'The same value retried returns the original trip.',
+    )
+
     # Who ended the trip, and why. `status_id` stays a single 'cancelled'
     # code so the four clients keep working, but ops, refunds, the driver
     # penalty ledger and the MVA-2020 cancellation policy all need to tell
@@ -78,6 +95,18 @@ class Trip(models.Model):
         return f'Trip {self.id} - {self.user_id}'
 
     class Meta:
+        constraints = [
+            # Scoped to the rider rather than global: the question this answers is
+            # "has THIS rider already submitted THIS booking?", and a global
+            # constraint would let one rider's id collide with another's.
+            #
+            # Partial, so the many rows with no key do not enter the index at all.
+            models.UniqueConstraint(
+                fields=['user_id', 'client_request_id'],
+                condition=models.Q(client_request_id__isnull=False),
+                name='trip_unique_client_request_per_rider',
+            ),
+        ]
         indexes = [
             models.Index(fields=['user_id', '-requested_at']),
             models.Index(fields=['driver_id', '-requested_at']),

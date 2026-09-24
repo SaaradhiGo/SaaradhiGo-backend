@@ -49,8 +49,9 @@ def update_driver_location(driver_id, lng, lat):
 
 def credit_driver_wallet(trip):
     """Settle a completed trip against the driver's settlement balance."""
-    from servers.payments.models import TransactionHistory
+    from servers.payments.models import TransactionHistory, TripSettlement
     from servers.rider.models import Wallet, WalletTransaction, get_wallet
+    from django.utils import timezone
     from servers.pricing.services import commission_percent_for_trip
     from decimal import Decimal, ROUND_HALF_UP
     from django.db import transaction, IntegrityError
@@ -94,9 +95,10 @@ def credit_driver_wallet(trip):
             new_balance = current_balance + net_amount
 
         # Idempotency block
+        wallet_txn = None
         try:
             with transaction.atomic():
-                WalletTransaction.objects.create(
+                wallet_txn = WalletTransaction.objects.create(
                     user_id=trip.driver_id.user_id,
                     amount=txn_amount,
                     txn_type=txn_type,
@@ -134,4 +136,31 @@ def credit_driver_wallet(trip):
             status='completed',
             txn_type=txn_type,
             user_name=trip.user_id.full_name or trip.user_id.phone_number,
+        )
+
+        # Immutable economic evidence for this trip.
+        #
+        # Inside the SAME transaction as the ledger row it explains, so the two
+        # cannot disagree after a crash -- a settlement describing money that never
+        # moved would be worse than no settlement at all.
+        #
+        # It needs no idempotency logic of its own. The `TRIP_<id>_EARNING` key on
+        # WalletTransaction above is the guard: a second call returns at the
+        # IntegrityError before reaching this line, so this runs exactly once for
+        # exactly the reason the ledger row does. The partial unique index on
+        # (trip) where version=1 is the database's independent backstop.
+        #
+        # Amounts are copied, not referenced: `commission_percent` is the rate AS
+        # APPLIED, so editing a rate card later cannot rewrite what this ride earned.
+        TripSettlement.objects.create(
+            trip=trip,
+            driver=trip.driver_id,
+            wallet_transaction=wallet_txn,
+            gross_fare=amount,
+            commission_percent=commission_rate,
+            commission_amount=commission,
+            driver_net=net_amount,
+            payment_method=trip.payment_method or 'online',
+            settled_at=timezone.now(),
+            source=TripSettlement.SOURCE_NATIVE,
         )

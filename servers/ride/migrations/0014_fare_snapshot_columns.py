@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('ride', '0012_triplocationpoint'),
+        ('ride', '0013_trip_client_request_id_and_more'),
     ]
 
     operations = [

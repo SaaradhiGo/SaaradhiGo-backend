@@ -227,3 +227,165 @@ def test_writing_a_final_snapshot_does_not_touch_the_trip_or_bill_anyone(trip):
         'estimated_fare', 'final_fare', 'payment_status').first()
     assert after == before
     assert Trip.objects.get(id=trip.id).final_fare is None
+
+
+# ---------------------------------------------------------------------------
+# The constraints, against real PostgreSQL
+# ---------------------------------------------------------------------------
+#
+# The two constraints that carry the guarantees are a PARTIAL unique index and a
+# CHECK. SQLite's behaviour around both is close enough to mislead and different
+# enough to matter, so the versions above (which run on SQLite in the default
+# suite) prove the policy while these prove the constraint. The difference is the
+# whole point of having both.
+
+@pytest.mark.postgres
+@pytest.mark.django_db(transaction=True)
+def test_postgres_itself_refuses_a_second_final_snapshot(trip):
+    """Enforced by the database, not by the one service that writes finals.
+
+    A management command, a data migration or a second worker bypasses application
+    logic. "At most one final fare per trip" is the sort of claim that has to be
+    true even then, because the alternative is two different answers to "what was
+    this rider charged".
+    """
+    from django.db import IntegrityError, transaction
+
+    FarePricing.objects.create(
+        trip_id=trip, base_fare=Decimal('30.00'),
+        distance_fare=Decimal('17.40'), time_fare=Decimal('2.00'),
+        total_fare=Decimal('120.00'),
+        snapshot_type=FarePricing.SNAPSHOT_FINAL,
+        finalized_at=timezone.now(),
+    )
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        FarePricing.objects.create(
+            trip_id=trip, base_fare=Decimal('30.00'),
+        distance_fare=Decimal('17.40'), time_fare=Decimal('2.00'),
+        total_fare=Decimal('999.00'),
+            snapshot_type=FarePricing.SNAPSHOT_FINAL,
+            finalized_at=timezone.now(),
+        )
+
+    assert FarePricing.objects.filter(
+        trip_id=trip, snapshot_type=FarePricing.SNAPSHOT_FINAL).count() == 1
+
+
+@pytest.mark.postgres
+@pytest.mark.django_db(transaction=True)
+def test_postgres_allows_many_quotes_beside_one_final(trip):
+    """The partial index must not accidentally cap quote snapshots.
+
+    A rider who changes vehicle type three times produces three quotes, and the
+    index is conditioned on `snapshot_type='final'` precisely so that stays legal.
+    """
+    from django.db import transaction
+
+    with transaction.atomic():
+        for i in range(3):
+            FarePricing.objects.create(
+                trip_id=trip, base_fare=Decimal('30.00'),
+                distance_fare=Decimal('17.40'), time_fare=Decimal('2.00'),
+                total_fare=Decimal(f'1{i}0.00'),
+                snapshot_type=FarePricing.SNAPSHOT_QUOTE, version=i + 1,
+            )
+        FarePricing.objects.create(
+            trip_id=trip, base_fare=Decimal('30.00'),
+            distance_fare=Decimal('17.40'), time_fare=Decimal('2.00'),
+            total_fare=Decimal('140.00'),
+            snapshot_type=FarePricing.SNAPSHOT_FINAL,
+            finalized_at=timezone.now(),
+        )
+
+    assert FarePricing.objects.filter(trip_id=trip).count() == 4
+
+
+@pytest.mark.postgres
+@pytest.mark.django_db(transaction=True)
+def test_postgres_refuses_a_negative_discount(trip):
+    """A negative discount is a surcharge wearing a discount's name."""
+    from django.db import IntegrityError, transaction
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        FarePricing.objects.create(
+            trip_id=trip, base_fare=Decimal('30.00'),
+            distance_fare=Decimal('17.40'), time_fare=Decimal('2.00'),
+            total_fare=Decimal('120.00'),
+            discount_amount=Decimal('-5.00'),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Telemetry provenance: why a fare basis was chosen
+# ---------------------------------------------------------------------------
+
+@pytest.mark.django_db
+def test_a_metered_basis_can_record_the_telemetry_that_justifies_it(trip):
+    """`metered_degraded` must be evidence, not an assertion.
+
+    The five-ride QA rehearsal established that coverage_ratio alone cannot carry
+    this: trip 13 sent four pings forty seconds apart and scored 0.75, better than
+    trip 16 which sent seven, because coverage measures span rather than density.
+    So the point count and the largest gap are stored alongside it -- those are what
+    reveal a hole in the middle of a journey.
+    """
+    snap = FarePricing.objects.create(
+        trip_id=trip, base_fare=Decimal('30.00'),
+        distance_fare=Decimal('17.40'), time_fare=Decimal('2.00'),
+        total_fare=Decimal('118.83'),
+        snapshot_type=FarePricing.SNAPSHOT_FINAL,
+        finalized_at=timezone.now(),
+        fare_basis=FarePricing.BASIS_METERED_DEGRADED,
+        actual_distance_km=Decimal('1.67'), actual_duration_min=Decimal('2.67'),
+        trail_points=7,
+        trail_coverage_ratio=Decimal('0.7500'),
+        trail_max_gap_seconds=40,
+    )
+    snap.refresh_from_db()
+
+    assert snap.fare_basis == FarePricing.BASIS_METERED_DEGRADED
+    assert snap.trail_points == 7
+    assert snap.trail_coverage_ratio == Decimal('0.7500')
+    assert snap.trail_max_gap_seconds == 40
+    # The three together are what make the basis reviewable: a 0.75 coverage with
+    # only 7 points and a 40-second hole is a different story from 0.75 with 200.
+    assert snap.trail_points is not None and snap.trail_max_gap_seconds is not None
+
+
+@pytest.mark.django_db
+def test_a_quote_snapshot_has_no_telemetry_because_there_is_no_trail_yet(trip):
+    """Null, not zero. At booking the journey has not happened."""
+    snap = FarePricing.objects.create(
+        trip_id=trip, base_fare=Decimal('30.00'),
+        distance_fare=Decimal('17.40'), time_fare=Decimal('2.00'),
+        total_fare=Decimal('120.00'),
+        snapshot_type=FarePricing.SNAPSHOT_QUOTE,
+        quoted_distance_km=Decimal('1.45'), quoted_duration_min=Decimal('1.00'),
+    )
+    snap.refresh_from_db()
+
+    assert snap.trail_points is None, (
+        'zero points and "no trail yet" are different facts and must not collapse'
+    )
+    assert snap.trail_coverage_ratio is None
+    assert snap.trail_max_gap_seconds is None
+    assert snap.finalized_at is None
+    assert snap.is_final is False
+
+
+@pytest.mark.django_db
+def test_the_snapshot_still_writes_with_no_telemetry_columns_supplied(trip):
+    """Additive, so existing writers are unaffected.
+
+    `_create_payment_on_complete`, the receipt task and the booking path all write
+    FarePricing without knowing these columns exist.
+    """
+    snap = FarePricing.objects.create(
+        trip_id=trip, base_fare=Decimal('30.00'),
+        distance_fare=Decimal('17.40'), time_fare=Decimal('2.00'),
+        total_fare=Decimal('120.00'),
+    )
+    assert snap.pk is not None
+    assert snap.snapshot_type == FarePricing.SNAPSHOT_QUOTE
+    assert snap.fare_basis == FarePricing.BASIS_ESTIMATE_LEGACY

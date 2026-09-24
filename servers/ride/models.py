@@ -254,6 +254,29 @@ class FarePricing(models.Model):
     # be identifiable; today it is invisible.
     pricing_source = models.CharField(max_length=16, blank=True, default='')
 
+    # --- why this fare deserved its basis -----------------------------------
+    #
+    # Added on the evidence of the five-ride QA rehearsal, which established two
+    # things a schema review alone would have missed.
+    #
+    # First, `coverage_ratio` does not measure density and cannot be the quality
+    # gate on its own: trip 13 sent four pings forty seconds apart and scored 0.75,
+    # BETTER than trip 16 which sent seven. Coverage is span, not sampling -- points
+    # spread across a journey score well, points bunched at the start score badly.
+    #
+    # Second, `max_gap_seconds` was being computed and then not surfaced anywhere,
+    # so the one number that does reveal a hole in the middle of a journey was
+    # invisible.
+    #
+    # Together these are what justifies `fare_basis`. Recording `metered_degraded`
+    # without them is an assertion; with them it is evidence a rider or a regulator
+    # can be shown. Null on a quote snapshot -- there is no trail yet at booking.
+    trail_points = models.PositiveIntegerField(null=True, blank=True)
+    trail_coverage_ratio = models.DecimalField(
+        max_digits=5, decimal_places=4, null=True, blank=True,
+    )
+    trail_max_gap_seconds = models.PositiveIntegerField(null=True, blank=True)
+
     # --- the three amounts --------------------------------------------------
     # gross_fare is the commission basis and the driver's economics.
     # rider_payable is what payment captures. They differ only by a discount.

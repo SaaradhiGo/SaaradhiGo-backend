@@ -1,0 +1,134 @@
+# Isolated stack for load testing. NOT for development and NOT for QA.
+#
+# WHY A SEPARATE STACK
+# -------------------
+# §13 requires load evidence from an isolated environment. Running it against
+# shared QA would be wrong twice over: the numbers would include whatever else is
+# using QA, and a hundred synthetic rides would pollute the trip, settlement and
+# wallet tables that every acceptance run and every money reconciliation reads.
+#
+# So this is its own PostgreSQL, its own Redis, its own backend and its own worker,
+# on ports nothing else uses, with a dedicated volume-less database that is meant to
+# be thrown away.
+#
+#   docker compose -f docker-compose.load.yml up -d --build
+#   python qa/load_harness.py --stage 10
+#   docker compose -f docker-compose.load.yml down -v
+#
+# WHY IT USES THE DOCKERFILE
+# --------------------------
+# Same build path as QA (python:3.12-slim), deliberately. Production currently
+# falls back to Railpack on Python 3.13 and fails to build psycopg2-binary, so
+# "what QA validates" and "what production builds" are already two different
+# artifacts. A load test on a third one would measure nothing anybody will run.
+#
+# WHAT IS DELIBERATELY ABSENT
+# ---------------------------
+# No S3, no FCM, no SMS, no Cashfree. A load test of the ride lifecycle should not
+# depend on four external providers, and their absence is handled by the same
+# degradation paths the product uses in an outage. The harness records which of them
+# were stubbed so no reader mistakes this for an end-to-end integration run.
+
+name: sg-load
+
+services:
+  loaddb:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: sgload
+      POSTGRES_USER: sgload
+      POSTGRES_PASSWORD: sgload
+      # Throughput knobs for a disposable database. fsync off is safe ONLY because
+      # this database is expected to be destroyed; it keeps the measurement about
+      # the application rather than about this laptop's disk.
+      POSTGRES_INITDB_ARGS: "--no-sync"
+    command: >
+      postgres
+      -c fsync=off
+      -c synchronous_commit=off
+      -c full_page_writes=off
+      -c max_connections=200
+      -c shared_buffers=256MB
+    ports:
+      - "127.0.0.1:55433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sgload -d sgload"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  loadredis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6391:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  loadbackend:
+    build:
+      context: .
+      dockerfile: dockerfile
+    depends_on:
+      loaddb:
+        condition: service_healthy
+      loadredis:
+        condition: service_healthy
+    environment: &appenv
+      DJANGO_SETTINGS_MODULE: base.settings
+      DEBUG_ENV: "True"
+      DJANGO_SECRET_KEY: load-harness-not-a-real-secret
+      JWT_SIGNING_KEY: load-harness-not-a-real-jwt-key
+      ALLOWED_HOSTS: "*"
+      ENVIRONMENT: load
+      CASHFREE_WEBHOOK_SECRET: load-harness-not-a-real-secret
+      DB_HOST: loaddb
+      DB_PORT: "5432"
+      DB_NAME: sgload
+      DB_USER: sgload
+      DB_PASSWORD: sgload
+      DB_SSLMODE: disable
+      REDIS_URL: redis://loadredis:6379
+      # Test phones are generated per ride by the harness. This is a load stack on
+      # a private port with a throwaway database; the production boot guard refuses
+      # this variable when ENVIRONMENT=production, which is what protects the real
+      # deployment from it.
+      TEST_PHONE_NUMBERS: ""
+      LOG_LEVEL: WARNING
+      GPS_TRAIL_ENABLED: "True"
+      PYTHONUNBUFFERED: "1"
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             daphne -b 0.0.0.0 -p 8000 base.asgi:application"
+    ports:
+      - "127.0.0.1:8100:8000"
+
+  loadworker:
+    build:
+      context: .
+      dockerfile: dockerfile
+    depends_on:
+      loadbackend:
+        condition: service_started
+    environment: *appenv
+    # Prefork with 4 children, which is what production should run. The kill-drill
+    # findings say a worker must not run on Windows; this is a Linux container, so
+    # the event loop and the visibility-timeout restore both work.
+    command: ["celery", "-A", "base", "worker", "-l", "WARNING", "--concurrency", "4"]
+
+  loadbeat:
+    build:
+      context: .
+      dockerfile: dockerfile
+    depends_on:
+      loadbackend:
+        condition: service_started
+    environment: *appenv
+    # Beat as its OWN service, not `-B` inside the worker. The pilot deployment
+    # still embeds it, which is correct for exactly one worker and doubles every
+    # scheduled task at two. This stack is how that topology gets exercised before
+    # it is adopted.
+    command: ["celery", "-A", "base", "beat", "-l", "WARNING"]

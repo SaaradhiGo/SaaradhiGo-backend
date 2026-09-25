@@ -155,6 +155,21 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # redelivery converges on the same state and does not re-alert. It
         # changes no trip status, no fare and no settlement.
         'ride.flag_stale_active_trips',
+        # The DURABLE backstop for the accept deadline, added because broker
+        # redelivery is ~15-17 min (visibility_timeout 900 s + restore-poll
+        # granularity, both measured) and the frame that tells a rider nobody
+        # accepted cannot wait that long. Recovery becomes the 2-minute beat
+        # interval instead, in the database, where a dead worker cannot take it.
+        #
+        # acks_late is safe: it only looks at trips still in `requested` with no
+        # driver, and it reaches its decision by calling auto_cancel_trip, which
+        # re-checks status inside a row lock and stands down if anything changed. A
+        # redelivery therefore finds the trips already cancelled and cancels nothing
+        # twice -- covered by test_celery_duplicate_execution.py.
+        #
+        # It is NOT a timeout-cancels-live-rides mechanism. The in-progress case is
+        # flag_stale_active_trips, which changes no status at all.
+        'ride.sweep_unaccepted_trips',
         'ride.compute_trip_actuals',
         'ride.dispatch_wave',
         'ride.issue_receipt_for_trip',

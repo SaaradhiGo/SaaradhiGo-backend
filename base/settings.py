@@ -272,6 +272,25 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'pricing.fare_shadow_sweep',
         'schedule': _crontab(minute='*/15'),
     },
+    'unaccepted-trip-sweep-every-2-min': {
+        # The DURABLE backstop for the accept deadline.
+        #
+        # auto_cancel_trip is scheduled once with a 90-second countdown, and if its
+        # worker dies the broker does not redeliver it for ~15-17 minutes
+        # (visibility_timeout 900 s plus restore-poll granularity, both measured in
+        # qa/celery_worker_loss_drill.py). Fifteen minutes is acceptable for a
+        # receipt and not for the frame that tells a rider nobody accepted.
+        #
+        # Lowering visibility_timeout to suit this one deadline would break every
+        # other task -- its floor is the longest legitimate unacked wait. So this
+        # deadline gets its own recovery path in the database instead, and recovery
+        # becomes this interval rather than the broker's.
+        #
+        # Only touches trips still in `requested` with no driver. The in-progress
+        # case is flag_stale_active_trips, which never cancels anything.
+        'task': 'ride.sweep_unaccepted_trips',
+        'schedule': _crontab(minute='*/2'),
+    },
     'gps-trail-drain-every-minute': {
         # Drains driver_location_stream into TripLocationPoint. A no-op while
         # GPS_TRAIL_ENABLED is False, so scheduling it is safe before the
@@ -615,6 +634,12 @@ PLATFORM_COMMISSION_PERCENT=_Decimal(os.environ.get("PLATFORM_COMMISSION_PERCENT
 # rider stared at "finding a driver" for ten minutes; the rolling fanout
 # below has fully played out well before 90s.
 TRIP_ACCEPT_TIMEOUT_SECONDS=int(os.environ.get("TRIP_ACCEPT_TIMEOUT_SECONDS", "90"))
+
+# Grace on top of the accept timeout before the durable sweep steps in, so the
+# normal countdown path wins and the sweep stays a backstop rather than a race.
+TRIP_UNACCEPTED_SWEEP_GRACE_SECONDS = int(
+    os.environ.get('TRIP_UNACCEPTED_SWEEP_GRACE_SECONDS', '60')
+)
 
 # Rolling fanout: expanding radius waves rather than one 5km blast. Each
 # wave gets DISPATCH_WAVE_SECONDS of exclusivity before the next widens.

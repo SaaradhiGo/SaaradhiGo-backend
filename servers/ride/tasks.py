@@ -312,3 +312,106 @@ def flag_stale_active_trips(self):
             summary['flagged'], summary['already_flagged'], summary['reasons'],
         )
     return summary
+
+
+@shared_task(
+    name='ride.sweep_unaccepted_trips',
+    bind=True,
+    acks_late=True,
+    max_retries=3,
+    default_retry_delay=30,
+)
+def sweep_unaccepted_trips(self, limit=200):
+    """Cancel trips nobody accepted, on a schedule rather than only on a countdown.
+
+    WHY THIS EXISTS: BROKER REDELIVERY IS TOO SLOW FOR THIS ONE DEADLINE
+    -------------------------------------------------------------------
+    `auto_cancel_trip` is scheduled once, with `countdown=TRIP_ACCEPT_TIMEOUT_SECONDS`
+    (90 s), when a trip is created. That single deadline is what bounds the whole
+    driver search, and it is what tells a rider their booking found nobody.
+
+    Measured in `qa/celery_worker_loss_drill.py`: a task whose worker is killed is
+    not lost, but it is invisible to every other worker until `visibility_timeout`
+    elapses, plus up to ~100 s of restore-poll granularity. With the timeout at
+    900 s that is roughly fifteen to seventeen minutes.
+
+    Fifteen minutes is fine for a receipt. It is not fine for the frame that tells a
+    rider "no driver accepted, try again" -- they sit watching a search that has
+    already been given up on, and they cannot rebook because the trip is still
+    `requested`.
+
+    Lowering `visibility_timeout` to fix that would be the wrong move, and
+    deliberately is not what happened here: the floor is set by the longest a message
+    can legitimately sit unacked (a 180 s countdown plus a 360 s execution), and
+    going under it turns recovery into a duplicate-execution generator for every
+    other task. One broker setting cannot serve a 90-second deadline and a 6-minute
+    task at once.
+
+    So this deadline gets its own recovery path, in the database, where a lost worker
+    cannot take it with them. Recovery becomes the beat interval (2 minutes) instead
+    of the visibility timeout, and it is independent of whether the original message
+    survived.
+
+    WHY THIS IS NOT "TIMEOUT -> CANCEL" ON A LIVE RIDE
+    --------------------------------------------------
+    It only ever looks at trips still in `requested` -- nobody has accepted, no
+    driver is en route, nothing is in progress. That is exactly the population
+    `auto_cancel_trip` already owns, and this reaches the same decision by the same
+    code: it calls `auto_cancel_trip` directly, so the row lock, the re-check inside
+    the lock, the narrow write, the rider notification and the dispatch cleanup are
+    all the ones that were already reviewed.
+
+    The in-progress case is a different question with a different answer, and it is
+    `flag_stale_active_trips` above: detect, escalate, let an operator decide, never
+    cancel.
+
+    IDEMPOTENT BY CONSTRUCTION
+    --------------------------
+    If the original `auto_cancel_trip` message arrives late, it finds the trip
+    already `cancelled` and stands down -- that path is covered by
+    `tests/test_celery_duplicate_execution.py`. So the two mechanisms cannot
+    double-cancel, double-notify, or disagree.
+    """
+    from django.conf import settings
+    from django.utils import timezone
+
+    from servers.ride.models import Trip
+
+    timeout = int(getattr(settings, 'TRIP_ACCEPT_TIMEOUT_SECONDS', 90))
+    # A grace period on top of the deadline, so this never races the countdown it
+    # backs up. The normal path should win; this is the backstop.
+    grace = int(getattr(settings, 'TRIP_UNACCEPTED_SWEEP_GRACE_SECONDS', 60))
+    cutoff = timezone.now() - timezone.timedelta(seconds=timeout + grace)
+
+    overdue = list(
+        Trip.objects
+        .filter(status_id__status_code='requested',
+                driver_id__isnull=True,
+                requested_at__lt=cutoff)
+        .order_by('requested_at')
+        .values_list('id', flat=True)[:limit]
+    )
+
+    summary = {'examined': len(overdue), 'cancelled': 0, 'stood_down': 0}
+    for trip_id in overdue:
+        try:
+            # The same task, called directly. Not `.delay()`: the entire point is
+            # to not depend on the broker for this deadline.
+            outcome = auto_cancel_trip.run(trip_id)
+        except Exception as exc:  # noqa: BLE001
+            # One bad trip must not stop the sweep for the rest.
+            logger.error('unaccepted_sweep: trip %s failed: %s', trip_id, exc)
+            continue
+        if isinstance(outcome, str) and 'auto-cancelled' in outcome:
+            summary['cancelled'] += 1
+        else:
+            summary['stood_down'] += 1
+
+    if summary['examined']:
+        logger.info(
+            'unaccepted_sweep examined=%s cancelled=%s stood_down=%s '
+            'cutoff_seconds=%s',
+            summary['examined'], summary['cancelled'], summary['stood_down'],
+            timeout + grace,
+        )
+    return summary

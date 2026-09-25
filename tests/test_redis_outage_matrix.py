@@ -140,7 +140,10 @@ def test_the_dead_stub_really_does_raise(redis_down):
     succeeded -- which is precisely how a Mock-based version of this file would
     read as green while proving nothing.
     """
-    with pytest.raises(Exception):
+    # ConnectionError specifically, not a blind Exception: the stub is supposed to
+    # fail the way an unreachable Redis fails, and asserting the exact type is what
+    # makes this a control rather than "something went wrong".
+    with pytest.raises(ConnectionError):
         rc.redis_client.get('anything')
 
 

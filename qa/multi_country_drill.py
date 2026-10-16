@@ -358,6 +358,57 @@ def main():
               in_day.utcoffset() != us_day.utcoffset(),
               f'IN {in_day.isoformat()} vs US {us_day.isoformat()}')
 
+        # ---- driver onboarding: the checklist a US driver is held to ----
+        print('\n--- driver onboarding ------------------------------------')
+        from servers.driver.compliance import (
+            evaluate_vehicle, required_vehicle_documents,
+            unrecordable_documents,
+        )
+
+        for label, drv in (('INDIA', in_driver), ('UNITED STATES', us_driver)):
+            req = required_vehicle_documents(drv)
+            observe(f'{label} vehicle documents required', ', '.join(req))
+            detail = evaluate_vehicle(drv.active_vehicle, drv)
+            for c in detail.values():
+                state = ('present' if c['present']
+                         else ('NO COLUMN TO STORE IT' if not c['applicable']
+                               else 'missing'))
+                print(f"          {c['label']:<28} {state}")
+
+        check('a US driver is never asked for an Indian certificate',
+              not ({'puc', 'permit', 'fitness'}
+                   & set(required_vehicle_documents(us_driver))),
+              f'US requires: {required_vehicle_documents(us_driver)}')
+        check('an Indian driver is still asked for all five',
+              {'rc', 'insurance', 'permit', 'fitness', 'puc'}
+              <= set(required_vehicle_documents(in_driver)))
+        observe('US documents with nowhere to be stored yet',
+                ', '.join(unrecordable_documents(us_driver)) or 'none')
+
+        # ---- payouts speak the driver's currency -------------------------
+        print('\n--- payouts -----------------------------------------------')
+        from servers.driver.services import (
+            minimum_withdrawal_for, validate_withdrawal_amount,
+        )
+        from servers.rider.models import Wallet
+
+        Wallet.objects.create(user_id=us_driver.user_id,
+                              balance=Decimal('0.00'), currency='USD')
+        Wallet.objects.create(user_id=in_driver.user_id,
+                              balance=Decimal('0.00'), currency='INR')
+
+        us_min = minimum_withdrawal_for(us_driver)
+        in_min = minimum_withdrawal_for(in_driver)
+        observe('minimum payout, US', format_money(us_min, 'USD'))
+        observe('minimum payout, India', format_money(in_min, 'INR'))
+
+        _, us_msg = validate_withdrawal_amount(us_driver, Decimal('5'))
+        observe('US driver asks to withdraw $5', us_msg)
+        check('a US driver is never shown a rupee sign',
+              '₹' not in us_msg, us_msg)
+        check('a US driver is not held to a 500-rupee minimum',
+              us_min < Decimal('500'), f'{us_min} < 500')
+
         # Phone normalisation, the defect that locked a US operator out.
         check('a bare US number normalises to +1, not +91',
               normalize_phone('5551234567', default_country='US') == '+15551234567',

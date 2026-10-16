@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 # docstring records the four divergent copies that preceded it. Imported under the
 # same name so existing call sites and tests are unchanged.
 from base.countries import normalize_phone  # noqa: E402
+from servers.driver.compliance import (  # noqa: E402
+    evaluate_vehicle, unrecordable_documents, vehicle_is_compliant,
+)
 from base import ops_mfa  # noqa: E402
 from base.permissions import is_operator  # noqa: E402
 from servers.admin_audit.services import record_admin_action  # noqa: E402
@@ -542,60 +545,27 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
 
             for vehicle in vehicles:
 
-                # EXACT MODEL FIELD
-                rc_doc = (
-                    vehicle.rc_doc
-                )
-
-                # EXACT MODEL FIELD
-                insurance_doc = (
-                    vehicle.insurance_doc
-                )
-
-                # EXACT MODEL FIELD
-                permit_doc = (
-                    vehicle.permit_doc
-                )
-
-                # EXACT MODEL FIELD
-                fitness_doc = (
-                    vehicle.fitness_doc
-                )
-
-                # EXACT MODEL FIELD
-                puc_doc = (
-                    vehicle.puc_doc
-                )
-
+                # The required document set comes from the DRIVER'S COUNTRY, not
+                # from a fixed list.
+                #
+                # This used to hardcode five Indian statutory documents -- rc,
+                # insurance, permit, fitness, puc -- and require all() of them.
+                # Three have no US equivalent: a US driver cannot obtain a
+                # Pollution Under Control certificate or a commercial passenger
+                # permit. So all() could never be true, all_vehicle_compliant was
+                # permanently False, and a US driver could never be approved. Not
+                # a confusing error -- no possible path to approval at all.
+                detail = evaluate_vehicle(vehicle, driver)
                 vehicle_checks = {
-                    "rc": has_document(
-                        rc_doc
-                    ),
-
-                    "insurance": has_document(
-                        insurance_doc
-                    ),
-
-                    "permit": has_document(
-                        permit_doc
-                    ),
-
-                    "fitness": has_document(
-                        fitness_doc
-                    ),
-
-                    "puc": has_document(
-                        puc_doc
-                    ),
+                    key: (c['present'] and c['applicable'])
+                    for key, c in detail.items()
                 }
 
                 vehicle_compliance_results.append(
                     vehicle_checks
                 )
 
-                if not all(
-                    vehicle_checks.values()
-                ):
+                if not vehicle_is_compliant(vehicle, driver):
                     all_vehicle_compliant = False
 
             # -------------------------------------------------

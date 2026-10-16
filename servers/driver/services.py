@@ -1,9 +1,41 @@
+from decimal import Decimal
+
 from django.db.models import Avg, Count, Q, Sum
 from django.utils import timezone
 from datetime import timedelta, datetime
 import re
+
+from base.money import DEFAULT_CURRENCY, format_money, normalize_currency
+
 from .models import Driver, WithdrawalRequest
 from servers.rider.models import Wallet
+
+# Smallest payout per currency. Roughly equivalent real amounts rather than the
+# same number: 500 rupees is about six dollars, and 500 dollars is not a
+# minimum, it is a barrier. One global figure is either meaningless in India or
+# prohibitive in the US.
+_MINIMUM_WITHDRAWAL = {
+    'INR': Decimal('500'),
+    'USD': Decimal('10'),
+}
+
+
+def driver_currency(driver):
+    """The currency a driver is paid in: their wallet's, else the default."""
+    try:
+        wallet = Wallet.objects.filter(
+            user_id=getattr(driver, 'user_id_id', None)).first()
+    except Exception:  # noqa: BLE001
+        wallet = None
+    if wallet and getattr(wallet, 'currency', None):
+        return normalize_currency(wallet.currency)
+    return DEFAULT_CURRENCY
+
+
+def minimum_withdrawal_for(driver):
+    """The smallest payout this driver's market allows."""
+    return _MINIMUM_WITHDRAWAL.get(
+        driver_currency(driver), _MINIMUM_WITHDRAWAL[DEFAULT_CURRENCY])
 
 
 def _contact_domain():
@@ -38,10 +70,24 @@ def validate_withdrawal_amount(driver, amount):
     Returns (is_valid, error_message)
     """
     available = calculate_available_balance(driver)
-    if amount < 500:
-        return False, "Minimum withdrawal amount is ₹500"
+
+    # Both the threshold and the symbol come from the driver's market.
+    #
+    # This was `amount < 500` with the message "Minimum withdrawal amount is
+    # ₹500". A US driver would have been told their minimum payout was 500
+    # rupees, shown a rupee sign beside a dollar balance, and blocked from
+    # withdrawing anything under $500.
+    minimum = minimum_withdrawal_for(driver)
+    currency = driver_currency(driver)
+
+    if amount < minimum:
+        return False, (
+            f'Minimum withdrawal amount is {format_money(minimum, currency)}'
+        )
     if amount > available:
-        return False, f"Insufficient balance. Available: ₹{available:.2f}"
+        return False, (
+            f'Insufficient balance. Available: {format_money(available, currency)}'
+        )
     return True, ""
 
 

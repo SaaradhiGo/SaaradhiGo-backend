@@ -725,3 +725,181 @@ def test_final_fare_is_still_null_in_both_markets(india_zone, us_zone,
     t2 = _trip(us_zone, _rider('US'), _driver(vehicle_type, 'US'), '30.83')
 
     assert t1.final_fare is None and t2.final_fare is None
+
+
+# ===========================================================================
+# Driver compliance — the blocker that made US approval impossible
+# ===========================================================================
+
+def test_a_us_driver_is_not_asked_for_indian_certificates(vehicle_type):
+    """The blocker. The console required all five Indian documents of everyone.
+
+    `permit`, `fitness` and `puc` have no US equivalent -- a US driver cannot
+    obtain a Pollution Under Control certificate -- so `all()` could never be
+    true and a US driver could never be approved. Not a confusing error: no
+    possible path to approval.
+    """
+    from servers.driver.compliance import required_vehicle_documents
+
+    us_driver = _driver(vehicle_type, 'US')
+    required = required_vehicle_documents(us_driver)
+
+    for indian_only in ('puc', 'permit', 'fitness'):
+        assert indian_only not in required, (
+            f'a US driver is still being asked for {indian_only}'
+        )
+    assert 'registration' in required and 'insurance' in required
+
+
+def test_an_indian_driver_still_needs_all_five(vehicle_type):
+    """India's requirements must not have been relaxed by this."""
+    from servers.driver.compliance import required_vehicle_documents
+
+    required = required_vehicle_documents(_driver(vehicle_type, 'IN'))
+
+    for doc in ('rc', 'insurance', 'permit', 'fitness', 'puc'):
+        assert doc in required, f'India stopped requiring {doc}'
+
+
+def test_a_drivers_country_is_read_from_their_phone_number(vehicle_type):
+    """The only signal available before they have taken a trip."""
+    from servers.driver.compliance import driver_country_code
+
+    assert driver_country_code(_driver(vehicle_type, 'US')) == 'US'
+    assert driver_country_code(_driver(vehicle_type, 'IN')) == 'IN'
+
+
+def test_a_us_vehicle_with_registration_and_insurance_is_closer_to_compliant(
+    vehicle_type,
+):
+    """Not fully compliant: `inspection` has no column to store it in yet.
+
+    Asserted in that direction on purpose. Treating an unrecordable document as
+    satisfied is how a driver whose safety inspection nobody saw gets approved,
+    so the gap stays visible instead.
+    """
+    from servers.driver.compliance import (
+        evaluate_vehicle, unrecordable_documents, vehicle_is_compliant,
+    )
+
+    us_driver = _driver(vehicle_type, 'US')
+    vehicle = us_driver.active_vehicle
+    vehicle.rc_doc = 'docs/reg.pdf'
+    vehicle.insurance_doc = 'docs/ins.pdf'
+    vehicle.save(update_fields=['rc_doc', 'insurance_doc'])
+
+    checks = evaluate_vehicle(vehicle, us_driver)
+    assert checks['registration']['present'] is True
+    assert checks['insurance']['present'] is True
+    assert checks['inspection']['applicable'] is False, (
+        'inspection appears storable, but there is no column for it'
+    )
+    assert vehicle_is_compliant(vehicle, us_driver) is False
+    assert 'inspection' in unrecordable_documents(us_driver)
+
+
+def test_an_indian_vehicle_with_all_five_is_compliant(vehicle_type):
+    """The control: India's approval path must still reach True."""
+    from servers.driver.compliance import vehicle_is_compliant
+
+    d = _driver(vehicle_type, 'IN')
+    v = d.active_vehicle
+    v.rc_doc = 'd/rc.pdf'
+    v.insurance_doc = 'd/ins.pdf'
+    v.permit_doc = 'd/permit.pdf'
+    v.fitness_doc = 'd/fit.pdf'
+    v.puc_doc = 'd/puc.pdf'
+    v.save()
+
+    assert vehicle_is_compliant(v, d) is True
+
+
+def test_a_missing_document_is_named_for_the_operator(vehicle_type):
+    """An operator needs to know WHICH document, not just that one is missing."""
+    from servers.driver.compliance import missing_documents
+
+    d = _driver(vehicle_type, 'IN')
+    v = d.active_vehicle
+    v.rc_doc = 'd/rc.pdf'
+    v.save(update_fields=['rc_doc'])
+
+    missing = missing_documents(v, d)
+    assert 'rc' not in missing
+    assert 'puc' in missing and 'insurance' in missing
+
+
+# ===========================================================================
+# Payout minimums and messages speak the driver's currency
+# ===========================================================================
+
+def test_a_us_driver_is_not_told_their_minimum_is_500_rupees(vehicle_type):
+    """The message said "Minimum withdrawal amount is ₹500" to everyone.
+
+    A US driver was shown a rupee sign beside a dollar balance and blocked from
+    withdrawing anything under $500 -- which is not a minimum, it is a barrier.
+    """
+    from servers.driver.services import (
+        minimum_withdrawal_for, validate_withdrawal_amount,
+    )
+
+    d = _driver(vehicle_type, 'US')
+    Wallet.objects.create(user_id=d.user_id, balance=Decimal('100.00'),
+                          currency='USD')
+
+    assert minimum_withdrawal_for(d) == Decimal('10')
+
+    ok, msg = validate_withdrawal_amount(d, Decimal('5'))
+    assert ok is False
+    assert '$10.00' in msg, f'message was {msg!r}'
+    assert '₹' not in msg, f'a rupee sign reached a US driver: {msg!r}'
+
+
+def test_the_minimum_is_no_longer_what_blocks_a_us_driver(vehicle_type):
+    """The control, stated precisely.
+
+    `calculate_available_balance` derives from the settlement ledger rather than
+    from the wallet row, so a $25 request on a seeded wallet is still refused --
+    for lack of balance. What matters is that it is refused for THAT reason and
+    not because $25 is under a 500-rupee minimum, which is what used to happen.
+    """
+    from servers.driver.services import validate_withdrawal_amount
+
+    d = _driver(vehicle_type, 'US')
+    Wallet.objects.create(user_id=d.user_id, balance=Decimal('100.00'),
+                          currency='USD')
+
+    ok, msg = validate_withdrawal_amount(d, Decimal('25'))
+
+    assert 'Minimum withdrawal' not in msg, (
+        f'$25 was blocked by a minimum threshold: {msg!r}'
+    )
+    assert 'Insufficient balance' in msg
+    assert '$' in msg and '₹' not in msg
+
+
+def test_an_indian_driver_still_has_a_500_rupee_minimum(vehicle_type):
+    """India's threshold must not have moved."""
+    from servers.driver.services import (
+        minimum_withdrawal_for, validate_withdrawal_amount,
+    )
+
+    d = _driver(vehicle_type, 'IN')
+    Wallet.objects.create(user_id=d.user_id, balance=Decimal('1000.00'),
+                          currency='INR')
+
+    assert minimum_withdrawal_for(d) == Decimal('500')
+    ok, msg = validate_withdrawal_amount(d, Decimal('100'))
+    assert ok is False
+    assert '₹500.00' in msg, f'message was {msg!r}'
+
+
+def test_an_insufficient_balance_message_uses_the_right_symbol(vehicle_type):
+    from servers.driver.services import validate_withdrawal_amount
+
+    d = _driver(vehicle_type, 'US')
+    Wallet.objects.create(user_id=d.user_id, balance=Decimal('15.00'),
+                          currency='USD')
+
+    ok, msg = validate_withdrawal_amount(d, Decimal('50'))
+    assert ok is False
+    assert '$' in msg and '₹' not in msg, f'message was {msg!r}'

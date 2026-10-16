@@ -3,6 +3,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from base.utils import success_response, error_response
+from base.countries import normalize_phone
 from base.permissions import IsAdmin, is_operator
 from servers.admin_dashboard import login_guard
 from base import ops_mfa
@@ -96,13 +97,12 @@ def admin_login(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Format phone number to E.164 if it's not already
-        phone_number = str(phone_number).strip()
-        if not phone_number.startswith('+'):
-            if len(phone_number) == 10:
-                phone_number = f'+91{phone_number}'
-            elif phone_number.startswith('91') and len(phone_number) == 12:
-                phone_number = f'+{phone_number}'
+        # Format phone number to E.164 if it's not already.
+        #
+        # Was an inline +91 prepend, so a US operator could not sign in here
+        # either. One helper, resolving against the country registry.
+        phone_number = normalize_phone(str(phone_number).strip()) or str(
+            phone_number).strip()
 
         # One refusal for every failure below: unknown phone, wrong password,
         # correct password on a non-operator account, and locked out. Anything

@@ -28,6 +28,10 @@ from django.core.mail import EmailMultiAlternatives
 from django.db import transaction
 from django.utils import timezone
 from django.utils.html import escape
+from base.countries import get_country
+from base.money import (
+    DEFAULT_CURRENCY, currency_for_trip, format_money,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,19 +94,19 @@ _RECEIPT_TEMPLATE = """\
     <tr><td><b>Date</b></td><td>{date_str}</td></tr>
     <tr><td><b>Pickup</b></td><td>{pickup}</td></tr>
     <tr><td><b>Drop</b></td><td>{drop}</td></tr>
-    <tr><td><b>Distance</b></td><td>{distance_km} km</td></tr>
+    <tr><td><b>Distance</b></td><td>{distance_km}</td></tr>
     <tr><td><b>Driver</b></td><td>{driver_name}</td></tr>
     <tr><td><b>Vehicle</b></td><td>{vehicle}</td></tr>
   </table>
 
   <h3 style="margin-top: 24px;">Fare breakdown</h3>
   <table cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; border: 1px solid #e5e7eb;">
-    <tr><td>Base fare</td><td style="text-align:right;">Rs. {base_fare}</td></tr>
-    <tr><td>Distance fare</td><td style="text-align:right;">Rs. {distance_fare}</td></tr>
-    <tr><td>Time fare</td><td style="text-align:right;">Rs. {time_fare}</td></tr>
+    <tr><td>Base fare</td><td style="text-align:right;">{base_fare}</td></tr>
+    <tr><td>Distance fare</td><td style="text-align:right;">{distance_fare}</td></tr>
+    <tr><td>Time fare</td><td style="text-align:right;">{time_fare}</td></tr>
     <tr><td>Surge multiplier</td><td style="text-align:right;">x {surge}</td></tr>
-    <tr><td>GST ({gst_rate}%)</td><td style="text-align:right;">Rs. {gst_amount}</td></tr>
-    <tr style="background: #f9fafb;"><td><b>Total fare</b></td><td style="text-align:right;"><b>Rs. {total_fare}</b></td></tr>
+    <tr><td>{tax_label} ({gst_rate}%)</td><td style="text-align:right;">{gst_amount}</td></tr>
+    <tr style="background: #f9fafb;"><td><b>Total fare</b></td><td style="text-align:right;"><b>{total_fare}</b></td></tr>
   </table>
 
   <p style="margin-top: 16px;"><b>Payment method:</b> {payment_method} &nbsp; <b>Status:</b> {payment_status}</p>
@@ -129,7 +133,23 @@ def _get_active_rate_card_for_trip(trip):
     fall back to defaults in that case."""
     try:
         from servers.pricing.services import find_zone_for_point, get_active_rate_card
-        zone = find_zone_for_point(trip.pickup_lat, trip.pickup_long)
+
+        # Prefer the zone STAMPED ON THE TRIP over re-deriving it from the
+        # pickup coordinates.
+        #
+        # The trip records the zone its pickup fell in, for exactly this reason:
+        # re-running a point-in-polygon lookup against today's zone table means a
+        # re-parented zone, a changed boundary or a deactivated zone silently
+        # changes the tax rate on a receipt for a ride that happened months ago.
+        # A receipt is a legal document; the rate it shows must be the rate that
+        # was charged, which is a fact about the trip and not a lookup.
+        #
+        # Same reasoning as the already-stored `zone_code` and
+        # `rate_card_version`. The coordinate lookup stays as a fallback for
+        # legacy trips written before the zone column existed.
+        zone = getattr(trip, 'zone', None)
+        if zone is None:
+            zone = find_zone_for_point(trip.pickup_lat, trip.pickup_long)
         if not zone:
             return None
         vt = None
@@ -137,16 +157,69 @@ def _get_active_rate_card_for_trip(trip):
             vt = trip.vehicle_id.vehicle_type_id
         elif trip.requested_vehicle_type:
             vt = trip.requested_vehicle_type
-        if not vt:
-            return None
-        return get_active_rate_card(zone, vt)
+        if vt:
+            card = get_active_rate_card(zone, vt)
+            if card is not None:
+                return card
+
+        # No vehicle type, or no card for it. Fall back to ANY active card in
+        # this zone, because the only thing the caller wants from the card is
+        # the TAX RATE, and tax is a property of the jurisdiction rather than of
+        # the vehicle. Returning None here instead sent the caller to a
+        # hardcoded 5.00 -- India's GST rate -- which a multi-country drill
+        # caught being applied to a US trip, taxing a $27 fare at 5% instead of
+        # the zone's 8.625%.
+        from servers.pricing.models import RateCard
+        return (RateCard.objects
+                .filter(zone=zone, is_active=True)
+                .order_by('-version')
+                .first())
     except Exception:  # noqa: BLE001
         logger.exception('rate-card lookup failed for trip=%s', trip.pk)
         return None
 
 
-def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount, fare_pricing):
-    """Build the HTML body. Pure function; no IO."""
+# Kilometres are what we store; what the rider reads depends on their market.
+KM_PER_MILE = Decimal('1.609344')
+
+
+def format_distance(km, unit='km'):
+    """Render a stored metric distance in the zone's unit.
+
+    Storage stays metric everywhere -- converting at write time would make two
+    trips in different markets incomparable and break every distance aggregate.
+    Conversion happens here, at the edge, for display only.
+    """
+    if km in (None, ''):
+        return '—'
+    value = Decimal(str(km))
+    if unit == 'mi':
+        return f'{(value / KM_PER_MILE).quantize(Decimal("0.01"))} mi'
+    return f'{value.quantize(Decimal("0.01"))} km'
+
+
+def _format_distance(trip):
+    """The distance line on a receipt, in the trip's zone's unit."""
+    km = trip.actual_distance_km or trip.estimated_distance_km
+    zone = getattr(trip, 'zone', None)
+    unit = (getattr(zone, 'distance_unit', '') or
+            get_country(getattr(zone, 'country', None)).distance_unit)
+    return format_distance(km, unit)
+
+
+def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
+                         fare_pricing, currency=None, tax_label=None,
+                         tax_mode='inclusive'):
+    """Build the HTML body. Pure function; no IO.
+
+    `currency` and `tax_label` are parameters rather than constants because this
+    document used to say "Rs." and "GST" whatever market the trip was in. A US
+    rider would have received a dollar fare labelled in rupees with an Indian tax
+    name on it.
+    """
+    from base.money import DEFAULT_CURRENCY, format_money
+    currency = currency or DEFAULT_CURRENCY
+    tax_label = tax_label or 'Tax'
     rider_name = (getattr(rider, 'full_name', '') or rider.phone_number) or 'Rider'
     driver_name = ''
     vehicle = ''
@@ -183,16 +256,17 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount, fare
         date_str=escape(date_str),
         pickup=escape(str(trip.pickup_address or '—')),
         drop=escape(str(trip.destination_address or '—')),
-        distance_km=str(trip.actual_distance_km or trip.estimated_distance_km or '—'),
+        distance_km=escape(_format_distance(trip)),
         driver_name=escape(str(driver_name)),
         vehicle=escape(str(vehicle or '—')),
-        base_fare=str(round(base_fare, 2)),
-        distance_fare=str(round(distance_fare, 2)),
-        time_fare=str(round(time_fare, 2)),
+        base_fare=format_money(base_fare, currency),
+        distance_fare=format_money(distance_fare, currency),
+        time_fare=format_money(time_fare, currency),
         surge=str(round(surge, 2)),
         gst_rate=str(gst_rate),
-        gst_amount=str(round(gst_amount, 2)),
-        total_fare=str(round(total, 2)),
+        gst_amount=format_money(gst_amount, currency),
+        total_fare=format_money(total, currency),
+        tax_label=escape(str(tax_label)),
         payment_method=escape(str(trip.payment_method or '—')),
         payment_status=escape(str(trip.payment_status or '—')),
     )
@@ -283,14 +357,20 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     time_fare = (fp.time_fare if fp else None) or 0
     surge = (fp.surge_multiplier if fp else None) or 1
 
+    # Currency and tax label come from the receipt row and its trip's zone, not
+    # from a constant. This table said "Amount (Rs.)" and "GST" for every market.
+    _currency = getattr(receipt, 'currency', None) or DEFAULT_CURRENCY
+    _zone = getattr(getattr(receipt, 'trip_id', None), 'zone', None)
+    _tax_label = get_country(getattr(_zone, 'country', None)).tax_label
+
     fare_rows = [
-        ['Description', 'Amount (Rs.)'],
-        ['Base fare', f'{base_fare}'],
-        ['Distance fare', f'{distance_fare}'],
-        ['Time fare', f'{time_fare}'],
+        ['Description', f'Amount ({_currency})'],
+        ['Base fare', format_money(base_fare, _currency, with_symbol=False)],
+        ['Distance fare', format_money(distance_fare, _currency, with_symbol=False)],
+        ['Time fare', format_money(time_fare, _currency, with_symbol=False)],
         ['Surge multiplier', f'x {surge}'],
-        ['GST', f'{receipt.gst_amount}'],
-        ['Total fare', f'{receipt.total_fare}'],
+        [_tax_label, format_money(receipt.gst_amount, _currency, with_symbol=False)],
+        ['Total fare', format_money(receipt.total_fare, _currency, with_symbol=False)],
     ]
     fare_table = Table(fare_rows, colWidths=[110 * mm, 55 * mm])
     fare_table.setStyle(TableStyle([
@@ -418,13 +498,64 @@ def issue_receipt(trip, force_resend: bool = False):
         return existing
 
     card = _get_active_rate_card_for_trip(trip)
-    gst_rate = card.gst_percent if card else Decimal('5.00')
+    if card is not None:
+        gst_rate = card.gst_percent
+    else:
+        # No rate card anywhere in this zone. The previous code used a literal
+        # Decimal('5.00') here, which is India's GST rate on taxi services --
+        # correct for India and silently wrong for every other market. The
+        # fallback now comes from the country registry, where the US value is
+        # deliberately 0.00 because there is no national US rate to guess.
+        _fallback_country = get_country(getattr(getattr(trip, 'zone', None),
+                                                'country', None))
+        gst_rate = Decimal(_fallback_country.default_tax_percent)
+        logger.error(
+            'no rate card for trip=%s zone=%s; taxing at the %s default of %s%%. '
+            'This is a pricing misconfiguration -- the receipt is a legal '
+            'document and this rate is a guess.',
+            trip.pk, getattr(getattr(trip, 'zone', None), 'code', None),
+            _fallback_country.code, gst_rate,
+        )
 
     fare_pricing = FarePricing.objects.filter(trip_id=trip).order_by('-id').first()
     total = trip.final_fare or trip.estimated_fare or Decimal('0.00')
-    # Inclusive GST extraction: gst = total * gst_rate / (100 + gst_rate)
-    gst_amount = (Decimal(str(total)) * Decimal(str(gst_rate)) /
-                  (Decimal('100.00') + Decimal(str(gst_rate)))).quantize(Decimal('0.01'))
+
+    # --- Tax, in this market's convention -----------------------------------
+    #
+    # This used to do inclusive extraction unconditionally:
+    #
+    #     gst = total * rate / (100 + rate)
+    #
+    # which is right for India, where GST is levied on the fare the rider is
+    # quoted so the quoted total already contains it. Applied to a US trip it
+    # would understate the fare AND misstate the tax on the document the rider
+    # keeps -- it would carve a notional tax out of a total that never had any
+    # tax in it.
+    #
+    # `inclusive`  the tax is already inside `total`; extract it for display.
+    #              total stays exactly as quoted. India.
+    # `additive`   the tax was added on top by `quote_fare`, so it is already
+    #              part of `total` as a real charge. Recompute the same way the
+    #              quote did -- on the pre-tax fare -- so the receipt's lines
+    #              reconcile with what was charged rather than re-deriving a
+    #              different number from the post-tax total.
+    zone = getattr(trip, 'zone', None)
+    tax_mode = (getattr(zone, 'tax_mode', '') or 'inclusive')
+    tax_label = get_country(getattr(zone, 'country', None)).tax_label
+    currency = currency_for_trip(trip)
+    rate = Decimal(str(gst_rate or '0'))
+
+    if tax_mode == 'additive':
+        per_trip_fee = Decimal(str(getattr(zone, 'per_trip_fee', None) or '0'))
+        # total = fare + tax + fee, and tax = fare * rate/100, so
+        # fare = (total - fee) / (1 + rate/100).
+        taxable = (Decimal(str(total)) - per_trip_fee)
+        divisor = (Decimal('1') + rate / Decimal('100'))
+        pre_tax = (taxable / divisor) if divisor else taxable
+        gst_amount = (pre_tax * rate / Decimal('100')).quantize(Decimal('0.01'))
+    else:
+        gst_amount = (Decimal(str(total)) * rate /
+                      (Decimal('100.00') + rate)).quantize(Decimal('0.01'))
 
     receipt_number = f"SG-{(trip.completed_at or timezone.now()).strftime('%Y%m')}-{trip.id}-v1"
 
@@ -435,12 +566,14 @@ def issue_receipt(trip, force_resend: bool = False):
             receipt_number=receipt_number,
             total_fare=total,
             gst_amount=gst_amount,
+            currency=currency,
             payment_method=trip.payment_method or '',
             payment_status=trip.payment_status or '',
             sent_to_email=rider.email or '',
             html_body=_render_receipt_html(
                 trip=trip, rider=rider, receipt_number=receipt_number,
                 gst_rate=gst_rate, gst_amount=gst_amount, fare_pricing=fare_pricing,
+                currency=currency, tax_label=tax_label, tax_mode=tax_mode,
             ),
             version=1,
         )

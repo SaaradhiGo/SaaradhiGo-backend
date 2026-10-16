@@ -30,8 +30,19 @@ _PII_PATTERNS = [
     (re.compile(r'\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}'), '<jwt-redacted>'),
     # AWS access keys
     (re.compile(r'\bAKIA[0-9A-Z]{16}\b'), '<aws-key-redacted>'),
-    # Phone numbers in E.164 — leave country code + 2 digits, redact the rest
-    (re.compile(r'(\+91)(\d{2})\d{8}'), r'\1\2********'),
+    # Phone numbers in E.164 — keep the first four digits, mask the rest.
+    #
+    # This used to be `(\+91)(\d{2})\d{8}`, which matched India and nothing else, so
+    # a US number went to the log in clear. Enumerating country codes is the wrong
+    # shape for a redaction filter: the one you forget is the one that leaks, and
+    # you find out after it has leaked.
+    #
+    # Four digits kept is enough to tell which market and which operator prefix a
+    # line refers to while leaving the subscriber unidentifiable. The mask length is
+    # fixed rather than proportional so the output does not disclose how long the
+    # number was. The 8-digit floor stops it mangling short numerics that happen to
+    # follow a plus sign.
+    (re.compile(r'\+(\d{8,15})\b'), lambda m: '+' + m.group(1)[:4] + '********'),
 ]
 
 

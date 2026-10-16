@@ -194,7 +194,11 @@ def test_me_delete_anonymises_and_deactivates(auth_client_rider):
     user.refresh_from_db()
     assert user.is_active is False
     assert user.phone_number != original_phone
-    assert user.phone_number.startswith('+91-deleted-')
+    # No country code. The placeholder used to be '+91-deleted-{id}', which
+    # made every anonymised account look Indian in the operator console --
+    # including US ones. A deleted account belongs to no market.
+    assert user.phone_number.startswith('deleted-')
+    assert '+91' not in user.phone_number
     # email / name fields cleared
     assert (user.full_name or '') == ''
     assert (user.email or '') == ''

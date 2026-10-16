@@ -106,8 +106,16 @@ def driver_full_detail_admin(request, driver_id):
 
     user = driver.user_id
     now = timezone.now()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    month_start = today_start.replace(day=1)
+    # Day and month boundaries in the DRIVER's market, not the deployment's.
+    # `now.replace(hour=0, ...)` measured both against Asia/Kolkata for every
+    # driver on the platform.
+    from base.market_time import (
+        driver_timezone, local_day_start, local_month_start,
+    )
+
+    _dtz = driver_timezone(driver)
+    today_start = local_day_start(_dtz, now=now)
+    month_start = local_month_start(_dtz, now=now)
     last_24h = now - timedelta(hours=24)
     last_7d = now - timedelta(days=7)
     last_30d = now - timedelta(days=30)

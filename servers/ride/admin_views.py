@@ -7,6 +7,7 @@ from servers.ride.models import Trip, Receipt, ChatMessage, PromoRedemption, Far
 from servers.ride.serializers import TripListSerializer
 from rest_framework.pagination import PageNumberPagination
 from servers.redis_client import get_all_active_drivers, get_all_active_riders
+from base.money import format_totals, sum_by_currency
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, IsAdmin])
@@ -393,9 +394,17 @@ def build_admin_dashboard_kpis(day_date=None):
     completed_today = Trip.objects.filter(
         completed_at__gte=day_start, completed_at__lt=day_end,
     )
-    gmv = completed_today.aggregate(
-        s=Sum('final_fare'),
-    )['s'] or Decimal('0.00')
+    # GMV, per currency.
+    #
+    # A single Sum() here was correct while the platform served one market and
+    # becomes a meaningless number the moment it serves two -- it would add
+    # dollars to rupees and present the result as money. `gmv` keeps the old
+    # shape for a single-market deployment so nothing downstream breaks, and
+    # `gmv_by_currency` is the honest answer that an operator reading a
+    # multi-market dashboard needs.
+    gmv_by_currency = sum_by_currency(completed_today, 'final_fare')
+    gmv = (next(iter(gmv_by_currency.values()), Decimal('0.00'))
+           if len(gmv_by_currency) <= 1 else None)
 
     online_now = Driver.objects.filter(status='online').count()
     online_24h = Driver.objects.filter(sessions__started_at__gte=last_24h).distinct().count()
@@ -408,10 +417,15 @@ def build_admin_dashboard_kpis(day_date=None):
     withdrawals_pending = WithdrawalRequest.objects.filter(
         status__in=('pending', 'approved', 'processing'),
     ).count()
+    _withdrawals_today = WithdrawalRequest.objects.filter(
+        status='completed', processed_at__gte=day_start, processed_at__lt=day_end,
+    )
+    withdrawals_completed_today_by_currency = sum_by_currency(
+        _withdrawals_today, 'amount')
     withdrawals_completed_today_amount = (
-        WithdrawalRequest.objects.filter(
-            status='completed', processed_at__gte=day_start, processed_at__lt=day_end,
-        ).aggregate(s=Sum('amount'))['s'] or Decimal('0.00')
+        next(iter(withdrawals_completed_today_by_currency.values()),
+             Decimal('0.00'))
+        if len(withdrawals_completed_today_by_currency) <= 1 else None
     )
 
     receipts_today = Receipt.objects.filter(issued_at__gte=day_start, issued_at__lt=day_end)
@@ -427,7 +441,12 @@ def build_admin_dashboard_kpis(day_date=None):
             'cancelled': by_status.get('cancelled', 0),
             'total': sum(by_status.values()),
         },
-        'gmv': str(gmv),
+        # str(None) would print the literal 'None' on a multi-market dashboard.
+        'gmv': (str(gmv) if gmv is not None else None),
+        # The honest shape. Always present, and the only one an operator should
+        # read once a second market exists.
+        'gmv_by_currency': {k: str(v) for k, v in gmv_by_currency.items()},
+        'gmv_display': format_totals(gmv_by_currency),
         'drivers': {
             'online_now': online_now,
             'online_24h': online_24h,

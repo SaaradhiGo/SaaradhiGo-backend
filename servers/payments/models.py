@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth import get_user_model
+from base.currency_stamp import CurrencyStampedModel
 
 User = get_user_model()
 
@@ -10,7 +11,11 @@ class PaymentGateway(models.TextChoices):
     # Add more gateways as needed
 
 
-class Payment(models.Model):
+class Payment(CurrencyStampedModel, models.Model):
+    # Where this row's currency is derived from. See base/currency_stamp.py.
+    #  A payment is for a trip.
+    currency_source_fields = ('trip_id',)
+
     STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('processing', 'Processing'),
@@ -29,6 +34,10 @@ class Payment(models.Model):
     user_id = models.ForeignKey(User, on_delete=models.CASCADE, related_name='payments')
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     method = models.CharField(max_length=20, choices=METHOD_CHOICES)
+    # Stamped at write time from the trip's zone. Denormalised on purpose: the
+    # currency a row was written in is a fact about that row, not a lookup
+    # against today's zone configuration.
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
 
     # Payment gateway
@@ -87,7 +96,13 @@ class Payment(models.Model):
         ]
 
 
-class TransactionHistory(models.Model):
+class TransactionHistory(CurrencyStampedModel, models.Model):
+    # Where this row's currency is derived from. See base/currency_stamp.py.
+    #  trip_id is nullable here (a withdrawal has no trip), so this falls
+    #  back to the default, which is correct: a payout is in the driver's
+    #  home-market currency and there is no trip to ask.
+    currency_source_fields = ('trip_id',)
+
     TXN_TYPE_CHOICES = [
         ('payment', 'Payment from Rider'),
         ('credit', 'Credit to Driver'),
@@ -101,6 +116,10 @@ class TransactionHistory(models.Model):
     withdrawal_request = models.ForeignKey('driver.WithdrawalRequest', on_delete=models.SET_NULL, null=True, blank=True, related_name='transactions')
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     method = models.CharField(max_length=50)
+    # Stamped at write time from the trip's zone. Denormalised on purpose: the
+    # currency a row was written in is a fact about that row, not a lookup
+    # against today's zone configuration.
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
     
     # Payment gateway fields
     payment_gateway = models.CharField(
@@ -176,7 +195,7 @@ class WebhookEvent(models.Model):
         return f'WebhookEvent {self.gateway}:{self.dedupe_key[:32]}'
 
 
-class TripSettlement(models.Model):
+class TripSettlement(CurrencyStampedModel, models.Model):
     """Immutable economic evidence for one settled trip.
 
     `WalletTransaction` stays the authoritative ledger: it says what money moved.
@@ -212,6 +231,10 @@ class TripSettlement(models.Model):
         version. There is no update path.
     """
 
+    # Where this row's currency is derived from. See base/currency_stamp.py.
+    #  Settlement is per trip; note the FK is `trip`, not `trip_id`.
+    currency_source_fields = ('trip',)
+
     SOURCE_NATIVE = 'native'
     SOURCE_RECONSTRUCTED = 'reconstructed'
     SOURCE_CHOICES = [
@@ -244,6 +267,10 @@ class TripSettlement(models.Model):
     # gross_fare - commission_amount, stored so the identity is asserted at write
     # time rather than recomputed by every reader.
     driver_net = models.DecimalField(max_digits=10, decimal_places=2)
+    # Stamped at write time from the trip's zone. Denormalised on purpose: the
+    # currency a row was written in is a fact about that row, not a lookup
+    # against today's zone configuration.
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
 
     # Decides the ledger's direction and who is holding the fare meanwhile.
     payment_method = models.CharField(max_length=32, blank=True, default='')

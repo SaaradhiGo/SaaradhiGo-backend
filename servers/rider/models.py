@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.db import models
 from django.contrib.auth import get_user_model
+from base.currency_stamp import CurrencyStampedModel
 
 User=get_user_model()
 class Rider(models.Model):
@@ -63,6 +64,13 @@ class Wallet(models.Model):
     # mismatch caused `wallet.balance + Decimal(amount)` to TypeError on
     # the first ever top-up. See QA-7 in the Phase-0 QA report.
     balance=models.DecimalField(max_digits=12,decimal_places=2,default=Decimal('0.00'))
+    # The currency this amount is in, stamped at write time from the trip's
+    # zone. Denormalised on purpose: the currency a row was written in is a
+    # FACT about that row, not a lookup against today's zone configuration --
+    # same reasoning as the already-stored `zone_code` and `rate_card_version`.
+    # Without it, every cross-market Sum() in this codebase is a meaningless
+    # number and nothing says so.
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
 
     class Meta:
         constraints = [
@@ -88,9 +96,58 @@ def get_wallet(user, scope=Wallet.SCOPE_RIDER, lock=False):
         wallet.balance = Decimal('0.00')
     return wallet
 
-class WalletTransaction(models.Model):
+class WalletTransaction(CurrencyStampedModel, models.Model):
+    """A ledger row. Carries its own currency.
+
+    This model has no trip FK -- the only link back to a trip is
+    `reference_id = 'TRIP_<id>'`, which `servers/driver/earnings.py` already
+    documents as a real modelling weakness. So the currency cannot be derived by
+    the generic mixin and `_derive_currency` is overridden below to parse it.
+
+    Parsing a string to find the currency of a money row is not good. It is,
+    however, strictly better than defaulting every settlement row to INR, and it
+    does not require changing the settlement write path in the same change that
+    introduces currency. When `reference_id` becomes a proper FK, delete the
+    override and add 'trip' to `currency_source_fields`.
+    """
+
+    currency_source_fields = ()
+
+    def _derive_currency(self):
+        from base.money import normalize_currency
+
+        ref = (self.reference_id or '') if hasattr(self, 'reference_id') else ''
+        if ref.startswith('TRIP_'):
+            try:
+                trip_pk = int(ref[len('TRIP_'):])
+            except (TypeError, ValueError):
+                trip_pk = None
+            if trip_pk is not None:
+                from servers.ride.models import Trip
+                found = (Trip.objects.filter(pk=trip_pk)
+                         .values_list('currency', flat=True).first())
+                if found:
+                    return normalize_currency(found)
+
+        # No trip to ask (a top-up, a withdrawal, a promo credit). Use the
+        # wallet's currency, which is the user's home market.
+        try:
+            wallet = Wallet.objects.filter(user_id=self.user_id_id).first()
+        except Exception:
+            wallet = None
+        if wallet and wallet.currency:
+            return normalize_currency(wallet.currency)
+        return None
+
     user_id = models.ForeignKey(User, on_delete=models.CASCADE, related_name='wallet_transactions')
     amount = models.DecimalField(max_digits=12, decimal_places=2)
+    # The currency this amount is in, stamped at write time from the trip's
+    # zone. Denormalised on purpose: the currency a row was written in is a
+    # FACT about that row, not a lookup against today's zone configuration --
+    # same reasoning as the already-stored `zone_code` and `rate_card_version`.
+    # Without it, every cross-market Sum() in this codebase is a meaningless
+    # number and nothing says so.
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
     txn_type = models.CharField(max_length=20, choices=[
         ('credit', 'Credit'),  # Added via payment gateway
         ('debit', 'Debit')     # Used for both gateway and direct payments

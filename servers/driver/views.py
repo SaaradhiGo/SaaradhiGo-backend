@@ -214,10 +214,18 @@ def driver_earnings_summary(request):
     rows = settlement_rows(driver)
     totals = summarise(rows)
 
-    # Local calendar day, matching what a driver means by "today".
-    today_start = timezone.localtime(timezone.now()).replace(
-        hour=0, minute=0, second=0, microsecond=0,
-    )
+    # Local calendar day, matching what a driver means by "today" -- in THEIR
+    # market, not the deployment's.
+    #
+    # This used to be `timezone.localtime(...)`, which resolves against the
+    # single global TIME_ZONE (Asia/Kolkata). For a driver in New York that
+    # window opened at 14:30 the previous afternoon, so the morning's rides were
+    # filed under yesterday and the figure they reconcile their cash against did
+    # not match the shift they had just worked. Nothing crashed; the number was
+    # simply about a different day than the person reading it was living in.
+    from base.market_time import driver_timezone, local_day_start
+
+    today_start = local_day_start(driver_timezone(driver))
     today = summarise([r for r in rows
                        if r.created_at is not None and r.created_at >= today_start])
 

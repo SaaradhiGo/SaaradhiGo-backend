@@ -30,6 +30,7 @@ resolver will pick it up at that timestamp.
 """
 
 import json
+import logging
 from decimal import Decimal
 
 from django.conf import settings
@@ -37,6 +38,8 @@ from django.db import models
 from django.utils import timezone
 
 from servers.driver.models import VehicleType
+
+logger = logging.getLogger(__name__)
 
 
 class PlatformSettings(models.Model):
@@ -146,10 +149,62 @@ class ServiceZone(models.Model):
     # an airport sub-zone (priority 100) wins over the city (priority 10).
     priority = models.IntegerField(default=10)
 
-    # Currency + timezone metadata. We're INR-only for now but storing
-    # this on the zone keeps later expansion clean.
-    currency = models.CharField(max_length=3, default='INR')
-    timezone_name = models.CharField(max_length=64, default='Asia/Kolkata')
+    # ---------------------------------------------------------------
+    # MARKET SEMANTICS
+    # ---------------------------------------------------------------
+    # The zone is the source of truth for what a market means, because a
+    # geographic market has exactly one currency and one tax convention --
+    # whereas a COUNTRY may have several timezones (the US has six) and a
+    # DEPLOYMENT serves several countries. The zone is the only level that
+    # covers both shapes.
+    #
+    # All four default from `base.countries` at save() when left blank, so
+    # creating a Hyderabad zone still means setting `country='IN'` and
+    # nothing else.
+    currency = models.CharField(
+        max_length=3, blank=True,
+        help_text='ISO 4217. Blank defaults from the country.',
+    )
+    timezone_name = models.CharField(
+        max_length=64, blank=True,
+        help_text="IANA name, e.g. 'Asia/Kolkata', 'America/Los_Angeles'. "
+                  "Blank defaults from the country. SET THIS EXPLICITLY for "
+                  "countries with several timezones -- a single national value "
+                  "rolls a Californian driver's earnings over at 9pm the day "
+                  "before.",
+    )
+    distance_unit = models.CharField(
+        max_length=2, blank=True,
+        choices=[('km', 'Kilometres'), ('mi', 'Miles')],
+        help_text='Unit this zone is PRICED and displayed in. Storage is '
+                  'always metric; this drives rate-card entry and display so '
+                  'a US zone is configured in the units its operator thinks '
+                  'in, rather than requiring a silent 1.609x conversion.',
+    )
+    tax_mode = models.CharField(
+        max_length=10, blank=True,
+        choices=[('inclusive', 'Included in the fare'),
+                 ('additive', 'Added on top of the fare')],
+        help_text="'inclusive' = the quoted fare already contains the tax and "
+                  "the receipt extracts it (India's GST). 'additive' = the tax "
+                  "is a separate line added on top (US sales tax). Getting this "
+                  "wrong understates the fare on the receipt.",
+    )
+    # Flat per-trip charge, in this zone's currency, on top of the fare and
+    # independent of tax. Several US jurisdictions levy one (the NYC congestion
+    # surcharge, Chicago's ground transportation tax) and they are a fixed
+    # amount per trip, not a percentage -- so a percentage-only tax model
+    # cannot express them.
+    per_trip_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal('0.00'),
+        help_text='Flat regulatory charge per trip, in this zone currency. '
+                  '0 for most zones.',
+    )
+    per_trip_fee_label = models.CharField(
+        max_length=64, blank=True,
+        help_text='What the rider sees for the flat fee, e.g. '
+                  "'Congestion surcharge'. Required if per_trip_fee > 0.",
+    )
 
     is_active = models.BooleanField(default=True, db_index=True)
 
@@ -166,6 +221,54 @@ class ServiceZone(models.Model):
             models.Index(fields=['priority'], name='zone_priority_idx'),
         ]
         ordering = ['-priority', 'code']
+
+    # ------------------------------------------------------------------
+    # Country-derived defaults
+    # ------------------------------------------------------------------
+    def apply_country_defaults(self):
+        """Fill blank market fields from `base.countries`. Idempotent.
+
+        Blank-means-inherit rather than a column default, because a column
+        default is evaluated once at migration time and then silently applies
+        India's conventions to a US zone created later. Inheriting at save()
+        means the registry stays the single source of truth.
+        """
+        from base.countries import get_country, is_supported
+
+        if self.country and not is_supported(self.country):
+            # Logged, not raised: refusing to save would lose the zone, and the
+            # fallback is visible in the fields it fills.
+            logger.error(
+                'ServiceZone %s has unsupported country %r; market defaults '
+                'fall back to %s. Add it to base.countries before launching '
+                'this zone.',
+                self.code, self.country, get_country(None).code,
+            )
+
+        country = get_country(self.country)
+        if not self.currency:
+            self.currency = country.currency
+        if not self.timezone_name:
+            self.timezone_name = country.default_timezone
+        if not self.distance_unit:
+            self.distance_unit = country.distance_unit
+        if not self.tax_mode:
+            self.tax_mode = country.tax_mode
+        self.currency = str(self.currency).upper().strip()
+
+    def save(self, *args, **kwargs):
+        self.apply_country_defaults()
+        super().save(*args, **kwargs)
+
+    @property
+    def country_profile(self):
+        from base.countries import get_country
+        return get_country(self.country)
+
+    @property
+    def tax_label(self):
+        """What the rider sees: 'GST' in India, 'Sales tax' in the US."""
+        return self.country_profile.tax_label
 
     def __str__(self):
         return f'{self.code} ({self.name})'

@@ -2,6 +2,7 @@ from django.db import models
 from django.contrib.auth import get_user_model
 from base.media import PrefixedUUIDPath, validate_document_file, validate_file_size, validate_image_file
 from base.storage_backends import private_document_storage, public_media_storage
+from base.currency_stamp import CurrencyStampedModel
 # Create your models here.
 User=get_user_model()
 class Driver(models.Model):
@@ -258,7 +259,7 @@ class DriverCancellation(models.Model):
         return f'Cancel driver={self.driver_id} trip={self.trip_id} reason={self.reason}'
 
 
-class WithdrawalRequest(models.Model):
+class WithdrawalRequest(CurrencyStampedModel, models.Model):
     STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('approved', 'Approved'),
@@ -280,8 +281,34 @@ class WithdrawalRequest(models.Model):
         ('bank', 'Bank Transfer'),
         ('upi', 'UPI Payout'),
     ]
+    # Where a payout's currency comes from: the driver's wallet, which is their
+    # home market. A payout has no trip, so there is nothing more specific to
+    # ask -- and paying a driver in the currency of whichever zone their last
+    # ride happened to be in would be wrong, not merely imprecise.
+    currency_source_fields = ()
+
+    def _derive_currency(self):
+        from base.money import normalize_currency
+        from servers.rider.models import Wallet
+
+        try:
+            wallet = Wallet.objects.filter(
+                user_id=self.driver.user_id_id).first()
+        except Exception:
+            wallet = None
+        if wallet and wallet.currency:
+            return normalize_currency(wallet.currency)
+        return None
+
     driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='withdrawal_requests')
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+    # The currency this amount is in, stamped at write time from the trip's
+    # zone. Denormalised on purpose: the currency a row was written in is a
+    # FACT about that row, not a lookup against today's zone configuration --
+    # same reasoning as the already-stored `zone_code` and `rate_card_version`.
+    # Without it, every cross-market Sum() in this codebase is a meaningless
+    # number and nothing says so.
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
     payout_method = models.CharField(max_length=20, choices=PAYOUT_METHOD_CHOICES, default='upi')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     requested_at = models.DateTimeField(auto_now_add=True)

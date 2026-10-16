@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 # expression; `base.permissions.is_operator` is now the only definition, and its
 # docstring records the four divergent copies that preceded it. Imported under the
 # same name so existing call sites and tests are unchanged.
+from base.countries import normalize_phone  # noqa: E402
 from base import ops_mfa  # noqa: E402
 from base.permissions import is_operator  # noqa: E402
 from servers.admin_audit.services import record_admin_action  # noqa: E402
@@ -97,11 +98,12 @@ def login(request: HttpRequest) -> HttpResponse:
             error = "Phone number and password are required."
         else:
             # Normalise to E.164 so the lookup matches stored phone numbers.
-            if not phone_number.startswith("+"):
-                if len(phone_number) == 10:
-                    phone_number = f"+91{phone_number}"
-                elif phone_number.startswith("91") and len(phone_number) == 12:
-                    phone_number = f"+{phone_number}"
+            #
+            # This used to be an inline `f"+91{phone_number}"`, which turned a US
+            # operator's 10-digit number into +915551234567 and left them unable
+            # to sign in. `normalize_phone` resolves against the supported
+            # country registry instead of assuming one.
+            phone_number = normalize_phone(phone_number) or phone_number
             # Brute-force guard. Measured against QA before this existed: 12
             # consecutive failed logins in 7.8 seconds with no throttling at all,
             # on the console that approves KYC and releases payouts.

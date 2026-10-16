@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth import get_user_model
 from servers.driver.models import Vehicle,Driver,VehicleType
+from base.currency_stamp import CurrencyStampedModel
 
 User=get_user_model()
 # Create your models here.
@@ -17,7 +18,12 @@ def get_default_trip_status():
     status, _ = TripStatus.objects.get_or_create(status_code='requested')
     return status.id
 
-class Trip(models.Model):
+class Trip(CurrencyStampedModel, models.Model):
+    # Where this row's currency is derived from. See base/currency_stamp.py.
+    #  A trip's currency comes from the zone its PICKUP fell in, which is
+    #  already stamped on the trip for exactly this kind of reason.
+    currency_source_fields = ('zone',)
+
     user_id=models.ForeignKey(User,on_delete=models.CASCADE,related_name='trips')
     driver_id=models.ForeignKey(Driver,on_delete=models.DO_NOTHING,related_name='trips',blank=True,null=True)
     vehicle_id=models.ForeignKey(Vehicle,on_delete=models.DO_NOTHING,related_name='trips',blank=True,null=True)
@@ -79,6 +85,13 @@ class Trip(models.Model):
     actual_duration_min=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
     estimated_fare=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
     final_fare=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
+    # The currency this amount is in, stamped at write time from the trip's
+    # zone. Denormalised on purpose: the currency a row was written in is a
+    # FACT about that row, not a lookup against today's zone configuration --
+    # same reasoning as the already-stored `zone_code` and `rate_card_version`.
+    # Without it, every cross-market Sum() in this codebase is a meaningless
+    # number and nothing says so.
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
     surge_multiplier=models.DecimalField(max_digits=4,decimal_places=2,default=1.00)
     payment_method=models.CharField(max_length=50,blank=True,null=True)
     payment_status=models.CharField(max_length=50,blank=True,null=True)
@@ -193,7 +206,7 @@ def driver_active_trip_ids(driver, exclude_trip_id=None):
     return list(qs.values_list('pk', flat=True))
 
 
-class FarePricing(models.Model):
+class FarePricing(CurrencyStampedModel, models.Model):
     """Immutable snapshot of how a trip's fare was arrived at.
 
     This table already existed and already behaved as a snapshot: one row is
@@ -215,6 +228,10 @@ class FarePricing(models.Model):
     behaviour; populating them at booking changes no behaviour either. Only a
     later, separately reviewed change makes anything read `rider_payable`.
     """
+
+    # Where this row's currency is derived from. See base/currency_stamp.py.
+    #  The quote belongs to the trip it priced.
+    currency_source_fields = ('trip_id',)
 
     SNAPSHOT_QUOTE = 'quote'
     SNAPSHOT_FINAL = 'final'
@@ -246,6 +263,10 @@ class FarePricing(models.Model):
     time_fare=models.DecimalField(max_digits=10,decimal_places=2)
     surge_multiplier=models.DecimalField(max_digits=4,decimal_places=2,default=1.00)
     total_fare=models.DecimalField(max_digits=10,decimal_places=2)
+    # Stamped at write time from the trip's zone. Denormalised on purpose: the
+    # currency a row was written in is a fact about that row, not a lookup
+    # against today's zone configuration.
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
 
     # --- which snapshot this is ---------------------------------------------
     snapshot_type = models.CharField(
@@ -375,7 +396,7 @@ class Rating(models.Model):
         return f'Rating {self.score} for Trip {self.trip_id.id}'
 
 
-class Receipt(models.Model):
+class Receipt(CurrencyStampedModel, models.Model):
     """Per-completed-trip receipt sent to the rider.
 
     Generated at trip-completion time. Stores the rendered HTML so
@@ -388,6 +409,10 @@ class Receipt(models.Model):
     fare adjusted, new receipt version). Resending the latest
     receipt updates last_sent_at only.
     """
+
+    # Where this row's currency is derived from. See base/currency_stamp.py.
+    #  The document belongs to the trip it describes.
+    currency_source_fields = ('trip_id',)
     from base.storage_backends import private_document_storage
     from base.media import PrefixedUUIDPath
 
@@ -396,6 +421,13 @@ class Receipt(models.Model):
     receipt_number=models.CharField(max_length=64,unique=True,db_index=True)
     total_fare=models.DecimalField(max_digits=10,decimal_places=2)
     gst_amount=models.DecimalField(max_digits=10,decimal_places=2,default=0)
+    # The currency this amount is in, stamped at write time from the trip's
+    # zone. Denormalised on purpose: the currency a row was written in is a
+    # FACT about that row, not a lookup against today's zone configuration --
+    # same reasoning as the already-stored `zone_code` and `rate_card_version`.
+    # Without it, every cross-market Sum() in this codebase is a meaningless
+    # number and nothing says so.
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
     payment_method=models.CharField(max_length=32,blank=True,default='')
     payment_status=models.CharField(max_length=32,blank=True,default='')
     sent_to_email=models.EmailField(blank=True,default='')

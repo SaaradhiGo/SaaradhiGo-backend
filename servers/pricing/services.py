@@ -570,8 +570,66 @@ def quote_fare(
             'amount': _residual,
         })
 
+    # --- Market semantics: tax mode, flat fees, currency, units --------------
+    #
+    # Up to this point `total_fare` is the metered fare after surge and the
+    # minimum, and that is ALL India needs: GST is inclusive there, so the tax
+    # already sits inside this number and the receipt extracts it.
+    #
+    # In an `additive` market (the US) the tax and any flat regulatory fee are
+    # charged ON TOP, so they are real additions to what the rider pays and must
+    # appear both in the total and as their own lines.
+    #
+    # The India path below is a no-op by construction. The additive branch is the
+    # only thing that moves `total_fare`, and it cannot run for an inclusive zone
+    # -- which matters, because a pricing change disguised as a refactor would
+    # move every Indian fare.
+    tax_mode = getattr(zone, 'tax_mode', '') or 'inclusive'
+    tax_percent = (card.gst_percent if card is not None
+                   else _DEFAULTS.get('gst_percent', Decimal('5.00')))
+    tax_percent = Decimal(str(tax_percent or '0'))
+    per_trip_fee = Decimal(str(getattr(zone, 'per_trip_fee', None) or '0'))
+    fee_label = getattr(zone, 'per_trip_fee_label', '') or 'Regulatory fee'
+
+    from base.countries import get_country
+    _country = get_country(getattr(zone, 'country', None))
+    tax_label = _country.tax_label
+    currency = (getattr(zone, 'currency', None) or _country.currency)
+    distance_unit = (getattr(zone, 'distance_unit', None)
+                     or _country.distance_unit)
+
+    tax_amount = Decimal('0.00')
+    if tax_mode == 'additive':
+        # Tax applies to the fare, not to the flat regulatory fee: a
+        # government charge is not itself a taxable service. Jurisdictions
+        # differ on this and it is the conservative reading.
+        tax_amount = round(total_fare * tax_percent / Decimal('100'), 2)
+        if tax_amount != Decimal('0.00'):
+            adjustments.append({
+                'code': 'tax',
+                'label': tax_label,
+                'amount': tax_amount,
+            })
+        if per_trip_fee != Decimal('0.00'):
+            adjustments.append({
+                'code': 'per_trip_fee',
+                'label': fee_label,
+                'amount': round(per_trip_fee, 2),
+            })
+        total_fare = round(total_fare + tax_amount + per_trip_fee, 2)
+
     return {
         'total_fare': total_fare,
+        # The market this quote was priced in. Without it a client cannot know
+        # whether 450 means rupees or dollars, and every downstream money row
+        # would have to re-derive it from the zone.
+        'currency': currency,
+        'tax_mode': tax_mode,
+        'tax_percent': round(tax_percent, 2),
+        'tax_label': tax_label,
+        'tax_amount': tax_amount,
+        'per_trip_fee': round(per_trip_fee, 2),
+        'distance_unit': distance_unit,
         'base_fare': _base_r,
         'distance_fare': _dist_r,
         'time_fare': _time_r,

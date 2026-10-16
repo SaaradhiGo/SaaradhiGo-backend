@@ -13,7 +13,8 @@ We anonymise rather than hard-delete because:
     legitimately be retained.
 
 What we anonymise on /me/delete/:
-  - phone_number → "+91-deleted-{user_id}"
+  - phone_number → "deleted-{user_id}"  (no country code: a deleted
+    account belongs to no market)
   - email → ""
   - full_name → "Deleted user"
   - dob, address fields, emergency_contact, avatar, fcm_token → cleared
@@ -227,7 +228,10 @@ def _serialize_notifications(user):
 def _anonymise_user(user):
     """Replace PII fields with placeholders. Keep the User row so FKs
     from Trip / Payment / TransactionHistory keep working."""
-    placeholder_phone = f"+91-deleted-{user.id}"
+    # No country code: a deleted account belongs to no market, and
+    # hardcoding +91 made every anonymised US user look Indian in
+    # the operator console.
+    placeholder_phone = f"deleted-{user.id}"
     fields_cleared = []
     user.phone_number = placeholder_phone
     fields_cleared.append('phone_number')

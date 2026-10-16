@@ -364,7 +364,10 @@ def build_admin_dashboard_kpis(day_date=None):
 
     Args:
         day_date: a ``date`` object for the reporting day. Defaults to
-            "today in the project's current timezone".
+            "today in the project's current timezone" -- the deployment's day,
+            deliberately, since these are platform-wide ops tiles. See the
+            note on `admin_dashboard` about which "today" this is and why the
+            money tiles are per currency.
 
     Returns:
         dict with the same shape the API endpoint returns, with all
@@ -474,16 +477,30 @@ def admin_dashboard(request):
     """Daily ops dashboard KPIs.
 
     Returns a single payload the admin web console can render as
-    headline tiles. Defaults to "today in Asia/Kolkata" but a `?date=`
-    query param (YYYY-MM-DD) lets ops backfill yesterday's numbers.
+    headline tiles. A `?date=` query param (YYYY-MM-DD) lets ops backfill
+    yesterday's numbers.
+
+    WHICH "TODAY"
+    -------------
+    The DEPLOYMENT's day, not any one market's -- this is a platform-wide ops
+    view and the team reading it sits in one place, so one cut-off is what
+    makes the tiles comparable day to day. That is a reporting convention and
+    it is stated here rather than implied: with two markets live, a day
+    boundary at Indian midnight splits a US afternoon.
+
+    The money tiles are NOT a single number for this reason. `gmv_by_currency`
+    and `withdrawals.completed_today_by_currency` give one amount per market;
+    the flat `gmv` is `None` when the day spans currencies rather than adding
+    them. For per-market revenue over a date range, the executive revenue
+    report scopes to one market at a time.
 
     Tile set:
       trips.requested / accepted / completed / cancelled
-      gmv (sum of completed trips' final_fare)
+      gmv / gmv_by_currency (completed trips' final_fare)
       drivers.online_now / online_24h
       riders.active_24h
       cancellations.driver_24h (counter for the rolling penalty rule)
-      withdrawals.pending / completed_today (Rs)
+      withdrawals.pending / completed_today_by_currency
       receipts.issued_today / send_failures_today
     """
     from datetime import datetime

@@ -577,7 +577,7 @@
 
                         <!-- AMOUNT -->
                         <td class="px-8 py-5 font-bold text-sm text-on-surface">
-                            {{ t.amount |money }}
+                            {{ t.amount|money:t.currency }}
                         </td>
 
 
@@ -1209,7 +1209,7 @@
                                 <span
                                     class="font-bold text-sm text-on-surface">
 
-                                    {{ item.amount|money }}
+                                    {{ item.amount|money:item.currency }}
 
                                 </span>
 

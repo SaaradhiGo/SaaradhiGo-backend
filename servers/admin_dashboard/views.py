@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # same name so existing call sites and tests are unchanged.
 from base.countries import normalize_phone  # noqa: E402
 from base.money import (  # noqa: E402
-    format_totals, single_currency_or_none, sum_by_currency,
+    DEFAULT_CURRENCY, format_totals, single_currency_or_none, sum_by_currency,
 )
 from servers.driver.compliance import (  # noqa: E402
     VEHICLE_DOCUMENT_COLUMNS, document_description, document_label,
@@ -2522,6 +2522,9 @@ def payment_dashboard(request: HttpRequest) -> HttpResponse:
                 "transfer_id": "-",
                 "status": payment.status,
                 "amount": payment.amount,
+                # The currency of THIS row. Without it the template
+                # picks a symbol for the number.
+                "currency": payment.currency,
                 "detail": payment.method,
                 "created_at": payment.created_at,
                 "source": "Payment",
@@ -2565,6 +2568,7 @@ def payment_dashboard(request: HttpRequest) -> HttpResponse:
                     or "unknown"
                 ),
                 "amount": payout.amount,
+                "currency": getattr(payout, "currency", "") or "",
                 "detail": driver_name,
                 "created_at": payout.created_at,
                 "source": "TransactionHistory",
@@ -2601,6 +2605,7 @@ def payment_dashboard(request: HttpRequest) -> HttpResponse:
                     or "failed"
                 ),
                 "amount": withdrawal.amount,
+                "currency": withdrawal.currency,
                 "detail": (
                     withdrawal.failure_reason
                     or driver_name
@@ -2639,6 +2644,9 @@ def payment_dashboard(request: HttpRequest) -> HttpResponse:
                 "transfer_id": "-",
                 "status": "refunded",
                 "amount": payment.amount,
+                # The currency of THIS row. Without it the template
+                # picks a symbol for the number.
+                "currency": payment.currency,
                 "detail": "Payment refunded",
                 "created_at": payment.updated_at,
                 "source": "Payment",
@@ -2777,6 +2785,38 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
         trip_qs = trip_qs.filter(
             completed_at__lt=end_dt
         )
+    # ---------------------------------------------------------
+    # MARKET SCOPE
+    #
+    # This report is reported ONE MARKET AT A TIME, and that is a deliberate
+    # choice rather than a limitation.
+    #
+    # Every figure below -- GBV, platform revenue, the take rate, the
+    # vehicle-class split, the monthly series and the month-over-month growth
+    # -- is built by adding `final_fare` across trips. Across two currencies
+    # that addition produces a number that is not an amount of money in either
+    # of them, and the template renders it with a leading currency symbol, so
+    # the page would assert that ₹190 + $30.83 = ₹220.83. Growth percentages
+    # computed from such a number are worse: they move when the exchange mix
+    # moves, not when the business does.
+    #
+    # Converting at a rate is not available either -- there is no FX source in
+    # this system and inventing one would make a board figure depend on a
+    # guess. So the report scopes to a currency, defaults to the only one with
+    # data, and offers a selector when there is more than one.
+    available_currencies = sorted(
+        c for c in trip_qs.values_list("currency", flat=True).distinct()
+        if c
+    ) or [DEFAULT_CURRENCY]
+
+    requested_currency = (request.GET.get("currency") or "").strip().upper()
+    selected_currency = (
+        requested_currency if requested_currency in available_currencies
+        else available_currencies[0]
+    )
+
+    trip_qs = trip_qs.filter(currency=selected_currency)
+
     completed_trips = trip_qs.select_related(
         "requested_vehicle_type",
         "vehicle_id__vehicle_type_id",
@@ -3016,6 +3056,11 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
     context = {
         "start_date": start_date,
         "end_date": end_date,
+        # Every money figure in this context is in THIS currency, and the
+        # template renders each one with it rather than assuming a symbol.
+        "currency": selected_currency,
+        "available_currencies": available_currencies,
+        "multi_market": len(available_currencies) > 1,
         "gbv": gbv,
         "platform_revenue": platform_revenue,
         "take_rate": take_rate,
@@ -5041,6 +5086,7 @@ def transaction_dashboard(request):
             "rider": user_name(rider, "Unknown Rider"),
             "driver": getattr(payment, "driver_name", None) or "Not Assigned",
             "amount": money(payment.amount),
+            "currency": payment.currency,
             "status": "success",
             "payment_method": payment.method or "—",
             "created_at": payment.created_at,
@@ -5079,6 +5125,7 @@ def transaction_dashboard(request):
             "rider": user_name(rider, "Unknown Rider"),
             "driver": getattr(payment, "driver_name", None) or "Not Assigned",
             "amount": money(payment.amount),
+            "currency": payment.currency,
             "status": "refunded",
             "payment_method": payment.method or "—",
             "created_at": payment.updated_at or payment.created_at,
@@ -5133,6 +5180,7 @@ def transaction_dashboard(request):
                 f"Driver #{driver.pk}" if driver else "Unknown Driver",
             ),
             "amount": money(txn.amount),
+            "currency": txn.currency,
             "status": "success",
             "payment_method": txn.method or "—",
             "created_at": txn.created_at,

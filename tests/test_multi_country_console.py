@@ -493,3 +493,111 @@ def test_a_single_market_dashboard_still_shows_one_number(console):
     assert '+' not in body.split('₹300.00')[0][-40:], (
         'a single-market total should not be rendered as a sum of markets'
     )
+
+
+# ===========================================================================
+# The executive revenue report
+# ===========================================================================
+
+# This view reads platform settings through the Django cache, which is Redis in
+# this project. The report's market scoping is what is under test, not the
+# cache backend, so these two use locmem and therefore run without Redis --
+# unlike servers/admin_dashboard/tests/test_executive_revenue.py, which needs
+# it and is skipped locally.
+LOCMEM = {
+    'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'},
+}
+
+
+@pytest.mark.django_db
+def test_the_executive_report_scopes_to_one_market(console, settings):
+    """GBV, platform revenue, the take rate, the vehicle-class split and the
+    monthly growth series are all built by ADDING final_fare across trips.
+    Across two currencies that sum is not an amount of money in either, and a
+    growth rate computed from it moves with the exchange mix rather than the
+    business. So the report reports one market at a time.
+    """
+    settings.CACHES = LOCMEM
+    india, usa = _two_market_zones()
+    _completed_payment(india, '+919550000666', 'erider1', '190.00')
+    _completed_payment(usa, '+15550000666', 'erider2', '30.83')
+
+    resp = console.get(reverse('executive_revenue'))
+    assert resp.status_code == 200, resp.content[:300]
+    ctx = resp.context
+
+    assert ctx['multi_market'] is True
+    assert ctx['available_currencies'] == ['INR', 'USD']
+    # Defaults to the first market with data, and the GBV is THAT market's.
+    assert ctx['currency'] == 'INR'
+    assert ctx['gbv'] == Decimal('190.00')
+    assert ctx['total_rides'] == 1
+
+    body = resp.content.decode('utf-8')
+    assert '₹190.00' in body
+    assert '220.83' not in body, 'rupees were added to dollars'
+
+
+@pytest.mark.django_db
+def test_the_executive_report_can_be_switched_to_the_other_market(
+        console, settings):
+    settings.CACHES = LOCMEM
+    india, usa = _two_market_zones()
+    _completed_payment(india, '+919550000777', 'erider3', '190.00')
+    _completed_payment(usa, '+15550000777', 'erider4', '30.83')
+
+    resp = console.get(reverse('executive_revenue'), {'currency': 'USD'})
+    assert resp.status_code == 200
+    ctx = resp.context
+
+    assert ctx['currency'] == 'USD'
+    assert ctx['gbv'] == Decimal('30.83')
+    assert ctx['total_rides'] == 1
+
+    body = resp.content.decode('utf-8')
+    assert '$30.83' in body
+    assert '₹190.00' not in body
+
+
+@pytest.mark.django_db
+def test_a_single_market_executive_report_is_unchanged(console, settings):
+    """The control, and the India pilot's every day: one currency means no
+    selector, no banner, and the same single number as before."""
+    settings.CACHES = LOCMEM
+    india, _ = _two_market_zones()
+    _completed_payment(india, '+919550000888', 'erider5', '190.00')
+    _completed_payment(india, '+919550000889', 'erider6', '110.00')
+
+    resp = console.get(reverse('executive_revenue'))
+    ctx = resp.context
+
+    assert ctx['multi_market'] is False
+    assert ctx['currency'] == 'INR'
+    assert ctx['gbv'] == Decimal('300.00')
+    assert '₹300.00' in resp.content.decode('utf-8')
+
+
+@pytest.mark.django_db
+def test_an_unknown_currency_in_the_url_falls_back_rather_than_empties(
+        console, settings):
+    """A bad query parameter must not silently produce a zero report that
+    somebody then reads as a collapse in revenue."""
+    settings.CACHES = LOCMEM
+    india, _ = _two_market_zones()
+    _completed_payment(india, '+919550000999', 'erider7', '190.00')
+
+    resp = console.get(reverse('executive_revenue'), {'currency': 'XXX'})
+    ctx = resp.context
+
+    assert ctx['currency'] == 'INR'
+    assert ctx['gbv'] == Decimal('190.00')
+
+
+# Rider wallet figures are NOT tested here on purpose. The money markup in
+# `riders.html` -- the wallet balance and the wallet-transaction rows -- sits
+# inside two `{% comment %}` blocks (lines 3-65 and 1086-1461), so the live
+# page renders none of it. A test asserting a currency symbol there would be
+# asserting against dead template code and would pass whatever the view did.
+#
+# Recorded rather than quietly skipped: if that markup is ever uncommented, it
+# needs `|money:row.currency` and a test like the two dashboard ones above.

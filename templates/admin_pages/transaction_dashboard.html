@@ -952,7 +952,7 @@ Transactions | SaaradhiGo
                 </p>
 
                 <h2 class="summary-value">
-                    {{ platform_fees |money }}
+                    {{ platform_fees|money_bare }}
                 </h2>
 
                 <p class="summary-description">
@@ -1466,7 +1466,7 @@ Transactions | SaaradhiGo
                         <td>
 
                             <span class="amount-value">
-                                {{ t.amount |money }}
+                                {{ t.amount|money:t.currency }}
                             </span>
 
                         </td>

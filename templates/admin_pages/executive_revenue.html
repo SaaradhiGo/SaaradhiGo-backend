@@ -48,6 +48,17 @@ background: #4d4635;
                 <input type="date" name="end_date" value="{{ end_date }}"
                     class="bg-surface-container-highest text-on-surface text-sm rounded-lg px-3 py-2 border border-outline-variant/20 focus:outline-none focus:border-primary">
             </div>
+            {% if multi_market %}
+            <div class="flex flex-col">
+                <label class="text-[10px] text-on-surface-variant uppercase font-bold mb-1 ml-1">Market</label>
+                <select name="currency"
+                    class="bg-surface-container-highest text-on-surface text-sm rounded-lg px-3 py-2 border border-outline-variant/20 focus:outline-none focus:border-primary">
+                    {% for code in available_currencies %}
+                    <option value="{{ code }}" {% if code == currency %}selected{% endif %}>{{ code }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endif %}
             <div class="flex items-end self-stretch pt-5">
                 <button type="submit"
                     class="h-full px-6 bg-gold-gradient text-on-primary font-label text-xs rounded-lg font-bold shadow-lg shadow-primary/10 hover:scale-[1.02] active:scale-[0.98] transition-transform">
@@ -64,6 +75,15 @@ background: #4d4635;
             {% endif %}
         </form>
     </header>
+    {% if multi_market %}
+    <div class="bg-surface-container border border-outline-variant/10 rounded-xl px-4 py-3 mb-6 text-xs text-on-surface-variant">
+        Every figure on this page is for the <strong class="text-on-surface">{{ currency }}</strong>
+        market only. Totals across markets are not added: the sum of two
+        currencies is not an amount of money, and a growth rate computed from
+        one moves with the exchange mix rather than the business.
+    </div>
+    {% endif %}
+
     <section class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
         <div class="md:col-span-2 bg-surface-container p-8 rounded-2xl relative overflow-hidden group">
             <div
@@ -73,7 +93,7 @@ background: #4d4635;
                 <div>
                     <p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">Gross Booking
                         Value</p>
-                    <h3 class="text-4xl font-headline font-black text-on-surface">{{ gbv|default:0|floatformat:0 |money }}</h3>
+                    <h3 class="text-4xl font-headline font-black text-on-surface">{{ gbv|default:0|money:currency }}</h3>
                 </div>
                 <div class="bg-primary/10 px-3 py-1 rounded-full flex items-center gap-1 border border-primary/20">
                     <span class="material-symbols-outlined text-sm text-primary"
@@ -99,7 +119,7 @@ background: #4d4635;
         </div>
         <div class="bg-surface-container p-8 rounded-2xl border border-outline-variant/5">
             <p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">Platform Revenue</p>
-            <h3 class="text-3xl font-headline font-bold text-on-surface mb-4">{{ platform_revenue|default:0|floatformat:2 |money }}</h3>
+            <h3 class="text-3xl font-headline font-bold text-on-surface mb-4">{{ platform_revenue|default:0|money:currency }}</h3>
             <div class="space-y-4">
                 <div class="flex justify-between items-center text-sm">
                     <span class="text-on-surface-variant">Take Rate</span>
@@ -142,7 +162,7 @@ background: #4d4635;
                         </circle>
                     </svg>
                     <div class="absolute text-center">
-                        <span class="block text-2xl font-black font-headline">{{ platform_revenue|default:0|floatformat:0 |money }}</span>
+                        <span class="block text-2xl font-black font-headline">{{ platform_revenue|default:0|money:currency }}</span>
                         <span class="text-[10px] text-on-surface-variant uppercase tracking-tighter">Total Net</span>
                     </div>
                 </div>
@@ -155,7 +175,7 @@ background: #4d4635;
                                 </div>
                                 <span class="font-headline font-bold">{{ item.name }}</span>
                             </div>
-                            <span class="text-sm font-label font-bold">{{ item.revenue|default:0|floatformat:2 |money }} ({{ item.pct|default:0 }}%)</span>
+                            <span class="text-sm font-label font-bold">{{ item.revenue|default:0|money:currency }} ({{ item.pct|default:0 }}%)</span>
                         </div>
                         <div class="w-full h-1 bg-surface-container-highest rounded-full overflow-hidden">
                             <div class="h-full bg-primary group-hover:brightness-110 transition-all"
@@ -185,7 +205,7 @@ background: #4d4635;
                         {% endif %}
                     </h4>
                     <p class="text-xs text-on-surface-variant mt-1 leading-relaxed">
-                        Revenue: {{ item.revenue|floatformat:2 |money }}
+                        Revenue: {{ item.revenue|money:currency }}
                         &nbsp; • &nbsp;
                         Rides: {{ item.rides }}
                     </p>

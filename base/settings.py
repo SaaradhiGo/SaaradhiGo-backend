@@ -118,8 +118,51 @@ REST_FRAMEWORK = {
         'otp_request': '5/hour',
         'otp_request_burst': '2/min',
         'otp_verify': '10/hour',
+        # Email+password. Deliberately tighter than the OTP rates: an OTP is
+        # a one-time code the user is waiting for, whereas a password attempt
+        # is a guess.
+        'email_login': '20/hour',
+        # These two SEND MAIL, so the cap also protects a third party's inbox
+        # from being used as a spam target.
+        'password_reset': '5/hour',
     },
 }
+# --- Email delivery ----------------------------------------------------------
+#
+# There was NO email configuration in this file. Django's defaults are SMTP on
+# localhost:25, which does not exist on Railway, so every receipt email has
+# been failing silently: the Receipt row is written, `send_failure_reason` is
+# populated, and nothing surfaces it.
+#
+# Now configured from the environment, with an explicit development default.
+# `base/auth_email.py` reports delivery as FAILED rather than pretending, so an
+# unconfigured deployment is visible in the log instead of in a column.
+#
+# To make mail work, the owner sets (per environment):
+#   EMAIL_HOST, EMAIL_PORT, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD,
+#   EMAIL_USE_TLS, DEFAULT_FROM_EMAIL
+# AWS SES SMTP is the natural choice here since the stack already uses SES for
+# SMS; it needs a verified sender domain, which is an owner action.
+_email_backend_default = (
+    'django.core.mail.backends.console.EmailBackend' if DEBUG
+    else 'django.core.mail.backends.smtp.EmailBackend'
+)
+EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', _email_backend_default)
+EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() in ('1', 'true', 'yes')
+EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', '10'))
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', '')
+
+# How long a password-reset or email-verification link stays valid.
+#
+# Django's default is 3 days. Two hours is enough for a person who just asked
+# for the link and short enough that an address compromised later is not a way
+# into the account. `PasswordResetTokenGenerator` reads this setting directly.
+PASSWORD_RESET_TIMEOUT = int(os.environ.get('PASSWORD_RESET_TIMEOUT', 2 * 60 * 60))
+
 from datetime import timedelta
 # JWT lifetimes match the system-design doc:
 #   - Access:  15 min (short window; minimises blast radius of a leaked token)

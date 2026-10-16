@@ -51,3 +51,57 @@ class OtpVerifyThrottle(_PhoneNumberRateThrottle):
     issues (the per-OTP attempt counter only catches attempts against a
     single issued OTP)."""
     scope = 'otp_verify'
+
+
+class _EmailRateThrottle(SimpleRateThrottle):
+    """Key the throttle on the email address in the request body.
+
+    The sibling of `_PhoneNumberRateThrottle`, for the same reason: an
+    attacker can rotate source IPs, so a per-IP cap alone does not bound
+    attempts against one identity.
+
+    Unlike the phone throttles there is NO test-account bypass. A test phone
+    bypass is safe because the numbers are operator-controlled and the OTP is
+    fixed; a password endpoint with a bypass list would be a way to hammer
+    whichever accounts are on that list.
+
+    A request with no address is not throttled here — the view refuses it
+    anyway — but it is still covered by the per-IP lockout in
+    `admin_dashboard.login_guard`.
+    """
+
+    scope = ''
+
+    def get_cache_key(self, request, view):
+        try:
+            email = request.data.get('email')
+        except Exception:  # noqa: BLE001
+            email = None
+        if not email:
+            return None
+        return self.cache_format % {
+            'scope': self.scope,
+            'ident': str(email).strip().lower(),
+        }
+
+
+class PasswordResetThrottle(_EmailRateThrottle):
+    """Cap on the reset and verification mail endpoints.
+
+    These SEND EMAIL, so an uncapped endpoint is both an enumeration oracle
+    and a way to use the platform to spam a third party's inbox.
+    """
+
+    scope = 'password_reset'
+
+
+class EmailLoginThrottle(_EmailRateThrottle):
+    """Sustained cap on email+password attempts per address.
+
+    Complements `login_guard`, which is the hard lockout. This is the gentler
+    outer bound, and it keeps working when the lockout fails open during a
+    cache outage... with the honest caveat that DRF throttles use the same
+    cache, so a total cache outage disables both. Stated rather than implied.
+    """
+
+    scope = 'email_login'

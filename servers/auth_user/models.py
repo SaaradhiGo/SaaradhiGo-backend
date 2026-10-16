@@ -1,4 +1,6 @@
 from django.db import models
+from django.db.models.functions import Lower
+
 from .usermanager import customUserManager
 from django.contrib.auth.models import AbstractUser
 from base.media import PrefixedUUIDPath, validate_file_size, validate_image_file
@@ -8,7 +10,24 @@ from base.storage_backends import public_media_storage
 class customUser(AbstractUser):
     full_name = models.CharField(max_length=256, blank=True, null=True)
     phone_number = models.CharField(max_length=20, unique=True)
-    email = models.CharField(max_length=256, blank=True, null=True)
+    # An EmailField, and unique when present -- see the constraint in Meta.
+    #
+    # This was `CharField(max_length=256)` with no validation and no
+    # uniqueness, which was adequate while email was decoration (a receipt
+    # address) and is not adequate now that it is an identity you can sign in
+    # with. Two accounts sharing an address means two wallets and two trip
+    # histories for one person, and a password reset that could reach either.
+    #
+    # 254 is the RFC 5321 maximum; the old 256 allowed addresses no mail
+    # system would accept.
+    email = models.EmailField(max_length=254, blank=True, null=True)
+
+    # When this account proved it controls its address, or NULL.
+    #
+    # Password reset requires it. Without this gate, anyone who could set an
+    # unverified address on an account could request a reset to an inbox they
+    # own -- which is account takeover with extra steps.
+    email_verified_at = models.DateTimeField(blank=True, null=True)
     gender = models.CharField(max_length=10, choices=[('male', 'Male'), ('female', 'Female'), ('other', 'Other')], blank=True, null=True)
     dob = models.DateField(blank=True, null=True)
     house_no = models.CharField(max_length=50, blank=True, null=True)
@@ -53,8 +72,25 @@ class customUser(AbstractUser):
     is_updated = models.BooleanField(default=False)
     USERNAME_FIELD = 'phone_number'
     REQUIRED_FIELDS = ['email']
-    
+
     objects = customUserManager()
+
+    class Meta:
+        constraints = [
+            # Unique on the LOWER-CASED address, and only for rows that have
+            # one.
+            #
+            # A plain `unique=True` would not do: it is case-sensitive, so
+            # A@b.com and a@b.com would be two accounts, and it would forbid
+            # more than one NULL on some backends. The condition keeps the
+            # thousands of phone-only accounts out of the constraint
+            # entirely.
+            models.UniqueConstraint(
+                Lower('email'),
+                condition=~models.Q(email=None) & ~models.Q(email=''),
+                name='uniq_user_email_ci',
+            ),
+        ]
     
     def __str__(self) -> str:
         return self.full_name if self.full_name else self.phone_number

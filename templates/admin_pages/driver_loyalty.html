@@ -58,7 +58,7 @@
                 </span>
 
                 <span class="text-3xl font-bold text-primary">
-                    {{ total_miles|floatformat:1 }} mi
+                    {{ total_miles|floatformat:1 }} km
                 </span>
             </div>
 
@@ -132,7 +132,7 @@
                 <div class="flex justify-between mt-2 text-xs text-on-surface-variant">
 
                     <span>
-                        {{ total_miles|floatformat:1 }} mi completed
+                        {{ total_miles|floatformat:1 }} km completed
                     </span>
 
                     <span>
@@ -376,7 +376,7 @@
                     </span>
 
                     <span class="font-bold">
-                        {{ d.total_revenue|floatformat:2 |money }}
+                        {{ d.total_revenue|money:d.currency }}
                     </span>
 
                 </div>

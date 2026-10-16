@@ -45,7 +45,9 @@ logger = logging.getLogger(__name__)
 # docstring records the four divergent copies that preceded it. Imported under the
 # same name so existing call sites and tests are unchanged.
 from base.countries import normalize_phone  # noqa: E402
-from base.money import format_totals, sum_by_currency  # noqa: E402
+from base.money import (  # noqa: E402
+    format_totals, single_currency_or_none, sum_by_currency,
+)
 from servers.driver.compliance import (  # noqa: E402
     VEHICLE_DOCUMENT_COLUMNS, document_description, document_label,
     evaluate_vehicle, required_vehicle_documents, unrecordable_documents,
@@ -3472,18 +3474,9 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
             )
         )
     )["total"] or Decimal("0")
-    total_revenue = completed_trips.aggregate(
-        total=Sum(
-            Coalesce(
-                "final_fare",
-                "estimated_fare",
-                output_field=DecimalField(
-                    max_digits=12,
-                    decimal_places=2,
-                ),
-            )
-        )
-    )["total"] or Decimal("0")
+    # The fleet-wide revenue figure is built with `sum_by_currency` further
+    # down, where the context is assembled. The single `Sum` that used to be
+    # computed here added rupees to dollars.
     # ==========================================================
     # ACTIVE LOYALTY DRIVERS
     # ==========================================================
@@ -3624,6 +3617,19 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
     # ==========================================================
     # DRIVER CARD DATA
     # ==========================================================
+    def driver_row_currency(driver):
+        """The currency this driver's completed trips are in.
+
+        One indexed query per row on a 25-row page. The alternative -- an
+        annotation -- cannot express "the single distinct value, or nothing",
+        and a wrong symbol on a money figure is worse than a query.
+        """
+        return single_currency_or_none(
+            Trip.objects.filter(
+                driver_id=driver, status_id__status_code="completed",
+            )
+        ) or ""
+
     drivers = []
     for driver in page_obj:
         trips = driver.completed_trip_count or 0
@@ -3668,6 +3674,11 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
                 float(revenue),
                 2
             ),
+            # The currency of THIS driver's revenue. Without it the template
+            # chose a symbol for the number, which is how a dollar total gets
+            # a rupee sign. A driver operates in one market, so one code is
+            # the right answer -- it just has to be carried, not assumed.
+            "currency": driver_row_currency(driver),
             "status": driver.status,
             "approved": driver.approved,
         })
@@ -3691,9 +3702,11 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
         # ----------------------------------------------
         # REVENUE
         # ----------------------------------------------
-        "total_revenue": round(
-            float(total_revenue),
-            2
+        # Fleet-wide, so it can legitimately span markets: rendered as one
+        # amount per currency rather than summed into a number that is not an
+        # amount of money in any of them.
+        "total_revenue_display": format_totals(
+            sum_by_currency(completed_trips, "final_fare")
         ),
         # ----------------------------------------------
         # RATING
@@ -5751,15 +5764,25 @@ def driver_profile(request, driver_id):
     # =========================================================
     # REVENUE
     # =========================================================
-    revenue_result = (
-        trips_qs
-        .filter(status_id__status_code="completed")
-        .aggregate(
-            total=Sum("final_fare")
-        )
-    )
+    # A driver operates in one market, so one number IS the honest answer here
+    # -- but the view has to establish that rather than assume it, and the
+    # template needs a currency to render it with instead of picking one.
+    #
+    # `single_currency_or_none` returns None when the rows span markets, and
+    # then the page shows both totals rather than their meaningless sum.
+    completed_trips_qs = trips_qs.filter(status_id__status_code="completed")
 
-    total_revenue = revenue_result.get("total") or 0
+    revenue_by_currency = sum_by_currency(completed_trips_qs, "final_fare")
+
+    total_revenue = (
+        list(revenue_by_currency.values())[0] if len(revenue_by_currency) == 1
+        else 0
+    )
+    total_revenue_currency = (
+        list(revenue_by_currency.keys())[0] if len(revenue_by_currency) == 1
+        else ""
+    )
+    total_revenue_display = format_totals(revenue_by_currency)
 
     # =========================================================
     # DISTANCE
@@ -6304,6 +6327,8 @@ def driver_profile(request, driver_id):
         # REVENUE / DISTANCE
         # -----------------------------------------------------
         "total_revenue": total_revenue,
+        "total_revenue_currency": total_revenue_currency,
+        "total_revenue_display": total_revenue_display,
 
         "total_distance": total_distance,
 

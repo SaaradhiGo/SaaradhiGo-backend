@@ -5,6 +5,9 @@ from django.utils import timezone
 from datetime import timedelta, datetime
 import re
 
+from base.market_time import (
+    driver_timezone, local_day_start, local_month_start,
+)
 from base.money import DEFAULT_CURRENCY, format_money, normalize_currency
 
 from .models import Driver, WithdrawalRequest
@@ -179,11 +182,20 @@ def check_daily_upi_limit(driver, amount):
     Check if driver has exceeded daily UPI limit.
     Returns (within_limit, used_today, limit)
     """
-    today = timezone.now().date()
+    # "Today" in the driver's own market, and only INR rows.
+    #
+    # `timezone.now().date()` is the deployment's today, and the NPCI ceiling
+    # below is a rupee figure -- so an unqualified Sum over a table that can
+    # hold rows in another currency would compare a mixed number against a
+    # rupee limit. The currency filter is belt-and-braces: UPI is an Indian
+    # rail and `initiate_upi_payout` already refuses a non-INR withdrawal, so
+    # this states the scope the number assumes rather than relying on it.
+    day_start = local_day_start(driver_timezone(driver))
     daily_total = WithdrawalRequest.objects.filter(
         driver=driver,
         payout_method='upi',
-        requested_at__date=today,
+        currency='INR',
+        requested_at__gte=day_start,
         status__in=['pending', 'approved', 'processed', 'completed']
     ).aggregate(total=Sum('amount'))['total'] or 0
     
@@ -200,12 +212,17 @@ def check_monthly_upi_limit(driver, amount):
     Check if driver has exceeded monthly UPI limit.
     Returns (within_limit, used_this_month, limit)
     """
-    now = timezone.now()
-    first_day_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    # The month that starts at local midnight on the 1st, in the driver's
+    # market. This was `timezone.now().replace(day=1, hour=0, ...)`, which is
+    # UTC midnight -- 05:30 IST -- so a withdrawal taken in the first five and
+    # a half hours of the month counted against the PREVIOUS month's NPCI
+    # ceiling. See the currency note in check_daily_upi_limit.
+    first_day_of_month = local_month_start(driver_timezone(driver))
     
     monthly_total = WithdrawalRequest.objects.filter(
         driver=driver,
         payout_method='upi',
+        currency='INR',
         requested_at__gte=first_day_of_month,
         status__in=['pending', 'approved', 'processed', 'completed']
     ).aggregate(total=Sum('amount'))['total'] or 0
@@ -377,9 +394,13 @@ def detect_upi_fraud(driver, amount, upi_id=None):
     # Rule 2: Unusual withdrawal amounts
     try:
         # Calculate average withdrawal amount for this driver
+        # Scoped to the currency this driver is paid in, because the
+        # average is compared against `amount`. Mixing magnitudes across
+        # currencies would make a normal payout look like a 90x anomaly.
         avg_withdrawal = WithdrawalRequest.objects.filter(
             driver=driver,
-            status='completed'
+            status='completed',
+            currency=driver_currency(driver),
         ).aggregate(avg_amount=Sum('amount') / Count('id'))['avg_amount'] or 0
         
         if avg_withdrawal > 0 and amount > avg_withdrawal * 2:
@@ -629,8 +650,14 @@ def get_upi_payout_monitoring_metrics(start_date=None, end_date=None):
     
     # 1. Daily limit utilization
     today = timezone.now().date()
+    # INR-scoped. Every threshold in this report is a rupee figure from NPCI
+    # (100,000 daily, 200,000 monthly, 50,000 reporting), so a Sum over rows
+    # that could be dollars would be compared against a rupee ceiling. UPI is
+    # an Indian rail, so this filter narrows nothing today -- it states the
+    # scope the numbers already assume.
     daily_upi_withdrawals = WithdrawalRequest.objects.filter(
         payout_method='upi',
+        currency='INR',
         requested_at__date=today,
         status__in=['completed', 'processing']
     ).aggregate(
@@ -803,8 +830,14 @@ def generate_npci_compliance_report(report_date=None):
     end_of_day = timezone.make_aware(datetime.combine(report_date, datetime.max.time()))
     
     # 1. Daily UPI transaction summary
+    # INR-scoped. Every threshold in this report is a rupee figure from NPCI
+    # (100,000 daily, 200,000 monthly, 50,000 reporting), so a Sum over rows
+    # that could be dollars would be compared against a rupee ceiling. UPI is
+    # an Indian rail, so this filter narrows nothing today -- it states the
+    # scope the numbers already assume.
     daily_transactions = WithdrawalRequest.objects.filter(
         payout_method='upi',
+        currency='INR',
         requested_at__range=[start_of_day, end_of_day]
     ).aggregate(
         total_count=Count('id'),
@@ -818,6 +851,7 @@ def generate_npci_compliance_report(report_date=None):
     # 2. Large transactions (> ₹50,000)
     large_transactions = WithdrawalRequest.objects.filter(
         payout_method='upi',
+        currency='INR',
         amount__gt=50000,
         requested_at__range=[start_of_day, end_of_day]
     ).values(
@@ -833,6 +867,7 @@ def generate_npci_compliance_report(report_date=None):
     
     monthly_transactions = WithdrawalRequest.objects.filter(
         payout_method='upi',
+        currency='INR',
         requested_at__range=[month_start_dt, month_end_dt],
         status='completed'
     ).aggregate(

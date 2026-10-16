@@ -579,3 +579,62 @@ def test_an_inheriting_zone_never_reports_a_blank_currency(india_zone):
     assert zone['currency']
     assert zone['distance_unit']
     assert zone['tax_mode']
+
+
+# ===========================================================================
+# The NPCI limit windows
+# ===========================================================================
+
+def test_the_daily_upi_limit_ignores_a_withdrawal_in_another_currency(
+        vehicle_type):
+    """The NPCI ceiling is 100,000 RUPEES. An unqualified Sum over a table that
+    can hold dollar rows compares a mixed number against a rupee limit."""
+    from servers.driver.services import check_daily_upi_limit
+
+    _, driver = _driver_client(vehicle_type, calling_code='91',
+                               currency='INR', balance='200000.00')
+    driver.upi_id = 'someone@okhdfcbank'
+    driver.save(update_fields=['upi_id'])
+
+    WithdrawalRequest.objects.create(
+        driver=driver, amount=Decimal('90000'), status='completed',
+        payout_method='upi')
+
+    # A dollar row for the same driver. Written with `.update()` on purpose:
+    # `WithdrawalRequest` stamps its currency from the driver's wallet at
+    # save(), so this row cannot arise through the application -- which is
+    # exactly why the filter is belt-and-braces rather than load-bearing.
+    # The point of the test is that if such a row DID exist (a legacy row, a
+    # driver who changed market, a manual correction), 50,000 of another
+    # currency would not be added into a rupee ceiling.
+    other = WithdrawalRequest.objects.create(
+        driver=driver, amount=Decimal('50000'), status='completed',
+        payout_method='upi')
+    WithdrawalRequest.objects.filter(pk=other.pk).update(currency='USD')
+
+    within, used, limit = check_daily_upi_limit(driver, 5000)
+    assert limit == 100000
+    assert used == 90000, 'a non-INR row leaked into the rupee total'
+    assert within is True
+
+
+def test_the_monthly_upi_window_opens_at_local_midnight_not_utc(vehicle_type):
+    """`timezone.now().replace(day=1, hour=0, ...)` is UTC midnight -- 05:30
+    IST -- so a withdrawal taken in the first five and a half hours of an
+    Indian month counted against the PREVIOUS month's ceiling."""
+    from datetime import datetime, timezone as dt_timezone
+
+    from base.market_time import _zoneinfo, local_month_start
+
+    ist = _zoneinfo('Asia/Kolkata')
+    # 02:00 IST on the 1st == 20:30 UTC on the LAST day of the previous month.
+    at = datetime(2026, 10, 1, 2, 0, tzinfo=ist)
+    window_start = local_month_start(ist, now=at)
+
+    assert window_start <= at, (
+        'a withdrawal at 02:00 IST on the 1st falls outside its own month'
+    )
+    assert window_start.day == 1
+    # And the naive UTC version would have excluded it.
+    utc_midnight_first = datetime(2026, 10, 1, 0, 0, tzinfo=dt_timezone.utc)
+    assert at < utc_midnight_first

@@ -69,6 +69,26 @@ def _driver_with_documents(calling_code, documents):
     return driver
 
 
+def _bare_driver(calling_code):
+    """A driver with no document files.
+
+    The profile page signs an S3 URL for every stored document, and these two
+    tests are about the revenue figure, not the documents -- a placeholder
+    filename would make botocore the thing under test.
+    """
+    i = next(_n)
+    user = User.objects.create_user(
+        phone_number=f'+{calling_code}6{i:09d}'[:16], role='driver',
+        username=f'bd{i}', full_name=f'Driver {i}')
+    driver = Driver.objects.create(user_id=user, approved=True)
+    vt, _ = VehicleType.objects.get_or_create(type='sedan')
+    vehicle = Vehicle.objects.create(
+        driver_id=driver, vehicle_type_id=vt, vehicle_number=f'BN{i:05d}')
+    driver.active_vehicle = vehicle
+    driver.save(update_fields=['active_vehicle'])
+    return driver
+
+
 def _onboarding(console, driver):
     resp = console.get(reverse('driver_onboarding'), {'driver': driver.pk})
     assert resp.status_code == 200
@@ -289,3 +309,187 @@ def test_an_indian_driver_missing_one_document_is_not_approved(
 
     driver.refresh_from_db()
     assert driver.approved is False
+
+
+# ===========================================================================
+# Per-driver money on the console
+# ===========================================================================
+
+def test_a_us_drivers_profile_shows_dollars(console):
+    """The driver-profile revenue figure was `Sum("final_fare")` rendered with
+    a symbol the template chose. For a US driver that symbol was a rupee sign
+    on a dollar total."""
+    from servers.pricing.models import ServiceZone
+    from servers.ride.models import Trip, TripStatus
+    from servers.rider.models import Rider
+
+    zone = ServiceZone.objects.create(
+        code='P-US-SFO', name='San Francisco', country='US', state_code='CA',
+        city='San Francisco', zone_type='city',
+        polygon_geojson={'type': 'Polygon', 'coordinates': [[
+            [-122.52, 37.70], [-122.35, 37.70], [-122.35, 37.84],
+            [-122.52, 37.84], [-122.52, 37.70]]]},
+        priority=50, is_active=True, timezone_name='America/Los_Angeles',
+    )
+    driver = _bare_driver('1')
+    rider_user = User.objects.create_user(
+        phone_number='+15550000222', role='rider', username='prider1')
+    Rider.objects.create(user_id=rider_user)
+    completed, _ = TripStatus.objects.get_or_create(status_code='completed')
+
+    from django.utils import timezone as dj_timezone
+    now = dj_timezone.now()
+    Trip.objects.create(
+        user_id=rider_user, driver_id=driver, status_id=completed, zone=zone,
+        pickup_lat=Decimal('37.7749'), pickup_long=Decimal('-122.4194'),
+        destination_lat=Decimal('37.7900'), destination_long=Decimal('-122.4194'),
+        estimated_fare=Decimal('30.83'), final_fare=Decimal('30.83'),
+        payment_method='cash', accepted_at=now, started_at=now,
+        completed_at=now,
+    )
+
+    resp = console.get(reverse('driver_profile', args=[driver.pk]))
+    assert resp.status_code == 200
+    body = resp.content.decode('utf-8')
+
+    assert '$30.83' in body
+    assert '₹30.83' not in body
+
+
+def test_an_indian_drivers_profile_still_shows_rupees(console):
+    """The control."""
+    from servers.pricing.models import ServiceZone
+    from servers.ride.models import Trip, TripStatus
+    from servers.rider.models import Rider
+    from django.utils import timezone as dj_timezone
+
+    zone = ServiceZone.objects.create(
+        code='P-IN-HYD', name='Hyderabad', country='IN', state_code='TG',
+        city='Hyderabad', zone_type='city',
+        polygon_geojson={'type': 'Polygon', 'coordinates': [[
+            [78.30, 17.40], [78.50, 17.40], [78.50, 17.50],
+            [78.30, 17.50], [78.30, 17.40]]]},
+        priority=50, is_active=True,
+    )
+    driver = _bare_driver('91')
+    rider_user = User.objects.create_user(
+        phone_number='+919550000222', role='rider', username='prider2')
+    Rider.objects.create(user_id=rider_user)
+    completed, _ = TripStatus.objects.get_or_create(status_code='completed')
+
+    now = dj_timezone.now()
+    Trip.objects.create(
+        user_id=rider_user, driver_id=driver, status_id=completed, zone=zone,
+        pickup_lat=Decimal('17.4450'), pickup_long=Decimal('78.3800'),
+        destination_lat=Decimal('17.4660'), destination_long=Decimal('78.3800'),
+        estimated_fare=Decimal('190.00'), final_fare=Decimal('190.00'),
+        payment_method='cash', accepted_at=now, started_at=now,
+        completed_at=now,
+    )
+
+    resp = console.get(reverse('driver_profile', args=[driver.pk]))
+    body = resp.content.decode('utf-8')
+    assert '₹190.00' in body
+    assert '$190.00' not in body
+
+
+# ===========================================================================
+# The two money dashboards, rendered with rows in both markets
+# ===========================================================================
+
+def _completed_payment(zone, phone, username, amount):
+    from servers.payments.models import Payment
+    from servers.ride.models import Trip, TripStatus
+    from servers.rider.models import Rider
+    from django.utils import timezone as dj_timezone
+
+    user = User.objects.create_user(
+        phone_number=phone, role='rider', username=username)
+    Rider.objects.create(user_id=user)
+    completed, _ = TripStatus.objects.get_or_create(status_code='completed')
+    point = ((Decimal('37.7749'), Decimal('-122.4194')) if zone.country == 'US'
+             else (Decimal('17.4450'), Decimal('78.3800')))
+    now = dj_timezone.now()
+    trip = Trip.objects.create(
+        user_id=user, status_id=completed, zone=zone,
+        pickup_lat=point[0], pickup_long=point[1],
+        destination_lat=point[0] + Decimal('0.02'), destination_long=point[1],
+        estimated_fare=Decimal(amount), final_fare=Decimal(amount),
+        payment_method='online', accepted_at=now, started_at=now,
+        completed_at=now,
+    )
+    payment = Payment.objects.create(
+        trip_id=trip, user_id=user, amount=Decimal(amount), method='online',
+        status='completed',
+    )
+    return trip, payment
+
+
+def _two_market_zones():
+    from servers.pricing.models import ServiceZone
+
+    india = ServiceZone.objects.create(
+        code='D-IN-HYD', name='Hyderabad', country='IN', state_code='TG',
+        city='Hyderabad', zone_type='city',
+        polygon_geojson={'type': 'Polygon', 'coordinates': [[
+            [78.30, 17.40], [78.50, 17.40], [78.50, 17.50],
+            [78.30, 17.50], [78.30, 17.40]]]},
+        priority=50, is_active=True,
+    )
+    usa = ServiceZone.objects.create(
+        code='D-US-SFO', name='San Francisco', country='US', state_code='CA',
+        city='San Francisco', zone_type='city',
+        polygon_geojson={'type': 'Polygon', 'coordinates': [[
+            [-122.52, 37.70], [-122.35, 37.70], [-122.35, 37.84],
+            [-122.52, 37.84], [-122.52, 37.70]]]},
+        priority=50, is_active=True, timezone_name='America/Los_Angeles',
+    )
+    return india, usa
+
+
+def test_the_payment_dashboard_shows_two_totals_not_their_sum(console):
+    """`Sum("amount")` over ₹190 and $30.83 is 220.83, which is not an amount
+    of money in either currency -- and the template rendered it with a rupee
+    sign, asserting it was rupees."""
+    india, usa = _two_market_zones()
+    _completed_payment(india, '+919550000333', 'drider1', '190.00')
+    _completed_payment(usa, '+15550000333', 'drider2', '30.83')
+
+    resp = console.get(reverse('payment_dashboard'))
+    assert resp.status_code == 200
+    body = resp.content.decode('utf-8')
+
+    assert '₹190.00' in body
+    assert '$30.83' in body
+    assert '220.83' not in body, 'rupees were added to dollars'
+
+
+def test_the_transaction_reconciliation_shows_two_totals(console):
+    india, usa = _two_market_zones()
+    _completed_payment(india, '+919550000444', 'trider1', '190.00')
+    _completed_payment(usa, '+15550000444', 'trider2', '30.83')
+
+    resp = console.get(reverse('transaction_dashboard'))
+    assert resp.status_code == 200
+    body = resp.content.decode('utf-8')
+
+    assert '₹190.00' in body
+    assert '$30.83' in body
+    assert '220.83' not in body
+
+
+def test_a_single_market_dashboard_still_shows_one_number(console):
+    """The control, and the state every day of the India pilot: with one
+    currency in the table the grouped total renders as one amount, exactly as
+    before."""
+    india, _ = _two_market_zones()
+    _completed_payment(india, '+919550000555', 'srider1', '190.00')
+    _completed_payment(india, '+919550000556', 'srider2', '110.00')
+
+    resp = console.get(reverse('payment_dashboard'))
+    body = resp.content.decode('utf-8')
+
+    assert '₹300.00' in body
+    assert '+' not in body.split('₹300.00')[0][-40:], (
+        'a single-market total should not be rendered as a sum of markets'
+    )

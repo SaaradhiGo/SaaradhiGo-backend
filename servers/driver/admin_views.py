@@ -113,6 +113,9 @@ def driver_full_detail_admin(request, driver_id):
         driver_timezone, local_day_start, local_month_start,
     )
 
+    from base.money import single_currency_or_none
+    from servers.driver.services import driver_currency
+
     _dtz = driver_timezone(driver)
     today_start = local_day_start(_dtz, now=now)
     month_start = local_month_start(_dtz, now=now)
@@ -247,6 +250,12 @@ def driver_full_detail_admin(request, driver_id):
         earnings_payload['lifetime'] = str(lifetime)
         earnings_payload['today'] = str(today_amt)
         earnings_payload['this_month'] = str(month_amt)
+        # The currency these three are in. A driver operates in one market, so
+        # one code is the honest answer here -- but without it the console is
+        # rendering three bare numbers and choosing a symbol for them itself.
+        # Taken from the driver's trips rather than the deployment default.
+        earnings_payload['currency'] = (
+            single_currency_or_none(completed_qs) or driver_currency(driver))
     except Exception:
         pass
 

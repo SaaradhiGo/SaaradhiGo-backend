@@ -207,8 +207,18 @@ def list_active_zones(request):
             'country': z.country,
             'zone_type': z.zone_type,
             'polygon_geojson': z.polygon_geojson,
-            'currency': z.currency,
-            'timezone': z.timezone_name,
+            # Resolved, not raw. `currency` and `timezone_name` are blank on a
+            # zone that inherits them from its country, and a rider app that
+            # read the blank would have no currency at all -- so these are the
+            # effective values the server itself prices with.
+            'currency': z.currency or z.country_profile.currency,
+            'timezone': z.timezone_name or z.country_profile.default_timezone,
+            # The market's units and tax convention. A client needs these
+            # BEFORE it quotes: to label a distance, and to know whether the
+            # tax it is about to be shown is already inside the fare.
+            'distance_unit': z.distance_unit or z.country_profile.distance_unit,
+            'tax_mode': z.tax_mode or z.country_profile.tax_mode,
+            'tax_label': z.tax_label,
         }
         for z in zones
     ]

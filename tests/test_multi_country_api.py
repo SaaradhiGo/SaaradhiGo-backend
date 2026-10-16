@@ -532,3 +532,50 @@ def test_an_unknown_point_falls_back_to_the_deployment_defaults():
 
     assert _road_network_factors(Decimal('0'), Decimal('0')) == (
         ROAD_DISTANCE_FACTOR, FALLBACK_AVG_SPEED_KMH)
+
+
+# ===========================================================================
+# The public zone list -- the only market signal a client gets before login
+# ===========================================================================
+
+ZONES_URL = '/api/v1/pricing/zones/'
+
+
+def test_the_public_zone_list_resolves_each_market(india_zone, us_zone):
+    """Anonymous, because the rider app reads this before anyone logs in.
+
+    `currency` and `timezone_name` are blank on a zone that inherits them from
+    its country, so the raw column would have told a client nothing. These are
+    the effective values the server prices with.
+    """
+    resp = APIClient().get(ZONES_URL)
+    assert resp.status_code == 200, resp.content
+    body = resp.json()
+    zones = {z['code']: z for z in body.get('data', body)['zones']}
+
+    india = zones['A-IN-HYD']
+    assert india['currency'] == 'INR'
+    assert india['distance_unit'] == 'km'
+    assert india['tax_mode'] == 'inclusive'
+    assert india['tax_label'] == 'GST'
+    assert india['timezone'] == 'Asia/Kolkata'
+
+    usa = zones['A-US-SFO']
+    assert usa['currency'] == 'USD'
+    assert usa['distance_unit'] == 'mi'
+    assert usa['tax_mode'] == 'additive'
+    assert usa['tax_label'] == 'Sales tax'
+    assert usa['timezone'] == 'America/Los_Angeles'
+
+
+def test_an_inheriting_zone_never_reports_a_blank_currency(india_zone):
+    """india_zone sets no currency at all -- it inherits IN. A blank here is
+    worse than wrong: a client cannot fall back from it."""
+    assert india_zone.currency in ('', 'INR')
+
+    resp = APIClient().get(ZONES_URL)
+    zone = [z for z in resp.json()['data']['zones']
+            if z['code'] == 'A-IN-HYD'][0]
+    assert zone['currency']
+    assert zone['distance_unit']
+    assert zone['tax_mode']

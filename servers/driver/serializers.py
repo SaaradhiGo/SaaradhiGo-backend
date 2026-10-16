@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 from .models import Vehicle, VehicleType, Driver, WithdrawalRequest, DriverBankAccount, IncentiveQuest
 from servers.auth_user.serializers import UserModelSerializer
@@ -21,7 +23,8 @@ class VehicleSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'vehicle_number', 'brand', 'model', 'color', 'year',
             'capacity', 'vehicle_pic', 'rc_doc', 'permit_doc',
-            'insurance_doc','fitness_doc','puc_doc','insurance_expiry','permit_expiry',
+            'insurance_doc','fitness_doc','puc_doc','inspection_doc',
+            'insurance_expiry','permit_expiry',
             'fitness_expiry','puc_expiry','status','vehicle_type', 'vehicle_type_id_val',
         ]
         read_only_fields = ['id', 'status']
@@ -79,6 +82,11 @@ class VehicleCreateSerializer(serializers.Serializer):
     insurance_doc = S3UploadKeyField(kind="insurance_doc",required=False, allow_null=True)
     fitness_doc = S3UploadKeyField(kind="fitness_doc",required=False, allow_null=True)
     puc_doc = S3UploadKeyField(kind="puc_doc",required=False,allow_null=True)
+    # US safety inspection. Optional like every other document here: which
+    # ones a driver actually needs is decided by their country in
+    # servers/driver/compliance.py, not by this serializer.
+    inspection_doc = S3UploadKeyField(kind="inspection_doc", required=False,
+                                      allow_null=True)
     insurance_expiry = serializers.DateField(required=False,allow_null=True)
     permit_expiry = serializers.DateField(required=False,allow_null=True)
     fitness_expiry = serializers.DateField(required=False,allow_null=True)
@@ -204,9 +212,24 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
 
 
 class WithdrawalRequestCreateSerializer(serializers.ModelSerializer):
+    """Shape only. The minimum belongs to the driver's market, not to this class.
+
+    `min_value: 500` used to live here, which made it the THIRD copy of India's
+    payout minimum (the view had its own `amount < 500`, and
+    `validate_withdrawal_amount` had the market-aware one). It is also the copy
+    that cannot be fixed in place: a serializer validating `amount` in
+    isolation does not know which driver is asking, so it cannot know whether
+    500 means rupees or dollars. A US driver requesting $25 was refused here
+    before any market-aware code ran.
+
+    What survives is the part that is true in every market -- an amount must be
+    a positive number -- and `validate_withdrawal_amount` in the view, which
+    has the driver and therefore the currency, owns the threshold.
+    """
+
     class Meta:
         model = WithdrawalRequest
         fields = ['amount']
         extra_kwargs = {
-            'amount': {'required': True, 'min_value': 500}
+            'amount': {'required': True, 'min_value': Decimal('0.01')}
         }

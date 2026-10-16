@@ -342,10 +342,19 @@ class RateCard(models.Model):
         max_digits=5, decimal_places=2, default=Decimal('18.00'),
     )
 
-    # GST rate. Phase-0: 5% on taxi services without ITC. Configurable
-    # because RBI/CBIC may shift this.
+    # The zone's tax rate: GST in India, sales tax in the US. Configurable
+    # because RBI/CBIC may shift the Indian rate, and because every US
+    # jurisdiction sets its own.
+    #
+    # THREE decimal places, not two. Indian GST is a whole 5%, but US combined
+    # state-plus-local sales tax is routinely quoted to a thousandth -- 8.625%
+    # in parts of California, 9.875% in parts of New York. At two places the
+    # rate was silently rounded to 8.62%, so the receipt stated a rate the
+    # jurisdiction does not levy and the tax was computed from it.
+    #
+    # India is unaffected: 5.00 and 5.000 are the same number.
     gst_percent = models.DecimalField(
-        max_digits=5, decimal_places=2, default=Decimal('5.00'),
+        max_digits=6, decimal_places=3, default=Decimal('5.000'),
     )
 
     objects = RateCardQuerySet.as_manager()

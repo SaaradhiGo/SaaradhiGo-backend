@@ -19,6 +19,21 @@ class BasePaymentGateway(ABC):
         """Return the name of the payment gateway (e.g., 'razorpay', 'cashfree')."""
         pass
     
+    def supported_currencies(self):
+        """Currency codes this gateway can actually settle in.
+
+        Declared, not assumed. Every call site passed `currency='INR'` as a
+        literal, which was correct while there was one market and silently
+        wrong the moment there were two: a dollar fare would have been sent to
+        a rupee gateway as a rupee amount, charging the rider roughly a
+        ninetieth of what they owed and recording the payment in the wrong
+        currency.
+
+        Defaults to INR-only because that is what the one implemented gateway
+        supports. A gateway that supports more overrides this.
+        """
+        return ('INR',)
+
     @abstractmethod
     def create_order(self, amount: float, trip_id: int, currency: str = 'INR') -> Optional[Dict[str, Any]]:
         """

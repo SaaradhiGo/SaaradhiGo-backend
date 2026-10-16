@@ -430,8 +430,25 @@ def test_india_tax_is_inside_the_quoted_fare(india_zone, vehicle_type):
                    distance_km=Decimal('10'), duration_min=Decimal('20'),
                    vehicle_type='sedan', record_demand=False)
     assert q['tax_mode'] == 'inclusive'
-    assert q['tax_amount'] == Decimal('0.00')
+    # Reported, not added. The quote states the GST sitting inside the fare --
+    # 190.00 * 5 / 105 -- so a rider is not shown "GST 0.00" beside a 5% rate,
+    # and the total is byte-for-byte the pre-multi-country number.
+    assert q['tax_amount'] == Decimal('9.05')
     assert q['total_fare'] == Decimal('190.00')
+
+
+def test_reporting_indias_inclusive_tax_does_not_add_it(india_zone, vehicle_type):
+    """The number the rider pays must not move because we started stating the
+    tax inside it. Inclusive extraction is display arithmetic only."""
+    _card(india_zone, vehicle_type, '30', '12', '2', '50', '5.00')
+    q = quote_fare(pickup_lat=HYD[0], pickup_lon=HYD[1],
+                   distance_km=Decimal('10'), duration_min=Decimal('20'),
+                   vehicle_type='sedan', record_demand=False)
+    metered = q['base_fare'] + q['distance_fare'] + q['time_fare']
+    adjustments = sum((a['amount'] for a in q['fare_adjustments']), Decimal('0'))
+    assert q['total_fare'] == metered + adjustments
+    # Specifically: the tax is NOT one of those adjustment lines in India.
+    assert 'tax' not in {a['code'] for a in q['fare_adjustments']}
 
 
 def test_us_tax_is_added_on_top(us_zone, vehicle_type):
@@ -703,9 +720,13 @@ def test_india_prices_exactly_what_it_priced_before(india_zone, vehicle_type):
     assert q['base_fare'] == Decimal('30.00')
     assert q['distance_fare'] == Decimal('120.00')
     assert q['time_fare'] == Decimal('40.00')
-    assert q['tax_amount'] == Decimal('0.00'), (
+    # The guard against India gaining an ADDITIVE tax is the absence of the
+    # line, not a zero amount: `tax_amount` now reports the GST already inside
+    # the 190.00. An additive tax would appear here AND move the total above.
+    assert 'tax' not in {a['code'] for a in q['fare_adjustments']}, (
         'India gained an additive tax line, which would double-charge GST'
     )
+    assert 'per_trip_fee' not in {a['code'] for a in q['fare_adjustments']}
 
 
 def test_the_india_minimum_fare_still_applies(india_zone, vehicle_type):
@@ -769,15 +790,10 @@ def test_a_drivers_country_is_read_from_their_phone_number(vehicle_type):
     assert driver_country_code(_driver(vehicle_type, 'IN')) == 'IN'
 
 
-def test_a_us_vehicle_with_registration_and_insurance_is_closer_to_compliant(
-    vehicle_type,
-):
-    """Not fully compliant: `inspection` has no column to store it in yet.
-
-    Asserted in that direction on purpose. Treating an unrecordable document as
-    satisfied is how a driver whose safety inspection nobody saw gets approved,
-    so the gap stays visible instead.
-    """
+def test_a_us_vehicle_without_its_inspection_is_not_compliant(vehicle_type):
+    """Registration and insurance are not enough. The inspection is required,
+    it now HAS a column (`inspection_doc`), and so missing it reads as missing
+    rather than as a platform gap."""
     from servers.driver.compliance import (
         evaluate_vehicle, unrecordable_documents, vehicle_is_compliant,
     )
@@ -791,11 +807,27 @@ def test_a_us_vehicle_with_registration_and_insurance_is_closer_to_compliant(
     checks = evaluate_vehicle(vehicle, us_driver)
     assert checks['registration']['present'] is True
     assert checks['insurance']['present'] is True
-    assert checks['inspection']['applicable'] is False, (
-        'inspection appears storable, but there is no column for it'
-    )
+    assert checks['inspection']['applicable'] is True
+    assert checks['inspection']['present'] is False
     assert vehicle_is_compliant(vehicle, us_driver) is False
-    assert 'inspection' in unrecordable_documents(us_driver)
+    # Nothing is unrecordable any more. This assertion is the one that will
+    # fail first if a future country adds a document type with no column --
+    # which is the point: it must block visibly, not pass silently.
+    assert unrecordable_documents(us_driver) == ()
+
+
+def test_a_fully_documented_us_vehicle_is_compliant(vehicle_type):
+    """The end of the blocker: there is now a reachable True for the US."""
+    from servers.driver.compliance import vehicle_is_compliant
+
+    us_driver = _driver(vehicle_type, 'US')
+    vehicle = us_driver.active_vehicle
+    vehicle.rc_doc = 'docs/reg.pdf'
+    vehicle.insurance_doc = 'docs/ins.pdf'
+    vehicle.inspection_doc = 'docs/inspection.pdf'
+    vehicle.save(update_fields=['rc_doc', 'insurance_doc', 'inspection_doc'])
+
+    assert vehicle_is_compliant(vehicle, us_driver) is True
 
 
 def test_an_indian_vehicle_with_all_five_is_compliant(vehicle_type):

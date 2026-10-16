@@ -7,6 +7,7 @@ from channels.db import database_sync_to_async
 from django.contrib.auth.models import AnonymousUser
 from django.core.cache import cache
 from base.utils import generate_otp
+from base.money import currency_for_trip, format_money
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +391,12 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             'pickup_address': event.get('pickup_address', ''),
             'destination_address': event.get('destination_address', ''),
             'estimated_fare': event.get('estimated_fare', ''),
+            # The driver accepts or declines on this number, so it needs a
+            # currency and the distance needs a unit -- a US driver shown
+            # "12.4 km" for a 7.7-mile trip is being asked to judge a job in
+            # units they do not use.
+            'currency': event.get('currency', ''),
+            'distance_unit': event.get('distance_unit', ''),
             'distance_km': event.get('distance_km', ''),
             'duration_min': event.get('duration_min', ''),
             'payment_method': event.get('payment_method', ''),
@@ -622,6 +629,9 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 'type': 'trip_created',
                 'trip_id': trip.id,
                 'estimated_fare': str(trip.estimated_fare) if trip.estimated_fare else None,
+                # An amount with no currency is not a price. Additive, so an
+                # app that ignores it is unaffected.
+                'currency': trip.currency,
                 'reused': reused,
                 'message': ('Reconnected to your existing request...' if reused
                             else 'Searching for nearby drivers...'),
@@ -2025,14 +2035,21 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     self._create_payment_on_complete(trip)
 
                     fare = trip.final_fare or trip.estimated_fare
+                    # Formatted in the trip's own currency. This was
+                    # f'Rs.{fare}' for every market, so a rider in San
+                    # Francisco was told their fare in rupees -- in the
+                    # notification AND in the push, which is the copy they
+                    # see on a lock screen and cannot correct.
+                    fare_text = format_money(fare, currency_for_trip(trip))
+                    message = f'Your ride has been completed. Final fare: {fare_text}'
                     Notification.objects.create(
                         user_id=trip.user_id,
                         title='Ride Completed',
-                        message=f'Your ride has been completed. Final fare: Rs.{fare}',
+                        message=message,
                     )
                     push = (
                         "Ride Completed",
-                        f"Your ride has been completed. Final fare: Rs.{fare}",
+                        message,
                         {"trip_id": str(trip.id), "type": "ride_completed"},
                     )
 

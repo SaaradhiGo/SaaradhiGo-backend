@@ -31,14 +31,17 @@ which means it is a reliable discriminator rather than a guess.
 A number from a country we do not serve falls back to the deployment default. That is
 logged, because it means somebody is being reviewed against the wrong checklist.
 
-WHAT THIS DOES NOT DO
----------------------
-It does not add the US documents to the Vehicle model. `registration` maps onto the
-existing `rc_doc` column and `inspection` has no column at all, so a US vehicle can
-satisfy registration and insurance today and inspection is recorded as not-applicable
-rather than silently passed. That is an honest partial: the schema work to add
-per-country document columns is listed in the go-live review and is not pretended to
-be done here.
+WHERE THE DOCUMENTS ARE STORED
+------------------------------
+`registration` maps onto the existing `rc_doc` column -- India's Registration
+Certificate and the US vehicle registration are the same document under two names --
+and `inspection` has its own `inspection_doc` column, added for the US safety
+inspection.
+
+`unrecordable_documents()` below still exists and still counts an unrecordable
+document as NOT compliant. It is empty today, and it is the mechanism that keeps the
+next country's new document type from being silently treated as satisfied instead of
+blocking approval visibly.
 """
 
 import logging
@@ -60,7 +63,7 @@ VEHICLE_DOCUMENT_COLUMNS = {
     'permit': 'permit_doc',
     'fitness': 'fitness_doc',
     'puc': 'puc_doc',
-    # 'inspection' has no column. See the module docstring.
+    'inspection': 'inspection_doc',
 }
 
 DRIVER_DOCUMENT_COLUMNS = {
@@ -80,6 +83,30 @@ DOCUMENT_LABELS = {
     'license_front': 'Licence (front)',
     'license_back': 'Licence (back)',
 }
+
+
+# One line of operator-facing explanation per document, for the console
+# checklist. Separate from DOCUMENT_LABELS because the label is a name and this
+# is the "what is this and why do we want it" an operator reads.
+DOCUMENT_DESCRIPTIONS = {
+    'rc': 'Vehicle ownership and registration document issued by the RTO.',
+    'registration': 'State vehicle registration showing current ownership.',
+    'insurance': 'Valid commercial motor insurance for the vehicle.',
+    'permit': 'Commercial passenger permit for the operating region.',
+    'fitness': 'Fitness certificate confirming the vehicle is roadworthy.',
+    'puc': 'Valid Pollution Under Control certificate.',
+    'inspection': 'Periodic safety inspection certificate.',
+    'license_front': 'Government-issued driving licence, front.',
+    'license_back': 'Government-issued driving licence, reverse.',
+}
+
+
+def document_label(key):
+    return DOCUMENT_LABELS.get(key, key)
+
+
+def document_description(key):
+    return DOCUMENT_DESCRIPTIONS.get(key, '')
 
 
 def driver_country_code(driver):

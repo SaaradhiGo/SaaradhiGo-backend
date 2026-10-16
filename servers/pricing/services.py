@@ -18,15 +18,17 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional, Tuple
 
 from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
+
 from shapely.geometry import Point, Polygon, shape as shapely_shape
 
+from base.market_time import zone_timezone
 from servers.pricing.models import PlatformSettings, RateCard, ServiceZone
 
 logger = logging.getLogger(__name__)
@@ -336,10 +338,24 @@ def compute_surge_multiplier(
 
 
 def _is_night_now(card: RateCard, at=None) -> bool:
-    """Is the supplied local hour inside the card's night window?"""
+    """Is it night in the ZONE this card prices, inside its night window?
+
+    The hour is resolved in the zone's own timezone, not the deployment's.
+
+    This was `timezone.localtime(...)`, which reads `settings.TIME_ZONE` --
+    Asia/Kolkata. Correct for India and wrong by 12.5 hours in California: a
+    San Francisco rider booking at 11am local was inside the 23:00-05:00 "night"
+    window because it was 23:30 in Kolkata, and so paid the night multiplier in
+    broad daylight, while a genuine 1am ride did not. A fare charged at the
+    wrong time of day, with nothing erroring.
+
+    India is unaffected by construction: an Indian zone's timezone IS
+    Asia/Kolkata, so the resolved hour is the same hour as before.
+    """
     try:
         check_time = at or timezone.now()
-        hour = timezone.localtime(check_time).hour
+        hour = check_time.astimezone(
+            zone_timezone(getattr(card, 'zone', None))).hour
     except Exception:  # noqa: BLE001
         return False
 
@@ -617,6 +633,16 @@ def quote_fare(
                 'amount': round(per_trip_fee, 2),
             })
         total_fare = round(total_fare + tax_amount + per_trip_fee, 2)
+    else:
+        # Inclusive: the tax is already inside `total_fare`, so reporting it
+        # does not move the total -- but reporting 0.00 would be a lie. A rider
+        # shown "GST 0.00" beside a 5% inclusive rate has been told the fare
+        # carries no tax. Extracted exactly the way the receipt extracts it, so
+        # the quote and the document the rider keeps state the same number.
+        if tax_percent:
+            tax_amount = (total_fare * tax_percent /
+                          (Decimal('100.00') + tax_percent)).quantize(
+                              Decimal('0.01'), rounding=ROUND_HALF_UP)
 
     return {
         'total_fare': total_fare,
@@ -625,7 +651,9 @@ def quote_fare(
         # would have to re-derive it from the zone.
         'currency': currency,
         'tax_mode': tax_mode,
-        'tax_percent': round(tax_percent, 2),
+        # Three places: see the comment on RateCard.gst_percent. Rounding a
+        # 8.625% rate to 8.62% misstates it on a legal document.
+        'tax_percent': round(tax_percent, 3),
         'tax_label': tax_label,
         'tax_amount': tax_amount,
         'per_trip_fee': round(per_trip_fee, 2),

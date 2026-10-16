@@ -314,11 +314,25 @@ def main():
               india['quote']['currency'] != usa['quote']['currency'],
               f"{india['quote']['currency']} vs {usa['quote']['currency']}")
 
-        check('India extracted tax from the fare, the US added it on top',
-              india['quote']['tax_amount'] == Decimal('0.00')
-              and usa['quote']['tax_amount'] > Decimal('0.00'),
-              f"IN adds {india['quote']['tax_amount']}, "
-              f"US adds {usa['quote']['tax_amount']}")
+        # Both markets now REPORT a tax amount -- India's is the GST already
+        # inside the quoted fare, because showing a rider "GST 0.00" beside a
+        # 5% inclusive rate is a lie. The difference that matters is whether
+        # the tax is a line that MOVES the total, so that is what is checked:
+        # a 'tax' adjustment exists in the US and must not exist in India.
+        india_codes = {a['code'] for a in india['quote']['fare_adjustments']}
+        usa_codes = {a['code'] for a in usa['quote']['fare_adjustments']}
+
+        check('India states the tax inside the fare and does not add it',
+              india['quote']['tax_amount'] > Decimal('0.00')
+              and 'tax' not in india_codes,
+              f"IN states {india['quote']['tax_amount']} inclusive, "
+              f"adjustments {sorted(india_codes)}")
+
+        check('the US adds the tax on top as its own line',
+              usa['quote']['tax_amount'] > Decimal('0.00')
+              and 'tax' in usa_codes,
+              f"US adds {usa['quote']['tax_amount']}, "
+              f"adjustments {sorted(usa_codes)}")
 
         # The US total must be strictly greater than its own pre-tax fare, and
         # the difference must be exactly tax + fee.

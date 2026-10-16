@@ -308,6 +308,12 @@ def _offer_payload(trip, rider_name, vehicle_type):
         'pickup_address': trip.pickup_address or '',
         'destination_address': trip.destination_address or '',
         'estimated_fare': str(trip.estimated_fare) if trip.estimated_fare else '',
+        # The offer is the one screen where a driver decides on money and
+        # distance, so both need their market's units. Additive fields: the
+        # event shape is otherwise unchanged, so an older driver build that
+        # reads neither still renders the offer exactly as before.
+        'currency': trip.currency or '',
+        'distance_unit': getattr(getattr(trip, 'zone', None), 'distance_unit', '') or 'km',
         'distance_km': str(trip.estimated_distance_km) if trip.estimated_distance_km is not None else '',
         'duration_min': str(trip.estimated_duration_min) if trip.estimated_duration_min is not None else '',
         'payment_method': str(trip.payment_method) if trip.payment_method else '',

@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 import requests
 from django.conf import settings
 
+from base.countries import get_country
+
 # Fallback fare constants (used when VehicleFarePricing not found in DB)
 DEFAULT_BASE_FARE = Decimal('30.00')
 DEFAULT_PER_KM_FARE = Decimal('12.00')
@@ -25,6 +27,12 @@ MIN_STRAIGHT_LINE_KM = 0.1
 # as straight-line × this factor. Hyderabad's road network is dense; 1.4
 # is a conservative empirical multiplier (Manhattan-like grids tend to
 # 1.3, dense city centres tend to 1.5).
+#
+# These two remain as the India/deployment defaults AND as the fallback when
+# no zone can be resolved. The per-market values live on the country registry
+# and are resolved per trip by `_road_network_factors` below -- 25 km/h is
+# Hyderabad traffic, and applying it to a San Francisco trip inflated the
+# estimated duration by about 60%, which is a priced component.
 ROAD_DISTANCE_FACTOR = 1.4
 
 # Average speed (km/h) we assume for duration estimation when Google fails.
@@ -84,6 +92,24 @@ def get_google_maps_distance(pickup_lat, pickup_long, dest_lat, dest_long):
     return None, None
 
 
+def _road_network_factors(pickup_lat, pickup_long):
+    """(detour factor, average speed) for the market the pickup is in.
+
+    Only reached on the Google-unavailable fallback path, and deliberately
+    tolerant: if the zone lookup fails for any reason the deployment defaults
+    are used, because a failed quote is worse than an approximate one.
+    """
+    try:
+        from servers.pricing.services import find_zone_for_point
+
+        zone = find_zone_for_point(pickup_lat, pickup_long)
+        country = get_country(getattr(zone, 'country', None))
+        return float(country.road_distance_factor), float(country.fallback_avg_speed_kmh)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug('road-network factor lookup failed, using defaults: %s', exc)
+        return ROAD_DISTANCE_FACTOR, FALLBACK_AVG_SPEED_KMH
+
+
 def validate_distance(distance_km, duration_min, pickup_lat, pickup_long, dest_lat, dest_long):
     """Compute the authoritative server-side distance and duration for a trip.
 
@@ -137,8 +163,9 @@ def validate_distance(distance_km, duration_min, pickup_lat, pickup_long, dest_l
         if straight_line < MIN_STRAIGHT_LINE_KM:
             return False, 0, 0, 'Pickup and drop locations are too close'
 
-        road_km = round(straight_line * ROAD_DISTANCE_FACTOR, 2)
-        road_min = round((road_km / FALLBACK_AVG_SPEED_KMH) * 60, 2)
+        detour_factor, avg_speed_kmh = _road_network_factors(pickup_lat, pickup_long)
+        road_km = round(straight_line * detour_factor, 2)
+        road_min = round((road_km / avg_speed_kmh) * 60, 2)
 
         if client_km is not None and road_km > 0:
             deviation = abs(client_km - road_km) / road_km
@@ -206,6 +233,18 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=Non
         'source': fare['source'],
         'zone_code': fare.get('zone_code', ''),
         'rate_card_version': fare.get('rate_card_version'),
+        # Market semantics. Forwarded through this wrapper for the same
+        # reason `fare_adjustments` had to be: this function rebuilds the
+        # payload field by field, so anything quote_fare starts returning is
+        # dropped here unless it is named. A client that cannot see `currency`
+        # does not know whether 135.22 means rupees or dollars.
+        'currency': fare.get('currency'),
+        'tax_mode': fare.get('tax_mode'),
+        'tax_percent': fare.get('tax_percent'),
+        'tax_label': fare.get('tax_label'),
+        'tax_amount': fare.get('tax_amount'),
+        'per_trip_fee': fare.get('per_trip_fee'),
+        'distance_unit': fare.get('distance_unit'),
     }
 
 def get_trip_details(trip_id):

@@ -64,12 +64,20 @@ def calculate_available_balance(driver):
         return Decimal('0.00')
 
 
-def validate_withdrawal_amount(driver, amount):
+def validate_withdrawal_amount(driver, amount, available=None):
     """
     Validate withdrawal amount against available balance and minimum/maximum limits.
     Returns (is_valid, error_message)
+
+    `available` lets a caller that already holds `SELECT FOR UPDATE` on the
+    wallet row pass the balance it locked. Without it this function would read
+    the same row again un-locked, and the request endpoint duplicated the whole
+    check inline rather than do that -- which is how the endpoint ended up with
+    its own hardcoded `amount < 500` and a rupee sign for every market while
+    this market-aware version sat unused beside it.
     """
-    available = calculate_available_balance(driver)
+    if available is None:
+        available = calculate_available_balance(driver)
 
     # Both the threshold and the symbol come from the driver's market.
     #
@@ -1494,6 +1502,39 @@ def initiate_upi_payout(withdrawal, driver):
     # ---------------------------------------------------------
     # BASIC VALIDATION
     # ---------------------------------------------------------
+    #
+    # UPI is an Indian rail and this call hardcodes currency="INR", which was
+    # correct while every driver was Indian. A withdrawal denominated in
+    # dollars routed down this path would send the NUMBER as rupees -- a $500
+    # payout dispatched as Rs.500 -- so the currency is checked before the
+    # gateway is touched rather than trusted.
+    #
+    # Returning False here is the right failure: nothing has been dispatched,
+    # so the caller's refund returns the amount to the driver's wallet. It is
+    # a mis-routing, not an unresolved payout.
+    withdrawal_currency = normalize_currency(
+        getattr(withdrawal, 'currency', None) or driver_currency(driver))
+    if withdrawal_currency != 'INR':
+        withdrawal.failure_reason = (
+            f'UPI payouts settle in INR; this withdrawal is in '
+            f'{withdrawal_currency}'
+        )
+        withdrawal.failure_count += 1
+        withdrawal.last_failure_at = timezone.now()
+        withdrawal.save(
+            update_fields=[
+                "failure_reason",
+                "failure_count",
+                "last_failure_at",
+            ]
+        )
+        logger.error(
+            'withdrawal %s is in %s and cannot be paid over UPI. No payout '
+            'rail is configured for this market.',
+            withdrawal.id, withdrawal_currency,
+        )
+        return False
+
     if not driver.upi_id:
         withdrawal.failure_reason = "UPI ID not set"
         withdrawal.failure_count += 1

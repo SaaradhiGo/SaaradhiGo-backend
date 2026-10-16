@@ -16,6 +16,17 @@ from django.db import transaction
 logger = logging.getLogger(__name__)
 
 
+def _money_str(value):
+    """Money as a string, or None when there is genuinely no value.
+
+    Money crosses JSON as a string so a client's float parser cannot round
+    0.01 off a fare. `None` is preserved rather than becoming "None": a field
+    that is absent for a market is different from one that is zero, and
+    str(None) would be rendered to a rider as a price.
+    """
+    return None if value is None else str(value)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def estimate_fare(request):
@@ -83,9 +94,11 @@ def estimate_fare(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Service-area enforcement. Phase-0 only serves Hyderabad metro; both
-    # pickup and drop must sit inside the polygon. Without this check, a
-    # tampered client can have us produce fares for any city.
+    # Service-area enforcement: both pickup and drop must sit inside an active
+    # ServiceZone polygon. Without this check, a tampered client can have us
+    # produce fares for any city. The zone table is the authority -- the
+    # message no longer says "Hyderabad", because which cities are served is
+    # now a row, not a constant.
     from base.service_area import validate_service_area
     area_ok, area_msg = validate_service_area(
         pickup_lat, pickup_long, destination_lat, destination_long,
@@ -95,7 +108,7 @@ def estimate_fare(request):
             code='OUT_OF_SERVICE_AREA',
             message=area_msg,
             field='pickup / destination',
-            issue='Coordinates fall outside the SaaradhiGo Hyderabad service area',
+            issue='Coordinates fall outside every active SaaradhiGo service zone',
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -126,12 +139,32 @@ def estimate_fare(request):
 
     return success_response({
         'estimated_fare': str(fare['total_fare']),
+        # The market this quote was priced in. A client that cannot see this
+        # does not know whether 135.22 is rupees or dollars, and `distance_unit`
+        # is what stops a US rider being quoted a per-kilometre rate.
+        #
+        # Same lesson as `fare_adjustments` below: quote_fare returning a field
+        # is not enough, because this layer and `estimate_amount` both rebuild
+        # the payload key by key. Verified at the HTTP boundary, not at the
+        # service call -- the live QA quote returned null for all seven of these
+        # while the service layer had been producing them correctly all along.
+        'currency': fare.get('currency'),
+        'distance_unit': fare.get('distance_unit'),
         'fare_breakdown': {
             'base_fare': str(fare['base_fare']),
             'distance_fare': str(fare['distance_fare']),
             'time_fare': str(fare['time_fare']),
             'surge_multiplier': str(fare['surge_multiplier']),
             'min_fare_applied': fare['min_fare_applied'],
+            # `tax_mode` tells the client what `tax_amount` means: `inclusive`
+            # (India) is already inside `estimated_fare`, `additive` (US) was
+            # added on top of the metered components. Adding them without
+            # knowing which would double-count the tax.
+            'tax_mode': fare.get('tax_mode'),
+            'tax_label': fare.get('tax_label'),
+            'tax_percent': _money_str(fare.get('tax_percent')),
+            'tax_amount': _money_str(fare.get('tax_amount')),
+            'per_trip_fee': _money_str(fare.get('per_trip_fee')),
         },
         # Named lines that close the gap between the metered components and the
         # amount charged -- the surge uplift, a minimum-fare uplift, and at most a

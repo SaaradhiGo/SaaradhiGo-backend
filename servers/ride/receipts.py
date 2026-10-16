@@ -470,6 +470,84 @@ def _send_receipt_email(receipt):
         return False, str(exc)[:512]
 
 
+def _resolve_tax_rate(trip):
+    """The tax rate this trip's receipt must state, for its market.
+
+    The rate comes from the zone's active rate card. When there is none the
+    fallback comes from the country registry -- NOT from a literal 5.00, which
+    is India's GST rate on taxi services and was silently applied to every
+    market. The US default is deliberately 0.00: there is no national US rate
+    to guess at, and guessing one onto a legal document is worse than stating
+    zero and logging the misconfiguration.
+    """
+    card = _get_active_rate_card_for_trip(trip)
+    if card is not None:
+        return Decimal(str(card.gst_percent or '0'))
+
+    country = get_country(getattr(getattr(trip, 'zone', None), 'country', None))
+    rate = Decimal(country.default_tax_percent)
+    logger.error(
+        'no rate card for trip=%s zone=%s; taxing at the %s default of %s%%. '
+        'This is a pricing misconfiguration -- the receipt is a legal '
+        'document and this rate is a guess.',
+        trip.pk, getattr(getattr(trip, 'zone', None), 'code', None),
+        country.code, rate,
+    )
+    return rate
+
+
+def _receipt_tax(trip, total, rate):
+    """Tax, currency and label for one receipt, in this market's convention.
+
+    This used to be inclusive extraction done unconditionally:
+
+        gst = total * rate / (100 + rate)
+
+    which is right for India, where GST is levied on the fare the rider is
+    quoted so the quoted total already contains it. Applied to a US trip it
+    carves a notional tax out of a total that never had any tax in it, and so
+    both understates the fare and misstates the tax on the document the rider
+    keeps.
+
+    `inclusive`  the tax is already inside `total`; extract it for display and
+                 leave `total` exactly as quoted. India.
+    `additive`   `quote_fare` added the tax on top, so it is already part of
+                 `total` as a real charge. Recompute it the way the quote did
+                 -- on the pre-tax fare -- so the receipt's lines reconcile
+                 with what was charged instead of re-deriving a different
+                 number from the post-tax total.
+
+    One function because there are two receipt-issuing paths, and the second
+    one -- `reissue_receipt`, used after a fare adjustment -- carried a copy of
+    the old India-only arithmetic. A reissued US receipt stated a tax that was
+    never charged, at India's rate, in no stated currency. Two copies of tax
+    law is one copy too many.
+    """
+    zone = getattr(trip, 'zone', None)
+    mode = (getattr(zone, 'tax_mode', '') or 'inclusive')
+    rate = Decimal(str(rate or '0'))
+    total = Decimal(str(total))
+
+    if mode == 'additive':
+        per_trip_fee = Decimal(str(getattr(zone, 'per_trip_fee', None) or '0'))
+        # total = fare + tax + fee, and tax = fare * rate/100, so
+        # fare = (total - fee) / (1 + rate/100).
+        taxable = total - per_trip_fee
+        divisor = (Decimal('1') + rate / Decimal('100'))
+        pre_tax = (taxable / divisor) if divisor else taxable
+        amount = (pre_tax * rate / Decimal('100')).quantize(Decimal('0.01'))
+    else:
+        amount = (total * rate /
+                  (Decimal('100.00') + rate)).quantize(Decimal('0.01'))
+
+    return {
+        'amount': amount,
+        'mode': mode,
+        'label': get_country(getattr(zone, 'country', None)).tax_label,
+        'currency': currency_for_trip(trip),
+    }
+
+
 def issue_receipt(trip, force_resend: bool = False):
     """Generate (and email) a Receipt for a completed trip.
 
@@ -497,65 +575,13 @@ def issue_receipt(trip, force_resend: bool = False):
         existing.save(update_fields=['last_sent_at', 'send_failure_reason'])
         return existing
 
-    card = _get_active_rate_card_for_trip(trip)
-    if card is not None:
-        gst_rate = card.gst_percent
-    else:
-        # No rate card anywhere in this zone. The previous code used a literal
-        # Decimal('5.00') here, which is India's GST rate on taxi services --
-        # correct for India and silently wrong for every other market. The
-        # fallback now comes from the country registry, where the US value is
-        # deliberately 0.00 because there is no national US rate to guess.
-        _fallback_country = get_country(getattr(getattr(trip, 'zone', None),
-                                                'country', None))
-        gst_rate = Decimal(_fallback_country.default_tax_percent)
-        logger.error(
-            'no rate card for trip=%s zone=%s; taxing at the %s default of %s%%. '
-            'This is a pricing misconfiguration -- the receipt is a legal '
-            'document and this rate is a guess.',
-            trip.pk, getattr(getattr(trip, 'zone', None), 'code', None),
-            _fallback_country.code, gst_rate,
-        )
-
+    gst_rate = _resolve_tax_rate(trip)
     fare_pricing = FarePricing.objects.filter(trip_id=trip).order_by('-id').first()
     total = trip.final_fare or trip.estimated_fare or Decimal('0.00')
 
-    # --- Tax, in this market's convention -----------------------------------
-    #
-    # This used to do inclusive extraction unconditionally:
-    #
-    #     gst = total * rate / (100 + rate)
-    #
-    # which is right for India, where GST is levied on the fare the rider is
-    # quoted so the quoted total already contains it. Applied to a US trip it
-    # would understate the fare AND misstate the tax on the document the rider
-    # keeps -- it would carve a notional tax out of a total that never had any
-    # tax in it.
-    #
-    # `inclusive`  the tax is already inside `total`; extract it for display.
-    #              total stays exactly as quoted. India.
-    # `additive`   the tax was added on top by `quote_fare`, so it is already
-    #              part of `total` as a real charge. Recompute the same way the
-    #              quote did -- on the pre-tax fare -- so the receipt's lines
-    #              reconcile with what was charged rather than re-deriving a
-    #              different number from the post-tax total.
-    zone = getattr(trip, 'zone', None)
-    tax_mode = (getattr(zone, 'tax_mode', '') or 'inclusive')
-    tax_label = get_country(getattr(zone, 'country', None)).tax_label
-    currency = currency_for_trip(trip)
-    rate = Decimal(str(gst_rate or '0'))
-
-    if tax_mode == 'additive':
-        per_trip_fee = Decimal(str(getattr(zone, 'per_trip_fee', None) or '0'))
-        # total = fare + tax + fee, and tax = fare * rate/100, so
-        # fare = (total - fee) / (1 + rate/100).
-        taxable = (Decimal(str(total)) - per_trip_fee)
-        divisor = (Decimal('1') + rate / Decimal('100'))
-        pre_tax = (taxable / divisor) if divisor else taxable
-        gst_amount = (pre_tax * rate / Decimal('100')).quantize(Decimal('0.01'))
-    else:
-        gst_amount = (Decimal(str(total)) * rate /
-                      (Decimal('100.00') + rate)).quantize(Decimal('0.01'))
+    tax = _receipt_tax(trip, total, gst_rate)
+    gst_amount, tax_mode = tax['amount'], tax['mode']
+    tax_label, currency = tax['label'], tax['currency']
 
     receipt_number = f"SG-{(trip.completed_at or timezone.now()).strftime('%Y%m')}-{trip.id}-v1"
 
@@ -600,24 +626,26 @@ def reissue_receipt(trip):
     rider = trip.user_id
     if not rider:
         return None
-    card = _get_active_rate_card_for_trip(trip)
-    gst_rate = card.gst_percent if card else Decimal('5.00')
+    gst_rate = _resolve_tax_rate(trip)
     from servers.ride.models import FarePricing
     fare_pricing = FarePricing.objects.filter(trip_id=trip).order_by('-id').first()
     total = trip.final_fare or trip.estimated_fare or Decimal('0.00')
-    gst_amount = (Decimal(str(total)) * Decimal(str(gst_rate)) /
-                  (Decimal('100.00') + Decimal(str(gst_rate)))).quantize(Decimal('0.01'))
+    tax = _receipt_tax(trip, total, gst_rate)
+    gst_amount = tax['amount']
     receipt_number = f"SG-{(trip.completed_at or timezone.now()).strftime('%Y%m')}-{trip.id}-v{new_version}"
 
     receipt = Receipt.objects.create(
         trip_id=trip, user_id=rider, receipt_number=receipt_number,
         total_fare=total, gst_amount=gst_amount,
+        currency=tax['currency'],
         payment_method=trip.payment_method or '',
         payment_status=trip.payment_status or '',
         sent_to_email=rider.email or '',
         html_body=_render_receipt_html(
             trip=trip, rider=rider, receipt_number=receipt_number,
             gst_rate=gst_rate, gst_amount=gst_amount, fare_pricing=fare_pricing,
+            currency=tax['currency'], tax_label=tax['label'],
+            tax_mode=tax['mode'],
         ),
         version=new_version,
     )

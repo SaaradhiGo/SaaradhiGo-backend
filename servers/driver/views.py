@@ -337,21 +337,26 @@ def driver_withdrawal_request(request):
         if wallet.balance is None:
             wallet.balance = Decimal('0.00')
             
-        if amount < 500:
+        # Minimum and balance both come from `validate_withdrawal_amount`,
+        # which resolves the threshold and the currency symbol from the
+        # driver's market. This block used to be a hardcoded `amount < 500`
+        # with the message "Minimum withdrawal amount is ₹500" -- so a US
+        # driver was blocked below $500 and shown a rupee sign beside a dollar
+        # balance -- while the market-aware function was imported above and
+        # never called.
+        #
+        # The locked balance is passed in rather than re-read: this
+        # transaction holds SELECT FOR UPDATE on the wallet row, and the
+        # amount validated must be the amount about to be debited.
+        ok, reason = validate_withdrawal_amount(
+            driver, amount, available=wallet.balance,
+        )
+        if not ok:
             return error_response(
                 code='INSUFFICIENT_BALANCE',
-                message="Minimum withdrawal amount is ₹500",
+                message=reason,
                 field='amount',
-                issue="Minimum withdrawal amount is ₹500",
-                status=status.HTTP_400_BAD_REQUEST
-            )
-            
-        if amount > wallet.balance:
-            return error_response(
-                code='INSUFFICIENT_BALANCE',
-                message=f"Insufficient balance. Available: ₹{wallet.balance:.2f}",
-                field='amount',
-                issue=f"Insufficient balance. Available: ₹{wallet.balance:.2f}",
+                issue=reason,
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -498,6 +503,7 @@ def create_vehicle(request):
             insurance_doc=data.get('insurance_doc'),
             fitness_doc=data.get('fitness_doc'),
             puc_doc=data.get('puc_doc'),
+            inspection_doc=data.get('inspection_doc'),
             insurance_expiry=data.get('insurance_expiry'),
             permit_expiry=data.get('permit_expiry'),
             fitness_expiry=data.get('fitness_expiry'),
@@ -550,7 +556,8 @@ def update_vehicle(request, vehicle_id):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    for field_name in ('rc_doc', 'permit_doc', 'insurance_doc', 'fitness_doc', 'puc_doc', 'vehicle_pic'):
+    for field_name in ('rc_doc', 'permit_doc', 'insurance_doc', 'fitness_doc',
+                       'puc_doc', 'inspection_doc', 'vehicle_pic'):
         field_provided, field_value, field_error = resolve_file_input(
             request, field_name, kind=field_name
         )

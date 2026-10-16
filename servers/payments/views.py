@@ -13,11 +13,53 @@ from django.views.decorators.http import require_POST
 from django.http import JsonResponse
 from django.db import models, transaction, IntegrityError
 from base.utils import success_response, error_response
+from base.money import currency_for_trip, format_money, normalize_currency
 from servers.payments.models import Payment, TransactionHistory, PaymentGateway, WebhookEvent
 from servers.payments.payment_gateways.factory import get_payment_gateway, get_payment_gateway_for_payments, get_payment_gateway_for_payouts
 from servers.ride.models import Trip
 
 logger = logging.getLogger(__name__)
+
+
+def _online_payment_currency(gateway, trip):
+    """Resolve the currency for an online order, or refuse the order.
+
+    Returns `(currency, error_response_or_None)`.
+
+    Every `create_order` call passed `currency='INR'` as a literal. With one
+    market that was simply true. With two it becomes a silent mischarge: a
+    $30.83 fare sent to a rupee-only gateway is charged as Rs.30.83 -- about a
+    ninetieth of what is owed -- and the Payment row records a currency the
+    rider never paid in. Nothing errors; the money is just wrong.
+
+    So the currency comes from the trip, and a gateway that cannot settle it
+    refuses the order instead of charging the wrong amount. This does not
+    enable any gateway in any new market -- it is the guard that makes the
+    absence of one visible.
+    """
+    currency = normalize_currency(currency_for_trip(trip))
+    supported = tuple(gateway.supported_currencies())
+    if currency in supported:
+        return currency, None
+
+    logger.error(
+        'online payment refused: trip=%s is priced in %s and gateway %s '
+        'settles only in %s. No gateway is configured for this market.',
+        getattr(trip, 'id', None), currency, gateway.get_name(), supported,
+    )
+    return None, error_response(
+        code='CURRENCY_NOT_SUPPORTED',
+        message=(
+            'Online payment is not available for this trip. '
+            'Please choose another payment method.'
+        ),
+        field='payment_method',
+        issue=(
+            f'Trip is priced in {currency}; gateway '
+            f'{gateway.get_name()} settles only in {", ".join(supported)}'
+        ),
+        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
 
 
 @api_view(['POST'])
@@ -108,9 +150,14 @@ def create_order(request):
     # so receipts and Cashfree-dashboard rows carry the actual customer's
     # identity, not the placeholder phone/email that used to ship on every
     # order (security audit H5).
+    pay_currency, currency_error = _online_payment_currency(gateway, trip)
+    if currency_error is not None:
+        return currency_error
+
     order = gateway.create_order(
         amount=amount,
         trip_id=trip.id,
+        currency=pay_currency,
         customer_id=str(request.user.id),
         customer_phone=request.user.phone_number,
         customer_email=request.user.email,
@@ -162,7 +209,7 @@ def create_order(request):
         'gateway_order_id': order.get('id') or order.get('order_id'),
         'amount': str(amount),
         'amount_paise': order.get('amount') or str(int(amount * 100)),
-        'currency': order.get('currency', 'INR'),
+        'currency': order.get('currency') or pay_currency,
         'trip_id': trip.id,
         'description': f'Payment for Trip #{trip.id}',
         'prefill': {
@@ -1593,9 +1640,12 @@ def refund_payment(request):
                 user_id=request.user,
                 title='Refund Processed',
                 message=(
-                    f"Your refund of Rs.{locked_payment.amount} for Trip "
-                    f"#{trip.id} has been initiated. It may take 5-7 business "
-                    f"days to reflect in your account."
+                    # Formatted in the payment's own currency; this was a
+                    # literal "Rs." on every refund notice.
+                    f"Your refund of "
+                    f"{format_money(locked_payment.amount, locked_payment.currency)} "
+                    f"for Trip #{trip.id} has been initiated. It may take 5-7 "
+                    f"business days to reflect in your account."
                 ),
             )
 
@@ -1823,10 +1873,13 @@ def switch_payment_method(request):
         if actual_method == 'online':
             # Use payment gateway abstraction
             gateway = get_payment_gateway_for_payments()
+            pay_currency, currency_error = _online_payment_currency(gateway, trip)
+            if currency_error is not None:
+                return currency_error
             order = gateway.create_order(
                 amount=float(amount),
                 trip_id=trip.id,
-                currency='INR',
+                currency=pay_currency,
                 customer_id=str(request.user.id),
                 customer_phone=request.user.phone_number,
                 customer_email=request.user.email,
@@ -1953,10 +2006,13 @@ def retry_payment(request):
                 'status': 'completed',
             }, status.HTTP_200_OK)
 
+        pay_currency, currency_error = _online_payment_currency(gateway, trip)
+        if currency_error is not None:
+            return currency_error
         order = gateway.create_order(
             amount=float(amount),
             trip_id=trip.id,
-            currency='INR',
+            currency=pay_currency,
             customer_id=str(request.user.id),
             customer_phone=request.user.phone_number,
             customer_email=request.user.email,

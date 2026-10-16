@@ -45,9 +45,25 @@ logger = logging.getLogger(__name__)
 # docstring records the four divergent copies that preceded it. Imported under the
 # same name so existing call sites and tests are unchanged.
 from base.countries import normalize_phone  # noqa: E402
+from base.money import format_totals, sum_by_currency  # noqa: E402
 from servers.driver.compliance import (  # noqa: E402
-    evaluate_vehicle, unrecordable_documents, vehicle_is_compliant,
+    VEHICLE_DOCUMENT_COLUMNS, document_description, document_label,
+    evaluate_vehicle, required_vehicle_documents, unrecordable_documents,
+    vehicle_is_compliant,
 )
+
+# Which expiry column goes with which document, for the console's cards. Not
+# every document has one: the US safety inspection's validity is a state-level
+# rule and there is no column for it, so its card shows no expiry rather than
+# an empty one.
+_DOCUMENT_EXPIRY_COLUMNS = {
+    'rc': 'rc_expiry',
+    'registration': 'rc_expiry',
+    'insurance': 'insurance_expiry',
+    'permit': 'permit_expiry',
+    'fitness': 'fitness_expiry',
+    'puc': 'puc_expiry',
+}
 from base import ops_mfa  # noqa: E402
 from base.permissions import is_operator  # noqa: E402
 from servers.admin_audit.services import record_admin_action  # noqa: E402
@@ -569,10 +585,26 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
                     all_vehicle_compliant = False
 
             # -------------------------------------------------
-            # SIX MANDATORY CHECKS
+            # MANDATORY CHECKS -- AS MANY AS THIS COUNTRY HAS
             # -------------------------------------------------
+            #
+            # This was `total_checks = 6` followed by six hand-written
+            # `if all(item["rc"] ...)` blocks naming rc, insurance, permit,
+            # fitness and puc by hand.
+            #
+            # Two things were wrong with it once a second market existed. Six
+            # is India's count, so a US driver with every US document could
+            # reach at most three of six and `passed_checks == total_checks`
+            # was unreachable. And `item["permit"]` on a US driver's check dict
+            # -- which is keyed by the documents the US requires -- raises
+            # KeyError, so the approval POST would have 500'd rather than
+            # refused.
+            #
+            # Counted from the required set instead, which is the same source
+            # the per-vehicle gate above uses.
+            required_documents = required_vehicle_documents(driver)
 
-            total_checks = 6
+            total_checks = 1 + len(required_documents)
 
             passed_checks = 0
 
@@ -580,43 +612,15 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
             if license_passed:
                 passed_checks += 1
 
-            # Vehicle documents
+            # Vehicle documents: one check per required document, and it passes
+            # only when EVERY vehicle has it.
             if vehicle_compliance_results:
-
-                if all(
-                    item["rc"]
-                    for item
-                    in vehicle_compliance_results
-                ):
-                    passed_checks += 1
-
-                if all(
-                    item["insurance"]
-                    for item
-                    in vehicle_compliance_results
-                ):
-                    passed_checks += 1
-
-                if all(
-                    item["permit"]
-                    for item
-                    in vehicle_compliance_results
-                ):
-                    passed_checks += 1
-
-                if all(
-                    item["fitness"]
-                    for item
-                    in vehicle_compliance_results
-                ):
-                    passed_checks += 1
-
-                if all(
-                    item["puc"]
-                    for item
-                    in vehicle_compliance_results
-                ):
-                    passed_checks += 1
+                for document_key in required_documents:
+                    if all(
+                        item.get(document_key)
+                        for item in vehicle_compliance_results
+                    ):
+                        passed_checks += 1
 
             # -------------------------------------------------
             # FINAL APPROVAL CONDITION
@@ -1296,33 +1300,52 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
             # -------------------------------------------------
             # VEHICLE COMPLIANCE CHECKS
             # -------------------------------------------------
+            #
+            # Keyed by the documents THIS DRIVER'S COUNTRY requires. This was
+            # a literal dict of India's six, which meant the checklist shown
+            # to an operator reviewing a US driver listed a Pollution Under
+            # Control certificate and a commercial permit as outstanding --
+            # documents that do not exist in that country -- and the score
+            # beside it could never pass 50%.
+            #
+            # The approval gate above already resolved this per country; this
+            # is the display the operator actually reads, and the two
+            # disagreeing is its own kind of broken: nobody approves a driver
+            # whose screen says 50%.
+            document_status = evaluate_vehicle(vehicle, driver)
 
             checks = {
-
-                "license": has_document(
-                    license_front
-                ),
-
-                "rc": has_document(
-                    rc_doc
-                ),
-
-                "insurance": has_document(
-                    insurance_doc
-                ),
-
-                "permit": has_document(
-                    permit_doc
-                ),
-
-                "fitness": has_document(
-                    fitness_doc
-                ),
-
-                "puc": has_document(
-                    puc_doc
-                ),
+                key: bool(state["present"] and state["applicable"])
+                for key, state in document_status.items()
             }
+            # The driver's own licence is a driver-level document, kept in this
+            # per-vehicle dict because the template and the score read it here.
+            checks["license"] = has_document(license_front)
+
+            # The document cards the operator sees, in this driver's country's
+            # order. The template used to carry five hand-written cards -- RC,
+            # insurance, permit, fitness, PUC -- so a US vehicle's screen
+            # listed three documents that country does not issue and had
+            # nowhere to show the safety inspection it does.
+            vehicle_documents = []
+            for key, state in document_status.items():
+                expiry_attr = _DOCUMENT_EXPIRY_COLUMNS.get(key)
+                file_field = getattr(
+                    vehicle, VEHICLE_DOCUMENT_COLUMNS.get(key, ''), None)
+                vehicle_documents.append({
+                    "key": key,
+                    "label": state["label"],
+                    "description": document_description(key),
+                    "present": bool(state["present"] and state["applicable"]),
+                    # False means there is no column to store it in. Shown as
+                    # its own state rather than as "missing", because missing
+                    # is something a driver can fix by uploading.
+                    "recordable": state["applicable"],
+                    "url": document_url(file_field) if file_field else "",
+                    "expiry": format_date(
+                        getattr(vehicle, expiry_attr, None)) if expiry_attr
+                    else "",
+                })
 
             passed = sum(
                 1
@@ -1513,6 +1536,8 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
 
                     "checks": checks,
 
+                    "documents": vehicle_documents,
+
                     "passed": passed,
                 }
             )
@@ -1542,161 +1567,40 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
                 for item in vehicle_details
             )
 
+        # The checklist an operator reads, built from what this driver's
+        # country requires.
+        #
+        # This was a hand-written list of six entries: licence, RC, commercial
+        # insurance, commercial permit, fitness certificate, PUC. Three of
+        # those do not exist in the US, so a US driver's checklist showed three
+        # permanent failures for documents they cannot obtain and a score that
+        # could not pass 50%.
+        #
+        # Generated from the same source as the approval gate -- the country
+        # registry -- so the screen and the gate cannot drift apart.
         compliance_checks = [
-
-            # -------------------------------------------------
-            # 1. LICENSE
-            # -------------------------------------------------
-
             {
-                "name": (
-                    "Driving License"
-                ),
-
-                "short_name": (
-                    "Driving License"
-                ),
-
-                "passed": (
-                    has_document(
-                        license_front
-                    )
-                ),
-
-                "description": (
-                    "Government-issued "
-                    "commercial driving "
-                    "license verification."
-                ),
+                "name": "Driving License",
+                "short_name": "Driving License",
+                "passed": has_document(license_front),
+                "description": document_description('license_front'),
             },
+        ]
 
-            # -------------------------------------------------
-            # 2. RC
-            # -------------------------------------------------
+        for _key in required_vehicle_documents(driver):
+            compliance_checks.append({
+                "name": document_label(_key),
+                "short_name": document_label(_key),
+                "passed": every_vehicle_has(_key),
+                "description": document_description(_key),
+            })
 
-            {
-                "name": (
-                    "Vehicle RC"
-                ),
-
-                "short_name": (
-                    "Vehicle RC"
-                ),
-
-                "passed": (
-                    every_vehicle_has(
-                        "rc"
-                    )
-                ),
-
-                "description": (
-                    "Vehicle ownership and "
-                    "registration document "
-                    "issued by RTO."
-                ),
-            },
-
-            # -------------------------------------------------
-            # 3. INSURANCE
-            # -------------------------------------------------
-
-            {
-                "name": (
-                    "Commercial Insurance"
-                ),
-
-                "short_name": (
-                    "Commercial Insurance"
-                ),
-
-                "passed": (
-                    every_vehicle_has(
-                        "insurance"
-                    )
-                ),
-
-                "description": (
-                    "Valid commercial "
-                    "motor insurance."
-                ),
-            },
-
-            # -------------------------------------------------
-            # 4. PERMIT
-            # -------------------------------------------------
-
-            {
-                "name": (
-                    "Commercial Permit"
-                ),
-
-                "short_name": (
-                    "Commercial Permit"
-                ),
-
-                "passed": (
-                    every_vehicle_has(
-                        "permit"
-                    )
-                ),
-
-                "description": (
-                    "Valid commercial "
-                    "transport permit."
-                ),
-            },
-
-            # -------------------------------------------------
-            # 5. FITNESS
-            # -------------------------------------------------
-
-            {
-                "name": (
-                    "Fitness Certificate (FC)"
-                ),
-
-                "short_name": (
-                    "Fitness Certificate (FC)"
-                ),
-
-                "passed": (
-                    every_vehicle_has(
-                        "fitness"
-                    )
-                ),
-
-                "description": (
-                    "Valid vehicle fitness "
-                    "certificate."
-                ),
-            },
-
-            # -------------------------------------------------
-            # 6. PUC
-            # -------------------------------------------------
-
-            {
-                "name": (
-                    "Pollution Under "
-                    "Control (PUC)"
-                ),
-
-                "short_name": (
-                    "Pollution Under "
-                    "Control (PUC)"
-                ),
-
-                "passed": (
-                    every_vehicle_has(
-                        "puc"
-                    )
-                ),
-
-                "description": (
-                    "Valid Pollution Under "
-                    "Control certificate."
-                ),
-            },
+        # Documents this country requires that have nowhere to be stored yet.
+        # Empty today. Surfaced rather than swallowed so that the next market's
+        # new document type shows up as a named gap on the operator's screen
+        # instead of an unexplained permanent block on approval.
+        missing_document_columns = [
+            document_label(key) for key in unrecordable_documents(driver)
         ]
 
         # =====================================================
@@ -1852,6 +1756,14 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
 
             "compliance_checks": (
                 compliance_checks
+            ),
+
+            # Documents this driver's market requires that the schema cannot
+            # store. Empty today. Surfaced so the next market's new document
+            # type appears as a named gap instead of an unexplained permanent
+            # block on approval.
+            "missing_document_columns": (
+                missing_document_columns
             ),
 
             "passed_checks": (
@@ -2430,12 +2342,15 @@ def payment_dashboard(request: HttpRequest) -> HttpResponse:
         status="completed"
     )
 
-    total_gross_revenue = (
-        completed_payments.aggregate(
-            total_revenue=models.Sum("amount")
-        )["total_revenue"]
-        or 0
-    )
+    # Grouped by currency, not summed into one number.
+    #
+    # `Sum("amount")` over a table holding both rupee and dollar rows returns
+    # their arithmetic sum, which is not an amount of money in any currency --
+    # and the template rendered it with a leading currency symbol, so the
+    # screen asserted it was rupees. Two honest numbers beat one wrong one, so
+    # there is deliberately no single `total_gross_revenue` any more.
+    total_gross_revenue_by_currency = sum_by_currency(
+        completed_payments, "amount")
 
     completed_count = completed_payments.count()
 
@@ -2797,7 +2712,7 @@ def payment_dashboard(request: HttpRequest) -> HttpResponse:
         "admin_pages/payment_dashboard.html",
         {
             # Existing metrics
-            "total_payments": total_gross_revenue,
+            "total_payments_by_currency": total_gross_revenue_by_currency,
             "completed_count": completed_count,
             "cancelled_count": cancelled_count,
             "page_obj": page_obj,
@@ -5098,11 +5013,10 @@ def transaction_dashboard(request):
         .order_by("-created_at")
     )
 
-    rider_total = money(
-        completed_payments.aggregate(
-            total=Sum("amount")
-        )["total"]
-    )
+    # Per currency. See the note on the payment dashboard above: one number
+    # across two currencies is not a total, and the reconciliation screen is
+    # exactly where a wrong one would be trusted.
+    rider_total = sum_by_currency(completed_payments, "amount")
 
     for payment in completed_payments.iterator(chunk_size=500):
         rider = payment.user_id
@@ -5140,11 +5054,7 @@ def transaction_dashboard(request):
         .order_by("-updated_at")
     )
 
-    refund_total = money(
-        refunded_payments.aggregate(
-            total=Sum("amount")
-        )["total"]
-    )
+    refund_total = sum_by_currency(refunded_payments, "amount")
 
     for payment in refunded_payments.iterator(chunk_size=500):
         rider = payment.user_id
@@ -5189,11 +5099,7 @@ def transaction_dashboard(request):
         .order_by("-created_at")
     )
 
-    driver_earning_total = money(
-        earning_history.aggregate(
-            total=Sum("amount")
-        )["total"]
-    )
+    driver_earning_total = sum_by_currency(earning_history, "amount")
 
     for txn in earning_history.iterator(chunk_size=500):
         driver = txn.driver_id
@@ -5242,11 +5148,7 @@ def transaction_dashboard(request):
         .order_by("-processed_at", "-requested_at")
     )
 
-    driver_payout_total = money(
-        completed_withdrawals.aggregate(
-            total=Sum("amount")
-        )["total"]
-    )
+    driver_payout_total = sum_by_currency(completed_withdrawals, "amount")
 
     for withdrawal in completed_withdrawals.iterator(chunk_size=500):
         driver = withdrawal.driver
@@ -5350,7 +5252,6 @@ def transaction_dashboard(request):
 
     total_transactions = len(transactions)
 
-    refund_total = money(refund_total)
 
     # =========================================================
     # CONTEXT

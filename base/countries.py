@@ -90,6 +90,23 @@ class Country:
     # defaulted field before a non-defaulted one.
     default_tax_percent: str = '0.00'
 
+    # --- road-network fallbacks --------------------------------------------
+    # Used ONLY when Google Distance Matrix is unavailable, to approximate road
+    # distance from the great-circle distance and then a duration from it.
+    #
+    # These were module constants in `servers/ride/utils.py` tuned for
+    # Hyderabad: a 1.4 detour factor for a dense, irregular street network and
+    # 25 km/h for its traffic. Applied to a US trip they overstate the duration
+    # by roughly 60%, and duration is a priced component -- so a fallback quote
+    # in San Francisco charged far more time-fare than the ride would take.
+    #
+    # India's values here are IDENTICAL to those constants, so no Indian fare
+    # moves. The US values are starting points for a grid-ish network at
+    # American city speeds and should be re-tuned against real trip data
+    # before a US launch; they are reached only when the Maps API fails.
+    road_distance_factor: float = 1.4
+    fallback_avg_speed_kmh: float = 25.0
+
     # --- compliance --------------------------------------------------------
     # Document keys a driver and a vehicle must supply in this country. The
     # KYC queue is driven by these, so a US driver is never asked for a
@@ -149,6 +166,10 @@ UNITED_STATES = Country(
     # A default only. US zones must set their own: a single national timezone
     # rolls a California driver's earnings over at 9pm the previous day.
     default_timezone='America/New_York',
+    # A grid-ish network at American city speeds. Fallback-only; see the field
+    # comments on `Country`.
+    road_distance_factor=1.25,
+    fallback_avg_speed_kmh=40.0,
     driver_documents=('license_front', 'license_back'),
     # No commercial permit, no PUC, no fitness certificate. Vehicle
     # registration and proof of insurance, plus a safety inspection in the

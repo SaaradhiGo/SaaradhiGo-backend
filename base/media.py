@@ -131,6 +131,14 @@ UPLOAD_KINDS = {
         "types": ALLOWED_DOCUMENT_TYPES,
         "file_validator": validate_document_file,
     },
+    # US safety inspection certificate. Private, like every other statutory
+    # document: a vehicle inspection report carries the plate and the owner.
+    "inspection_doc": {
+        "prefix": "inspection_docs",
+        "visibility": "private",
+        "types": ALLOWED_DOCUMENT_TYPES,
+        "file_validator": validate_document_file,
+    },
 }
 
 

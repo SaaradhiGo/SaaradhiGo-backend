@@ -96,8 +96,8 @@ Driver Onboarding & Vehicle Fleet Compliance - SaaradhiGo Admin
                 </h1>
 
                 <p class="mt-2 text-sm text-on-surface-variant">
-                    Review driver KYC credentials, vehicle fitness,
-                    commercial insurance, permits, and pollution certificates.
+                    Review driver KYC credentials and the vehicle documents
+                    each driver's country requires.
                 </p>
 
             </div>
@@ -998,6 +998,28 @@ Driver Onboarding & Vehicle Fleet Compliance - SaaradhiGo Admin
 
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 
+                            {% if selected.missing_document_columns %}
+
+                                <div class="rounded-xl border border-amber-500/30
+                                            bg-amber-500/5 p-4 mb-4 text-xs">
+
+                                    <div class="font-black text-amber-300">
+                                        Cannot be recorded yet
+                                    </div>
+
+                                    <p class="mt-1 text-on-surface-variant">
+                                        This market requires
+                                        {{ selected.missing_document_columns|join:", " }},
+                                        which there is nowhere to store. Approval
+                                        is blocked until engineering adds it --
+                                        this is a platform gap, not a missing
+                                        upload from the driver.
+                                    </p>
+
+                                </div>
+
+                            {% endif %}
+
                             {% for check in selected.compliance_checks %}
 
                                 <div class="compliance-card rounded-2xl
@@ -1273,7 +1295,7 @@ Driver Onboarding & Vehicle Fleet Compliance - SaaradhiGo Admin
 
                             <p class="text-xs text-on-surface-variant mb-6">
                                 Mandatory commercial vehicle registration,
-                                insurance, fitness, and pollution certificates.
+                                documents required in this driver's market.
                             </p>
 
 
@@ -1405,20 +1427,43 @@ Driver Onboarding & Vehicle Fleet Compliance - SaaradhiGo Admin
                                                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 
 
-                                                    <!-- RC -->
+                                                    <!--
+                                                      One card per document
+                                                      THIS DRIVER'S COUNTRY
+                                                      requires. There were five
+                                                      hand-written cards here
+                                                      (RC, insurance, permit,
+                                                      fitness, PUC) -- India's
+                                                      statutory set -- so a US
+                                                      vehicle showed three
+                                                      permanent MISSING rows
+                                                      for documents that
+                                                      country does not issue,
+                                                      and the safety inspection
+                                                      it does issue had nowhere
+                                                      to appear.
+                                                    -->
+
+                                                    {% for doc in vehicle.documents %}
 
                                                     <div class="rounded-xl border border-outline-variant/20 p-4">
 
                                                         <div class="flex items-center justify-between">
 
                                                             <div class="font-bold text-sm">
-                                                                Registration Certificate (RC)
+                                                                {{ doc.label }}
                                                             </div>
 
-                                                            {% if vehicle.rc.present %}
+                                                            {% if doc.present %}
 
                                                                 <span class="text-xs font-black text-emerald-400">
                                                                     VERIFIED
+                                                                </span>
+
+                                                            {% elif not doc.recordable %}
+
+                                                                <span class="text-xs font-black text-amber-400">
+                                                                    NOT RECORDABLE
                                                                 </span>
 
                                                             {% else %}
@@ -1433,25 +1478,35 @@ Driver Onboarding & Vehicle Fleet Compliance - SaaradhiGo Admin
 
 
                                                         <div class="text-xs text-on-surface-variant mt-2">
-                                                            Vehicle ownership and registration document issued by RTO.
+                                                            {{ doc.description }}
                                                         </div>
 
 
-                                                        {% if vehicle.rc.present %}
+                                                        {% if doc.present %}
 
                                                             <div class="mt-3 flex items-center justify-between">
 
-                                                                <span class="text-xs">
-                                                                    Expiry:
-                                                                    <strong>
-                                                                        {{ vehicle.rc.expiry }}
-                                                                    </strong>
-                                                                </span>
+                                                                {% if doc.expiry %}
 
-                                                                {% if vehicle.rc.url %}
+                                                                    <span class="text-xs">
+                                                                        Expiry:
+                                                                        <strong>
+                                                                            {{ doc.expiry }}
+                                                                        </strong>
+                                                                    </span>
+
+                                                                {% else %}
+
+                                                                    <span class="text-xs text-on-surface-variant">
+                                                                        No expiry recorded
+                                                                    </span>
+
+                                                                {% endif %}
+
+                                                                {% if doc.url %}
 
                                                                     <a
-                                                                        href="{{ vehicle.rc.url }}"
+                                                                        href="{{ doc.url }}"
                                                                         target="_blank"
                                                                         rel="noopener"
                                                                         class="px-3 py-2 rounded-lg bg-primary text-black text-xs font-bold"
@@ -1463,78 +1518,18 @@ Driver Onboarding & Vehicle Fleet Compliance - SaaradhiGo Admin
 
                                                             </div>
 
-                                                        {% else %}
+                                                        {% elif not doc.recordable %}
 
-                                                            <div class="flex items-center gap-2 mt-3 text-xs text-red-300">
+                                                            <div class="flex items-center gap-2 mt-3 text-xs text-amber-300">
 
                                                                 <span class="material-symbols-outlined text-[18px]">
-                                                                    no_photography
+                                                                    report
                                                                 </span>
 
-                                                                RC Document Missing
-
-                                                            </div>
-
-                                                        {% endif %}
-
-                                                    </div>
-
-
-                                                    <!-- Insurance -->
-
-                                                    <div class="rounded-xl border border-outline-variant/20 p-4">
-
-                                                        <div class="flex items-center justify-between">
-
-                                                            <div class="font-bold text-sm">
-                                                                Commercial Insurance
-                                                            </div>
-
-                                                            {% if vehicle.insurance.present %}
-
-                                                                <span class="text-xs font-black text-emerald-400">
-                                                                    VERIFIED
-                                                                </span>
-
-                                                            {% else %}
-
-                                                                <span class="text-xs font-black text-red-400">
-                                                                    MISSING
-                                                                </span>
-
-                                                            {% endif %}
-
-                                                        </div>
-
-
-                                                        <div class="mt-2 text-xs text-on-surface-variant">
-                                                            Valid commercial motor insurance.
-                                                        </div>
-
-
-                                                        {% if vehicle.insurance.present %}
-
-                                                            <div class="mt-3 flex items-center justify-between">
-
-                                                                <span class="text-xs">
-                                                                    Expiry:
-                                                                    <strong>
-                                                                        {{ vehicle.insurance.expiry }}
-                                                                    </strong>
-                                                                </span>
-
-                                                                {% if vehicle.insurance.url %}
-
-                                                                    <a
-                                                                        href="{{ vehicle.insurance.url }}"
-                                                                        target="_blank"
-                                                                        rel="noopener"
-                                                                        class="px-3 py-2 rounded-lg bg-primary text-black text-xs font-bold"
-                                                                    >
-                                                                        View
-                                                                    </a>
-
-                                                                {% endif %}
+                                                                Required in this market but there is
+                                                                nowhere to store it yet, so approval
+                                                                is blocked. Raise this with
+                                                                engineering.
 
                                                             </div>
 
@@ -1546,7 +1541,7 @@ Driver Onboarding & Vehicle Fleet Compliance - SaaradhiGo Admin
                                                                     no_photography
                                                                 </span>
 
-                                                                Insurance Missing
+                                                                {{ doc.label }} Missing
 
                                                             </div>
 
@@ -1554,230 +1549,7 @@ Driver Onboarding & Vehicle Fleet Compliance - SaaradhiGo Admin
 
                                                     </div>
 
-
-                                                    <!-- Permit -->
-
-                                                    <div class="rounded-xl border border-outline-variant/20 p-4">
-
-                                                        <div class="flex items-center justify-between">
-
-                                                            <div class="font-bold text-sm">
-                                                                Commercial Permit
-                                                            </div>
-
-                                                            {% if vehicle.permit.present %}
-
-                                                                <span class="text-xs font-black text-emerald-400">
-                                                                    VERIFIED
-                                                                </span>
-
-                                                            {% else %}
-
-                                                                <span class="text-xs font-black text-red-400">
-                                                                    MISSING
-                                                                </span>
-
-                                                            {% endif %}
-
-                                                        </div>
-
-
-                                                        <div class="mt-2 text-xs text-on-surface-variant">
-                                                            Valid commercial transport permit.
-                                                        </div>
-
-
-                                                        {% if vehicle.permit.present %}
-
-                                                            <div class="mt-3 flex items-center justify-between">
-
-                                                                <span class="text-xs">
-                                                                    Expiry:
-                                                                    <strong>
-                                                                        {{ vehicle.permit.expiry }}
-                                                                    </strong>
-                                                                </span>
-
-                                                                {% if vehicle.permit.url %}
-
-                                                                    <a
-                                                                        href="{{ vehicle.permit.url }}"
-                                                                        target="_blank"
-                                                                        rel="noopener"
-                                                                        class="px-3 py-2 rounded-lg bg-primary text-black text-xs font-bold"
-                                                                    >
-                                                                        View
-                                                                    </a>
-
-                                                                {% endif %}
-
-                                                            </div>
-
-                                                        {% else %}
-
-                                                            <div class="flex items-center gap-2 mt-3 text-xs text-red-300">
-
-                                                                <span class="material-symbols-outlined text-[18px]">
-                                                                    no_photography
-                                                                </span>
-
-                                                                Permit Missing
-
-                                                            </div>
-
-                                                        {% endif %}
-
-                                                    </div>
-
-
-                                                    <!-- Fitness -->
-
-                                                    <div class="rounded-xl border border-outline-variant/20 p-4">
-
-                                                        <div class="flex items-center justify-between">
-
-                                                            <div class="font-bold text-sm">
-                                                                Fitness Certificate (FC)
-                                                            </div>
-
-                                                            {% if vehicle.fitness.present %}
-
-                                                                <span class="text-xs font-black text-emerald-400">
-                                                                    VERIFIED
-                                                                </span>
-
-                                                            {% else %}
-
-                                                                <span class="text-xs font-black text-red-400">
-                                                                    MISSING
-                                                                </span>
-
-                                                            {% endif %}
-
-                                                        </div>
-
-
-                                                        <div class="mt-2 text-xs text-on-surface-variant">
-                                                            Valid vehicle fitness certificate.
-                                                        </div>
-
-
-                                                        {% if vehicle.fitness.present %}
-
-                                                            <div class="mt-3 flex items-center justify-between">
-
-                                                                <span class="text-xs">
-                                                                    Expiry:
-                                                                    <strong>
-                                                                        {{ vehicle.fitness.expiry }}
-                                                                    </strong>
-                                                                </span>
-
-                                                                {% if vehicle.fitness.url %}
-
-                                                                    <a
-                                                                        href="{{ vehicle.fitness.url }}"
-                                                                        target="_blank"
-                                                                        rel="noopener"
-                                                                        class="px-3 py-2 rounded-lg bg-primary text-black text-xs font-bold"
-                                                                    >
-                                                                        View
-                                                                    </a>
-
-                                                                {% endif %}
-
-                                                            </div>
-
-                                                        {% else %}
-
-                                                            <div class="flex items-center gap-2 mt-3 text-xs text-red-300">
-
-                                                                <span class="material-symbols-outlined text-[18px]">
-                                                                    no_photography
-                                                                </span>
-
-                                                                Fitness Certificate Missing
-
-                                                            </div>
-
-                                                        {% endif %}
-
-                                                    </div>
-
-
-                                                    <!-- PUC -->
-
-                                                    <div class="rounded-xl border border-outline-variant/20 p-4 md:col-span-2">
-
-                                                        <div class="flex items-center justify-between">
-
-                                                            <div class="font-bold text-sm">
-                                                                Pollution Under Control (PUC)
-                                                            </div>
-
-                                                            {% if vehicle.puc.present %}
-
-                                                                <span class="text-xs font-black text-emerald-400">
-                                                                    VERIFIED
-                                                                </span>
-
-                                                            {% else %}
-
-                                                                <span class="text-xs font-black text-red-400">
-                                                                    MISSING
-                                                                </span>
-
-                                                            {% endif %}
-
-                                                        </div>
-
-
-                                                        <div class="mt-2 text-xs text-on-surface-variant">
-                                                            Valid Pollution Under Control certificate.
-                                                        </div>
-
-
-                                                        {% if vehicle.puc.present %}
-
-                                                            <div class="mt-3 flex items-center justify-between">
-
-                                                                <span class="text-xs">
-                                                                    Expiry:
-                                                                    <strong>
-                                                                        {{ vehicle.puc.expiry }}
-                                                                    </strong>
-                                                                </span>
-
-                                                                {% if vehicle.puc.url %}
-
-                                                                    <a
-                                                                        href="{{ vehicle.puc.url }}"
-                                                                        target="_blank"
-                                                                        rel="noopener"
-                                                                        class="px-3 py-2 rounded-lg bg-primary text-black text-xs font-bold"
-                                                                    >
-                                                                        View
-                                                                    </a>
-
-                                                                {% endif %}
-
-                                                            </div>
-
-                                                        {% else %}
-
-                                                            <div class="flex items-center gap-2 mt-3 text-xs text-red-300">
-
-                                                                <span class="material-symbols-outlined text-[18px]">
-                                                                    no_photography
-                                                                </span>
-
-                                                                PUC Certificate Missing
-
-                                                            </div>
-
-                                                        {% endif %}
-
-                                                    </div>
+                                                    {% endfor %}
 
                                                 </div>
 

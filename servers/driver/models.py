@@ -106,6 +106,27 @@ class Vehicle(models.Model):
         validators=[validate_document_file, validate_file_size],
     )
 
+    # The US safety inspection. The five columns above are India's statutory
+    # set; the US requires vehicle registration (that is `rc_doc` -- the same
+    # document under another name), proof of insurance, and in most states a
+    # periodic safety inspection, which had nowhere to be stored.
+    #
+    # Without this column `servers/driver/compliance.py` reported the
+    # inspection as required-but-unrecordable, which correctly counts as NOT
+    # compliant -- so a US driver could be onboarded as far as a permanent
+    # block and no further. Counting it as satisfied instead would have
+    # approved a driver whose inspection nobody ever saw.
+    #
+    # Nullable and unused in India, so no Indian row changes.
+    inspection_doc = models.FileField(
+        blank=True,
+        max_length=512,
+        null=True,
+        storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('inspection_docs'),
+        validators=[validate_document_file, validate_file_size],
+    )
+
     vehicle_type_id = models.ForeignKey(
         VehicleType,
         on_delete=models.CASCADE,

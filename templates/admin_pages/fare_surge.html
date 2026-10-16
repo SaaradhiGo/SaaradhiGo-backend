@@ -299,7 +299,7 @@
 
                         <label for="baseFare"
                                class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
-                            Base Fare (₹)
+                            Base Fare ({{ selected_zone.currency|default:"zone currency" }})
                         </label>
 
                         <input type="number"
@@ -318,7 +318,7 @@
 
                         <label for="perKmFare"
                                class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
-                            Per KM Fare (₹)
+                            Per-{{ selected_zone.distance_unit|default:"km" }} Fare ({{ selected_zone.currency|default:"zone currency" }})
                         </label>
 
                         <input type="number"
@@ -337,7 +337,7 @@
 
                         <label for="perMinFare"
                                class="block text-[10px] text-on-surface-variant uppercase font-bold mb-2">
-                            Per Minute Fare (₹)
+                            Per Minute Fare ({{ selected_zone.currency|default:"zone currency" }})
                         </label>
 
                         <input type="number"

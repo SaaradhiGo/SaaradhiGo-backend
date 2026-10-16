@@ -1,4 +1,5 @@
 {% extends 'admin_pages/base.html' %}
+{% load money_tags %}
 
 {% block title %}SaaradhiGo - Fleet Loyalty{% endblock %}
 
@@ -375,7 +376,7 @@
                     </span>
 
                     <span class="font-bold">
-                        ₹{{ d.total_revenue|floatformat:2 }}
+                        {{ d.total_revenue|floatformat:2 |money }}
                     </span>
 
                 </div>

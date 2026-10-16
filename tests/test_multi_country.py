@@ -903,3 +903,87 @@ def test_an_insufficient_balance_message_uses_the_right_symbol(vehicle_type):
     ok, msg = validate_withdrawal_amount(d, Decimal('50'))
     assert ok is False
     assert '$' in msg and '₹' not in msg, f'message was {msg!r}'
+
+
+# ===========================================================================
+# The operator console renders each row in its own currency
+# ===========================================================================
+
+def test_the_money_filter_renders_each_row_in_its_own_currency():
+    """The console had ~40 hardcoded rupee signs across 11 templates.
+
+    Replacing them with dollars where a US page needs it would be the same
+    mistake twice: the symbol belongs to the ROW, because a trip list can show
+    an Indian trip and a US trip on the same screen.
+    """
+    from django.template import Context, Template
+
+    t = Template('{% load money_tags %}{{ a|money:c1 }} and {{ b|money:c2 }}')
+    out = t.render(Context({'a': Decimal('190'), 'c1': 'INR',
+                            'b': Decimal('30.83'), 'c2': 'USD'}))
+
+    assert out == '₹190.00 and $30.83', out
+
+
+def test_the_money_filter_shows_an_em_dash_rather_than_a_zero_fare():
+    """A blank fare is not a free ride, and printing 0.00 says it was."""
+    from django.template import Context, Template
+
+    t = Template('{% load money_tags %}{{ a|money:"USD" }}')
+    assert t.render(Context({'a': None})) == '—'
+
+
+def test_the_money_filter_never_raises_into_a_page():
+    """A filter that throws blanks the whole page an operator is reading."""
+    from django.template import Context, Template
+
+    t = Template('{% load money_tags %}{{ a|money:"USD" }}')
+    out = t.render(Context({'a': object()}))
+    assert out, 'the filter produced nothing instead of degrading'
+
+
+def test_totals_render_as_two_amounts_never_a_sum():
+    """The defect the currency column exists to prevent, at the last moment."""
+    from django.template import Context, Template
+
+    t = Template('{% load money_tags %}{{ totals|money_totals }}')
+    out = t.render(Context({'totals': {'INR': Decimal('190.00'),
+                                       'USD': Decimal('30.83')}}))
+
+    assert '₹190.00' in out and '$30.83' in out
+    assert '220' not in out, 'rupees were added to dollars'
+
+
+def test_no_console_template_hardcodes_a_currency_symbol():
+    """A regression lock. Re-introducing one is easy and invisible in review."""
+    import pathlib
+
+    offenders = []
+    for path in pathlib.Path('templates/admin_pages').glob('*.html'):
+        text = path.read_text(encoding='utf-8')
+        if '₹' in text or 'Rs.' in text:
+            offenders.append(path.name)
+
+    assert not offenders, (
+        f'these console templates hardcode a currency: {offenders}. '
+        f'Use {{{{ amount|money:row.currency }}}} so the symbol follows the row.'
+    )
+
+
+def test_every_console_template_still_compiles():
+    """The money filter is registered via TEMPLATES OPTIONS libraries, because
+    `servers.admin_dashboard` is deliberately not an installed app. If that
+    registration is lost, every page that formats money raises at render time
+    and blanks itself."""
+    import pathlib
+
+    from django.template.loader import get_template
+
+    broken = []
+    for path in sorted(pathlib.Path('templates/admin_pages').glob('*.html')):
+        try:
+            get_template(f'admin_pages/{path.name}')
+        except Exception as exc:  # noqa: BLE001
+            broken.append(f'{path.name}: {exc}')
+
+    assert not broken, f'templates failed to compile: {broken}'

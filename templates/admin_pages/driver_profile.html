@@ -1,4 +1,5 @@
 {% extends "admin_pages/base.html" %}
+{% load money_tags %}
 
 {% block title %}
 Driver Profile - SaaradhiGo Admin
@@ -1753,7 +1754,7 @@ Driver Profile - SaaradhiGo Admin
                 </p>
 
                 <p class="text-3xl font-headline font-extrabold text-primary mt-1">
-                    ₹{{ total_revenue|floatformat:2 }}
+                    {{ total_revenue|floatformat:2 |money }}
                 </p>
 
             </div>
@@ -1968,13 +1969,13 @@ Driver Profile - SaaradhiGo Admin
                 {% if trip.final_fare is not None %}
 
                 <p class="text-sm font-semibold text-on-surface">
-                    ₹{{ trip.final_fare|floatformat:2 }}
+                    {{ trip.final_fare|floatformat:2 |money:trip.currency }}
                 </p>
 
                 {% elif trip.estimated_fare is not None %}
 
                 <p class="text-sm font-semibold text-on-surface">
-                    ₹{{ trip.estimated_fare|floatformat:2 }}
+                    {{ trip.estimated_fare|floatformat:2 |money:trip.currency }}
                 </p>
 
                 {% else %}

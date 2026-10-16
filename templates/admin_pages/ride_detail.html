@@ -1,5 +1,6 @@
 
 {% extends "admin_pages/base.html" %}
+{% load money_tags %}
 
 {% block content %}
 
@@ -193,14 +194,14 @@
                 <div class="flex justify-between">
                     <span class="text-gray-400">Estimated Fare</span>
                     <span class="text-white">
-                        ₹{{ trip.estimated_fare|default:"0" }}
+                        {{ trip.estimated_fare|money:trip.currency }}
                     </span>
                 </div>
 
                 <div class="flex justify-between">
                     <span class="text-gray-400">Final Fare</span>
                     <span class="text-white">
-                        ₹{{ trip.final_fare|default:"0" }}
+                        {{ trip.final_fare|money:trip.currency }}
                     </span>
                 </div>
 
@@ -214,34 +215,34 @@
                 {% if fare %}
                 <div class="flex justify-between">
                     <span class="text-gray-400">Base fare</span>
-                    <span class="text-white">₹{{ fare.base_fare }}</span>
+                    <span class="text-white">{{ fare.base_fare|money:trip.currency }}</span>
                 </div>
                 <div class="flex justify-between">
                     <span class="text-gray-400">Distance charge</span>
-                    <span class="text-white">₹{{ fare.distance_fare }}</span>
+                    <span class="text-white">{{ fare.distance_fare|money:trip.currency }}</span>
                 </div>
                 <div class="flex justify-between">
                     <span class="text-gray-400">Time charge</span>
-                    <span class="text-white">₹{{ fare.time_fare }}</span>
+                    <span class="text-white">{{ fare.time_fare|money:trip.currency }}</span>
                 </div>
                 {% endif %}
 
                 <div class="flex justify-between">
                     <span class="text-gray-400">Discount{% if promo %} ({{ promo.promo.code }}){% endif %}</span>
-                    <span class="text-white">{% if promo %}-₹{{ promo.discount_amount }}{% else %}—{% endif %}</span>
+                    <span class="text-white">{% if promo %}-{{ promo.discount_amount|money:trip.currency }}{% else %}—{% endif %}</span>
                 </div>
 
                 <div class="flex justify-between border-t border-[#F5C542]/10 pt-3">
                     <span class="text-gray-400">Platform commission ({{ commission_rate }}%)</span>
-                    <span class="text-white">₹{{ commission_amount }}</span>
+                    <span class="text-white">{{ commission_amount|money:trip.currency }}</span>
                 </div>
                 <div class="flex justify-between">
                     <span class="text-gray-400">Driver net earnings</span>
-                    <span class="text-white">₹{{ driver_net }}</span>
+                    <span class="text-white">{{ driver_net|money:trip.currency }}</span>
                 </div>
                 <div class="flex justify-between">
                     <span class="text-gray-400">GST (receipt)</span>
-                    <span class="text-white">{% if gst_amount is not None %}₹{{ gst_amount }}{% else %}—{% endif %}</span>
+                    <span class="text-white">{% if gst_amount is not None %}{{ gst_amount|money:trip.currency }}{% else %}—{% endif %}</span>
                 </div>
 
                 <div class="flex justify-between">
@@ -303,7 +304,7 @@
 
             <p class="text-gray-400 text-sm">Cancellation Fee</p>
             <p class="text-white">
-                ₹{{ trip.cancellation_fee|default:"0" }}
+                {{ trip.cancellation_fee|money:trip.currency }}
             </p>
 
         </div>
@@ -349,7 +350,7 @@
         {% for receipt in receipts %}
         <div class="flex flex-wrap justify-between gap-3 border-b border-[#F5C542]/10 py-2 text-sm">
             <span class="text-white">{{ receipt.receipt_number }} / v{{ receipt.version }}</span>
-            <span class="text-gray-400">₹{{ receipt.total_fare }} / GST ₹{{ receipt.gst_amount }}</span>
+            <span class="text-gray-400">{{ receipt.total_fare|money:receipt.currency }} / tax {{ receipt.gst_amount|money:receipt.currency }}</span>
             <span class="text-gray-400">{{ receipt.issued_at }}</span>
         </div>
         {% empty %}

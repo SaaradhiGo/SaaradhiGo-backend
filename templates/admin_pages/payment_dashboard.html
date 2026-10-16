@@ -1,4 +1,5 @@
 {% extends 'admin_pages/base.html' %}
+{% load money_tags %}
 
 {% block title %}SaaradhiGo | Payment Gateway Dashboard{% endblock %}
 
@@ -137,7 +138,7 @@
             </p>
 
             <h3 class="font-headline font-black text-4xl text-on-surface">
-                ₹{{ total_payments|default:"0.00" }}
+                {{ total_payments |money }}
             </h3>
 
             <div class="mt-6 flex items-center gap-2 text-primary font-bold text-sm">
@@ -576,7 +577,7 @@
 
                         <!-- AMOUNT -->
                         <td class="px-8 py-5 font-bold text-sm text-on-surface">
-                            ₹{{ t.amount|default:"0.00" }}
+                            {{ t.amount |money }}
                         </td>
 
 
@@ -1208,7 +1209,7 @@
                                 <span
                                     class="font-bold text-sm text-on-surface">
 
-                                    ₹{{ item.amount }}
+                                    {{ item.amount|money }}
 
                                 </span>
 
@@ -1509,7 +1510,7 @@
 
                             <span class="font-bold text-sm text-on-surface">
 
-                                ₹{{ withdrawal.amount }}
+                                {{ withdrawal.amount|money:withdrawal.currency }}
 
                             </span>
 

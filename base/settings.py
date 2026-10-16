@@ -449,6 +449,19 @@ TEMPLATES = [
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
             ],
+            # Registered explicitly because `servers.admin_dashboard` is
+            # deliberately NOT in INSTALLED_APPS -- it is a views-and-templates
+            # package mounted at the site root, and adding it would start
+            # managing its models and migrations as an app.
+            #
+            # Template tag libraries are otherwise discovered only from
+            # installed apps, so without this every console page that formats
+            # money raises "'money_tags' is not a registered tag library" at
+            # render time, which blanks the page rather than degrading.
+            'libraries': {
+                'money_tags':
+                    'servers.admin_dashboard.templatetags.money_tags',
+            },
         },
     },
 ]

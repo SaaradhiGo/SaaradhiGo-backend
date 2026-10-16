@@ -1,4 +1,5 @@
 {% extends 'admin_pages/base.html' %}
+{% load money_tags %}
 {% block title %}SaaradhiGo Executive Revenue Analytics{% endblock %}
 
 {% block extra_css %}
@@ -72,7 +73,7 @@ background: #4d4635;
                 <div>
                     <p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">Gross Booking
                         Value</p>
-                    <h3 class="text-4xl font-headline font-black text-on-surface">₹{{ gbv|default:0|floatformat:0 }}</h3>
+                    <h3 class="text-4xl font-headline font-black text-on-surface">{{ gbv|default:0|floatformat:0 |money }}</h3>
                 </div>
                 <div class="bg-primary/10 px-3 py-1 rounded-full flex items-center gap-1 border border-primary/20">
                     <span class="material-symbols-outlined text-sm text-primary"
@@ -98,7 +99,7 @@ background: #4d4635;
         </div>
         <div class="bg-surface-container p-8 rounded-2xl border border-outline-variant/5">
             <p class="text-on-surface-variant font-label text-xs uppercase tracking-wider mb-1">Platform Revenue</p>
-            <h3 class="text-3xl font-headline font-bold text-on-surface mb-4">₹{{ platform_revenue|default:0|floatformat:2 }}</h3>
+            <h3 class="text-3xl font-headline font-bold text-on-surface mb-4">{{ platform_revenue|default:0|floatformat:2 |money }}</h3>
             <div class="space-y-4">
                 <div class="flex justify-between items-center text-sm">
                     <span class="text-on-surface-variant">Take Rate</span>
@@ -141,7 +142,7 @@ background: #4d4635;
                         </circle>
                     </svg>
                     <div class="absolute text-center">
-                        <span class="block text-2xl font-black font-headline">₹{{ platform_revenue|default:0|floatformat:0 }}</span>
+                        <span class="block text-2xl font-black font-headline">{{ platform_revenue|default:0|floatformat:0 |money }}</span>
                         <span class="text-[10px] text-on-surface-variant uppercase tracking-tighter">Total Net</span>
                     </div>
                 </div>
@@ -154,7 +155,7 @@ background: #4d4635;
                                 </div>
                                 <span class="font-headline font-bold">{{ item.name }}</span>
                             </div>
-                            <span class="text-sm font-label font-bold">₹{{ item.revenue|default:0|floatformat:2 }} ({{ item.pct|default:0 }}%)</span>
+                            <span class="text-sm font-label font-bold">{{ item.revenue|default:0|floatformat:2 |money }} ({{ item.pct|default:0 }}%)</span>
                         </div>
                         <div class="w-full h-1 bg-surface-container-highest rounded-full overflow-hidden">
                             <div class="h-full bg-primary group-hover:brightness-110 transition-all"
@@ -184,7 +185,7 @@ background: #4d4635;
                         {% endif %}
                     </h4>
                     <p class="text-xs text-on-surface-variant mt-1 leading-relaxed">
-                        Revenue: ₹{{ item.revenue|floatformat:2 }}
+                        Revenue: {{ item.revenue|floatformat:2 |money }}
                         &nbsp; • &nbsp;
                         Rides: {{ item.rides }}
                     </p>

@@ -156,8 +156,8 @@ font-family: 'Manrope', sans-serif;
         </div>
         <div
             class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[120px]">
-            <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">GMV (₹)</span>
-            <span class="text-xl font-headline font-black text-on-surface">{{ kpis.gmv }}</span>
+            <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">GMV</span>
+            <span class="text-xl font-headline font-black text-on-surface">{{ kpis.gmv_display }}</span>
             <span class="text-[9px] font-label text-on-surface-variant mt-0.5">completed fare</span>
         </div>
         <div
@@ -185,8 +185,8 @@ font-family: 'Manrope', sans-serif;
             <span
                 class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Withdrawals</span>
             <span class="text-xl font-headline font-black text-on-surface">{{ kpis.withdrawals.pending }}</span>
-            <span class="text-[9px] font-label text-on-surface-variant mt-0.5">₹
-                {{ kpis.withdrawals.completed_today_amount }} today</span>
+            <span class="text-[9px] font-label text-on-surface-variant mt-0.5">
+                {{ kpis.withdrawals.completed_today_display }} today</span>
         </div>
         <div
             class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[120px]">
@@ -218,8 +218,7 @@ font-family: 'Manrope', sans-serif;
             class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[140px]">
             <span class="text-[8px] font-label text-on-surface-variant uppercase tracking-widest mb-1">Fleet
                 Revenue</span>
-            <span id="ticker-revenue" class="text-xl font-headline font-black text-on-surface">{% if kpis %}₹
-                {{ kpis.gmv }}{% else %}Calculated...{% endif %}</span>
+            <span id="ticker-revenue" class="text-xl font-headline font-black text-on-surface">{% if kpis %}{{ kpis.gmv_display }}{% else %}Calculated...{% endif %}</span>
         </div>
         <div
             class="bg-surface-container-lowest/80 backdrop-blur-md px-4 py-3 rounded-lg border border-outline-variant/20 flex flex-col min-w-[140px]">

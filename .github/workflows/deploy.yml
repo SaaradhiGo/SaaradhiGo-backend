@@ -10,9 +10,20 @@ on:
   push:
     branches:
       - dev
+      # Feature branches got NO CI at all, so the only way to learn that a
+      # change broke lint, the suite or the Postgres concurrency check was to
+      # push it to dev -- which is also the branch that deploys. The gates are
+      # worth more before that point than after it.
+      #
+      # The deploy job is gated on `github.ref == 'refs/heads/dev'` AND
+      # `github.event_name == 'push'`, so running on a feature branch builds
+      # and tests but cannot deploy anything.
+      - 'feat/**'
+      - 'fix/**'
   pull_request:
     branches:
       - dev
+  workflow_dispatch:
 
 # Don't run more than one deploy at a time on the same branch; queue them
 # so the second push waits for the first to settle on EC2.

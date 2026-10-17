@@ -24,7 +24,7 @@ from decimal import Decimal
 from typing import Optional
 
 from django.conf import settings
-from django.core.mail import EmailMultiAlternatives
+from base.auth_email import send_message
 from django.db import transaction
 from django.utils import timezone
 from django.utils.html import escape
@@ -66,19 +66,6 @@ def _legal_entity():
     business and its accountants.
     """
     return getattr(settings, 'PLATFORM_LEGAL_ENTITY', 'SaaradhiGo Mobility')
-
-
-def _default_from_email():
-    """Sender for the receipt email.
-
-    The fallback used to be an address on a domain this platform does not use, so a
-    bounce would have gone somewhere nobody reads.
-    """
-    explicit = getattr(settings, 'DEFAULT_FROM_EMAIL', '')
-    if explicit:
-        return explicit
-    domain = getattr(settings, 'PLATFORM_CONTACT_DOMAIN', 'saaradhigo.in')
-    return f'no-reply@{domain}'
 
 
 _RECEIPT_TEMPLATE = """\
@@ -436,38 +423,57 @@ def _attach_pdf_to_receipt(receipt) -> bool:
 
 
 def _send_receipt_email(receipt):
-    """Send via configured email backend. Returns (sent_ok, error_str).
+    """Send via the one outbound gate. Returns (sent_ok, error_str).
 
-    Attempts to attach the PDF blob as a file attachment; falls back to
-    HTML-only if PDF generation fails."""
+    WHY THIS NO LONGER BUILDS ITS OWN MESSAGE
+    -----------------------------------------
+    This used to construct an EmailMultiAlternatives and call send() directly.
+    It therefore answered to neither of the two safeguards the auth emails go
+    through:
+
+      * `delivery_is_configured()` -- so on a deployment with no mail
+        configuration it attempted a send to localhost:25, caught the
+        exception, and wrote the error into Receipt.send_failure_reason where
+        nobody was watching. That is the silent failure this column is full
+        of.
+      * `AUTH_EMAIL_ALLOWLIST` -- so "an empty QA allowlist blocks all
+        outbound email" was false for the one message type that goes to
+        customers. QA pointed at real SES, with a real address in a restored
+        dump, would have emailed that person a GST receipt for a test trip.
+
+    The subject, body, HTML and PDF attachment are unchanged. Only the way
+    out is.
+    """
     to_addr = receipt.sent_to_email
     if not to_addr:
         return False, 'no_email'
+
+    attachments = []
     try:
-        msg = EmailMultiAlternatives(
-            subject=f'Your {_brand()} receipt {receipt.receipt_number}',
-            body=f'Your {_brand()} trip receipt is enclosed (HTML + PDF).',
-            from_email=_default_from_email(),
-            to=[to_addr],
-        )
-        msg.attach_alternative(receipt.html_body, 'text/html')
-        # Attach the PDF if we managed to render one.
-        try:
-            if receipt.pdf_file:
-                receipt.pdf_file.open('rb')
-                msg.attach(
-                    f'{receipt.receipt_number}.pdf',
-                    receipt.pdf_file.read(),
-                    'application/pdf',
-                )
-                receipt.pdf_file.close()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning('attach pdf failed for receipt=%s: %s', receipt.id, exc)
-        msg.send(fail_silently=False)
-        return True, ''
+        if receipt.pdf_file:
+            receipt.pdf_file.open('rb')
+            attachments.append((
+                f'{receipt.receipt_number}.pdf',
+                receipt.pdf_file.read(),
+                'application/pdf',
+            ))
+            receipt.pdf_file.close()
     except Exception as exc:  # noqa: BLE001
-        logger.warning('receipt email failed for receipt=%s: %s', receipt.id, exc)
-        return False, str(exc)[:512]
+        # HTML-only is a usable receipt; no PDF is not a reason to send none.
+        logger.warning('attach pdf failed for receipt=%s: %s', receipt.id, exc)
+
+    sent, reason = send_message(
+        to=to_addr,
+        subject=f'Your {_brand()} receipt {receipt.receipt_number}',
+        body=f'Your {_brand()} trip receipt is enclosed (HTML + PDF).',
+        html=receipt.html_body,
+        attachments=attachments,
+    )
+    if not sent:
+        logger.warning(
+            'receipt email not sent for receipt=%s: %s', receipt.id, reason,
+        )
+    return sent, reason[:512]
 
 
 def _resolve_tax_rate(trip):

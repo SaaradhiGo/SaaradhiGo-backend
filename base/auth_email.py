@@ -124,7 +124,11 @@ def recipient_allowed(address):
         return True, ''
 
     backend = getattr(settings, 'EMAIL_BACKEND', '') or ''
-    if backend.endswith('console.EmailBackend') or backend in _NON_DELIVERING_BACKENDS             or backend.endswith('locmem.EmailBackend'):
+    if (
+        backend.endswith('console.EmailBackend')
+        or backend.endswith('locmem.EmailBackend')
+        or backend in _NON_DELIVERING_BACKENDS
+    ):
         return True, ''
 
     allowlist = [a.lower() for a in getattr(settings, 'AUTH_EMAIL_ALLOWLIST', [])]
@@ -158,10 +162,24 @@ def _frontend_link(path, uid, token):
     return f'{base}{path}?uid={uid}&token={token}'
 
 
-def _send(*, to, subject, body, html=None):
-    """Hand one message to the configured backend. Returns True on success.
+def send_message(*, to, subject, body, html=None, attachments=None):
+    """Hand one message to the configured backend. Returns (sent, reason).
 
-    Never raises.
+    THE ONE WAY OUT
+    ---------------
+    This is the only place in the codebase that may call `message.send()`.
+    Receipt email used to build its own `EmailMultiAlternatives` in
+    `servers/ride/receipts.py` and send it directly, which meant it was
+    governed by neither `delivery_is_configured()` nor
+    `AUTH_EMAIL_ALLOWLIST`. The consequence was not theoretical: QA pointed
+    at real SES, with a real customer address in a restored dump, would have
+    emailed that person a GST receipt for a test trip. "An empty QA allowlist
+    blocks all outbound email" is only true if every sender comes through
+    here.
+
+    `attachments` is a list of (filename, content, mimetype) tuples, which is
+    what a receipt PDF needs. Never raises; the reason is returned so a caller
+    with somewhere to record it (Receipt.send_failure_reason) can.
     """
     allowed, why = recipient_allowed(to)
     if not allowed:
@@ -171,7 +189,7 @@ def _send(*, to, subject, body, html=None):
             'sent. Set AUTH_EMAIL_ALLOWLIST to permit a test recipient.',
             why, subject,
         )
-        return False
+        return False, f'blocked: {why}'
 
     ok, reason = delivery_is_configured()
     if not ok:
@@ -182,7 +200,7 @@ def _send(*, to, subject, body, html=None):
             'NOT sent. Configure EMAIL_BACKEND/EMAIL_HOST/DEFAULT_FROM_EMAIL.',
             reason, subject,
         )
-        return False
+        return False, f'undeliverable: {reason}'
 
     try:
         message = EmailMultiAlternatives(
@@ -194,14 +212,22 @@ def _send(*, to, subject, body, html=None):
         )
         if html:
             message.attach_alternative(html, 'text/html')
+        for attachment in attachments or ():
+            message.attach(*attachment)
         message.send(fail_silently=False)
-        return True
+        return True, ''
     except Exception as exc:  # noqa: BLE001
         logger.error(
             'auth_email_send_failed subject=%r error=%s: %s',
             subject, type(exc).__name__, exc,
         )
-        return False
+        return False, f'{type(exc).__name__}: {exc}'[:512]
+
+
+def _send(*, to, subject, body, html=None):
+    """Boolean form, for the auth flows whose callers only log success."""
+    sent, _reason = send_message(to=to, subject=subject, body=body, html=html)
+    return sent
 
 
 def send_password_reset(*, user, uid, token):

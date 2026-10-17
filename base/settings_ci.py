@@ -35,6 +35,20 @@ _TEST_ENV_DEFAULTS = {
     'DEBUG_ENV': 'True',
     'CASHFREE_WEBHOOK_SECRET': 'ci-test-secret',
     'REDIS_URL': 'redis://localhost:6379',
+
+    # A SENDER, so the mail paths are exercised rather than skipped.
+    #
+    # base/auth_email.py refuses to report a send as successful when the
+    # deployment has no From address -- deliberately, because that is the live
+    # state of QA and it is why receipt email has been failing into a database
+    # column instead of a log. Without this, every test that asserts a message
+    # was composed would fail for the right reason in the wrong place.
+    #
+    # Nothing leaves the machine: Django swaps EMAIL_BACKEND for locmem under
+    # test, which captures into mail.outbox. QA and production must still set
+    # a real DEFAULT_FROM_EMAIL on a verified SES sender domain -- an owner
+    # action, documented in the SES setup runbook.
+    'DEFAULT_FROM_EMAIL': 'no-reply@ci.saaradhigo.test',
 }
 
 for _key, _value in _TEST_ENV_DEFAULTS.items():

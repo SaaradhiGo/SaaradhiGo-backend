@@ -789,6 +789,27 @@ FARE_SHADOW_LOOKBACK_HOURS = int(os.environ.get('FARE_SHADOW_LOOKBACK_HOURS', '7
 
 GOOGLE_MAPS_API_KEY=os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
+# --- Firebase Cloud Messaging ------------------------------------------------
+#
+# `servers/auth_user/services.py` only ever looked for a service-account FILE,
+# at a path that was not configurable because this setting did not exist. The
+# file is gitignored and is not in the deployed image, so `firebase_admin` was
+# never initialised anywhere and EVERY push was skipped -- for both apps, for
+# the whole life of the project. Dispatch's FCM leg has been dead and the
+# WebSocket has carried every ride offer alone.
+#
+# FIREBASE_CREDENTIALS_JSON holds the service-account JSON itself, which is
+# what a platform with environment variables and an ephemeral filesystem can
+# supply. Owner action: create a service account for the Firebase project,
+# download its key, and set this variable. It is a private key -- it must
+# never be committed, logged, or echoed.
+#
+# The file path remains supported for local development.
+FIREBASE_CREDENTIALS_JSON = os.environ.get('FIREBASE_CREDENTIALS_JSON', '')
+FIREBASE_CREDENTIALS_PATH = os.environ.get(
+    'FIREBASE_CREDENTIALS_PATH', 'firebase-credentials.json',
+)
+
 # When no RateCard governs a pickup, may we quote the hardcoded fallback
 # fare? Yes in dev/CI so a fresh DB is usable; no in production, where a
 # missing card means a city was seeded wrong and quoting a made-up price

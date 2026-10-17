@@ -33,6 +33,7 @@ concurrency:
 
 jobs:
   lint:
+    name: validate / lint, SAST, dependency audit
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -62,6 +63,7 @@ jobs:
         run: pip-audit -r requirements.txt
 
   test:
+    name: validate / test suite
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -118,6 +120,7 @@ jobs:
         run: pytest
 
   postgres-concurrency:
+    name: validate / postgres concurrency
     # Row-lock contention tests only. The `test` job above stays on SQLite and
     # is unchanged; SELECT FOR UPDATE is a no-op there, so the one-driver-one-
     # trip invariant cannot be proven by it. These tests are opted into by
@@ -234,7 +237,31 @@ jobs:
 
           exit $status
 
+  # OPTIONAL. Separate from the three `validate` jobs above on purpose.
+  #
+  # THE PRESENTATION PROBLEM THIS FIXES
+  # -----------------------------------
+  # `dev` was red for four consecutive runs. In every one, lint, test and
+  # postgres-concurrency PASSED and only this job failed, at "Setup SSH",
+  # because EC2_SSH_KEY / EC2_HOST are not configured. The workflow's
+  # conclusion is the worst of its jobs, so the branch showed a red X that
+  # said "the code is broken" when it meant "the deploy target is not set
+  # up". A permanently red default branch teaches people to stop reading CI,
+  # which is how a real failure gets ignored.
+  #
+  # The distinction now drawn:
+  #
+  #   * secrets ABSENT   -> this job SKIPS, with a notice and a line in the
+  #     run summary. Nothing is deployed and the run is green, because
+  #     nothing about the application is wrong.
+  #   * secrets PRESENT  -> every step runs and a failure is RED, exactly as
+  #     before. A deploy that is configured and broken is a real failure.
+  #
+  # Nothing about the validation gates changes. `needs:` still requires all
+  # three to pass before this job runs at all, so an unvalidated commit can
+  # never reach EC2 -- that gate is not weakened, moved or made conditional.
   deploy:
+    name: deploy to EC2 (optional)
     needs: [test, lint, postgres-concurrency]
     runs-on: ubuntu-latest
     # Only deploy from a real push to dev. Prevents accidental deploys from
@@ -242,10 +269,42 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
 
     steps:
+      - name: Is a deploy target configured?
+        id: preflight
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          missing=""
+          [ -n "$EC2_SSH_KEY" ] || missing="$missing EC2_SSH_KEY"
+          [ -n "$EC2_HOST" ]    || missing="$missing EC2_HOST"
+          [ -n "$EC2_USER" ]    || missing="$missing EC2_USER"
+
+          if [ -n "$missing" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Deploy skipped::No EC2 deploy target is configured (missing:$missing). The application was validated; nothing was deployed."
+            {
+              echo "### Deploy skipped"
+              echo
+              echo "No EC2 deploy target is configured. Missing secrets:\`$missing\`."
+              echo
+              echo "The three \`validate\` jobs passed, so **the application is fine** --"
+              echo "this run deployed nothing because there is nowhere configured to"
+              echo "deploy to. Set the secrets to enable it, or remove this job if EC2"
+              echo "is no longer the deployment target."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Deploying::EC2 target configured; deploying $GITHUB_SHA."
+          fi
+
       - name: Checkout code
+        if: steps.preflight.outputs.configured == 'true'
         uses: actions/checkout@v4
 
       - name: Setup SSH
+        if: steps.preflight.outputs.configured == 'true'
         env:
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
           EC2_HOST_KEY: ${{ secrets.EC2_HOST_KEY }}
@@ -279,6 +338,7 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Deploy to EC2
+        if: steps.preflight.outputs.configured == 'true'
         env:
           EC2_USER: ${{ secrets.EC2_USER }}
           EC2_HOST: ${{ secrets.EC2_HOST }}

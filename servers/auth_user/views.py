@@ -617,6 +617,30 @@ def logout(request):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        # Stop pushing to the device that just signed out.
+        #
+        # The refresh token is revoked above, but `fcm_token` was left on the
+        # row -- so dispatch kept addressing ride offers to that handset. The
+        # consequences are concrete: a driver who logs out still gets woken by
+        # offers they cannot accept, and a shared or resold phone delivers one
+        # driver's ride offers to whoever holds it next. The token is a device
+        # credential, and a session that has ended should not leave one behind.
+        #
+        # Narrow write, and deliberately not fatal: a logout must succeed even
+        # if this does not. The client also deletes its local token, so the
+        # two halves are independent.
+        try:
+            type(request.user).objects.filter(pk=request.user.id).update(
+                fcm_token=None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # No token in the log line: anyone holding one can push to that
+            # device.
+            logger.error(
+                'could not clear the push token at logout for user %s: %s',
+                request.user.id, exc,
+            )
+
         logger.info(f"User {request.user.id} logged out (refresh blacklisted)")
         return success_response(
             data={'message': 'Logged out'},

@@ -321,7 +321,53 @@ def _offer_payload(trip, rider_name, vehicle_type):
     }
 
 
-def _enqueue_offer_pushes(driver_ids, trip_id, rider_name):
+def _offer_push_data(trip_id, offer):
+    """The data payload for an offer push.
+
+    ADDITIVE ONLY, and deliberately sparse.
+    ------------------------------------
+    `trip_id` and `type` are what the driver app has always read, and both
+    keep their names and their string type -- `send_push_notification_task`
+    stringifies every value, so the app parses `trip_id` as a String over
+    push and an int over the socket. An older build that reads only these two
+    is unaffected.
+
+    `expires_at` is added because the driver app had no way to tell a fresh
+    offer from one that had been sitting in a notification shade: the payload
+    carried no expiry, so the app fell back to comparing the FCM send time
+    against a hard-coded 90 seconds copied from
+    TRIP_ACCEPT_TIMEOUT_SECONDS. That is a guess about server behaviour
+    living in a client. This makes it the server's own answer, and it stays
+    correct if the timeout is ever retuned.
+
+    `vehicle_type` is added so a tapped notification can say which vehicle
+    class the offer is for before the socket describes it.
+
+    WHAT IS DELIBERATELY NOT HERE
+    -----------------------------
+    No rider name, no pickup or destination address, no coordinates, and no
+    fare. A notification is rendered on a lock screen: anyone holding the
+    handset reads it without unlocking. The socket frame carries all of that
+    to an app the driver has already unlocked, which is the right place for
+    it. A push exists to wake the app, not to brief it.
+    """
+    from django.conf import settings
+    from django.utils import timezone
+
+    data = {'trip_id': str(trip_id), 'type': 'ride_request'}
+
+    timeout = int(getattr(settings, 'TRIP_ACCEPT_TIMEOUT_SECONDS', 90))
+    data['expires_at'] = (
+        timezone.now() + timezone.timedelta(seconds=timeout)
+    ).isoformat()
+
+    if isinstance(offer, dict) and offer.get('vehicle_type'):
+        data['vehicle_type'] = str(offer['vehicle_type'])
+
+    return data
+
+
+def _enqueue_offer_pushes(driver_ids, trip_id, rider_name, offer=None):
     """Queue one FCM task per candidate, with a single bulk driver query.
 
     The previous loop issued `Driver.objects.get()` per driver per wave.
@@ -359,7 +405,7 @@ def _enqueue_offer_pushes(driver_ids, trip_id, rider_name):
                 user_id,
                 'New Ride Request',
                 f'New ride request from {rider_name}',
-                {'trip_id': str(trip_id), 'type': 'ride_request'},
+                _offer_push_data(trip_id, offer),
             )
             queued += 1
         except Exception as exc:  # noqa: BLE001
@@ -443,7 +489,9 @@ def execute_wave(trip_id, wave_index, epoch, radii):
                         driver_id, trip_id, exc,
                     )
 
-        pushes = _enqueue_offer_pushes(candidates, trip.id, rider_name)
+        pushes = _enqueue_offer_pushes(
+            candidates, trip.id, rider_name, offer=payload,
+        )
 
     _log('dispatch_wave_offers', trip_id=trip_id, epoch=epoch,
          wave_index=wave_index, radius=radius,

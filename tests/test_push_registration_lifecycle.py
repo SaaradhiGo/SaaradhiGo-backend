@@ -242,3 +242,99 @@ class TestPushIsSkippedCleanlyWhenUnconfigured:
             ).get()
 
         assert result is False
+
+
+class TestTheOfferPushPayload:
+    """What an offer push carries, and what it must never carry.
+
+    A notification is rendered on a lock screen: anyone holding the handset
+    reads it without unlocking. So the push is deliberately sparse -- it
+    exists to wake the app, and the socket frame briefs it once the driver
+    has unlocked.
+    """
+
+    def test_it_keeps_the_two_fields_the_app_has_always_read(self):
+        from servers.ride.dispatch import _offer_push_data
+
+        data = _offer_push_data(4210, None)
+
+        assert data['trip_id'] == '4210'
+        assert data['type'] == 'ride_request'
+        # Stringified, because send_push_notification_task stringifies every
+        # value and the app parses trip_id as a String over push.
+        assert isinstance(data['trip_id'], str)
+
+    def test_it_carries_an_expiry_the_client_no_longer_has_to_guess(
+            self, settings):
+        # The driver app had no expiry in the payload, so it compared the FCM
+        # send time against a hard-coded 90 seconds copied from this setting.
+        # That is a guess about server behaviour living in a client.
+        from datetime import datetime
+
+        from servers.ride.dispatch import _offer_push_data
+
+        settings.TRIP_ACCEPT_TIMEOUT_SECONDS = 120
+
+        data = _offer_push_data(4210, None)
+
+        assert 'expires_at' in data
+        expires = datetime.fromisoformat(data['expires_at'])
+        assert expires.tzinfo is not None, 'an expiry without a timezone is ambiguous'
+
+    def test_the_expiry_follows_the_setting_rather_than_a_constant(
+            self, settings):
+        from datetime import datetime
+
+        from django.utils import timezone
+
+        from servers.ride.dispatch import _offer_push_data
+
+        settings.TRIP_ACCEPT_TIMEOUT_SECONDS = 300
+        data = _offer_push_data(4210, None)
+
+        seconds = (
+            datetime.fromisoformat(data['expires_at']) - timezone.now()
+        ).total_seconds()
+        assert 280 < seconds < 320, seconds
+
+    def test_the_vehicle_class_is_included_when_known(self):
+        from servers.ride.dispatch import _offer_push_data
+
+        data = _offer_push_data(4210, {'vehicle_type': 'sedan'})
+
+        assert data['vehicle_type'] == 'sedan'
+
+    def test_no_rider_name_address_coordinate_or_fare_is_included(self):
+        """The whole point of keeping this payload sparse."""
+        from servers.ride.dispatch import _offer_push_data
+
+        offer = {
+            'rider_name': 'Priya Sharma',
+            'pickup_address': '14 Lavelle Road, Bengaluru',
+            'destination_address': 'Indiranagar',
+            'pickup_lat': '12.9352',
+            'pickup_lng': '77.6245',
+            'estimated_fare': '192.00',
+            'vehicle_type': 'sedan',
+            'payment_method': 'cash',
+        }
+
+        data = _offer_push_data(4210, offer)
+
+        blob = str(data).lower()
+        for leaked in [
+            'priya', 'sharma', 'lavelle', 'indiranagar',
+            '12.9352', '77.6245', '192.00',
+        ]:
+            assert leaked.lower() not in blob, (
+                f'"{leaked}" would be shown on a lock screen'
+            )
+        # Only the four agreed keys.
+        assert set(data) <= {'trip_id', 'type', 'expires_at', 'vehicle_type'}
+
+    def test_a_missing_offer_is_not_an_error(self):
+        from servers.ride.dispatch import _offer_push_data
+
+        for offer in [None, {}, 'not-a-dict', 42]:
+            data = _offer_push_data(4210, offer)
+            assert data['trip_id'] == '4210'

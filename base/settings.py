@@ -156,6 +156,29 @@ EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() in ('1', 'true',
 EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', '10'))
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', '')
 
+# Who a NON-PRODUCTION deployment is allowed to email.
+#
+# The accident this prevents: QA is pointed at real SES, QA's database holds a
+# real customer's address (restored from a dump, or typed into a test account),
+# somebody exercises password reset, and a reset link for a live account lands
+# in that person's inbox.
+#
+# Comma-separated. An entry starting with '@' matches a whole domain:
+#   AUTH_EMAIL_ALLOWLIST="qa@deeptrics.com,@saaradhigo.in"
+#
+# Enforced by base/auth_email.py whenever ENVIRONMENT != 'production' AND the
+# backend actually delivers. An empty allowlist on a delivering non-production
+# deployment blocks ALL mail, deliberately: the safe default for "we do not yet
+# know who we may write to" is nobody.
+#
+# SES sandbox mode restricts recipients too, but that is an AWS account state
+# nobody in this repo controls or can assert. This is the copy we own.
+AUTH_EMAIL_ALLOWLIST = [
+    entry.strip().lower()
+    for entry in os.environ.get('AUTH_EMAIL_ALLOWLIST', '').split(',')
+    if entry.strip()
+]
+
 # How long a password-reset or email-verification link stays valid.
 #
 # Django's default is 3 days. Two hours is enough for a person who just asked

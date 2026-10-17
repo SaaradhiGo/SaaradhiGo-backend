@@ -101,6 +101,56 @@ def delivery_is_configured():
     return True, ''
 
 
+def recipient_allowed(address):
+    """May this deployment write to this address? Returns (ok, reason).
+
+    Production is unrestricted -- it is supposed to email customers.
+
+    Everywhere else, a delivering backend may only write to
+    `settings.AUTH_EMAIL_ALLOWLIST`. The accident being prevented is concrete:
+    QA pointed at real SES, a real customer's address in QA's database, and a
+    password-reset link for a live account landing in that person's inbox.
+
+    An EMPTY allowlist on a delivering non-production deployment blocks
+    everything. That is the deliberate direction: the safe default for "we do
+    not yet know who we may write to" is nobody, and the refusal is logged
+    with the reason so it cannot be mistaken for a broken mailer.
+
+    Console and locmem backends are exempt -- nothing leaves the machine, and
+    blocking them would make local development and the test suite useless.
+    """
+    environment = str(getattr(settings, 'ENVIRONMENT', '') or '').lower()
+    if environment == 'production':
+        return True, ''
+
+    backend = getattr(settings, 'EMAIL_BACKEND', '') or ''
+    if backend.endswith('console.EmailBackend') or backend in _NON_DELIVERING_BACKENDS             or backend.endswith('locmem.EmailBackend'):
+        return True, ''
+
+    allowlist = [a.lower() for a in getattr(settings, 'AUTH_EMAIL_ALLOWLIST', [])]
+    if not allowlist:
+        return False, (
+            f'environment={environment or "unset"} is not production and '
+            'AUTH_EMAIL_ALLOWLIST is empty, so no address may be emailed'
+        )
+
+    target = str(address or '').strip().lower()
+    if not target:
+        return False, 'no recipient'
+
+    for entry in allowlist:
+        if entry.startswith('@'):
+            if target.endswith(entry):
+                return True, ''
+        elif target == entry:
+            return True, ''
+
+    return False, (
+        f'recipient is not in AUTH_EMAIL_ALLOWLIST (environment='
+        f'{environment or "unset"})'
+    )
+
+
 def _frontend_link(path, uid, token):
     base = (getattr(settings, 'FRONTEND_URL', '') or '').rstrip('/')
     if not base:
@@ -113,6 +163,16 @@ def _send(*, to, subject, body, html=None):
 
     Never raises.
     """
+    allowed, why = recipient_allowed(to)
+    if not allowed:
+        # The address is NOT logged, for the same reason as below.
+        logger.warning(
+            'auth_email_blocked reason=%s subject=%r — the message was NOT '
+            'sent. Set AUTH_EMAIL_ALLOWLIST to permit a test recipient.',
+            why, subject,
+        )
+        return False
+
     ok, reason = delivery_is_configured()
     if not ok:
         # The address is NOT logged. An auth log that lists the addresses it

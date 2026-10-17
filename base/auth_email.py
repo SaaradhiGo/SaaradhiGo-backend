@@ -101,6 +101,32 @@ def delivery_is_configured():
     return True, ''
 
 
+def backend_leaves_the_machine():
+    """Does the configured backend actually put a message on the wire?
+
+    console prints to stdout, locmem captures into `mail.outbox`, dummy
+    discards. None of them can reach a real person, which is why
+    `recipient_allowed()` exempts them -- enforcing an allowlist there would
+    make local development and the test suite useless without protecting
+    anybody.
+
+    Exposed because the allowlist is only half the answer to "would this
+    message reach that address": a deployment can be *allowed* to write to an
+    address and still be incapable of it. `email_safety_check` reported "YES,
+    it would be SENT" for a console deployment before this existed, which is
+    the opposite of reassuring when the point of the command is to confirm
+    that nothing can escape.
+    """
+    backend = getattr(settings, 'EMAIL_BACKEND', '') or ''
+    if not backend:
+        return False
+    return not (
+        backend.endswith('console.EmailBackend')
+        or backend.endswith('locmem.EmailBackend')
+        or backend in _NON_DELIVERING_BACKENDS
+    )
+
+
 def recipient_allowed(address):
     """May this deployment write to this address? Returns (ok, reason).
 
@@ -123,12 +149,7 @@ def recipient_allowed(address):
     if environment == 'production':
         return True, ''
 
-    backend = getattr(settings, 'EMAIL_BACKEND', '') or ''
-    if (
-        backend.endswith('console.EmailBackend')
-        or backend.endswith('locmem.EmailBackend')
-        or backend in _NON_DELIVERING_BACKENDS
-    ):
+    if not backend_leaves_the_machine():
         return True, ''
 
     allowlist = [a.lower() for a in getattr(settings, 'AUTH_EMAIL_ALLOWLIST', [])]

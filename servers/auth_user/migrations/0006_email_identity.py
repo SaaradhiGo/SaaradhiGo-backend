@@ -4,56 +4,117 @@ import django.db.models.functions.text
 from django.db import migrations, models
 
 
-def normalise_and_check_emails(apps, schema_editor):
-    """Lower-case existing addresses, and refuse to continue on a duplicate.
+# The width of the EmailField this migration narrows `email` down to. The
+# column is varchar(256) before this migration and varchar(254) after, so a
+# longer stored value fails the ALTER with a raw
+# `value too long for type character varying(254)` from the database.
+EMAIL_MAX_LENGTH = 254
 
-    The unique constraint added below cannot be created while two rows share
-    an address, and the failure you get from the database names a constraint,
-    not what to do about it. So this runs first and either fixes the data or
-    stops with an instruction.
+
+def _normalised(value):
+    """The exact value this migration will store for `value`."""
+    return (value or '').strip().lower()
+
+
+def normalise_and_check_emails(apps, schema_editor):
+    """Check the data is migratable, then lower-case it.
+
+    CHECKS FIRST, WRITES AFTER. Two things can make the operations below
+    fail, and both are properties of the data rather than of the code:
+
+    1. Two accounts sharing an address -- the unique constraint cannot be
+       created. The database would name a constraint and leave you to work
+       out which rows.
+    2. An address longer than 254 characters -- the AlterField narrows the
+       column and the database refuses with `value too long for type
+       character varying(254)`, naming neither the column's purpose nor the
+       row.
+
+    Both are detected here, before anything is written, and reported
+    together so a single run tells you everything that has to be fixed.
+    Nothing is auto-resolved: choosing which of two accounts keeps an
+    address, or what a 300-character address should become, is a support
+    decision -- one of those accounts may hold a wallet balance or a trip
+    history -- and a migration must not make it silently.
 
     Normalising is safe: `email__iexact` lookups already treated these as
     equal, so nothing that works today starts failing.
 
-    Duplicates are NOT auto-resolved. Choosing which of two accounts keeps an
-    address is a support decision -- one of them may hold a wallet balance or
-    a trip history -- and a migration must not make it silently. The error
-    reports the COUNT and the account ids, never the addresses, so a
+    Length is measured on the NORMALISED value, because that is what gets
+    stored. An address that is only over-long because of surrounding
+    whitespace is fixed by this migration rather than rejected by it.
+
+    The report gives counts and account ids, never addresses, so a
     deployment log does not become a list of customer emails.
     """
     User = apps.get_model('auth_user', 'customUser')
 
-    for user in User.objects.exclude(email=None).exclude(email='').iterator():
-        normalized = (user.email or '').strip().lower()
-        if normalized != user.email:
-            User.objects.filter(pk=user.pk).update(email=normalized)
+    rows = (
+        User.objects
+        .exclude(email=None)
+        .exclude(email='')
+        .order_by('pk')
+        .values_list('pk', 'email')
+    )
 
-    seen = {}
+    too_long = []
+    longest = 0
+    first_seen = {}
     duplicates = {}
-    for pk, email in (
-        User.objects.exclude(email=None).exclude(email='')
-        .values_list('pk', 'email').iterator()
-    ):
-        key = (email or '').strip().lower()
-        if key in seen:
-            duplicates.setdefault(key, [seen[key]]).append(pk)
+
+    # One ordered pass, so the same database always produces the same
+    # report: which account is reported as the original of a duplicate pair
+    # is decided by primary key, not by row order on disk.
+    for pk, email in rows.iterator():
+        normalized = _normalised(email)
+
+        if len(normalized) > EMAIL_MAX_LENGTH:
+            too_long.append(pk)
+            longest = max(longest, len(normalized))
+
+        if normalized in first_seen:
+            duplicates.setdefault(normalized, [first_seen[normalized]]).append(pk)
         else:
-            seen[key] = pk
+            first_seen[normalized] = pk
+
+    problems = []
+
+    if too_long:
+        problems.append(
+            f'{len(too_long)} email address(es) are longer than '
+            f'{EMAIL_MAX_LENGTH} characters (longest: {longest}), so the '
+            f'email column cannot be narrowed to varchar({EMAIL_MAX_LENGTH}). '
+            f'Affected account ids: {sorted(too_long)}. '
+            'Shorten or clear each one, then re-run the migration.'
+        )
 
     if duplicates:
         ids = sorted(pk for group in duplicates.values() for pk in group)
-        raise RuntimeError(
-            f'{len(duplicates)} email address(es) are shared by '
-            f'{len(ids)} accounts, so a unique email identity cannot be '
-            f'created. Affected account ids: {ids}. '
+        problems.append(
+            f'{len(duplicates)} email address(es) are shared by {len(ids)} '
+            'accounts, so a unique email identity cannot be created. '
+            f'Affected account ids: {ids}. '
             'Decide which account keeps each address (check wallet balance '
-            'and trip history first), clear the others, then re-run the '
-            'migration. Addresses are deliberately not printed here.'
+            'and trip history first), then clear the others.'
         )
+
+    if problems:
+        raise RuntimeError(
+            'Cannot migrate to a unique email identity. '
+            + ' '.join(problems)
+            + ' Addresses are deliberately not printed here.'
+        )
+
+    # Only now, with the data proven migratable, write anything.
+    for pk, email in rows.iterator():
+        normalized = _normalised(email)
+        if normalized != email:
+            User.objects.filter(pk=pk).update(email=normalized)
 
 
 def noop_reverse(apps, schema_editor):
     """Nothing to undo: lower-casing an address is not a loss."""
+
 
 class Migration(migrations.Migration):
 

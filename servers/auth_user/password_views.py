@@ -317,6 +317,23 @@ def reset_password(request):
 # Email ownership
 # ---------------------------------------------------------------------------
 
+def _send_verification_for(user):
+    """Mint a verification token and send the link. Never raises.
+
+    Shared with registration, which has just created the account and must
+    not fail the request because a mail gate refused: the account exists
+    either way, and the person can ask for the link again.
+    """
+    try:
+        token = verify_tokens.make_token(user)
+        sent = send_email_verification(user=user, uid=_uid(user), token=token)
+        logger.info('email_verify_sent user_id=%s delivered=%s', user.pk, sent)
+        return sent
+    except Exception as exc:                                 # noqa: BLE001
+        logger.error('email_verify_send_failed user_id=%s error=%s',
+                     user.pk, type(exc).__name__)
+        return False
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @throttle_classes([PasswordResetThrottle])

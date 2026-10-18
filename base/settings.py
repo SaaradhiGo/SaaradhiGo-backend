@@ -874,6 +874,20 @@ if os.environ.get('DB_HOST'):
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 
+# Sign in to the operator console with either identifier.
+#
+# USERNAME_FIELD is phone_number, so ModelBackend alone means the console
+# form accepts a phone and nothing else -- while the API had offered
+# /auth/email/login/ for a while. Two sign-in surfaces for one account, and
+# the identifier most people remember worked on only one of them.
+#
+# Order matters: ModelBackend stays FIRST, so every existing phone+password
+# sign-in takes exactly the path it always did. The email backend only
+# engages for an identifier containing '@'.
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+    'base.auth_backends.EmailOrPhoneBackend',
+]
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',

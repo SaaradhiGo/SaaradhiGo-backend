@@ -55,7 +55,12 @@ from base.permissions import is_operator
 from base.utils import error_response, success_response
 from servers.admin_dashboard import login_guard
 
-from .identity import can_use_password_login, normalize_email, InvalidEmail
+from .identity import (
+    InvalidEmail,
+    can_use_password_login,
+    email_is_verified,
+    normalize_email,
+)
 from .serializers import UserModelSerializer
 
 logger = logging.getLogger(__name__)
@@ -152,6 +157,31 @@ def email_login(request):
         login_guard.record_failure(request, email)
         logger.warning('email_login_failed reason=inactive user_id=%s', user.pk)
         return _refuse()
+
+    # The address has to be PROVEN, not merely typed.
+    #
+    # Self-registration lets anyone create an account against any address.
+    # Without this check, verification would be decorative: the password set
+    # at registration would work immediately, and someone could register with
+    # a stranger's address and hold a working account on it.
+    #
+    # Reached only with a correct password, so naming the reason tells an
+    # attacker nothing they did not already know, and telling the real owner
+    # 'verify your email' instead of 'invalid credentials' is the difference
+    # between a solvable problem and a support ticket.
+    #
+    # Accounts created by `bootstrap_qa_accounts` or by an operator invite
+    # are verified at the point their password is set, so this does not lock
+    # out the operator console.
+    if not email_is_verified(user):
+        logger.info('email_login_unverified user_id=%s', user.pk)
+        return error_response(
+            code='AUTH_EMAIL_UNVERIFIED',
+            message='Confirm your email address before signing in. We sent you a link when you registered.',
+            field='email',
+            issue='Email address not yet verified',
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     # --- second factor, for operators only --------------------------------
     #

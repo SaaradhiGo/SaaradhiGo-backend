@@ -20,6 +20,8 @@ from .password_views import (
     reset_password,
 )
 
+from .registration_views import register_with_email
+
 urlpatterns = [
     path('otp/', request_otp),
     path('login/', token),
@@ -36,6 +38,7 @@ urlpatterns = [
 
     # Email + password. Additive: every path above is unchanged, and
     # phone+OTP remains the primary route for riders and drivers.
+    path('email/register/', register_with_email),
     path('email/login/', email_login),
     path('email/verify/request/', request_email_verification),
     path('email/verify/confirm/', confirm_email_verification),

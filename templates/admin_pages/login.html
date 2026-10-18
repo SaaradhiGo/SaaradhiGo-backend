@@ -44,21 +44,23 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
             </div>
             <div class="relative z-10 max-w-md">
                 <h2 class="font-headline text-5xl font-extrabold text-on-surface leading-tight mb-6">
-                    The Digital Vault <br />
-                    <span class="text-primary-container">Fleet Control</span>
+                    SaaradhiGo <br />
+                    <span class="text-primary-container">Admin</span>
                 </h2>
-                <p class="text-on-surface-variant text-lg leading-relaxed font-light">
-                    Experience the ultimate in administrative precision. Curated insights for the modern transport
-                    ecosystem.
+                <p class="text-on-surface-variant text-lg leading-relaxed">
+                    Staff access for operations: approve driver documents, follow live rides,
+                    resolve disputes, review payments and respond to SOS alerts.
                 </p>
             </div>
             <div
                 class="relative z-10 flex items-center gap-8 text-xs font-label uppercase tracking-widest text-on-surface-variant/50">
-                <span>Precision</span>
+                <span>Driver onboarding</span>
                 <span>•</span>
-                <span>Security</span>
+                <span>Live rides</span>
                 <span>•</span>
-                <span>Excellence</span>
+                <span>Payments</span>
+                <span>•</span>
+                <span>Safety</span>
             </div>
         </div>
 
@@ -66,8 +68,10 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
         <div
             class="lg:col-span-5 p-12 lg:p-16 flex flex-col justify-center bg-surface-container-high border-l border-outline-variant/15">
             <div class="mb-10 text-center lg:text-left">
-                <h1 class="font-headline text-3xl font-bold text-on-surface mb-2">Admin Portal</h1>
-                <p class="text-on-surface-variant font-label text-sm">Secure access for fleet operations</p>
+                <h1 class="font-headline text-3xl font-bold text-on-surface mb-2">Sign in</h1>
+                <p class="text-on-surface-variant font-label text-sm">
+                    Staff accounts only. Riders and drivers use the SaaradhiGo app.
+                </p>
             </div>
 
             {% if error %}
@@ -81,14 +85,15 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                 {% csrf_token %}
                 <!-- Phone Number -->
                 <div class="space-y-2">
-                    <label
-                        class="text-xs font-label uppercase tracking-widest text-on-surface-variant ml-1">Phone Number</label>
+                    <label for="id_username"
+                        class="text-xs font-label uppercase tracking-widest text-on-surface-variant ml-1">Email or phone number</label>
                     <div class="relative group h-14">
                         <span
-                            class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-outline text-sm">phone</span>
+                            class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-outline text-sm">person</span>
                         <input id="id_username" name="username"
                             class="w-full h-full bg-surface-container-highest border-b border-outline-variant/30 focus:border-primary pl-10 pr-4 text-on-surface transition-all placeholder:text-outline/50 outline-none"
-                            placeholder="e.g. 9876543210" type="text" required autocomplete="username" />
+                            placeholder="you@saaradhigo.in or 9876543210" type="text" required autocomplete="username"
+                            autofocus />
                         <div
                             class="absolute bottom-0 left-0 h-[1px] w-0 bg-primary transition-all duration-300 group-focus-within:w-full">
                         </div>
@@ -96,7 +101,7 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                 </div>
                 <!-- Password -->
                 <div class="space-y-2">
-                    <label
+                    <label for="id_password"
                         class="text-xs font-label uppercase tracking-widest text-on-surface-variant ml-1">Password</label>
                     <div class="relative group h-14">
                         <span
@@ -119,12 +124,11 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
             </form>
             <div class="mt-12 flex flex-col items-center gap-6">
                 <div class="flex gap-6 text-xs font-label text-on-surface-variant/60">
-                    <a class="hover:text-primary transition-colors" href="#">Support Center</a>
-                    <a class="hover:text-primary transition-colors" href="#">Privacy Policy</a>
-                    <a class="hover:text-primary transition-colors" href="#">API Docs</a>
+                    <a class="hover:text-primary transition-colors"
+                       href="mailto:support@saaradhigo.in">Get help signing in</a>
                 </div>
                 <p class="text-[10px] text-outline/30 font-label tracking-widest uppercase">
-                    © 2026 SaaradhiGo Enterprises
+                    © 2026 SaaradhiGo
                 </p>
             </div>
         </div>

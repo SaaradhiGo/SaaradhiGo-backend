@@ -847,15 +847,52 @@
             };
 
 
+            // Built by Django, not typed as a literal: the previous hardcoded
+            // '/api/notifications/' was never routed, so every page load 404'd
+            // and then tried to JSON.parse an HTML error page.
+            const NOTIF_FEED_URL =
+                "{% url 'admin_notifications_feed' %}";
+
+            const NOTIF_READ_URL_TEMPLATE =
+                "{% url 'admin_notification_mark_read' 0 %}";
+
+
             function fetchNotifications() {
 
-                fetch('/api/notifications/')
+                fetch(NOTIF_FEED_URL, {
+                        headers: {
+                            'Accept': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        // A session that has not cleared MFA must not be
+                        // followed into the login PAGE and parsed as JSON.
+                        redirect: 'manual'
+                    })
 
-                    .then(res => res.json())
+                    .then(res => {
+
+                        if (!res.ok) {
+                            // 403 before MFA, 404 if the route is ever lost
+                            // again. Neither is an exception worth throwing in
+                            // the operator's console: the bell just stays
+                            // empty.
+                            return null;
+                        }
+
+                        const type =
+                            res.headers.get('content-type') || '';
+
+                        if (type.indexOf('application/json') === -1) {
+                            return null;
+                        }
+
+                        return res.json();
+
+                    })
 
                     .then(data => {
 
-                        if (data.status === 'ok') {
+                        if (data && data.status === 'ok') {
 
                             renderNotifications(
                                 data.notifications
@@ -865,12 +902,11 @@
 
                     })
 
-                    .catch(err =>
-                        console.error(
-                            "Notification fetch error:",
-                            err
-                        )
-                    );
+                    .catch(() => {
+                        /* Network failure. The bell is not important enough to
+                           shout about, and a thrown error here used to be the
+                           only thing in the console. */
+                    });
 
             }
 
@@ -1019,7 +1055,9 @@
             function markAsRead(id) {
 
                 fetch(
-                    `/api/notifications/${id}/read/`,
+                    NOTIF_READ_URL_TEMPLATE.replace(
+                        /0\/read\/$/, id + '/read/'
+                    ),
                     {
                         method: 'POST',
 

@@ -1,5 +1,7 @@
 from django.urls import path
 
+from .notification_api import notifications_feed, notification_mark_read
+
 from .views import (
     admin_logout,
     dashboard,
@@ -59,4 +61,18 @@ urlpatterns = [
     # Driver Profile
     path("driver/<int:driver_id>/", driver_profile, name="driver_profile"),
     path("notifications/", notifications, name="notifications"),
+
+    # The console bell polls these. They live here (mounted at root) so the
+    # template's existing /api/notifications/ URLs resolve; the template now
+    # builds them with {% url %} so the path cannot drift again.
+    path(
+        "api/notifications/",
+        notifications_feed,
+        name="admin_notifications_feed",
+    ),
+    path(
+        "api/notifications/<int:notif_id>/read/",
+        notification_mark_read,
+        name="admin_notification_mark_read",
+    ),
 ]

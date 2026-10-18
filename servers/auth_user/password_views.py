@@ -70,6 +70,7 @@ from base.utils import error_response, success_response
 from servers.admin_audit.services import record_admin_action
 from servers.admin_dashboard import login_guard
 
+from .session_revocation import revoke_after_credential_change
 from .identity import (
     InvalidEmail,
     assert_email_available,
@@ -188,10 +189,14 @@ def change_password(request):
     user.set_password(new_password)
     user.save(update_fields=['password'])
 
-    # Every outstanding reset token for this account is now invalid, because
-    # the generator hashes the password hash. Stated here so nobody adds a
-    # "revoke tokens" step believing it is missing.
-    logger.info('password_changed user_id=%s', user.pk)
+    # Outstanding RESET tokens are already invalid: the generator hashes the
+    # password hash. JWTs are not -- a refresh token lives 14 days and keeps
+    # rotating -- so changing a password used to leave every existing session
+    # alive, including an attacker's. Revoke them here.
+    revoked = revoke_after_credential_change(
+        user, request, reason='Password changed by the account holder.')
+    logger.info('password_changed user_id=%s sessions_revoked=%s',
+                user.pk, revoked)
     return success_response(
         data={'message': 'Your password has been changed.'},
         status_code=status.HTTP_200_OK,
@@ -295,7 +300,13 @@ def reset_password(request):
 
     login_guard.clear(request, (user.email or '').lower())
 
-    logger.info('password_reset_ok user_id=%s', user.pk)
+    # A reset is the flow someone uses when they have LOST control of the
+    # account, so ending every existing session matters more here than in a
+    # routine change.
+    revoked = revoke_after_credential_change(
+        user, request, reason='Password reset through a verified address.')
+    logger.info('password_reset_ok user_id=%s sessions_revoked=%s',
+                user.pk, revoked)
     return success_response(
         data={'message': 'Your password has been set. You can sign in now.'},
         status_code=status.HTTP_200_OK,

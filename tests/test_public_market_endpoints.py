@@ -85,3 +85,103 @@ class TestZonesEndpointStillPublic:
         r = APIClient().get('/api/v1/pricing/zones/')
         assert r.status_code == 200
         assert 'zones' in r.json().get('data', {})
+
+
+class TestVehicleTypesAtAPoint:
+    """What a booking screen may offer, and where it may not offer anything.
+
+    A category without an active RateCard for the zone cannot be quoted. If a
+    client shows it anyway, the rider taps it, `estimate-fare` fails, and the
+    product looks broken for a category it should never have offered.
+    """
+
+    URL = '/api/v1/pricing/vehicle-types/'
+
+    def test_a_point_outside_every_zone_is_not_an_error(self):
+        # "We do not operate here" is a real answer a booking screen must be
+        # able to render as an empty state rather than a failure.
+        r = APIClient().get(self.URL, {'lat': 51.5074, 'lng': -0.1278})
+
+        assert r.status_code == 200
+        data = r.json()['data']
+        assert data['serviceable'] is False
+        assert data['zone'] is None
+        assert data['vehicle_types'] == []
+
+    def test_missing_coordinates_are_refused(self):
+        r = APIClient().get(self.URL)
+        assert r.status_code == 400
+        assert r.json()['error']['code'] == 'MISSING_FIELDS'
+
+    def test_it_is_public(self):
+        # Needed before a rider signs in, to show what is on offer.
+        assert APIClient().get(
+            self.URL, {'lat': 51.5, 'lng': -0.12}).status_code == 200
+
+    def test_a_served_point_returns_its_market(self, db):
+        from django.utils import timezone as dj_tz
+
+        from servers.driver.models import VehicleType
+        from servers.pricing.models import RateCard, ServiceZone
+
+        zone = ServiceZone.objects.filter(is_active=True).first()
+        if zone is None:
+            pytest.skip('no service zone in this database')
+
+        card = (
+            RateCard.objects
+            .filter(zone=zone, is_active=True,
+                    effective_from__lte=dj_tz.now())
+            .select_related('vehicle_type')
+            .first()
+        )
+        if card is None or card.vehicle_type is None:
+            pytest.skip('no active rate card for the zone')
+
+        # A point the zone certainly contains: its own polygon's first vertex
+        # is on the boundary, so use the centroid-ish average instead.
+        coords = (zone.polygon_geojson or {}).get('coordinates') or []
+        if not coords or not coords[0]:
+            pytest.skip('zone has no polygon')
+        ring = coords[0]
+        lng = sum(p[0] for p in ring) / len(ring)
+        lat = sum(p[1] for p in ring) / len(ring)
+
+        r = APIClient().get(self.URL, {'lat': lat, 'lng': lng})
+        data = r.json()['data']
+
+        assert r.status_code == 200
+        assert data['serviceable'] is True
+        # The market, resolved the same way /pricing/zones/ resolves it.
+        assert data['zone']['currency']
+        assert data['zone']['distance_unit'] in ('km', 'mi')
+        offered = {v['type'] for v in data['vehicle_types']}
+        assert card.vehicle_type.type in offered, (
+            'a category with an active card must be offered'
+        )
+
+    def test_only_categories_with_an_active_card_are_offered(self, db):
+        from servers.driver.models import VehicleType
+        from servers.pricing.models import RateCard, ServiceZone
+
+        zone = ServiceZone.objects.filter(is_active=True).first()
+        if zone is None:
+            pytest.skip('no service zone in this database')
+
+        coords = (zone.polygon_geojson or {}).get('coordinates') or []
+        if not coords or not coords[0]:
+            pytest.skip('zone has no polygon')
+        ring = coords[0]
+        lng = sum(p[0] for p in ring) / len(ring)
+        lat = sum(p[1] for p in ring) / len(ring)
+
+        # A catalogue entry with no card anywhere must not be offered.
+        orphan = VehicleType.objects.create(
+            type='orphan-category', description='no rate card')
+
+        r = APIClient().get(self.URL, {'lat': lat, 'lng': lng})
+        offered = {v['type'] for v in r.json()['data']['vehicle_types']}
+
+        assert orphan.type not in offered, (
+            'offering an unpriced category makes estimate-fare fail on tap'
+        )

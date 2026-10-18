@@ -1357,7 +1357,44 @@ from servers.redis_client import check_maps_rate_limit, get_cached_map_data, cac
 from servers.ride.maps_utils import (
     google_places_autocomplete, google_directions, google_place_details,
     google_geocode,
+    MapsFailure, NOT_CONFIGURED, QUOTA_EXCEEDED, PERMISSION_DENIED,
 )
+
+
+def _maps_error_response():
+    """Turn the adapter's failure reason into an answer that explains itself.
+
+    The CODE stays `API_ERROR` in every case on purpose: the website and both
+    apps already treat that code as "maps is unavailable, say so and do not
+    invent places", and changing it would silently break that handling. What
+    changes is the message -- an unconfigured deployment, an exhausted quota
+    and a rejected key used to be indistinguishable, so the most common
+    situation in QA (no key at all) read as an outage.
+    """
+    reason = MapsFailure.reason()
+    if reason == NOT_CONFIGURED:
+        message = ('Maps is not configured on this deployment. Destination '
+                   'search is unavailable until a provider key is set.')
+        issue = 'GOOGLE_MAPS_API_KEY is not set'
+    elif reason == QUOTA_EXCEEDED:
+        message = ('The maps provider has refused further requests for now '
+                   '(quota exceeded). Try again later.')
+        issue = 'provider quota exceeded'
+    elif reason == PERMISSION_DENIED:
+        message = ('The maps provider rejected this request. The key may be '
+                   'invalid, or this API may not be enabled for the project.')
+        issue = 'provider rejected the credentials or the API is not enabled'
+    else:
+        message = 'Failed to fetch data from Maps API'
+        issue = 'Upstream service error'
+
+    return error_response(
+        code='API_ERROR',
+        message=message,
+        field='api',
+        issue=issue,
+        status=status.HTTP_502_BAD_GATEWAY,
+    )
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -1395,13 +1432,7 @@ def proxy_geocode(request):
 
     result = google_places_autocomplete(search_text, location=location)
     if result is None:
-        return error_response(
-            code='API_ERROR',
-            message='Failed to fetch data from Maps API',
-            field='api',
-            issue='Upstream service error',
-            status=status.HTTP_502_BAD_GATEWAY
-        )
+        return _maps_error_response()
 
     # Cache for 30 days
     cache_map_data(cache_key, result, ttl_seconds=30*24*60*60)
@@ -1448,13 +1479,7 @@ def proxy_reverse_geocode(request):
 
     result = google_geocode(latlng=f'{lat},{lng}')
     if result is None:
-        return error_response(
-            code='API_ERROR',
-            message='Failed to fetch data from Maps API',
-            field='api',
-            issue='Upstream service error',
-            status=status.HTTP_502_BAD_GATEWAY
-        )
+        return _maps_error_response()
 
     cache_map_data(cache_key, result, ttl_seconds=7*24*60*60)
     return success_response(result, status.HTTP_200_OK)
@@ -1501,13 +1526,7 @@ def proxy_place_details(request):
 
     result = google_place_details(place_id, session_token=session_token)
     if result is None:
-        return error_response(
-            code='API_ERROR',
-            message='Failed to fetch data from Maps API',
-            field='api',
-            issue='Upstream service error',
-            status=status.HTTP_502_BAD_GATEWAY
-        )
+        return _maps_error_response()
 
     # A place's coordinates don't move. Cache for 30 days like geocode.
     cache_map_data(cache_key, result, ttl_seconds=30*24*60*60)
@@ -1570,13 +1589,7 @@ def proxy_directions(request):
 
     result = google_directions(origin_lat, origin_lng, dest_lat, dest_lng)
     if result is None:
-        return error_response(
-            code='API_ERROR',
-            message='Failed to fetch data from Maps API',
-            field='api',
-            issue='Upstream service error',
-            status=status.HTTP_502_BAD_GATEWAY
-        )
+        return _maps_error_response()
 
     # Cache for 5 minutes
     cache_map_data(cache_key, result, ttl_seconds=300)

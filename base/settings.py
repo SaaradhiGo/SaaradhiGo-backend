@@ -789,6 +789,22 @@ FARE_SHADOW_LOOKBACK_HOURS = int(os.environ.get('FARE_SHADOW_LOOKBACK_HOURS', '7
 
 GOOGLE_MAPS_API_KEY=os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
+# Which Places API the maps adapters speak: "new" (default) or "legacy".
+#
+# Places API (Legacy) cannot be enabled on Google Cloud projects created from
+# October 2026, so a fresh project can only use "new". Projects that already
+# have legacy access can set "legacy" and keep the old endpoints.
+GOOGLE_PLACES_API_VERSION = os.environ.get("GOOGLE_PLACES_API_VERSION", "new")
+
+# CARTO basemap key for the admin God View map.
+#
+# CARTO stopped serving raster tiles unkeyed in September 2026 -- an unkeyed
+# request returns HTTP 200 whose image is the words "API KEY REQUIRED". The
+# key is free, needs no CARTO account, and allows 1M commercial tile requests
+# a month. Blank is handled: the console says the map is unconfigured rather
+# than drawing a grid of watermarks.
+CARTO_BASEMAP_API_KEY = os.environ.get("CARTO_BASEMAP_API_KEY", "")
+
 # --- Firebase Cloud Messaging ------------------------------------------------
 #
 # `servers/auth_user/services.py` only ever looked for a service-account FILE,

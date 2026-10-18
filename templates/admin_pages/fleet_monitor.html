@@ -271,12 +271,55 @@ font-family: 'Manrope', sans-serif;
             preferCanvas: true,
         });
 
-        // Dark/gold themed tile layer (CartoDB dark matter) keeps the existing palette.
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-            attribution: '&copy; OpenStreetMap &copy; CARTO',
-            subdomains: 'abcd',
-            maxZoom: 19,
-        }).addTo(map);
+        // Dark/gold themed tile layer (CARTO dark matter) keeps the existing palette.
+        //
+        // CARTO stopped serving raster tiles without a key in September 2026.
+        // An unkeyed request still returns HTTP 200 -- but the image IS the
+        // words "API KEY REQUIRED", so the map looked broken rather than
+        // unconfigured, and no error anywhere said why.
+        //
+        // The key is free and needs no CARTO account. Attribution to both
+        // OpenStreetMap and CARTO is required on every map, free tier
+        // included, so it is not optional decoration.
+        var CARTO_KEY = "{{ carto_api_key|escapejs }}";
+
+        if (CARTO_KEY) {
+
+            L.tileLayer(
+                'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=' +
+                    encodeURIComponent(CARTO_KEY),
+                {
+                    attribution:
+                        '&copy; OpenStreetMap contributors, &copy; CARTO',
+                    subdomains: 'abcd',
+                    maxZoom: 19,
+                }
+            ).addTo(map);
+
+        } else {
+
+            // No key: say so once, rather than tiling the viewport with the
+            // provider's watermark. Driver markers still render on the blank
+            // canvas, which is the part of this screen that is operational.
+            var warning = L.control({ position: 'topright' });
+
+            warning.onAdd = function () {
+                var div = L.DomUtil.create('div', 'carto-key-missing');
+                div.style.cssText =
+                    'background:rgba(20,17,16,.92);color:#EEBD2B;' +
+                    'border:1px solid rgba(238,189,43,.4);border-radius:12px;' +
+                    'padding:10px 14px;font-size:12px;max-width:280px;' +
+                    'line-height:1.5;';
+                div.innerHTML =
+                    '<strong>Base map not configured</strong><br>' +
+                    'Set CARTO_BASEMAP_API_KEY to draw the map. ' +
+                    'Driver positions below are live and unaffected.';
+                return div;
+            };
+
+            warning.addTo(map);
+
+        }
 
         // ---- Custom gold driver marker icon ----
         window.makeDriverIcon = function () {

@@ -1,6 +1,7 @@
 from datetime import datetime, time, timedelta
 import csv
 from functools import wraps
+from django.conf import settings
 from django.utils import timezone
 from django.contrib.auth import authenticate, login as auth_login, logout as auth_logout
 from django.http import HttpRequest, HttpResponse
@@ -224,7 +225,19 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         # Never let a stats failure blank the whole map page — the live
         # WebSocket driver feed is still useful on its own.
         kpis = None
-    return render(request, 'admin_pages/fleet_monitor.html', {"kpis": kpis})
+
+    # CARTO stopped serving raster basemap tiles without a key in September
+    # 2026: an unkeyed request returns HTTP 200 whose image IS the words
+    # "API KEY REQUIRED", so the God View map looked broken rather than
+    # unconfigured. Confirmed by fetching a tile and inspecting it.
+    #
+    # The key is free and carries no account requirement; it is passed to the
+    # template so the tile URL can be built with it, and the template says so
+    # plainly when it is absent instead of rendering a wall of watermarks.
+    return render(request, 'admin_pages/fleet_monitor.html', {
+        "kpis": kpis,
+        "carto_api_key": getattr(settings, 'CARTO_BASEMAP_API_KEY', ''),
+    })
 from urllib.parse import urlencode
 from django.db import transaction
 @admin_required

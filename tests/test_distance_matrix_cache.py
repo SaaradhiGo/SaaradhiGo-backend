@@ -28,6 +28,14 @@ from servers.ride import utils
 
 
 class _Resp:
+    """A Routes API computeRoutes reply.
+
+    The legacy Distance Matrix endpoint cannot be enabled on a Google Cloud
+    project created after Google's cut-off, so the fare path now calls Routes.
+    What these tests assert -- one billable call per quote, no cache
+    poisoning, a bounded timeout -- is unchanged; only the wire shape is.
+    """
+
     status_code = 200
     text = ''
 
@@ -37,12 +45,10 @@ class _Resp:
 
     def json(self):
         return {
-            'status': 'OK',
-            'rows': [{'elements': [{
-                'status': 'OK',
-                'distance': {'value': int(self._km * 1000)},
-                'duration': {'value': int(self._minutes * 60)},
-            }]}],
+            'routes': [{
+                'distanceMeters': int(self._km * 1000),
+                'duration': f'{int(self._minutes * 60)}s',
+            }],
         }
 
 
@@ -71,7 +77,7 @@ DEST = (16.5190, 80.6305)
 def test_four_categories_buy_one_distance_matrix_call(settings, _memory_cache):
     settings.GOOGLE_MAPS_API_KEY = 'test-key'
 
-    with patch('servers.ride.utils.requests.get',
+    with patch('servers.ride.utils.requests.post',
                return_value=_Resp(2.4, 7.0)) as http:
         results = [
             utils.get_google_maps_distance(*PICKUP, *DEST)
@@ -89,7 +95,7 @@ def test_four_categories_buy_one_distance_matrix_call(settings, _memory_cache):
 def test_a_different_destination_is_a_different_call(settings, _memory_cache):
     settings.GOOGLE_MAPS_API_KEY = 'test-key'
 
-    with patch('servers.ride.utils.requests.get',
+    with patch('servers.ride.utils.requests.post',
                return_value=_Resp(2.4, 7.0)) as http:
         utils.get_google_maps_distance(*PICKUP, *DEST)
         utils.get_google_maps_distance(*PICKUP, 16.6000, 80.7000)
@@ -102,7 +108,7 @@ def test_nudging_the_pin_within_a_metre_reuses_the_answer(settings, _memory_cach
     """5dp is ~1.1m. A map pin settling must not re-buy the route."""
     settings.GOOGLE_MAPS_API_KEY = 'test-key'
 
-    with patch('servers.ride.utils.requests.get',
+    with patch('servers.ride.utils.requests.post',
                return_value=_Resp(2.4, 7.0)) as http:
         utils.get_google_maps_distance(16.50620, 80.64800, *DEST)
         utils.get_google_maps_distance(16.506201, 80.648001, *DEST)
@@ -119,7 +125,7 @@ def test_a_dead_cache_still_answers(settings):
                side_effect=RuntimeError('redis down')), \
          patch('servers.redis_client.cache_map_data',
                side_effect=RuntimeError('redis down')), \
-         patch('servers.ride.utils.requests.get', return_value=_Resp(2.4, 7.0)):
+         patch('servers.ride.utils.requests.post', return_value=_Resp(2.4, 7.0)):
         assert utils.get_google_maps_distance(*PICKUP, *DEST) == (2.4, 7.0)
 
 
@@ -135,7 +141,7 @@ def test_nothing_is_cached_when_google_fails(settings, _memory_cache):
         def json(self):
             return {}
 
-    with patch('servers.ride.utils.requests.get', return_value=_Bad()):
+    with patch('servers.ride.utils.requests.post', return_value=_Bad()):
         assert utils.get_google_maps_distance(*PICKUP, *DEST) == (None, None)
 
     assert _memory_cache == {}
@@ -145,7 +151,7 @@ def test_nothing_is_cached_when_google_fails(settings, _memory_cache):
 def test_no_key_means_no_request_and_no_cache(settings, _memory_cache):
     settings.GOOGLE_MAPS_API_KEY = ''
 
-    with patch('servers.ride.utils.requests.get') as http:
+    with patch('servers.ride.utils.requests.post') as http:
         assert utils.get_google_maps_distance(*PICKUP, *DEST) == (None, None)
 
     assert http.call_count == 0

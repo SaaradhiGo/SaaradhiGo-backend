@@ -26,18 +26,13 @@ CATEGORIES = ('auto', 'hatchback', 'sedan', 'suv')
 
 
 class _Resp:
+    """A Routes API computeRoutes reply (the fare path's provider)."""
+
     status_code = 200
     text = ''
 
     def json(self):
-        return {
-            'status': 'OK',
-            'rows': [{'elements': [{
-                'status': 'OK',
-                'distance': {'value': 2400},
-                'duration': {'value': 420},
-            }]}],
-        }
+        return {'routes': [{'distanceMeters': 2400, 'duration': '420s'}]}
 
 
 @pytest.fixture
@@ -54,7 +49,7 @@ def _cache():
 def test_requests_per_quote_across_every_category(settings, _cache, capsys):
     settings.GOOGLE_MAPS_API_KEY = 'test-key'
 
-    with patch('servers.ride.utils.requests.get', return_value=_Resp()) as http:
+    with patch('servers.ride.utils.requests.post', return_value=_Resp()) as http:
         for _ in CATEGORIES:
             utils.get_google_maps_distance(*PICKUP, *DEST)
 
@@ -74,7 +69,7 @@ def test_an_abandoned_booking_costs_one_quote_not_four(settings, _cache, capsys)
     """
     settings.GOOGLE_MAPS_API_KEY = 'test-key'
 
-    with patch('servers.ride.utils.requests.get', return_value=_Resp()) as http:
+    with patch('servers.ride.utils.requests.post', return_value=_Resp()) as http:
         for _ in CATEGORIES:
             utils.get_google_maps_distance(*PICKUP, *DEST)
         # rider abandons; no booking, no further Maps traffic
@@ -88,7 +83,7 @@ def test_an_abandoned_booking_costs_one_quote_not_four(settings, _cache, capsys)
 def test_a_second_rider_on_the_same_route_pays_nothing(settings, _cache, capsys):
     settings.GOOGLE_MAPS_API_KEY = 'test-key'
 
-    with patch('servers.ride.utils.requests.get', return_value=_Resp()) as http:
+    with patch('servers.ride.utils.requests.post', return_value=_Resp()) as http:
         utils.get_google_maps_distance(*PICKUP, *DEST)   # rider A
         first = http.call_count
         utils.get_google_maps_distance(*PICKUP, *DEST)   # rider B, same route
@@ -109,7 +104,7 @@ def test_dispatch_evaluates_drivers_without_any_maps_request(capsys):
     """
     from servers.ride import dispatch
 
-    with patch('servers.ride.utils.requests.get') as http:
+    with patch('servers.ride.utils.requests.post') as http:
         radii = dispatch.wave_plan()
         waves = len(radii)
 
@@ -125,7 +120,7 @@ def test_a_timeout_falls_back_and_is_not_cached(settings, _cache, capsys):
     settings.GOOGLE_MAPS_API_KEY = 'test-key'
     import requests as _requests
 
-    with patch('servers.ride.utils.requests.get',
+    with patch('servers.ride.utils.requests.post',
                side_effect=_requests.Timeout('timed out')) as http:
         result = utils.get_google_maps_distance(*PICKUP, *DEST)
 
@@ -137,16 +132,22 @@ def test_a_timeout_falls_back_and_is_not_cached(settings, _cache, capsys):
 
 
 @pytest.mark.django_db
-def test_the_outbound_call_is_bounded_by_a_timeout(settings):
-    """An unbounded Maps call would hold a request worker open indefinitely."""
+def test_the_outbound_call_is_bounded_by_a_timeout(settings, _cache):
+    """An unbounded Maps call would hold a request worker open indefinitely.
+
+    Takes `_cache` so the provider is genuinely called: without it this test
+    reads whatever a previous test left in the real Redis for the same route
+    and asserts nothing at all.
+    """
     settings.GOOGLE_MAPS_API_KEY = 'test-key'
 
-    with patch('servers.ride.utils.requests.get', return_value=_Resp()) as http:
+    with patch('servers.ride.utils.requests.post', return_value=_Resp()) as http:
         utils.get_google_maps_distance(*PICKUP, *DEST)
 
+    assert http.call_count == 1, 'the provider was never called'
     timeout = http.call_args.kwargs.get('timeout')
     assert timeout is not None and timeout <= 10, (
-        f'Distance Matrix called with timeout={timeout!r}'
+        f'Routes API called with timeout={timeout!r}'
     )
 
 
@@ -155,7 +156,7 @@ def test_no_api_key_means_no_billable_traffic_at_all(settings, _cache, capsys):
     """What QA costs today: nothing. Maps is unconfigured and nothing is sent."""
     settings.GOOGLE_MAPS_API_KEY = ''
 
-    with patch('servers.ride.utils.requests.get') as http:
+    with patch('servers.ride.utils.requests.post') as http:
         result = utils.get_google_maps_distance(*PICKUP, *DEST)
 
     with capsys.disabled():

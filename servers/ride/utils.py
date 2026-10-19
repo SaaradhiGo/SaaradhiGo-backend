@@ -58,6 +58,35 @@ def _haversine_km(lat1, lon1, lat2, lon2):
     return R * 2 * math.asin(math.sqrt(a))
 
 
+def _routing_api_version() -> str:
+    """'new' (Routes API, default) or 'legacy' (Distance Matrix / Directions).
+
+    Mirrors GOOGLE_PLACES_API_VERSION. Defaults to NEW for the same reason:
+    a Google Cloud project created after Google's legacy cut-off cannot enable
+    the legacy routing APIs, so defaulting to them would fail by default on
+    every new deployment.
+    """
+    from django.conf import settings as _s
+
+    value = (getattr(_s, 'GOOGLE_ROUTING_API_VERSION', '') or '').strip().lower()
+    return value if value in ('new', 'legacy') else 'new'
+
+
+def _duration_seconds(value):
+    """Routes API durations are strings like '420s'."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if text.endswith('s'):
+        text = text[:-1]
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 # Distance Matrix answers are cached on the origin/destination pair.
 #
 # Quoting a ride fans out one request PER VEHICLE CATEGORY -- the website does
@@ -113,38 +142,124 @@ def get_google_maps_distance(pickup_lat, pickup_long, dest_lat, dest_long):
         logger.warning(f"Distance cache read failed: {e}")
         cache_key = None
 
-    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
-    params = {
-        "origins": f"{pickup_lat},{pickup_long}",
-        "destinations": f"{dest_lat},{dest_long}",
-        "key": api_key,
-        "mode": "driving",
-    }
     try:
-        response = requests.get(url, params=params, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "OK":
-                elements = data["rows"][0]["elements"][0]
-                if elements.get("status") == "OK":
-                    distance_m = elements["distance"]["value"]
-                    duration_s = elements["duration"]["value"]
-                    km = distance_m / 1000.0
-                    minutes = duration_s / 60.0
-                    if cache_key:
-                        try:
-                            cache_map_data(
-                                cache_key,
-                                {'distance_km': km, 'duration_min': minutes},
-                                ttl_seconds=DISTANCE_MATRIX_CACHE_TTL_SECONDS,
-                            )
-                        except Exception as e:  # noqa: BLE001
-                            logger.warning(f"Distance cache write failed: {e}")
-                    return km, minutes
-        logger.warning(f"Google Maps API error: {response.text}")
-    except Exception as e:
+        if _routing_api_version() == 'legacy':
+            km, minutes = _distance_legacy(
+                api_key, pickup_lat, pickup_long, dest_lat, dest_long,
+            )
+        else:
+            km, minutes = _distance_routes(
+                api_key, pickup_lat, pickup_long, dest_lat, dest_long,
+            )
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"Google Maps API request failed: {e}")
-    return None, None
+        return None, None
+
+    if km is None or minutes is None:
+        return None, None
+
+    if cache_key:
+        try:
+            cache_map_data(
+                cache_key,
+                {'distance_km': km, 'duration_min': minutes},
+                ttl_seconds=DISTANCE_MATRIX_CACHE_TTL_SECONDS,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Distance cache write failed: {e}")
+    return km, minutes
+
+
+def _distance_routes(api_key, pickup_lat, pickup_long, dest_lat, dest_long):
+    """Road distance and duration from the Routes API.
+
+    Replaces Distance Matrix (Legacy), which a Google Cloud project created
+    after its legacy cut-off CANNOT enable. Probing the SaaradhiGo project's
+    own key returned, for Distance Matrix and Directions alike:
+
+        "You're calling a legacy API, which is not enabled for your project.
+         ... switch to the Places API (New) or Routes API."
+
+    while Geocoding and Places API (New) answered normally. So this is not a
+    migration for tidiness; the legacy endpoint cannot be turned on at all,
+    and without this every fare would silently fall back to the haversine
+    approximation.
+
+    The numbers are the same quantities the legacy API returned -- metres and
+    seconds along a driving route -- so the fare computed from them is
+    unchanged. `routingPreference` is TRAFFIC_AWARE, matching the legacy
+    default of a traffic-adjusted driving duration.
+
+    The field mask is required by the Routes API and is also a cost control:
+    asking only for distance and duration keeps the request in the cheapest
+    SKU tier rather than paying for geometry nobody reads here.
+    """
+    response = requests.post(
+        'https://routes.googleapis.com/directions/v2:computeRoutes',
+        headers={
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': api_key,
+            'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration',
+        },
+        json={
+            'origin': {'location': {'latLng': {
+                'latitude': float(pickup_lat), 'longitude': float(pickup_long),
+            }}},
+            'destination': {'location': {'latLng': {
+                'latitude': float(dest_lat), 'longitude': float(dest_long),
+            }}},
+            'travelMode': 'DRIVE',
+            'routingPreference': 'TRAFFIC_AWARE',
+        },
+        timeout=5,
+    )
+    if response.status_code != 200:
+        logger.warning(f"Routes API error {response.status_code}: {response.text[:200]}")
+        return None, None
+
+    routes = (response.json() or {}).get('routes') or []
+    if not routes:
+        return None, None
+
+    distance_m = routes[0].get('distanceMeters')
+    duration_s = _duration_seconds(routes[0].get('duration'))
+    if distance_m is None or duration_s is None:
+        return None, None
+    return distance_m / 1000.0, duration_s / 60.0
+
+
+def _distance_legacy(api_key, pickup_lat, pickup_long, dest_lat, dest_long):
+    """Distance Matrix (Legacy).
+
+    Kept for deployments on a Google Cloud project old enough to still have it
+    enabled; selected with GOOGLE_ROUTING_API_VERSION=legacy.
+    """
+    response = requests.get(
+        "https://maps.googleapis.com/maps/api/distancematrix/json",
+        params={
+            "origins": f"{pickup_lat},{pickup_long}",
+            "destinations": f"{dest_lat},{dest_long}",
+            "key": api_key,
+            "mode": "driving",
+        },
+        timeout=5,
+    )
+    if response.status_code != 200:
+        logger.warning(f"Google Maps API error: {response.text[:200]}")
+        return None, None
+
+    data = response.json()
+    if data.get("status") != "OK":
+        logger.warning(f"Google Maps API error: {data.get('status')}")
+        return None, None
+
+    elements = data["rows"][0]["elements"][0]
+    if elements.get("status") != "OK":
+        return None, None
+    return (
+        elements["distance"]["value"] / 1000.0,
+        elements["duration"]["value"] / 60.0,
+    )
 
 
 def _road_network_factors(pickup_lat, pickup_long):

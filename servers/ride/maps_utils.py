@@ -83,6 +83,16 @@ def _places_api_version() -> str:
     return value if value in ('new', 'legacy') else 'new'
 
 
+def _routing_api_version() -> str:
+    """'new' (Routes API, default) or 'legacy' (Directions/Distance Matrix).
+
+    Same reasoning as _places_api_version: a project created after Google's
+    legacy cut-off cannot enable the legacy routing APIs at all.
+    """
+    value = (getattr(settings, 'GOOGLE_ROUTING_API_VERSION', '') or '').strip().lower()
+    return value if value in ('new', 'legacy') else 'new'
+
+
 # --------------------------------------------------------------------------
 # failure reporting
 # --------------------------------------------------------------------------
@@ -464,6 +474,121 @@ def google_directions(origin_lat, origin_lng, dest_lat, dest_lng):
     if not maps_configured():
         return _fail(NOT_CONFIGURED, 'GOOGLE_MAPS_API_KEY is not set')
 
+    if _routing_api_version() == 'legacy':
+        return _directions_legacy(origin_lat, origin_lng, dest_lat, dest_lng)
+    return _directions_new(origin_lat, origin_lng, dest_lat, dest_lng)
+
+
+def _directions_new(origin_lat, origin_lng, dest_lat, dest_lng):
+    """Routes API, normalised into the shape the apps already parse.
+
+    Directions (Legacy) cannot be enabled on a Google Cloud project created
+    after Google's legacy cut-off -- probing the SaaradhiGo key returned
+    "You're calling a legacy API, which is not enabled for your project" for
+    both Directions and Distance Matrix, while Geocoding and Places (New)
+    answered normally.
+
+    THE RESPONSE SHAPE IS A CONTRACT, so this translates rather than
+    replaces. The rider app reads `status`, `routes[0].legs[0].distance/
+    duration` and `routes[0].overview_polyline.points`, and decodes that
+    polyline directly. Routes API returns the SAME encoded polyline format,
+    so the translation is lossless for everything a client actually uses, and
+    no app needs changing.
+    """
+    try:
+        response = requests.post(
+            'https://routes.googleapis.com/directions/v2:computeRoutes',
+            headers={
+                'Content-Type': 'application/json',
+                'X-Goog-Api-Key': _api_key(),
+                # Required by Routes, and a cost control: ask only for what
+                # the clients read.
+                'X-Goog-FieldMask': (
+                    'routes.distanceMeters,routes.duration,'
+                    'routes.polyline.encodedPolyline,routes.viewport'
+                ),
+            },
+            json={
+                'origin': {'location': {'latLng': {
+                    'latitude': float(origin_lat), 'longitude': float(origin_lng),
+                }}},
+                'destination': {'location': {'latLng': {
+                    'latitude': float(dest_lat), 'longitude': float(dest_lng),
+                }}},
+                'travelMode': 'DRIVE',
+                'routingPreference': 'TRAFFIC_AWARE',
+            },
+            timeout=5,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as exc:
+        return _fail(*_classify_http(exc))
+    except ValueError as exc:
+        return _fail(UPSTREAM_ERROR, f'unparseable response: {exc}')
+
+    routes = (payload or {}).get('routes') or []
+    if not routes:
+        return _fail(INVALID_REQUEST, 'Routes API returned no route')
+
+    return {'status': 'OK', 'routes': [_route_as_legacy(r) for r in routes]}
+
+
+def _route_as_legacy(route):
+    """One Routes API route in Directions (Legacy) clothing."""
+    metres = route.get('distanceMeters') or 0
+    seconds = _duration_seconds(route.get('duration')) or 0
+    polyline = (route.get('polyline') or {}).get('encodedPolyline', '')
+
+    leg = {
+        'distance': {
+            'value': int(metres),
+            # `text` is rendered to the rider and parsed back out by the app's
+            # regex, so the unit must stay as the legacy API wrote it.
+            'text': f'{metres / 1000.0:.1f} km',
+        },
+        'duration': {
+            'value': int(seconds),
+            'text': f'{max(1, round(seconds / 60.0))} min',
+        },
+    }
+
+    out = {
+        'legs': [leg],
+        'overview_polyline': {'points': polyline},
+    }
+
+    viewport = route.get('viewport') or {}
+    low, high = viewport.get('low'), viewport.get('high')
+    if low and high:
+        out['bounds'] = {
+            'southwest': {
+                'lat': low.get('latitude'), 'lng': low.get('longitude'),
+            },
+            'northeast': {
+                'lat': high.get('latitude'), 'lng': high.get('longitude'),
+            },
+        }
+    return out
+
+
+def _duration_seconds(value):
+    """Routes API durations are strings like '420s'."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if text.endswith('s'):
+        text = text[:-1]
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _directions_legacy(origin_lat, origin_lng, dest_lat, dest_lng):
+    """Directions (Legacy), for projects that still have it enabled."""
     try:
         response = requests.get(
             'https://maps.googleapis.com/maps/api/directions/json',

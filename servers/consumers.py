@@ -1143,13 +1143,35 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             current_status = await self._current_trip_status()
         except Exception:  # noqa: BLE001 -- a greeting must not fail the connect
             logger.exception('trip_status_on_connect_failed')
-        await self.send(text_data=json.dumps({
+
+        greeting = {
             'type': 'connection_established',
             'trip_id': self.trip_id,
             'subscribed': self.in_trip_group,
             'trip_status': current_status,
             'message': 'Connected to trip updates',
-        }))
+        }
+
+        # THE PICKUP PIN, for the RIDER only.
+        #
+        # It was broadcast exactly once, inside the `accept` event. A rider who
+        # reloaded the page, lost the socket for a moment, or simply opened
+        # their trip from another tab never saw it again -- and the driver
+        # cannot start the trip without it, so the ride could not begin at all.
+        # The greeting already exists to let a client "discover durable truth
+        # rather than infer it"; the PIN is part of that truth.
+        #
+        # Rider only, and only while it is still needed: once the trip is
+        # in_progress or terminal the PIN proves nothing and is not re-sent.
+        if self.participation == 'rider' and current_status in (
+            'accepted', 'reached',
+        ):
+            try:
+                greeting['otp'] = await self._current_trip_otp()
+            except Exception:  # noqa: BLE001 -- never fail the connect over this
+                logger.exception('trip_otp_on_connect_failed')
+
+        await self.send(text_data=json.dumps(greeting))
         await self._start_location_pump()
 
     async def disconnect(self, close_code):
@@ -1178,6 +1200,22 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 'trip_status': status,
                 'close_code': close_code,
             })
+
+    @database_sync_to_async
+    def _current_trip_otp(self):
+        """The pickup PIN for this trip, as a string, or None.
+
+        Read from PostgreSQL for the same reason the status is: the rider is
+        about to read this number aloud to a driver, so it has to be the
+        committed one.
+        """
+        from servers.ride.models import Trip
+
+        otp = (Trip.objects
+               .filter(id=self.trip_id)
+               .values_list('otp', flat=True)
+               .first())
+        return str(otp) if otp is not None else None
 
     @database_sync_to_async
     def _current_trip_status(self):

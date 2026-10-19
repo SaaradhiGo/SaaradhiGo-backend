@@ -58,6 +58,31 @@ def _haversine_km(lat1, lon1, lat2, lon2):
     return R * 2 * math.asin(math.sqrt(a))
 
 
+# Distance Matrix answers are cached on the origin/destination pair.
+#
+# Quoting a ride fans out one request PER VEHICLE CATEGORY -- the website does
+# `Promise.all(vehicle_types.map(quoteFare))` -- and each one landed on this
+# function uncached. Four categories meant four identical, separately billed
+# Distance Matrix calls for the same two points, every time a rider tapped
+# "Show fares", including on bookings they abandoned.
+#
+# The road distance between two fixed points does not change between those
+# four calls. Duration does drift with traffic, so the TTL is short: long
+# enough to collapse the fan-out and a rider comparing categories, short
+# enough that a quote is never built on a stale travel time.
+#
+# 5 decimal places is ~1.1m, so nudging a pin still reuses the entry.
+DISTANCE_MATRIX_CACHE_TTL_SECONDS = 300
+
+
+def _distance_cache_key(pickup_lat, pickup_long, dest_lat, dest_long):
+    return (
+        'maps:distancematrix:'
+        f'{float(pickup_lat):.5f},{float(pickup_long):.5f}:'
+        f'{float(dest_lat):.5f},{float(dest_long):.5f}'
+    )
+
+
 def get_google_maps_distance(pickup_lat, pickup_long, dest_lat, dest_long):
     """
     Fetch distance and duration from Google Maps Distance Matrix API.
@@ -67,6 +92,26 @@ def get_google_maps_distance(pickup_lat, pickup_long, dest_lat, dest_long):
     api_key = getattr(settings, 'GOOGLE_MAPS_API_KEY', None)
     if not api_key:
         return None, None
+
+    # Cache lookups must never be able to fail a quote, so every Redis
+    # interaction here is advisory: a miss, a decode error or a dead cache
+    # just means we ask Google.
+    cache_key = None
+    try:
+        from servers.redis_client import cache_map_data, get_cached_map_data
+
+        cache_key = _distance_cache_key(
+            pickup_lat, pickup_long, dest_lat, dest_long,
+        )
+        cached = get_cached_map_data(cache_key)
+        if isinstance(cached, dict):
+            km = cached.get('distance_km')
+            minutes = cached.get('duration_min')
+            if isinstance(km, (int, float)) and isinstance(minutes, (int, float)):
+                return float(km), float(minutes)
+    except Exception as e:  # noqa: BLE001 -- the cache is never load-bearing
+        logger.warning(f"Distance cache read failed: {e}")
+        cache_key = None
 
     url = "https://maps.googleapis.com/maps/api/distancematrix/json"
     params = {
@@ -84,8 +129,18 @@ def get_google_maps_distance(pickup_lat, pickup_long, dest_lat, dest_long):
                 if elements.get("status") == "OK":
                     distance_m = elements["distance"]["value"]
                     duration_s = elements["duration"]["value"]
-                    print(distance_m / 1000.0, duration_s / 60.0)
-                    return distance_m / 1000.0, duration_s / 60.0
+                    km = distance_m / 1000.0
+                    minutes = duration_s / 60.0
+                    if cache_key:
+                        try:
+                            cache_map_data(
+                                cache_key,
+                                {'distance_km': km, 'duration_min': minutes},
+                                ttl_seconds=DISTANCE_MATRIX_CACHE_TTL_SECONDS,
+                            )
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning(f"Distance cache write failed: {e}")
+                    return km, minutes
         logger.warning(f"Google Maps API error: {response.text}")
     except Exception as e:
         logger.warning(f"Google Maps API request failed: {e}")

@@ -462,7 +462,21 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     'fatigue': status.to_dict(),
                 }
             self.driver.status = "online"
-            self.driver.save()
+            # ONLY the status column.
+            #
+            # `self.driver` is loaded once in connect() and held for the life
+            # of the socket, so a bare save() writes every column back from a
+            # snapshot that may be hours old. A trip completing meanwhile
+            # increments `total_trips` in the database with F(); the next
+            # toggle used to overwrite it, which is how driver #8 reported 3
+            # completed trips against an authoritative 4.
+            #
+            # `total_trips` was only the visible casualty. The same write
+            # reverted anything else changed during the session -- `ratings`,
+            # `approved`, `qa_simulated_eligibility`, `active_vehicle`. An
+            # operator approving a driver's KYC mid-shift would have had that
+            # decision silently undone when the driver went offline.
+            self.driver.save(update_fields=['status'])
             record_session_start(self.driver)
             return {'ok': True, 'fatigue': status.to_dict()}
         except Exception as e:
@@ -475,7 +489,8 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         try:
             from servers.driver.fatigue import record_session_end
             self.driver.status = "off"
-            self.driver.save()
+            # Scoped for the same reason as going online, above.
+            self.driver.save(update_fields=['status'])
             record_session_end(self.driver, reason='offline')
             return {'ok': True}
         except Exception as e:

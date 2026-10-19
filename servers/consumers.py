@@ -1563,14 +1563,38 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     # -- Event handlers --
 
     async def trip_status_update(self, event):
-        """Broadcast trip status to all participants."""
-        await self.send(text_data=json.dumps({
+        """Broadcast trip status to all participants.
+
+        The accept event reaches this group carrying the pickup PIN, but the
+        payload below is built from a fixed set of keys, so `otp` was dropped
+        on the way out. A rider watching their own trip on this socket -- the
+        website does exactly that, from the moment the trip is created --
+        therefore never learned the PIN, and the ride could not be started at
+        all. Found by running trip #88 end to end: the driver accepted,
+        reached the pickup and asked for a number the rider had no way to see.
+
+        The PIN goes to the RIDER only. The driver must be told it out loud by
+        the passenger -- that is the entire point of it -- so it is gated the
+        same way `driver_location_update` is gated, by participation rather
+        than by trusting the sender to omit it.
+        """
+        payload = {
             'type': 'trip_status_update',
             'trip_id': event['trip_id'],
             'status': event['status'],
             'message': event.get('message', ''),
             'driver_id': event.get('driver_id'),
-        }))
+        }
+
+        if getattr(self, 'participation', None) == 'rider':
+            otp = event.get('otp')
+            if otp is not None and str(otp).strip() != '':
+                payload['otp'] = str(otp)
+            for key in ('driver_info', 'vehicle_info'):
+                if event.get(key):
+                    payload[key] = event[key]
+
+        await self.send(text_data=json.dumps(payload))
 
     async def driver_location_update(self, event):
         """Forward live driver location to the RIDER on this trip.

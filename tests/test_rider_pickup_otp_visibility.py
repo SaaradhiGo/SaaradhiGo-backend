@@ -110,3 +110,119 @@ def test_helper_returns_a_string_for_reading_aloud():
 def test_missing_otp_is_none_not_a_crash():
     trip, _rider, _driver = _trip(status='accepted', otp=None)
     assert _greeting_otp(trip, 'rider', 'accepted') is None
+
+
+# ---------------------------------------------------------------------------
+# THE SECOND DEFECT, FOUND BY RUNNING TRIP #88
+#
+# Fixing the greeting was not enough. A rider on the website opens the trip
+# socket the moment the trip is created -- while it is still `searching` --
+# so the greeting has no PIN to carry, and the page never reconnects. The PIN
+# has to arrive on the accept broadcast itself.
+#
+# It did reach the trip group: `status_event` carries `otp` when the action is
+# `accept`. But `trip_status_update` rebuilt the outgoing frame from a fixed
+# set of keys and dropped it. So the driver accepted trip #88, drove to the
+# pickup and asked for a number the rider could not see anywhere.
+#
+# The PIN now travels to the RIDER on that broadcast, and only the rider: the
+# passenger has to say it out loud, which is the entire point of it.
+# ---------------------------------------------------------------------------
+
+import asyncio
+import json
+
+
+def _relay(participation, event):
+    """Run the real `trip_status_update` and capture the frame it sends."""
+    from servers.consumers import TripStatusConsumer
+
+    consumer = TripStatusConsumer.__new__(TripStatusConsumer)
+    consumer.participation = participation
+
+    sent = []
+
+    async def fake_send(text_data=None, **_kw):
+        sent.append(json.loads(text_data))
+
+    consumer.send = fake_send
+    asyncio.run(TripStatusConsumer.trip_status_update(consumer, event))
+    assert len(sent) == 1
+    return sent[0]
+
+
+def _accept_event(otp='802039'):
+    return {
+        'type': 'trip_status_update',
+        'trip_id': 88,
+        'status': 'accept',
+        'message': 'Trip accepted',
+        'driver_id': 8,
+        'otp': otp,
+        'driver_info': {'id': 8, 'stars': '0.0'},
+        'vehicle_info': {'vehicle_number': 'AP16QA0001'},
+    }
+
+
+def test_rider_receives_the_pin_on_the_accept_broadcast():
+    frame = _relay('rider', _accept_event())
+    assert frame['otp'] == '802039', (
+        'without this the rider cannot start the ride at all: the PIN exists '
+        'nowhere else on their screen'
+    )
+
+
+@pytest.mark.parametrize(
+    'participation', ['assigned_driver', 'candidate_driver', None],
+)
+def test_nobody_but_the_rider_receives_the_pin(participation):
+    frame = _relay(participation, _accept_event())
+    assert 'otp' not in frame, (
+        'the driver must be told the PIN by the passenger; a driver that can '
+        'read it off their own screen can start a ride nobody got into'
+    )
+
+
+def test_rider_also_receives_the_driver_and_vehicle_details():
+    frame = _relay('rider', _accept_event())
+    assert frame['driver_info']['id'] == 8
+    assert frame['vehicle_info']['vehicle_number'] == 'AP16QA0001'
+
+
+def test_driver_details_are_not_leaked_to_other_candidates():
+    frame = _relay('candidate_driver', _accept_event())
+    assert 'driver_info' not in frame
+    assert 'vehicle_info' not in frame
+
+
+def test_the_ordinary_status_frame_is_unchanged():
+    """Every other status must keep the exact shape clients already parse."""
+    frame = _relay('rider', {
+        'type': 'trip_status_update',
+        'trip_id': 88,
+        'status': 'in_progress',
+        'message': '',
+        'driver_id': 8,
+    })
+    assert frame == {
+        'type': 'trip_status_update',
+        'trip_id': 88,
+        'status': 'in_progress',
+        'message': '',
+        'driver_id': 8,
+    }
+
+
+@pytest.mark.parametrize('otp', [None, '', '   '])
+def test_a_missing_pin_is_omitted_rather_than_sent_as_empty(otp):
+    event = _accept_event(otp=otp)
+    frame = _relay('rider', event)
+    assert 'otp' not in frame, (
+        'an empty PIN box is worse than none: it invites the rider to read '
+        'out a blank'
+    )
+
+
+def test_a_numeric_pin_survives_as_a_string_with_its_leading_zero():
+    frame = _relay('rider', _accept_event(otp='004321'))
+    assert frame['otp'] == '004321'

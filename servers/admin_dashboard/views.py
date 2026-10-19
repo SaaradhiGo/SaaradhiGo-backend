@@ -47,7 +47,8 @@ logger = logging.getLogger(__name__)
 # same name so existing call sites and tests are unchanged.
 from base.countries import normalize_phone  # noqa: E402
 from base.money import (  # noqa: E402
-    DEFAULT_CURRENCY, format_totals, single_currency_or_none, sum_by_currency,
+    DEFAULT_CURRENCY, charged_fare, format_totals, single_currency_or_none,
+    sum_by_currency,
 )
 from servers.driver.compliance import (  # noqa: E402
     VEHICLE_DOCUMENT_COLUMNS, document_description, document_label,
@@ -3772,7 +3773,7 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
         # amount per currency rather than summed into a number that is not an
         # amount of money in any of them.
         "total_revenue_display": format_totals(
-            sum_by_currency(completed_trips, "final_fare")
+            sum_by_currency(completed_trips, charged_fare())
         ),
         # ----------------------------------------------
         # RATING
@@ -5841,7 +5842,7 @@ def driver_profile(request, driver_id):
     # then the page shows both totals rather than their meaningless sum.
     completed_trips_qs = trips_qs.filter(status_id__status_code="completed")
 
-    revenue_by_currency = sum_by_currency(completed_trips_qs, "final_fare")
+    revenue_by_currency = sum_by_currency(completed_trips_qs, charged_fare())
 
     total_revenue = (
         list(revenue_by_currency.values())[0] if len(revenue_by_currency) == 1

@@ -2039,6 +2039,32 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     # Create payment on trip completion within the same transaction
                     self._create_payment_on_complete(trip)
 
+                    # Count the trip against the driver.
+                    #
+                    # `Driver.total_trips` is read by the console, the driver
+                    # profile and the admin APIs, and was incremented by
+                    # NOTHING -- it stayed 0 for every driver forever. Trip
+                    # #81 completed and the counter did not move.
+                    #
+                    # This runs on the TRANSITION into 'completed', not on
+                    # seeing the state: the guard above returns
+                    # `already_in_target_state` for a replayed completion and
+                    # never reaches here, so a retried ack cannot count the
+                    # same trip twice. A cancelled trip takes the other
+                    # branch and is never counted.
+                    #
+                    # F() so the increment happens in the database, inside the
+                    # transaction that is already holding this trip row --
+                    # read-modify-write in Python would lose a concurrent
+                    # completion by the same driver.
+                    if trip.driver_id_id is not None:
+                        from django.db.models import F as _F
+                        from servers.driver.models import Driver as _Driver
+
+                        _Driver.objects.filter(id=trip.driver_id_id).update(
+                            total_trips=_F('total_trips') + 1,
+                        )
+
                     fare = trip.final_fare or trip.estimated_fare
                     # Formatted in the trip's own currency. This was
                     # f'Rs.{fare}' for every market, so a rider in San

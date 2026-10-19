@@ -2,6 +2,7 @@ import logging
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
+from base.money import charged_fare
 from base.utils import success_response, error_response
 from base.permissions import (
     CAP_DRIVER_KYC, CAP_FINANCE_PAYOUT, IsAdmin, RequiresCapability,
@@ -244,9 +245,17 @@ def driver_full_detail_admin(request, driver_id):
         completed_qs = Trip.objects.filter(
             driver_id=driver, status_id__status_code='completed',
         )
-        lifetime = completed_qs.aggregate(s=Sum('final_fare'))['s'] or Decimal('0.00')
-        today_amt = completed_qs.filter(completed_at__gte=today_start).aggregate(s=Sum('final_fare'))['s'] or Decimal('0.00')
-        month_amt = completed_qs.filter(completed_at__gte=month_start).aggregate(s=Sum('final_fare'))['s'] or Decimal('0.00')
+        # `charged_fare()`, not 'final_fare'. That column is written only when
+        # a promo is applied, so these three totals read 0.00 for a driver
+        # whose every trip was an ordinary one -- which is most drivers.
+        #
+        # NOTE this is GROSS FARE COLLECTED on the driver's trips, not the
+        # driver's take-home: commission is deducted elsewhere, and these two
+        # are deliberately different numbers.
+        fare = charged_fare()
+        lifetime = completed_qs.aggregate(s=Sum(fare))['s'] or Decimal('0.00')
+        today_amt = completed_qs.filter(completed_at__gte=today_start).aggregate(s=Sum(fare))['s'] or Decimal('0.00')
+        month_amt = completed_qs.filter(completed_at__gte=month_start).aggregate(s=Sum(fare))['s'] or Decimal('0.00')
         earnings_payload['lifetime'] = str(lifetime)
         earnings_payload['today'] = str(today_amt)
         earnings_payload['this_month'] = str(month_amt)

@@ -379,6 +379,7 @@ def build_admin_dashboard_kpis(day_date=None):
     from django.db.models import Count, Sum
     from servers.driver.models import Driver, DriverCancellation, WithdrawalRequest
     from servers.ride.models import Trip, Receipt
+    from base.money import charged_fare
 
     tz = timezone.get_current_timezone()
     if day_date is None:
@@ -405,7 +406,10 @@ def build_admin_dashboard_kpis(day_date=None):
     # shape for a single-market deployment so nothing downstream breaks, and
     # `gmv_by_currency` is the honest answer that an operator reading a
     # multi-market dashboard needs.
-    gmv_by_currency = sum_by_currency(completed_today, 'final_fare')
+    # `charged_fare()`, not 'final_fare': that column is only written when a
+    # promo is applied, so summing it reported GMV of zero for every ordinary
+    # trip. Trip #81 settled 135.68 INR in cash and this tile said 0.00.
+    gmv_by_currency = sum_by_currency(completed_today, charged_fare())
     gmv = (next(iter(gmv_by_currency.values()), Decimal('0.00'))
            if len(gmv_by_currency) <= 1 else None)
 

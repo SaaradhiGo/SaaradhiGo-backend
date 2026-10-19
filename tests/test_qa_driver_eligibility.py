@@ -207,3 +207,62 @@ def test_command_writes_an_audit_row_saying_it_is_not_an_approval():
 def test_command_refuses_an_unknown_driver():
     with pytest.raises(CommandError, match='no driver with id'):
         call_command('qa_simulate_driver_eligibility', '--driver-id', '999999')
+
+
+# --------------------------------------------------------------------------
+# the driver profile API must tell the app what the sockets already decided
+# --------------------------------------------------------------------------
+
+@override_settings(**QA)
+def test_profile_exposes_dispatch_eligible_without_claiming_approval():
+    """The app routes on this; it must not have to read `approved`.
+
+    Before this field existed, a QA test driver was accepted by the dispatch
+    sockets and simultaneously sent to the onboarding wizard by the app,
+    because the app decided from `approved` alone.
+    """
+    from servers.driver.serializers import DriverProfileSerializer
+
+    driver = _driver(qa_simulated_eligibility=True)
+    data = DriverProfileSerializer(driver).data
+
+    assert data['dispatch_eligible'] is True
+    assert data['approved'] is False, 'the API must keep telling the truth'
+    assert data['qa_simulated_eligibility'] is True
+
+
+@override_settings(**PROD)
+def test_profile_dispatch_eligible_is_false_in_production_for_simulated():
+    from servers.driver.serializers import DriverProfileSerializer
+
+    driver = _driver(qa_simulated_eligibility=True)
+    data = DriverProfileSerializer(driver).data
+    assert data['dispatch_eligible'] is False
+    assert data['approved'] is False
+
+
+@override_settings(**PROD)
+def test_profile_dispatch_eligible_tracks_real_approval_in_production():
+    from servers.driver.serializers import DriverProfileSerializer
+
+    data = DriverProfileSerializer(_driver(approved=True)).data
+    assert data['dispatch_eligible'] is True
+    assert data['approved'] is True
+
+
+@override_settings(**QA)
+def test_dispatch_eligible_is_not_writable():
+    """A driver must not be able to grant themselves eligibility."""
+    from servers.driver.serializers import DriverProfileSerializer
+
+    driver = _driver()
+    ser = DriverProfileSerializer(
+        driver,
+        data={'dispatch_eligible': True, 'qa_simulated_eligibility': True},
+        partial=True,
+    )
+    assert ser.is_valid(), ser.errors
+    ser.save()
+    driver.refresh_from_db()
+    assert driver.qa_simulated_eligibility is False
+    assert driver.approved is False

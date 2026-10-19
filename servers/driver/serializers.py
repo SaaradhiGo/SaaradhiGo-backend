@@ -35,9 +35,29 @@ class DriverProfileSerializer(serializers.ModelSerializer):
     license_doc_back = S3UploadKeyField(kind="license_doc_back", required=False, allow_null=True)
     active_vehicle_details = VehicleSerializer(source='active_vehicle', read_only=True)
 
+    # MAY THIS DRIVER OPERATE RIGHT NOW -- which is not the same question as
+    # "has a human approved their documents".
+    #
+    # The app used to decide both its routing and its go-online control from
+    # `approved` alone, so a QA test driver with simulated eligibility was
+    # accepted by the server's dispatch sockets and still sent to the
+    # onboarding wizard by the app: eligible on the backend, invisible on the
+    # device.
+    #
+    # `approved` keeps its meaning and is untouched. This additive field says
+    # what the three WebSocket gates already decide, so the client and the
+    # server stop disagreeing. Read-only, computed, and never writable.
+    dispatch_eligible = serializers.SerializerMethodField()
+    qa_simulated_eligibility = serializers.BooleanField(read_only=True)
+
+    def get_dispatch_eligible(self, obj) -> bool:
+        from servers.driver.qa_eligibility import may_operate
+
+        return may_operate(obj)
+
     class Meta:
         model = Driver
-        fields = ['id', 'license_doc', 'license_doc_back', 'license_expiry', 'active_vehicle', 'active_vehicle_details', 'status', 'approved', 'total_trips', 'ratings']
+        fields = ['id', 'license_doc', 'license_doc_back', 'license_expiry', 'active_vehicle', 'active_vehicle_details', 'status', 'approved', 'dispatch_eligible', 'qa_simulated_eligibility', 'total_trips', 'ratings']
         # Defence in depth. This serializer is only ever bound to a DRIVER'S OWN
         # token, and `update_driver_profile` already builds its payload from a
         # four-field allow-list -- so `approved` was never reachable in practice.
@@ -51,7 +71,8 @@ class DriverProfileSerializer(serializers.ModelSerializer):
         # approval is unaffected -- it uses KYCApprovalSerializer, which declares
         # `approved` and `status` writable and enforces the MVA-2020 document
         # checks before allowing approved=True.
-        read_only_fields = ['approved', 'status', 'total_trips', 'ratings']
+        read_only_fields = ['approved', 'status', 'total_trips', 'ratings',
+                            'dispatch_eligible', 'qa_simulated_eligibility']
 
 
 class DriverBankAccountSerializer(serializers.ModelSerializer):

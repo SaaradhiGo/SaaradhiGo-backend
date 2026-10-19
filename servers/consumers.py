@@ -1850,6 +1850,21 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 trip.status_id = status_obj
                 trip.accepted_at = timezone.now()
 
+                # Record WHICH VEHICLE is doing this ride.
+                #
+                # `Trip.vehicle_id` had no assignment anywhere in the codebase,
+                # so it was null on every trip ever taken -- and the rider's
+                # own history serialises `vehicle_info` from it, so that field
+                # was permanently null too. Found on trip #90: a sedan was
+                # booked, dispatched, driven and paid for, and the ride the
+                # rider could read back named no vehicle at all.
+                #
+                # The accept broadcast already reads `driver.active_vehicle`
+                # to tell the rider what to look for at the kerb; this stores
+                # the same thing, so what was shown and what is on the record
+                # cannot drift apart.
+                trip.vehicle_id = driver.active_vehicle
+
                 # Generate and save OTP for the trip
                 otp = generate_otp(6)
                 trip.otp = otp

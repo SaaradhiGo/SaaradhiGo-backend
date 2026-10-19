@@ -203,6 +203,72 @@ async def test_the_rider_reconnects_into_the_durable_status(status):
 
 
 # ---------------------------------------------------------------------------
+# The pickup PIN across a reconnect
+#
+# Reconnecting into the right status is not enough on its own. The PIN was
+# broadcast once, on accept, and lived nowhere else the rider could reach it:
+# drop the socket for a moment and the ride could not be started at all,
+# because the driver cannot begin without a number only the rider can supply.
+# Trip #88 stalled at the kerb exactly this way.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('status', ['accepted', 'reached'])
+async def test_the_rider_recovers_the_pickup_pin_on_reconnect(status):
+    """Drop the rider's socket mid-assignment; the PIN comes back with it."""
+    suffix = 1700 + abs(hash(status)) % 300
+    rider = await asyncio.to_thread(_make_rider, suffix)
+    driver = await asyncio.to_thread(_make_driver, suffix)
+    trip = await asyncio.to_thread(_make_trip, rider, driver, status)
+
+    # First connection, then lose it the way a phone on a lift does.
+    comm, first, _ = await _connect(rider, trip.id)
+    await _shutdown(comm)
+
+    # Reconnect: everything needed to carry on must be in the greeting.
+    comm, greeting, _ = await _connect(rider, trip.id)
+    await _shutdown(comm)
+
+    assert first.get('otp') == '123456'
+    assert greeting['trip_status'] == status
+    assert greeting.get('otp') == '123456', (
+        'a rider who lost the socket could not read out the PIN, and the '
+        'driver cannot start the trip without it'
+    )
+
+
+@pytest.mark.parametrize('status', ['in_progress', 'completed', 'cancelled'])
+async def test_the_pin_is_not_replayed_once_it_proves_nothing(status):
+    suffix = 2100 + abs(hash(status)) % 300
+    rider = await asyncio.to_thread(_make_rider, suffix)
+    driver = await asyncio.to_thread(_make_driver, suffix)
+    trip = await asyncio.to_thread(_make_trip, rider, driver, status)
+
+    comm, greeting, _ = await _connect(rider, trip.id)
+    await _shutdown(comm)
+
+    assert 'otp' not in greeting or greeting['otp'] is None
+
+
+@pytest.mark.parametrize('status', ['accepted', 'reached'])
+async def test_the_assigned_driver_never_receives_the_pin_on_reconnect(status):
+    """The driver has to be told it by the passenger. That is the point of it.
+
+    A driver app that could read the PIN out of its own reconnect could start
+    a ride with nobody in the car.
+    """
+    suffix = 2500 + abs(hash(status)) % 300
+    rider = await asyncio.to_thread(_make_rider, suffix)
+    driver = await asyncio.to_thread(_make_driver, suffix)
+    trip = await asyncio.to_thread(_make_trip, rider, driver, status)
+
+    comm, greeting, _ = await _connect(driver.user_id, trip.id)
+    await _shutdown(comm)
+
+    assert greeting['trip_status'] == status
+    assert 'otp' not in greeting or greeting['otp'] is None
+
+
+# ---------------------------------------------------------------------------
 # The case this exists for
 # ---------------------------------------------------------------------------
 

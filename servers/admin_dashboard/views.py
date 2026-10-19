@@ -1673,6 +1673,14 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
             # KYC
             "status": doc_status,
 
+            # A QA test account carrying SIMULATED dispatch eligibility.
+            # Surfaced so the console can label it: its documents are
+            # placeholders, `approved` is still false, and it is dispatchable
+            # only in a QA environment.
+            "qa_simulated_eligibility": bool(
+                getattr(driver, "qa_simulated_eligibility", False)
+            ),
+
             # Driver operational status
             "driver_status": driver_status,
 

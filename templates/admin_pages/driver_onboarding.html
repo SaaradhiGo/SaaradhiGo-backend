@@ -654,6 +654,22 @@ Driver Onboarding & Vehicle Fleet Compliance - SaaradhiGo Admin
                                                 KYC {{ selected.status }}
                                             </span>
 
+                                            {% if selected.qa_simulated_eligibility %}
+                                                {# A QA test account with SIMULATED dispatch
+                                                   eligibility. Shown next to the KYC badge so an
+                                                   operator can never mistake it for an approved
+                                                   driver: its documents are placeholders and its
+                                                   `approved` flag is still false. #}
+                                                <span
+                                                    class="status-pill px-3 py-1 rounded-full
+                                                           bg-fuchsia-500/15 text-fuchsia-300
+                                                           border border-fuchsia-400/30"
+                                                    title="Simulated eligibility for QA testing. Not a KYC approval; ignored outside QA."
+                                                >
+                                                    QA TEST DRIVER — SIMULATED
+                                                </span>
+                                            {% endif %}
+
                                         </div>
 
 

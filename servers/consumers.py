@@ -5,6 +5,8 @@ import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import AnonymousUser
+
+from servers.driver.qa_eligibility import may_operate
 from django.core.cache import cache
 from base.utils import generate_otp
 from base.money import currency_for_trip, format_money
@@ -163,7 +165,10 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             logger.info("WS reject 4003: user has no driver profile")
             await self.close(code=4003)
             return
-        if not self.driver.approved:
+        # `may_operate`, not `approved`: a QA test driver carries simulated
+        # eligibility that is honoured ONLY in a QA environment. `approved`
+        # still means a real document review and nothing else.
+        if not may_operate(self.driver):
             await self.close(code=4004)
             return
         lat = self.scope.get('lat')
@@ -1607,7 +1612,7 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         current = trip.status_id.status_code if trip.status_id else None
         if current not in (None, 'requested'):
             return 'none'
-        if not driver.approved or (driver.status or '').strip().lower() == 'blocked':
+        if not may_operate(driver) or (driver.status or '').strip().lower() == 'blocked':
             return 'none'
         return 'candidate_driver'
 
@@ -1690,7 +1695,7 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 except Driver.DoesNotExist:
                     return {'success': False, 'error': 'Driver profile not found'}
 
-                if not driver.approved:
+                if not may_operate(driver):
                     return {
                         'success': False,
                         'error': 'Your driver profile is not approved yet. '

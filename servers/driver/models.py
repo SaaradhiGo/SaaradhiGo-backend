@@ -47,6 +47,23 @@ class Driver(models.Model):
     #   - Rolling cancellation cooldown (3 cancels in 24h -> 1h lockout)
     # Nullable so legacy drivers continue to work; default unlocked.
     fatigue_lockout_until=models.DateTimeField(null=True,blank=True,db_index=True)
+    # SIMULATED dispatch eligibility for a QA test account. NOT an approval.
+    #
+    # `approved` is the output of a real MVA-2020 document review and stays
+    # the only thing that means that. This flag says "this is a test account
+    # and we are pretending, in QA". It is honoured only where
+    # servers.driver.qa_eligibility.qa_simulation_allowed() is true -- an
+    # explicit QA environment -- so the same row in production grants
+    # nothing. A driver carrying this has doc_status 'pending' and shows as
+    # KYC PENDING in the console, which is the truth.
+    qa_simulated_eligibility=models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            'QA test account: simulated dispatch eligibility. Never a KYC '
+            'approval, and ignored outside a QA environment.'
+        ),
+    )
     def __str__(self) -> str:
         return self.user_id.full_name if self.user_id.full_name else self.user_id.phone_number
 class VehicleType(models.Model):

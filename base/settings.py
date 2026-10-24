@@ -130,11 +130,21 @@ REST_FRAMEWORK = {
         # security control. Generous enough to type two addresses with
         # autocomplete firing as you go; far too small to be worth scraping.
         # Signed-in riders bypass it entirely (see GuestMapsThrottle).
-        'guest_maps': '60/hour',
-        # A ceiling on all anonymous lookups combined. The per-IP cap is
-        # keyed on a client-supplied address; this one cannot be evaded by
-        # rotating it, so it is what actually bounds the bill.
-        'guest_maps_global': '1200/hour',
+        # Sized against SHARED ADDRESSES, not against one person. Mobile
+        # carriers in India put large numbers of subscribers behind a single
+        # CGNAT address, and an office does the same, so a cap tuned to one
+        # visitor's typing would lock out everyone else on that address. A
+        # debounced autocomplete spends roughly 10-20 calls on a booking
+        # attempt, so this allows about ten visitors an hour per address.
+        'guest_maps': '180/hour',
+        # The ceiling that actually bounds the bill. The per-IP cap is keyed
+        # on a client-supplied header and can be walked around by rotating
+        # it; this bucket is shared by every anonymous request and cannot.
+        # At Places list-pricing this caps anonymous spend near USD 1.70 an
+        # hour in the worst case, which is a bad day rather than an
+        # incident. Raise it when real traffic justifies it -- with a figure
+        # measured from the logs, not a guess.
+        'guest_maps_global': '600/hour',
     },
 }
 # --- Email delivery ----------------------------------------------------------

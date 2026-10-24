@@ -4,8 +4,14 @@ from decimal import Decimal
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from base.utils import success_response, error_response
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.decorators import (
+    api_view,
+    permission_classes,
+    throttle_classes,
+)
+
+from base.throttles import GuestMapsThrottle
 from servers.ride.models import Trip, FarePricing
 from servers.ride.serializers import TripListSerializer, TripDetailSerializer
 from servers.ride.utils import estimate_amount, validate_distance
@@ -1396,8 +1402,12 @@ def _maps_error_response():
         status=status.HTTP_502_BAD_GATEWAY,
     )
 
+# Place SEARCH is open to guests so the public homepage can offer a real
+# pickup and destination before asking anyone to sign in. It looks a place
+# up and nothing else. Ride operations below stay authenticated.
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+@throttle_classes([GuestMapsThrottle])
 def proxy_geocode(request):
     """
     Proxy for Google Places Autocomplete/Geocode.
@@ -1485,8 +1495,12 @@ def proxy_reverse_geocode(request):
     return success_response(result, status.HTTP_200_OK)
 
 
+# Open to guests for the same reason as `proxy_geocode`: resolving the
+# suggestion a visitor picked into coordinates is part of searching, and
+# without it the homepage could only hand over free text.
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+@throttle_classes([GuestMapsThrottle])
 def proxy_place_details(request):
     """Proxy for Google Place Details.
 

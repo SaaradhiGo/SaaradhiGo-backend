@@ -105,3 +105,35 @@ class EmailLoginThrottle(_EmailRateThrottle):
     """
 
     scope = 'email_login'
+
+
+class GuestMapsThrottle(SimpleRateThrottle):
+    """Cap place lookups by ANONYMOUS callers, keyed on client IP.
+
+    The public homepage lets a visitor search for a pickup and a destination
+    before signing in, which means `maps/geocode` and `maps/place-details`
+    have to answer unauthenticated requests. Those calls cost money with the
+    map provider, so an uncapped version of them is an open geocoding API
+    with our billing attached.
+
+    A SIGNED-IN RIDER IS NOT THROTTLED HERE. `get_cache_key` returns None for
+    an authenticated request, which tells DRF to skip this throttle entirely,
+    so the behaviour riders have today is unchanged. Only the guest path is
+    bounded.
+
+    The IP comes from `REMOTE_ADDR` via DRF's own `get_ident`, which already
+    honours `NUM_PROXIES`. Behind a proxy that is the edge's view of the
+    client, which is the best signal available and is good enough for a
+    spend cap -- it is not an authentication control.
+    """
+
+    scope = 'guest_maps'
+
+    def get_cache_key(self, request, view):
+        user = getattr(request, 'user', None)
+        if user is not None and user.is_authenticated:
+            return None  # signed-in riders are not subject to this cap
+        return self.cache_format % {
+            'scope': self.scope,
+            'ident': self.get_ident(request),
+        }

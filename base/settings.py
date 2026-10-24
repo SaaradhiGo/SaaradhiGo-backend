@@ -125,6 +125,12 @@ REST_FRAMEWORK = {
         # These two SEND MAIL, so the cap also protects a third party's inbox
         # from being used as a spam target.
         'password_reset': '5/hour',
+        # Place lookups from a SIGNED-OUT visitor on the public homepage.
+        # Each one costs a Places call, so this is a spend cap, not a
+        # security control. Generous enough to type two addresses with
+        # autocomplete firing as you go; far too small to be worth scraping.
+        # Signed-in riders bypass it entirely (see GuestMapsThrottle).
+        'guest_maps': '60/hour',
     },
 }
 # --- Email delivery ----------------------------------------------------------

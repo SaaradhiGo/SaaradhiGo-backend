@@ -129,6 +129,27 @@ class GuestMapsThrottle(SimpleRateThrottle):
 
     scope = 'guest_maps'
 
+    def get_ident(self, request):
+        """The client IP, taken as the FIRST entry of X-Forwarded-For.
+
+        DRF's own `get_ident` joins the whole XFF chain when `NUM_PROXIES`
+        is unset. Behind Railway's edge that chain carries a hop that
+        changes between requests, so every call produced a different key and
+        the throttle counted nothing -- measured at 65 anonymous requests in
+        a row, all 200, against a 60/hour cap.
+
+        The leftmost entry is the original client and is stable. It is also
+        client-supplied and therefore spoofable, which is why this is not the
+        only cap: `GuestMapsGlobalThrottle` bounds total anonymous spend
+        regardless of what any one caller claims its address is.
+        """
+        xff = request.META.get('HTTP_X_FORWARDED_FOR')
+        if xff:
+            first = xff.split(',')[0].strip()
+            if first:
+                return first
+        return request.META.get('REMOTE_ADDR', '')
+
     def get_cache_key(self, request, view):
         user = getattr(request, 'user', None)
         if user is not None and user.is_authenticated:
@@ -137,3 +158,26 @@ class GuestMapsThrottle(SimpleRateThrottle):
             'scope': self.scope,
             'ident': self.get_ident(request),
         }
+
+
+class GuestMapsGlobalThrottle(SimpleRateThrottle):
+    """A ceiling on ALL anonymous place lookups, across every caller.
+
+    The per-IP cap is keyed on an address the client supplies, so a caller
+    willing to rotate `X-Forwarded-For` can walk around it. This one cannot
+    be walked around: every anonymous request shares a single bucket, so the
+    most the public endpoints can cost in an hour is bounded no matter how
+    the traffic is spread.
+
+    Sized well above honest use -- a visitor typing two addresses makes a
+    handful of calls -- and well below a bill worth worrying about. Signed-in
+    riders bypass it, exactly as they bypass the per-IP cap.
+    """
+
+    scope = 'guest_maps_global'
+
+    def get_cache_key(self, request, view):
+        user = getattr(request, 'user', None)
+        if user is not None and user.is_authenticated:
+            return None
+        return self.cache_format % {'scope': self.scope, 'ident': 'all'}

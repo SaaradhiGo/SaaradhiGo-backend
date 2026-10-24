@@ -11,7 +11,7 @@ from rest_framework.decorators import (
     throttle_classes,
 )
 
-from base.throttles import GuestMapsThrottle
+from base.throttles import GuestMapsGlobalThrottle, GuestMapsThrottle
 from servers.ride.models import Trip, FarePricing
 from servers.ride.serializers import TripListSerializer, TripDetailSerializer
 from servers.ride.utils import estimate_amount, validate_distance
@@ -1407,7 +1407,7 @@ def _maps_error_response():
 # up and nothing else. Ride operations below stay authenticated.
 @api_view(['POST'])
 @permission_classes([AllowAny])
-@throttle_classes([GuestMapsThrottle])
+@throttle_classes([GuestMapsThrottle, GuestMapsGlobalThrottle])
 def proxy_geocode(request):
     """
     Proxy for Google Places Autocomplete/Geocode.
@@ -1500,7 +1500,7 @@ def proxy_reverse_geocode(request):
 # without it the homepage could only hand over free text.
 @api_view(['POST'])
 @permission_classes([AllowAny])
-@throttle_classes([GuestMapsThrottle])
+@throttle_classes([GuestMapsThrottle, GuestMapsGlobalThrottle])
 def proxy_place_details(request):
     """Proxy for Google Place Details.
 

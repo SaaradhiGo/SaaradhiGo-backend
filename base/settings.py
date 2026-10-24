@@ -131,6 +131,10 @@ REST_FRAMEWORK = {
         # autocomplete firing as you go; far too small to be worth scraping.
         # Signed-in riders bypass it entirely (see GuestMapsThrottle).
         'guest_maps': '60/hour',
+        # A ceiling on all anonymous lookups combined. The per-IP cap is
+        # keyed on a client-supplied address; this one cannot be evaded by
+        # rotating it, so it is what actually bounds the bill.
+        'guest_maps_global': '1200/hour',
     },
 }
 # --- Email delivery ----------------------------------------------------------

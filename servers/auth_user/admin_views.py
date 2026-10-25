@@ -10,6 +10,7 @@ from base import ops_mfa
 from servers.admin_audit.services import record_admin_action
 from django.contrib.auth import get_user_model
 from servers.auth_user.serializers import UserModelSerializer
+from servers.auth_user.identity import InvalidEmail, normalize_email
 from rest_framework.pagination import PageNumberPagination
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
@@ -85,55 +86,100 @@ def admin_login(request):
     operators. All three are now one identical refusal.
     """
     try:
+        # EMAIL OR PHONE, because an operator is a person with an email
+        # address.
+        #
+        # This endpoint took a phone number and only a phone number, and the
+        # console's own sign-in screen took a phone and a one-time code. So
+        # the owner's operator account -- created with and identified by
+        # admin@saaradhigo.com -- had no door it could walk through, and
+        # "sign in as admin with your email and password" was not a feature
+        # anybody could use.
+        #
+        # The address is resolved the same way every other email path
+        # resolves one (trim, NFKC, lower-case, unique), so `A@B.com` and
+        # `a@b.com` are the same operator here as everywhere else. Nothing
+        # about the authorization below changes: the password, the operator
+        # check, MFA and the lockout are identical whichever identifier was
+        # used to find the account.
+        raw_email = request.data.get('email')
         phone_number = request.data.get('phone_number')
         password = request.data.get('password')
 
-        if not phone_number or not password:
+        if not (raw_email or phone_number) or not password:
             return error_response(
                 code='AUTH_MISSING_CREDENTIALS',
-                message='Phone number and password are required',
+                message='An email address or phone number, and a password, are required',
                 field='general',
                 issue='Missing credentials',
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Format phone number to E.164 if it's not already.
-        #
-        # Was an inline +91 prepend, so a US operator could not sign in here
-        # either. One helper, resolving against the country registry.
-        phone_number = normalize_phone(str(phone_number).strip()) or str(
-            phone_number).strip()
+        email = ''
+        if raw_email:
+            try:
+                email = normalize_email(raw_email)
+            except InvalidEmail:
+                # Shaped like the generic refusal rather than a validation
+                # error: "that is not an address" and "no such operator"
+                # must not be distinguishable here.
+                email = ''
 
-        # One refusal for every failure below: unknown phone, wrong password,
-        # correct password on a non-operator account, and locked out. Anything
-        # that distinguishes them is an oracle.
+        if phone_number:
+            # Format phone number to E.164 if it's not already.
+            #
+            # Was an inline +91 prepend, so a US operator could not sign in
+            # here either. One helper, resolving against the country registry.
+            phone_number = normalize_phone(str(phone_number).strip()) or str(
+                phone_number).strip()
+
+        # The lockout key. One namespace for both identifier kinds -- an
+        # email and a phone can never collide as strings -- so a hundred
+        # guesses against admin@saaradhigo.com cannot be continued against
+        # the same operator's number with a fresh counter.
+        identifier = email or phone_number
+
+        # One refusal for every failure below: unknown identifier, wrong
+        # password, correct password on a non-operator account, and locked
+        # out. Anything that distinguishes them is an oracle.
         def _refuse():
             return error_response(
                 code='AUTH_INVALID_CREDENTIALS',
-                message='Invalid phone number or password',
+                message='Invalid credentials',
                 field='general',
                 issue='Invalid credentials',
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        if login_guard.is_locked(request, phone_number):
+        if not identifier:
             return _refuse()
 
-        try:
-            user = user_model.objects.get(phone_number=phone_number)
-        except user_model.DoesNotExist:
-            login_guard.record_failure(request, phone_number)
+        if login_guard.is_locked(request, identifier):
+            return _refuse()
+
+        user = None
+        if email:
+            user = user_model.objects.filter(email__iexact=email).first()
+        elif phone_number:
+            user = user_model.objects.filter(phone_number=phone_number).first()
+
+        if user is None:
+            # Hash and discard, so an unknown identifier costs the same time
+            # as a wrong password and the endpoint is not a timing oracle for
+            # which operator accounts exist.
+            user_model().set_password(password)
+            login_guard.record_failure(request, identifier)
             return _refuse()
 
         if not user.check_password(password):
-            login_guard.record_failure(request, phone_number)
+            login_guard.record_failure(request, identifier)
             return _refuse()
 
         # A CORRECT password on a non-operator account still counts as a failure.
         # Otherwise every rider and driver account is an unthrottled oracle for
         # password guessing -- the attacker simply aims at a non-operator.
         if not is_operator(user):
-            login_guard.record_failure(request, phone_number)
+            login_guard.record_failure(request, identifier)
             return _refuse()
 
         # MFA at the point the credential is ISSUED.
@@ -152,7 +198,7 @@ def admin_login(request):
                 # Enforced environment, operator with nothing enrolled. Refused
                 # rather than waved through, with the same generic message so this
                 # does not report which operators lack a second factor.
-                login_guard.record_failure(request, phone_number)
+                login_guard.record_failure(request, identifier)
                 logger.warning('ops_api_login_refused_no_mfa_device user_id=%s',
                                user.id)
                 return _refuse()
@@ -169,10 +215,10 @@ def admin_login(request):
                     status=status.HTTP_401_UNAUTHORIZED,
                 )
             if not ops_mfa.verify_code(user, code):
-                login_guard.record_failure(request, phone_number)
+                login_guard.record_failure(request, identifier)
                 return _refuse()
 
-        login_guard.clear(request, phone_number)
+        login_guard.clear(request, identifier)
         record_admin_action(
             request, action='ops_api_login', target_type='operator',
             target_id=user.pk,

@@ -58,6 +58,7 @@ from servers.admin_dashboard import login_guard
 
 from .identity import InvalidEmail, normalize_email
 from .password_views import _send_verification_for
+from .profiles import ensure_role_profile
 
 logger = logging.getLogger(__name__)
 
@@ -227,9 +228,17 @@ def register_with_email(request):
             user.email_verified_at = None
             user.save(update_fields=['password', 'email_verified_at'])
 
-            if role == 'rider':
-                from servers.rider.models import Rider
-                Rider.objects.get_or_create(user_id=user)
+            # THE PROFILE ROW IS PART OF THE ACCOUNT, not an extra.
+            #
+            # This branch used to read `if role == 'rider'` and create a
+            # Rider -- and nothing at all for a driver. Every driver who
+            # signed up through "Apply to drive" on the website therefore
+            # got an account with no `Driver` row, and `request.user.driver`
+            # in servers/driver/views.py raised, so every driver endpoint
+            # answered HTTP 500 for them. They could sign in and then do
+            # nothing. One helper now, shared with the OTP path and the
+            # invite path, so the role always gets what the role needs.
+            ensure_role_profile(user)
     except IntegrityError:
         # Lost a race against a concurrent registration for the same
         # identity. Same answer as "taken"; nothing is disclosed.

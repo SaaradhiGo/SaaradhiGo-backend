@@ -69,6 +69,23 @@ class TestItCreatesAnAccount:
         assert r.status_code == 201
         assert User.objects.get(email__iexact='dev@deeptrics.com').role == 'driver'
 
+    def test_a_driver_profile_is_created_too(self):
+        # THE GAP THAT MADE EVERY DRIVER SCREEN RETURN 500.
+        #
+        # This branch created a `Rider` for a rider and nothing at all for a
+        # driver, so an account created through "Apply to drive" on the
+        # website had no `Driver` row. `servers/driver/views.py` reaches it
+        # as `request.user.driver` with no guard, so every driver endpoint
+        # raised `RelatedObjectDoesNotExist` and answered HTTP 500 -- for
+        # the whole life of the account, with no way to repair it from the
+        # client.
+        from servers.driver.models import Driver
+
+        _register(role='driver', email='dev2@deeptrics.com',
+                  phone_number='+919870000003')
+        user = User.objects.get(email__iexact='dev2@deeptrics.com')
+        assert Driver.objects.filter(user_id=user).exists()
+
     def test_the_address_starts_unverified(self):
         _register()
         assert User.objects.get(email__iexact=GOOD['email']).email_verified_at is None

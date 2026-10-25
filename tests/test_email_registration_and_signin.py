@@ -231,3 +231,62 @@ class TestTheConsoleAcceptsEitherIdentifier:
         user.save(update_fields=['is_active'])
         assert authenticate(username='ops.probe@deeptrics.com',
                             password='Harbour-Lantern-2026!') is None
+
+
+class TestAnAccountStrandedByAnUnmailableDeployment:
+    """The window between the old behaviour and the fix left real accounts
+    unusable, and nothing the person does can clear it.
+
+    Registration marks the address verified where no link can be delivered.
+    Accounts created BEFORE that rule existed are still unverified, are told
+    to open a link that was never sent, and can never sign in. The same rule
+    applied on the way in is what releases them -- and it must stay refused
+    in production, where an unverified address is a real signal.
+    """
+
+    def _unverified_account(self):
+        user = User.objects.create_user(
+            phone_number='+919870009001',
+            username='+919870009001',
+            email='stranded@deeptrics.com',
+            role='rider',
+            full_name='Stranded Rider',
+        )
+        user.set_password('Monsoon-Ferry-2026!')
+        user.email_verified_at = None
+        user.save()
+        return user
+
+    def test_it_signs_in_where_no_link_can_be_delivered(self, monkeypatch):
+        monkeypatch.setattr(
+            'base.auth_email.delivery_is_configured', lambda: (False, 'no backend'))
+        user = self._unverified_account()
+
+        r = _login(user.email, 'Monsoon-Ferry-2026!')
+
+        assert r.status_code == 200, r.content.decode()
+        user.refresh_from_db()
+        assert user.email_verified_at is not None
+
+    def test_it_stays_refused_in_production(self, monkeypatch, settings):
+        monkeypatch.setattr(
+            'base.auth_email.delivery_is_configured', lambda: (False, 'no backend'))
+        settings.IS_PRODUCTION = True
+        user = self._unverified_account()
+
+        r = _login(user.email, 'Monsoon-Ferry-2026!')
+
+        assert r.status_code == 403
+        assert r.json()['error']['code'] == 'AUTH_EMAIL_UNVERIFIED'
+        user.refresh_from_db()
+        assert user.email_verified_at is None
+
+    def test_it_stays_refused_where_mail_works(self, monkeypatch):
+        monkeypatch.setattr(
+            'base.auth_email.delivery_is_configured', lambda: (True, ''))
+        user = self._unverified_account()
+
+        r = _login(user.email, 'Monsoon-Ferry-2026!')
+
+        assert r.status_code == 403
+        assert r.json()['error']['code'] == 'AUTH_EMAIL_UNVERIFIED'

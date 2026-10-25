@@ -101,6 +101,40 @@ def delivery_is_configured():
     return True, ''
 
 
+def verification_is_deliverable():
+    """Can this deployment actually deliver an email verification link?
+
+    WHY THE ANSWER CHANGES WHAT AUTH DOES.
+
+    `email_login` refuses an unverified address, and an address is verified
+    by clicking a link in an email. On a deployment with no mail backend
+    that pair is a lock with no key: registration returns 201, the account
+    exists, the screen says "check your email", and nothing is ever sent.
+    The person can never sign in, and nothing they do can change that.
+
+    So where mail cannot be delivered, the address is treated as verified --
+    at registration, and on the way in for an account stranded before that
+    rule existed.
+
+    NOT IN PRODUCTION. There the same situation is a misconfiguration, and
+    accepting a password for an address nobody proved they own would let
+    anyone register against a stranger's address and hold a working account
+    on it. Production refuses to boot without a mail backend (see the guard
+    in base/settings.py), so this is unreachable there by construction --
+    and gated here anyway, because "unreachable" is a property of today's
+    settings and this is a property of the rule.
+
+    Lives here rather than in a view so the registration path and the
+    sign-in path cannot drift apart on it.
+    """
+    from django.conf import settings
+
+    ok, _ = delivery_is_configured()
+    if ok:
+        return True
+    return bool(getattr(settings, 'IS_PRODUCTION', False))
+
+
 def backend_leaves_the_machine():
     """Does the configured backend actually put a message on the wire?
 

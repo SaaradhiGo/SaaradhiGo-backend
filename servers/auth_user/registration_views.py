@@ -83,34 +83,15 @@ GENERIC_ACCEPTED_NO_MAIL = (
 
 
 def _verification_is_deliverable():
-    """Can this deployment actually deliver a verification link?
+    """See `base.auth_email.verification_is_deliverable`.
 
-    WHY THE ANSWER CHANGES WHAT REGISTRATION DOES.
-
-    `email_login` refuses an unverified address, and verification happens by
-    clicking a link in an email. On a deployment with no mail backend that
-    pair is a lock with no key: registration returns 201, the account
-    exists, the screen says "check your email", and no email is ever sent.
-    The person can never sign in. That is precisely what QA hit --
-    "creating an account is not working as expected" -- and it was not a
-    bug in either half on its own.
-
-    So where mail cannot be delivered, the address is marked verified at
-    registration instead. NOT IN PRODUCTION: there, the same situation is a
-    misconfiguration, and silently accepting a password for an address
-    nobody proved they own would let anyone register against a stranger's
-    address and hold a working account on it. Production refuses to boot
-    without a mail backend now -- see the guard in base/settings.py -- so
-    this branch is unreachable there by construction, and gated anyway.
+    Kept as a module-level name because the tests patch it here, and because
+    the registration path and the sign-in path must answer this question
+    identically -- which is why the rule itself lives in one place.
     """
-    from django.conf import settings
+    from base.auth_email import verification_is_deliverable
 
-    from base.auth_email import delivery_is_configured
-
-    ok, _ = delivery_is_configured()
-    if ok:
-        return True
-    return bool(getattr(settings, 'IS_PRODUCTION', False))
+    return verification_is_deliverable()
 
 
 @api_view(['POST'])

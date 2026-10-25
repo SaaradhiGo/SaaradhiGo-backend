@@ -51,6 +51,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 from base import ops_mfa
+from base.auth_email import verification_is_deliverable
 from base.permissions import is_operator
 from base.utils import error_response, success_response
 from servers.admin_dashboard import login_guard
@@ -174,14 +175,37 @@ def email_login(request):
     # are verified at the point their password is set, so this does not lock
     # out the operator console.
     if not email_is_verified(user):
-        logger.info('email_login_unverified user_id=%s', user.pk)
-        return error_response(
-            code='AUTH_EMAIL_UNVERIFIED',
-            message='Confirm your email address before signing in. We sent you a link when you registered.',
-            field='email',
-            issue='Email address not yet verified',
-            status=status.HTTP_403_FORBIDDEN,
-        )
+        # AN ACCOUNT STRANDED BY A DEPLOYMENT THAT CANNOT MAIL.
+        #
+        # Registration already marks the address verified where no
+        # verification link can be delivered, because otherwise the account
+        # is a lock with no key. But accounts created BEFORE that fix landed
+        # are still sitting unverified with no way to clear it: the link
+        # they are told to open was never sent and never will be. Every one
+        # of them is permanently unusable, and the person is told to look
+        # for an email that does not exist.
+        #
+        # So the same rule is applied on the way in. NOT IN PRODUCTION,
+        # where an unverified address must stay refused -- there this is a
+        # misconfiguration, not a condition to accommodate, and production
+        # refuses to boot without a mail backend anyway, so this branch is
+        # unreachable there by construction and gated regardless.
+        if not verification_is_deliverable():
+            user.email_verified_at = timezone.now()
+            user.save(update_fields=['email_verified_at'])
+            logger.info(
+                'email_login_autoverified user_id=%s reason=mail_not_deliverable',
+                user.pk,
+            )
+        else:
+            logger.info('email_login_unverified user_id=%s', user.pk)
+            return error_response(
+                code='AUTH_EMAIL_UNVERIFIED',
+                message='Confirm your email address before signing in. We sent you a link when you registered.',
+                field='email',
+                issue='Email address not yet verified',
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
     # --- second factor, for operators only --------------------------------
     #

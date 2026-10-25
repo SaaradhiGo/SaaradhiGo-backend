@@ -137,6 +137,12 @@ REST_FRAMEWORK = {
         # debounced autocomplete spends roughly 10-20 calls on a booking
         # attempt, so this allows about ten visitors an hour per address.
         'guest_maps': '180/hour',
+        # Fare quotes for a visitor who has not signed in. A real rider
+        # prices one trip and presses "Show fares" once, which is four
+        # requests sharing one cached distance lookup. 120/hour is roughly
+        # thirty such trips from one address per hour -- far above honest
+        # use, far below a bill worth worrying about.
+        'guest_fare': '120/hour',
         # The ceiling that actually bounds the bill. The per-IP cap is keyed
         # on a client-supplied header and can be walked around by rotating
         # it; this bucket is shared by every anonymous request and cannot.
@@ -145,6 +151,10 @@ REST_FRAMEWORK = {
         # incident. Raise it when real traffic justifies it -- with a figure
         # measured from the logs, not a guess.
         'guest_maps_global': '600/hour',
+        # The un-evadable ceiling on anonymous fare quotes. Sized so the
+        # worst hour of a scripted abuse run is a few hundred distance
+        # lookups, not an unbounded number.
+        'guest_fare_global': '400/hour',
     },
 }
 # --- Email delivery ----------------------------------------------------------

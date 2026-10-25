@@ -11,7 +11,12 @@ from rest_framework.decorators import (
     throttle_classes,
 )
 
-from base.throttles import GuestMapsGlobalThrottle, GuestMapsThrottle
+from base.throttles import (
+    GuestFareGlobalThrottle,
+    GuestFareThrottle,
+    GuestMapsGlobalThrottle,
+    GuestMapsThrottle,
+)
 from servers.ride.models import Trip, FarePricing
 from servers.ride.serializers import TripListSerializer, TripDetailSerializer
 from servers.ride.utils import estimate_amount, validate_distance
@@ -34,10 +39,27 @@ def _money_str(value):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+@throttle_classes([GuestFareThrottle, GuestFareGlobalThrottle])
 def estimate_fare(request):
     """
     Estimate fare for a trip before rider confirms.
+
+    OPEN TO A VISITOR WHO HAS NOT SIGNED IN, DELIBERATELY. Asking someone to
+    create an account before telling them what a ride costs is asking them
+    to commit before they know the price, and it is the one number they came
+    for. Sign-in moves to the point of CONFIRMING a trip, which is where it
+    belongs: that is when a ride is actually being created against a person.
+
+    What that does NOT mean is an open distance API. Each distinct trip
+    costs one Google Distance Matrix call -- cached, so quoting four vehicle
+    classes for one trip costs one call -- and anonymous callers are bounded
+    by a per-IP cap and an un-evadable global ceiling. A signed-in rider
+    skips both.
+
+    Nothing here reads the caller's identity except `rider_id`, which is
+    optional: it records a demand ping for surge and is simply absent for a
+    guest.
     
     Expected request data:
     {
@@ -140,7 +162,9 @@ def estimate_fare(request):
         vehicle_type=vehicle_type,
         pickup_lat=pickup_lat,
         pickup_long=pickup_long,
-        rider_id=request.user.id,
+        # None for a guest. `estimate_amount` takes it as optional and
+        # only uses it to record a demand ping for surge.
+        rider_id=getattr(request.user, 'id', None),
     )
 
     return success_response({

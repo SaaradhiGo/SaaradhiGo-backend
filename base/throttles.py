@@ -181,3 +181,36 @@ class GuestMapsGlobalThrottle(SimpleRateThrottle):
         if user is not None and user.is_authenticated:
             return None
         return self.cache_format % {'scope': self.scope, 'ident': 'all'}
+
+
+class GuestFareThrottle(GuestMapsThrottle):
+    """Cap fare quotes by ANONYMOUS callers, keyed on client IP.
+
+    A rider is shown prices before being asked to sign in, so
+    `/ride/estimate-fare/` has to answer unauthenticated requests. Each
+    distinct trip costs one Google Distance Matrix call; the result is
+    cached, so quoting four vehicle classes for the same trip costs one
+    call, not four. An uncapped version is still an open distance API with
+    our billing attached.
+
+    Its own scope rather than sharing `guest_maps`, so that a visitor who
+    has spent their place-search budget can still be quoted a price for the
+    trip they already built, and so the two budgets can be tuned apart.
+
+    Everything else -- the leftmost-XFF client key, and signed-in riders
+    skipping the cap entirely -- is inherited.
+    """
+
+    scope = 'guest_fare'
+
+
+class GuestFareGlobalThrottle(GuestMapsGlobalThrottle):
+    """A ceiling on ALL anonymous fare quotes, across every caller.
+
+    Same reasoning as the global maps ceiling: the per-IP key is an address
+    the client supplies, so a caller willing to rotate it walks around the
+    per-IP cap. This bucket is shared by every anonymous request and cannot
+    be walked around, which is what actually bounds the bill.
+    """
+
+    scope = 'guest_fare_global'

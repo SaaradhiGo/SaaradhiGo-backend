@@ -110,12 +110,12 @@ class TestAnAllowlistedAddressIsReportedAsReachable:
 
     def test_a_domain_entry_is_labelled_as_a_whole_domain(self, settings):
         configure(settings, environment='qa', backend=SMTP,
-                  allowlist=['@deeptrics.com', 'one@saaradhigo.in'])
+                  allowlist=['@deeptrics.com', 'one@saaradhigo.com'])
 
         output = run()
 
         assert '@deeptrics.com   (whole domain)' in output
-        assert 'one@saaradhigo.in   (exact address)' in output
+        assert 'one@saaradhigo.com   (exact address)' in output
 
 
 class TestABackendThatCannotReachAnyone:

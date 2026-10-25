@@ -184,7 +184,7 @@ DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', '')
 # in that person's inbox.
 #
 # Comma-separated. An entry starting with '@' matches a whole domain:
-#   AUTH_EMAIL_ALLOWLIST="qa@deeptrics.com,@saaradhigo.in"
+#   AUTH_EMAIL_ALLOWLIST="qa@deeptrics.com,@saaradhigo.com"
 #
 # Enforced by base/auth_email.py whenever ENVIRONMENT != 'production' AND the
 # backend actually delivers. An empty allowlist on a delivering non-production
@@ -238,11 +238,18 @@ PLATFORM_LEGAL_ENTITY = os.environ.get(
 )
 
 # Domain used to build the operational contact addresses shown to drivers.
-# Previously hardcoded to vahango.com, a domain this platform does not appear to
-# use -- so a driver's grievance email would have gone nowhere. Still needs a
-# human to confirm these mailboxes actually exist and are monitored.
+#
+# THE OFFICIAL DOMAIN IS saaradhigo.com. This was hardcoded to vahango.com
+# (a domain this platform does not use), then saaradhigo.in (which publishes
+# no MX record, so a driver's grievance email bounced). `.com` publishes Zoho
+# MX, SPF and DMARC, so mail to it is deliverable.
+#
+# Deliverable is not the same as read: each mailbox built from this domain --
+# tech-support@, fraud-team@, compliance@, operations@ -- still has to exist
+# in Zoho and be monitored by a person before the MVA-2020 grievance
+# obligation is met. That is an owner action, not a code change.
 PLATFORM_CONTACT_DOMAIN = os.environ.get(
-    'PLATFORM_CONTACT_DOMAIN', 'saaradhigo.in',
+    'PLATFORM_CONTACT_DOMAIN', 'saaradhigo.com',
 )
 
 SIMPLE_JWT = {

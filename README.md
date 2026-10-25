@@ -3,7 +3,8 @@
 Django + Django Channels backend that powers the SaaradhiGo / VahanGo ride-hailing platform. Serves the rider Flutter app ([SaaradhiGo-mobile](../SaaradhiGo-mobile)) and the web/native clients ([SaaradhiGo-web](../SaaradhiGo-web)).
 
 - **Branch:** `dev` (deployed automatically to EC2 — see `.github/workflows/deploy.yml`)
-- **Base URL (dev):** `https://dev.api.saaradhigo.in`
+- **Base URL (QA):** `https://backend-qa-811d.up.railway.app`
+- **Base URL (production target):** `https://api.saaradhigo.com` _(DNS not yet configured)_
 - **API prefix:** `/api/v1/`
 - **Admin:** `/admin/`
 

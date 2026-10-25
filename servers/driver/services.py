@@ -46,10 +46,16 @@ def _contact_domain():
 
     Configurable because these were hardcoded to a domain this platform
     does not use, which meant a driver's grievance email went nowhere.
+
+    The fallback must match settings.PLATFORM_CONTACT_DOMAIN. It did not:
+    settings moved to saaradhigo.com and this still said saaradhigo.in, so
+    any deployment that did not set the variable built grievance addresses
+    at a domain with no MX record -- the exact failure the setting exists to
+    prevent, hiding one function away.
     """
     from django.conf import settings
 
-    return getattr(settings, 'PLATFORM_CONTACT_DOMAIN', 'saaradhigo.in')
+    return getattr(settings, 'PLATFORM_CONTACT_DOMAIN', 'saaradhigo.com')
 
 
 

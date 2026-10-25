@@ -66,17 +66,17 @@ class TestRecipientAllowed:
 
     def test_qa_allows_a_whole_domain_with_an_at_prefix(self, settings):
         _configure(settings, environment='qa', backend=SMTP,
-                   allowlist=['@saaradhigo.in'])
-        assert recipient_allowed('anyone@saaradhigo.in')[0] is True
-        assert recipient_allowed('qa.rider@saaradhigo.in')[0] is True
+                   allowlist=['@saaradhigo.com'])
+        assert recipient_allowed('anyone@saaradhigo.com')[0] is True
+        assert recipient_allowed('qa.rider@saaradhigo.com')[0] is True
 
     def test_a_domain_entry_does_not_match_a_lookalike(self, settings):
-        # '@saaradhigo.in' must not match 'evil-saaradhigo.in' or
-        # 'saaradhigo.in.example.com'.
+        # '@saaradhigo.com' must not match 'evil-saaradhigo.com' or
+        # 'saaradhigo.com.example.com'.
         _configure(settings, environment='qa', backend=SMTP,
-                   allowlist=['@saaradhigo.in'])
-        assert recipient_allowed('x@evilsaaradhigo.in')[0] is False
-        assert recipient_allowed('x@saaradhigo.in.example.com')[0] is False
+                   allowlist=['@saaradhigo.com'])
+        assert recipient_allowed('x@evilsaaradhigo.com')[0] is False
+        assert recipient_allowed('x@saaradhigo.com.example.com')[0] is False
 
     def test_a_non_allowlisted_address_is_refused_with_a_reason(self, settings):
         _configure(settings, environment='qa', backend=SMTP,

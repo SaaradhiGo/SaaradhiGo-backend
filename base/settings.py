@@ -645,6 +645,33 @@ if IS_PRODUCTION:
                 'and in production it is a back door into payout approval and KYC.'
             )
 
+    # A PRODUCTION THAT CANNOT SEND MAIL CANNOT COMPLETE A SIGN-UP.
+    #
+    # `email_login` refuses an unverified address and verification happens by
+    # clicking a link in an email. Without a mail backend those two make a
+    # lock with no key: the account is created, the screen says "check your
+    # email", nothing is sent, and the person can never sign in. QA hit
+    # exactly that.
+    #
+    # Registration compensates off production by marking the address
+    # verified instead. This guard is what keeps that branch unreachable
+    # here: production either delivers mail or refuses to start, so it can
+    # never be the deployment that accepts a password for an address nobody
+    # proved they own.
+    _mail_ok, _mail_why = (True, '')
+    try:
+        from base.auth_email import delivery_is_configured as _delivery_check
+
+        _mail_ok, _mail_why = _delivery_check()
+    except Exception as _exc:  # pragma: no cover - import-time safety only
+        _mail_ok, _mail_why = False, f'could not be checked ({_exc})'
+    if not _mail_ok:
+        _production_faults.append(
+            f'Email delivery is not configured ({_mail_why}). Verification '
+            'links cannot be sent, so nobody could finish signing up, and '
+            'password reset would be silently dead.'
+        )
+
     # A production deployment still pointing at QA infrastructure writes real
     # customer data into a test system, or reads test data as if it were real.
     for _name in ('BACKEND_URL', 'FRONTEND_URL'):

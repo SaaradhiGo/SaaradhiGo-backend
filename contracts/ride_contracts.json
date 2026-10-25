@@ -28,7 +28,7 @@
           "unresolved_trips": 0
         },
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.438657+05:30"
+          "timestamp": "2026-10-25T14:06:00.925896+05:30"
         }
       }
     },
@@ -45,7 +45,7 @@
           "cancellation_rate": "0%"
         },
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.443679+05:30"
+          "timestamp": "2026-10-25T14:06:00.932348+05:30"
         }
       }
     },
@@ -56,7 +56,7 @@
         "status": "success",
         "data": [],
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.442678+05:30"
+          "timestamp": "2026-10-25T14:06:00.931350+05:30"
         }
       }
     },
@@ -80,7 +80,7 @@
           "ratings": "5.00"
         },
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.445191+05:30"
+          "timestamp": "2026-10-25T14:06:00.935880+05:30"
         }
       }
     },
@@ -97,7 +97,7 @@
           "minimum_withdrawal": 500.0
         },
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.440686+05:30"
+          "timestamp": "2026-10-25T14:06:00.928334+05:30"
         }
       }
     },
@@ -125,8 +125,8 @@
           "driver_name": "+918880000001",
           "vehicle_info": null,
           "requested_vehicle_type": null,
-          "requested_at": "2026-10-25T13:12:15.385854+05:30",
-          "completed_at": "2026-10-25T13:12:15.385854+05:30",
+          "requested_at": "2026-10-25T14:06:00.866731+05:30",
+          "completed_at": "2026-10-25T14:06:00.866731+05:30",
           "cancelled_at": null,
           "estimated_duration_min": null,
           "actual_duration_min": null,
@@ -144,7 +144,7 @@
           "otp": null
         },
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.417938+05:30"
+          "timestamp": "2026-10-25T14:06:00.898760+05:30"
         }
       }
     },
@@ -178,7 +178,7 @@
           "validated_min": 16.1
         },
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.394373+05:30"
+          "timestamp": "2026-10-25T14:06:00.875789+05:30"
         }
       }
     },
@@ -226,8 +226,8 @@
               "driver_name": "+918880000001",
               "vehicle_info": null,
               "requested_vehicle_type": null,
-              "requested_at": "2026-10-25T13:12:15.385854+05:30",
-              "completed_at": "2026-10-25T13:12:15.385854+05:30",
+              "requested_at": "2026-10-25T14:06:00.866731+05:30",
+              "completed_at": "2026-10-25T14:06:00.866731+05:30",
               "cancelled_at": null,
               "estimated_duration_min": null,
               "actual_duration_min": null,
@@ -236,7 +236,7 @@
           ]
         },
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.426602+05:30"
+          "timestamp": "2026-10-25T14:06:00.907280+05:30"
         }
       }
     },
@@ -269,8 +269,8 @@
               "driver_name": "+918880000001",
               "vehicle_info": null,
               "requested_vehicle_type": null,
-              "requested_at": "2026-10-25T13:12:15.385854+05:30",
-              "completed_at": "2026-10-25T13:12:15.385854+05:30",
+              "requested_at": "2026-10-25T14:06:00.866731+05:30",
+              "completed_at": "2026-10-25T14:06:00.866731+05:30",
               "cancelled_at": null,
               "estimated_duration_min": null,
               "actual_duration_min": null,
@@ -279,7 +279,7 @@
           ]
         },
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.422092+05:30"
+          "timestamp": "2026-10-25T14:06:00.903761+05:30"
         }
       }
     },
@@ -296,7 +296,7 @@
           "message": "Rating submitted successfully"
         },
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.430156+05:30"
+          "timestamp": "2026-10-25T14:06:00.911280+05:30"
         }
       }
     },
@@ -328,7 +328,7 @@
           "failure_reason": "no_email"
         },
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.457800+05:30"
+          "timestamp": "2026-10-25T14:06:00.949676+05:30"
         }
       }
     },
@@ -371,8 +371,8 @@
           "driver_name": "+918880000001",
           "vehicle_info": null,
           "requested_vehicle_type": null,
-          "requested_at": "2026-10-25T13:12:15.385854+05:30",
-          "completed_at": "2026-10-25T13:12:15.385854+05:30",
+          "requested_at": "2026-10-25T14:06:00.866731+05:30",
+          "completed_at": "2026-10-25T14:06:00.866731+05:30",
           "cancelled_at": null,
           "estimated_duration_min": null,
           "actual_duration_min": null,
@@ -390,7 +390,7 @@
           "otp": null
         },
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.406404+05:30"
+          "timestamp": "2026-10-25T14:06:00.888239+05:30"
         }
       }
     },
@@ -418,8 +418,8 @@
           "driver_name": "+918880000001",
           "vehicle_info": null,
           "requested_vehicle_type": null,
-          "requested_at": "2026-10-25T13:12:15.385854+05:30",
-          "completed_at": "2026-10-25T13:12:15.385854+05:30",
+          "requested_at": "2026-10-25T14:06:00.866731+05:30",
+          "completed_at": "2026-10-25T14:06:00.866731+05:30",
           "cancelled_at": null,
           "estimated_duration_min": null,
           "actual_duration_min": null,
@@ -437,7 +437,7 @@
           "otp": null
         },
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.401894+05:30"
+          "timestamp": "2026-10-25T14:06:00.881304+05:30"
         }
       }
     },
@@ -452,7 +452,7 @@
           "message": "SOS recorded. Help is on the way."
         },
         "meta": {
-          "timestamp": "2026-10-25T13:12:15.447764+05:30"
+          "timestamp": "2026-10-25T14:06:00.939876+05:30"
         }
       }
     }

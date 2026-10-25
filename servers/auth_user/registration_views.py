@@ -47,6 +47,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
@@ -71,6 +72,44 @@ GENERIC_ACCEPTED = (
     'on its way; if the address or number was already registered, nothing '
     'changed.'
 )
+
+#: The same, for a deployment that cannot send mail at all. See
+#: `_verification_is_deliverable` for why this exists and why it is safe.
+GENERIC_ACCEPTED_NO_MAIL = (
+    'If we could create the account, it is ready to sign in; if the address '
+    'or number was already registered, nothing changed.'
+)
+
+
+def _verification_is_deliverable():
+    """Can this deployment actually deliver a verification link?
+
+    WHY THE ANSWER CHANGES WHAT REGISTRATION DOES.
+
+    `email_login` refuses an unverified address, and verification happens by
+    clicking a link in an email. On a deployment with no mail backend that
+    pair is a lock with no key: registration returns 201, the account
+    exists, the screen says "check your email", and no email is ever sent.
+    The person can never sign in. That is precisely what QA hit --
+    "creating an account is not working as expected" -- and it was not a
+    bug in either half on its own.
+
+    So where mail cannot be delivered, the address is marked verified at
+    registration instead. NOT IN PRODUCTION: there, the same situation is a
+    misconfiguration, and silently accepting a password for an address
+    nobody proved they own would let anyone register against a stranger's
+    address and hold a working account on it. Production refuses to boot
+    without a mail backend now -- see the guard in base/settings.py -- so
+    this branch is unreachable there by construction, and gated anyway.
+    """
+    from django.conf import settings
+
+    from base.auth_email import delivery_is_configured
+
+    ok, _ = delivery_is_configured()
+    if ok:
+        return True
+    return bool(getattr(settings, 'IS_PRODUCTION', False))
 
 
 @api_view(['POST'])
@@ -202,13 +241,31 @@ def register_with_email(request):
 
     logger.info('register_ok user_id=%s role=%s', user.pk, role)
 
-    # Through the one outbound gate, so an unconfigured or allowlisted
-    # environment refuses to send rather than mailing a stranger. A blocked
-    # send is not an error for the caller: the account exists either way, and
-    # the operator can verify it another way.
-    _send_verification_for(user)
+    deliverable = _verification_is_deliverable()
+
+    if deliverable:
+        # Through the one outbound gate, so an unconfigured or allowlisted
+        # environment refuses to send rather than mailing a stranger. A
+        # blocked send is not an error for the caller: the account exists
+        # either way, and the operator can verify it another way.
+        _send_verification_for(user)
+    else:
+        # No mail backend, and not production. Requiring a click in an email
+        # that cannot be sent would leave this account permanently unusable.
+        user.email_verified_at = timezone.now()
+        user.save(update_fields=['email_verified_at'])
+        logger.info(
+            'register_autoverified user_id=%s reason=mail_not_deliverable', user.pk,
+        )
 
     return success_response(
-        data={'message': GENERIC_ACCEPTED},
+        data={
+            'message': GENERIC_ACCEPTED if deliverable else GENERIC_ACCEPTED_NO_MAIL,
+            # A PROPERTY OF THE DEPLOYMENT, NOT OF THIS ADDRESS. It is the
+            # same for every caller, so it tells nobody whether a particular
+            # address was already registered -- which is the one thing these
+            # responses are careful not to reveal.
+            'verification_required': deliverable,
+        },
         status_code=status.HTTP_201_CREATED,
     )

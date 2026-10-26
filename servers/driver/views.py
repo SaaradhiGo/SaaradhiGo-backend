@@ -8,6 +8,7 @@ from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .serializers import DriverProfileSerializer
 from .utils import update_driver_location
+from base.storage_health import save_with_storage_errors
 from .permissions import IsDriver
 from .models import Vehicle
 from base.media import EMPTY_FILE_VALUES, resolve_file_input
@@ -511,7 +512,10 @@ def create_vehicle(request):
             vehicle_pic=data.get('vehicle_pic'),
         )
         vehicle.full_clean()
-        vehicle.save()
+        _, storage_error = save_with_storage_errors(
+            vehicle.save, what='vehicle creation')
+        if storage_error is not None:
+            return storage_error
     except ValidationError as e:
         return error_response(
             code='VALIDATION_ERROR',
@@ -579,7 +583,12 @@ def update_vehicle(request, vehicle_id):
 
     try:
         vehicle.full_clean()
-        vehicle.save()
+        # A refused write to the object store is not a bad request. See
+        # base/storage_health.py.
+        _, storage_error = save_with_storage_errors(
+            vehicle.save, what='vehicle documents')
+        if storage_error is not None:
+            return storage_error
         if was_rejected:
             driver.doc_status = "pending"
             driver.approved = False
@@ -715,8 +724,13 @@ def update_driver_profile(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    
-    serializer.save()
+    # A refused write to the object store is not a bad request and must not
+    # surface as "an unexpected error". See base/storage_health.py.
+    _, storage_error = save_with_storage_errors(
+        serializer.save, what='driver documents')
+    if storage_error is not None:
+        return storage_error
+
     if was_rejected:
         driver.doc_status = "pending"
         driver.approved = False

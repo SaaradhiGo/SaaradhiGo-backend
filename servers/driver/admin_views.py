@@ -1,4 +1,6 @@
 import logging
+
+from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
@@ -60,6 +62,67 @@ def retrieve_driver_admin(request, driver_id):
             issue=f"No driver matches id {driver_id}",
             status=status.HTTP_404_NOT_FOUND
         )
+
+
+def _compliance_payload(driver):
+    """The review checklist: what this driver's country requires, and what
+    is on file.
+
+    Built by `servers/driver/compliance.py` -- the same functions that build
+    the driver's own onboarding checklist -- so an operator and the driver
+    they are reviewing cannot be looking at different lists, and a country
+    whose rules change changes both screens at once.
+    """
+    from servers.driver import compliance
+
+    vehicle = driver.active_vehicle or driver.vehicle_set.order_by('id').first()
+
+    def rows(checks):
+        return [
+            {
+                'key': key,
+                'label': check['label'],
+                'description': compliance.document_description(key),
+                'present': check['present'],
+                # False where the requirement has no column to store it in.
+                # Reported rather than hidden: treating an unrecordable
+                # document as satisfied is how an unverified driver gets
+                # approved.
+                'recordable': check['applicable'],
+            }
+            for key, check in checks.items()
+        ]
+
+    driver_rows = rows(compliance.evaluate_driver(driver))
+    vehicle_rows = rows(compliance.evaluate_vehicle(vehicle, driver)) if vehicle else []
+
+    return {
+        'country': compliance.driver_country_code(driver),
+        'driver_documents': driver_rows,
+        'vehicle_documents': vehicle_rows,
+        'missing': [r['key'] for r in driver_rows + vehicle_rows
+                    if not (r['present'] and r['recordable'])],
+    }
+
+
+def _document_url(field):
+    """A time-limited link to a private document, or None.
+
+    `FileField.url` on the private storage produces a PRESIGNED url that
+    expires (AWS_QUERYSTRING_EXPIRE, 15 minutes by default). It signs
+    locally and makes no network call, so a broken bucket cannot make this
+    raise -- but a misconfigured one can, and an operator losing the whole
+    driver page because one document link could not be built would be a
+    worse outcome than a missing link.
+    """
+    if not field:
+        return None
+    try:
+        return field.url
+    except Exception:
+        logger.exception('document_url_failed name=%s', getattr(field, 'name', '?'))
+        return None
+
 
 
 @api_view(['GET'])
@@ -141,6 +204,17 @@ def driver_full_detail_admin(request, driver_id):
             'fitness_expiry': v.fitness_expiry.isoformat() if v.fitness_expiry else None,
             'puc_expiry': v.puc_expiry.isoformat() if v.puc_expiry else None,
             'is_active_vehicle': bool(driver.active_vehicle_id and driver.active_vehicle_id == v.id),
+            # THE DOCUMENTS THEMSELVES. The console showed expiry DATES and
+            # no way to open the paperwork, so an operator was asked to
+            # approve a driver to carry paying passengers while looking at
+            # four em-dashes. Each link is presigned and short-lived.
+            'rc_doc_url': _document_url(v.rc_doc),
+            'insurance_doc_url': _document_url(v.insurance_doc),
+            'permit_doc_url': _document_url(v.permit_doc),
+            'fitness_doc_url': _document_url(v.fitness_doc),
+            'puc_doc_url': _document_url(v.puc_doc),
+            'inspection_doc_url': _document_url(v.inspection_doc),
+            'vehicle_pic_url': _document_url(v.vehicle_pic),
         })
 
     # ---- fatigue status (computes live + persists lockout if breached) ----
@@ -275,8 +349,8 @@ def driver_full_detail_admin(request, driver_id):
         'ratings': str(driver.ratings),
         'total_trips': driver.total_trips,
         'license_expiry': driver.license_expiry.isoformat() if driver.license_expiry else None,
-        'license_doc_url': driver.license_doc.url if driver.license_doc else None,
-        'license_doc_back_url': driver.license_doc_back.url if driver.license_doc_back else None,
+        'license_doc_url': _document_url(driver.license_doc),
+        'license_doc_back_url': _document_url(driver.license_doc_back),
         'upi_id': driver.upi_id,
         'fatigue_lockout_until': driver.fatigue_lockout_until.isoformat() if driver.fatigue_lockout_until else None,
         'user': {
@@ -294,6 +368,13 @@ def driver_full_detail_admin(request, driver_id):
         'withdrawals': withdrawals_payload,
         'recent_trips': recent_trips,
         'earnings': earnings_payload,
+        # WHAT THIS DRIVER'S COUNTRY REQUIRES, and which of it is on file.
+        # Computed by servers/driver/compliance.py -- the same functions
+        # that build the driver's own checklist -- so the operator and the
+        # driver cannot be looking at different lists.
+        'compliance': _compliance_payload(driver),
+        'doc_status': driver.doc_status,
+        'doc_rejection_reason': driver.doc_rejection_reason or '',
     }
     return success_response(payload, status.HTTP_200_OK)
 
@@ -315,6 +396,27 @@ def update_kyc_status_admin(request, driver_id):
         serializer = KYCApprovalSerializer(driver, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
+
+            # THE REVIEW OUTCOME, WHERE THE DRIVER CAN READ IT.
+            #
+            # The reason an operator typed went to the audit log and nowhere
+            # else: `KYCApprovalSerializer` only writes `approved` and
+            # `status`, so `doc_status` stayed 'pending' forever and
+            # `doc_rejection_reason` was never written at all. The driver's
+            # screen showed "not approved" with no reason, which is
+            # identical to what a driver who has uploaded nothing sees --
+            # and the operator believed they had explained themselves.
+            approved = serializer.validated_data.get('approved')
+            if approved is not None:
+                driver.doc_status = 'approved' if approved else 'rejected'
+                driver.doc_rejection_reason = (
+                    '' if approved else (request.data.get('reason') or '').strip()
+                )
+                driver.doc_status_updated_at = timezone.now()
+                driver.save(update_fields=[
+                    'doc_status', 'doc_rejection_reason', 'doc_status_updated_at',
+                ])
+
             driver.refresh_from_db()
             after = {
                 'approved': driver.approved,

@@ -174,3 +174,212 @@ def test_delete_driver_admin(auth_client_admin, auth_client_driver):
     # Verify deleted
     with pytest.raises(Driver.DoesNotExist):
         Driver.objects.get(id=driver_id)
+
+
+# ---------------------------------------------------------------------------
+# The review screen has to show the documents it is reviewing
+# ---------------------------------------------------------------------------
+#
+# The console rendered expiry DATES and no way to open the paperwork, so an
+# operator approving a driver to carry paying passengers was looking at four
+# em-dashes. Approval is gated on documents; a reviewer who cannot see them
+# is rubber-stamping.
+
+def _driver_with_docs(driver_user):
+    """A driver carrying a document in every column the console reviews."""
+    from servers.driver.models import Vehicle, VehicleType
+
+    driver = Driver.objects.get(user_id=driver_user)
+    driver.license_doc = 'license_docs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg'
+    driver.license_doc_back = 'license_docs_back/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.jpg'
+    vt, _ = VehicleType.objects.get_or_create(type='sedan')
+    vehicle = Vehicle.objects.create(
+        driver_id=driver, vehicle_type_id=vt, vehicle_number='TS09KYC001',
+        rc_doc='rc_docs/cccccccccccccccccccccccccccccccc.jpg',
+        insurance_doc='insurance_docs/dddddddddddddddddddddddddddddddd.jpg',
+    )
+    driver.active_vehicle = vehicle
+    driver.save()
+    return driver
+
+
+@pytest.mark.django_db
+def test_admin_driver_detail_offers_a_link_for_every_document(
+    auth_client_admin, auth_client_driver,
+):
+    """The payload must carry a slot for every document under review.
+
+    Asserted on SHAPE rather than on a built URL: the test settings have no
+    S3 region, so no signed URL can be generated here. Whether one can
+    actually be built on a real deployment is what
+    `manage.py check_storage` answers, against the real bucket.
+    """
+    client, _ = auth_client_admin
+    _, driver_user = auth_client_driver
+    driver = _driver_with_docs(driver_user)
+
+    resp = client.get(f'/api/v1/driver/admin/{driver.id}/full/')
+
+    assert resp.status_code == 200, resp.content.decode()
+    data = resp.json()['data']
+    assert 'license_doc_url' in data
+    assert 'license_doc_back_url' in data
+    vehicle = data['vehicles'][0]
+    for key in ('rc_doc_url', 'insurance_doc_url', 'permit_doc_url',
+                'fitness_doc_url', 'puc_doc_url', 'inspection_doc_url',
+                'vehicle_pic_url'):
+        assert key in vehicle, f'{key} missing — an operator cannot open it'
+
+
+class TestTheDocumentLinkHelper:
+    """`_document_url` decides whether an operator can open a document.
+
+    It must never raise: one unbuildable link costing the whole driver page
+    is a worse outcome than a missing link, and storage misconfiguration is
+    not hypothetical here.
+    """
+
+    def test_an_empty_field_has_no_link(self):
+        from servers.driver.admin_views import _document_url
+
+        assert _document_url(None) is None
+        assert _document_url('') is None
+
+    def test_a_usable_field_returns_its_url(self):
+        from servers.driver.admin_views import _document_url
+
+        class Field:
+            name = 'license_docs/x.jpg'
+            url = 'https://bucket.example/license_docs/x.jpg?X-Amz-Signature=abc'
+
+            def __bool__(self):
+                return True
+
+        assert _document_url(Field()).startswith('https://bucket.example/')
+
+    def test_a_storage_failure_becomes_no_link_not_an_exception(self):
+        from servers.driver.admin_views import _document_url
+
+        class Broken:
+            name = 'license_docs/x.jpg'
+
+            def __bool__(self):
+                return True
+
+            @property
+            def url(self):
+                raise ValueError('Invalid endpoint')
+
+        assert _document_url(Broken()) is None
+
+
+@pytest.mark.django_db
+def test_admin_detail_carries_the_same_checklist_the_driver_sees(
+    auth_client_admin, auth_client_driver,
+):
+    """Operator and driver must not be looking at different lists."""
+    client, _ = auth_client_admin
+    _, driver_user = auth_client_driver
+    driver = _driver_with_docs(driver_user)
+
+    resp = client.get(f'/api/v1/driver/admin/{driver.id}/full/')
+
+    compliance = resp.json()['data']['compliance']
+    assert compliance['country']
+    keys = {d['key'] for d in compliance['driver_documents']}
+    assert 'license_front' in keys
+    assert isinstance(compliance['missing'], list)
+
+
+@pytest.mark.django_db
+def test_a_missing_document_is_reported_missing_not_hidden(
+    auth_client_admin, auth_client_driver,
+):
+    client, _ = auth_client_admin
+    _, driver_user = auth_client_driver
+    driver = _driver_with_docs(driver_user)
+    driver.license_doc = ''
+    driver.save(update_fields=['license_doc'])
+
+    resp = client.get(f'/api/v1/driver/admin/{driver.id}/full/')
+
+    data = resp.json()['data']
+    assert data['license_doc_url'] is None
+    assert 'license_front' in data['compliance']['missing']
+
+
+# ---------------------------------------------------------------------------
+# A rejection has to reach the driver
+# ---------------------------------------------------------------------------
+#
+# The reason an operator typed went to the audit log and nowhere else:
+# KYCApprovalSerializer only writes `approved` and `status`, so `doc_status`
+# stayed 'pending' forever and `doc_rejection_reason` was never written. The
+# driver saw "not approved" with no reason -- identical to a driver who has
+# uploaded nothing -- while the operator believed they had explained.
+
+@pytest.mark.django_db
+def test_rejecting_a_driver_records_the_reason_for_them_to_read(
+    auth_client_admin, auth_client_driver,
+):
+    client, _ = auth_client_admin
+    _, driver_user = auth_client_driver
+    driver = _driver_with_docs(driver_user)
+
+    resp = client.patch(
+        f'/api/v1/driver/admin/{driver.id}/update-kyc/',
+        {'approved': False, 'reason': 'Licence photo is unreadable.'},
+        format='json',
+    )
+
+    assert resp.status_code == 200, resp.content.decode()
+    driver.refresh_from_db()
+    assert driver.approved is False
+    assert driver.doc_status == 'rejected'
+    assert driver.doc_rejection_reason == 'Licence photo is unreadable.'
+    assert driver.doc_status_updated_at is not None
+
+
+@pytest.mark.django_db
+def test_the_driver_can_then_read_that_reason(auth_client_admin, auth_client_driver):
+    """End to end: operator rejects, driver sees why on their own screen."""
+    client, _ = auth_client_admin
+    driver_client, driver_user = auth_client_driver
+    driver = _driver_with_docs(driver_user)
+
+    client.patch(
+        f'/api/v1/driver/admin/{driver.id}/update-kyc/',
+        {'approved': False, 'reason': 'Insurance has expired.'},
+        format='json',
+    )
+
+    seen = driver_client.get('/api/v1/driver/driver/onboarding/').json()['data']
+    assert seen['doc_status'] == 'rejected'
+    assert seen['doc_rejection_reason'] == 'Insurance has expired.'
+
+
+@pytest.mark.django_db
+def test_approving_clears_a_previous_rejection_reason(
+    auth_client_admin, auth_client_driver,
+):
+    """A stale reason beside an approved account is worse than none."""
+    from django.utils import timezone as tz
+
+    client, _ = auth_client_admin
+    _, driver_user = auth_client_driver
+    driver = _driver_with_docs(driver_user)
+    driver.license_expiry = tz.localdate() + tz.timedelta(days=400)
+    driver.doc_status = 'rejected'
+    driver.doc_rejection_reason = 'Licence photo is unreadable.'
+    driver.save()
+
+    resp = client.patch(
+        f'/api/v1/driver/admin/{driver.id}/update-kyc/',
+        {'approved': True}, format='json',
+    )
+
+    assert resp.status_code == 200, resp.content.decode()
+    driver.refresh_from_db()
+    assert driver.approved is True
+    assert driver.doc_status == 'approved'
+    assert driver.doc_rejection_reason == ''

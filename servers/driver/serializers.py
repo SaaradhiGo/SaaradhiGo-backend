@@ -57,7 +57,18 @@ class DriverProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Driver
-        fields = ['id', 'license_doc', 'license_doc_back', 'license_expiry', 'active_vehicle', 'active_vehicle_details', 'status', 'approved', 'dispatch_eligible', 'qa_simulated_eligibility', 'total_trips', 'ratings']
+        # `doc_status` and `doc_rejection_reason` are READ-ONLY and were
+        # not exposed at all, so a driver whose documents an operator had
+        # rejected saw only `approved: false` -- the same thing a driver who
+        # had never uploaded anything sees. They were told "not approved"
+        # and never told why, or that there was a reason to read. A review
+        # outcome nobody can read is not a review.
+        fields = ['id', 'license_doc', 'license_doc_back', 'license_expiry',
+                  'active_vehicle', 'active_vehicle_details', 'status',
+                  'approved', 'doc_status', 'doc_rejection_reason',
+                  'doc_status_updated_at', 'uploaded_timestamp',
+                  'dispatch_eligible', 'qa_simulated_eligibility',
+                  'total_trips', 'ratings']
         # Defence in depth. This serializer is only ever bound to a DRIVER'S OWN
         # token, and `update_driver_profile` already builds its payload from a
         # four-field allow-list -- so `approved` was never reachable in practice.
@@ -71,8 +82,15 @@ class DriverProfileSerializer(serializers.ModelSerializer):
         # approval is unaffected -- it uses KYCApprovalSerializer, which declares
         # `approved` and `status` writable and enforces the MVA-2020 document
         # checks before allowing approved=True.
+        # DEFENCE IN DEPTH. This serializer is bound to a DRIVER'S OWN
+        # profile on a PATCH they control, so anything a driver must not be
+        # able to set about themselves is listed here as well as being
+        # enforced elsewhere. The review outcome is decided by an operator
+        # through the KYC endpoint; a driver may read it and nothing more.
         read_only_fields = ['approved', 'status', 'total_trips', 'ratings',
-                            'dispatch_eligible', 'qa_simulated_eligibility']
+                            'dispatch_eligible', 'qa_simulated_eligibility',
+                            'doc_status', 'doc_rejection_reason',
+                            'doc_status_updated_at', 'uploaded_timestamp']
 
 
 class DriverBankAccountSerializer(serializers.ModelSerializer):

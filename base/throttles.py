@@ -214,3 +214,38 @@ class GuestFareGlobalThrottle(GuestMapsGlobalThrottle):
     """
 
     scope = 'guest_fare_global'
+
+
+class GuestRouteThrottle(GuestMapsThrottle):
+    """Cap route lookups by ANONYMOUS callers, keyed on client IP.
+
+    The booking map draws the road the rider will actually travel, and the
+    polyline for it comes from `/ride/maps/directions/`. That endpoint was
+    `IsAuthenticated` while its siblings -- place search and place details
+    -- had already been opened to guests, so a visitor who had not signed
+    in got the map, the pickup marker and the drop marker, and no line
+    between them, plus a 401 in the console on every booking page. The two
+    halves of the same picture disagreed about who was allowed to see it.
+
+    Its own scope rather than sharing `guest_maps`, for the same reason
+    `guest_fare` has one: a route is a more expensive call than a place
+    lookup, the budgets want tuning apart, and a visitor who has spent
+    their search budget should still see the trip they already built.
+
+    Everything else -- the leftmost-XFF client key, and signed-in riders
+    skipping the cap entirely -- is inherited.
+    """
+
+    scope = 'guest_route'
+
+
+class GuestRouteGlobalThrottle(GuestMapsGlobalThrottle):
+    """A ceiling on ALL anonymous route lookups, across every caller.
+
+    Same reasoning as the global maps and fare ceilings: the per-IP key is
+    an address the client supplies, so a caller willing to rotate it walks
+    around the per-IP cap. This bucket is shared by every anonymous request
+    and cannot be walked around, which is what actually bounds the bill.
+    """
+
+    scope = 'guest_route_global'

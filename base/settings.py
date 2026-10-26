@@ -143,6 +143,9 @@ REST_FRAMEWORK = {
         # thirty such trips from one address per hour -- far above honest
         # use, far below a bill worth worrying about.
         'guest_fare': '120/hour',
+        # One route per trip, cached for five minutes server-side; a
+        # visitor who re-centres the map does not buy another.
+        'guest_route': '120/hour',
         # The ceiling that actually bounds the bill. The per-IP cap is keyed
         # on a client-supplied header and can be walked around by rotating
         # it; this bucket is shared by every anonymous request and cannot.
@@ -155,6 +158,7 @@ REST_FRAMEWORK = {
         # worst hour of a scripted abuse run is a few hundred distance
         # lookups, not an unbounded number.
         'guest_fare_global': '400/hour',
+        'guest_route_global': '400/hour',
     },
 }
 # --- Email delivery ----------------------------------------------------------

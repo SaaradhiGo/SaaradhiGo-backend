@@ -16,6 +16,8 @@ from base.throttles import (
     GuestFareThrottle,
     GuestMapsGlobalThrottle,
     GuestMapsThrottle,
+    GuestRouteGlobalThrottle,
+    GuestRouteThrottle,
 )
 from servers.ride.models import Trip, FarePricing
 from servers.ride.serializers import TripListSerializer, TripDetailSerializer
@@ -1571,8 +1573,22 @@ def proxy_place_details(request):
     return success_response(result, status.HTTP_200_OK)
 
 
+# The ROUTE LINE is part of the same picture as the markers, and a guest
+# already has the markers.
+#
+# This was `IsAuthenticated` while place search and place details had
+# already been opened to guests, so a visitor who had not signed in saw the
+# map, their pickup and their drop -- and no road drawn between them, plus a
+# 401 on the console of every booking page. Two halves of one picture
+# disagreeing about who may see it.
+#
+# Capped on its own budget rather than sharing the place-search one: a route
+# is the more expensive call, and a visitor who has spent their search
+# budget should still see the trip they have already built. The result is
+# cached for five minutes server-side, so panning the map buys nothing.
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+@throttle_classes([GuestRouteThrottle, GuestRouteGlobalThrottle])
 def proxy_directions(request):
     """
     Proxy for Google Directions.
@@ -1581,8 +1597,13 @@ def proxy_directions(request):
         "dest_lat": float, "dest_lng": float
     }
     """
-    user_id = request.user.id
-    if not check_maps_rate_limit(user_id, limit=100, period=3600):
+    # Anonymous callers have no id to key the per-user counter on; the two
+    # throttle classes above are what bounds them. A signed-in rider keeps
+    # the existing per-user cap as well.
+    user_id = getattr(request.user, 'id', None)
+    if user_id is not None and not check_maps_rate_limit(
+        user_id, limit=100, period=3600
+    ):
         return error_response(
             code='RATE_LIMIT_EXCEEDED',
             message='You have exceeded your API rate limit',

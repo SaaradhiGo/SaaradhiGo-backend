@@ -125,3 +125,92 @@ def test_a_signed_in_rider_skips_the_guest_cap(django_user_model):
             'a signed-in rider hit the guest throttle; get_cache_key is '
             'supposed to return None for an authenticated request'
         )
+
+
+# ---------------------------------------------------------------------------
+# The route line, which is part of the same picture as the markers.
+# ---------------------------------------------------------------------------
+#
+# `/ride/maps/directions/` was `IsAuthenticated` while place search and place
+# details had already been opened to guests, so a signed-out visitor got the
+# map and both markers and NO line between them -- plus a 401 in the console
+# of every booking page. Two halves of one picture disagreeing about who may
+# see it. Found on deployed QA, not in review.
+
+# NO TRAILING SLASH. `servers/ride/urls.py` registers this one as
+# `maps/directions`, unlike every other route in the project. With a
+# slash these requests 404, the throttle is never consulted, and the
+# permission assertion below passes without the guest reaching the view.
+DIRECTIONS = '/api/v1/ride/maps/directions'
+
+ROUTE = {
+    'origin_lat': 17.4844,
+    'origin_lng': 78.3893,
+    'dest_lat': 17.4335,
+    'dest_lng': 78.3865,
+}
+
+
+def test_a_guest_is_not_refused_a_route_for_being_anonymous():
+    """What the PERMISSION layer does, not what Google returns.
+
+    Without a Maps key the proxy answers 502, which is fine here: the thing
+    under test is that the guest reached the view at all. 401 or 403 means
+    the gate is back.
+    """
+    response = APIClient().post(DIRECTIONS, ROUTE, format='json')
+
+    assert response.status_code not in (401, 403), (
+        'a guest was refused the route for their own trip; they already '
+        'have the two markers it joins'
+    )
+
+
+def test_anonymous_route_lookups_are_capped():
+    """Opening it must not mean uncapping it.
+
+    Driven against the configured rate rather than a patched one: DRF
+    resolves throttle rates through its own cached settings object, so a
+    test that lowers the rate at runtime can measure the old one and pass
+    for the wrong reason.
+
+    Each request uses a DIFFERENT destination, or the server-side cache
+    answers without the throttle ever being consulted -- which would make
+    this assert nothing.
+    """
+    client = APIClient()
+    statuses = []
+    for i in range(140):  # guest_route is 120/hour
+        r = client.post(
+            DIRECTIONS,
+            {**ROUTE, 'dest_lat': 17.40 + i / 10000},
+            format='json',
+            REMOTE_ADDR='203.0.113.9',
+        )
+        statuses.append(r.status_code)
+        if r.status_code == 429:
+            break
+
+    assert 429 in statuses, (
+        'no 429 in 140 anonymous route lookups against a 120/hour cap -- '
+        'the throttle is not counting. Check the cache backend and get_ident.'
+    )
+
+
+def test_a_signed_in_rider_skips_the_guest_route_cap(django_user_model):
+    """The cap is for guests, and inherits that rule from GuestMapsThrottle."""
+    user = django_user_model.objects.create_user(
+        phone_number='+919999000092',
+        email='rider.route@saaradhigo.com',
+        password='x' * 14,
+    )
+    client = APIClient()
+    client.force_authenticate(user=user)
+
+    for i in range(10):
+        r = client.post(
+            DIRECTIONS, {**ROUTE, 'dest_lat': 17.40 + i / 10000}, format='json')
+        assert r.status_code != 429, (
+            'a signed-in rider hit the guest route throttle; get_cache_key '
+            'is supposed to return None for an authenticated caller'
+        )

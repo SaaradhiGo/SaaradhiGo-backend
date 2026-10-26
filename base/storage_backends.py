@@ -1,4 +1,4 @@
-"""S3 storage backends for uploaded media.
+"""S3 / R2 storage backends for uploaded media.
 
 WHY `file_overwrite` IS TRUE
 ----------------------------
@@ -14,36 +14,80 @@ upload impossible from the website:
    Nothing is ever saved under a caller-supplied name, so there is no name
    to collide with.
 
-2. **The deployment's storage credentials deny HeadObject.** The Railway
-   bucket answers 403 to it, so `get_available_name` raised
-   `ClientError: An error occurred (403) when calling the HeadObject
-   operation` and EVERY `FileField.save` through this storage ended in HTTP
-   500. Measured on QA, from the real traceback, not inferred.
-
-The presigned direct-to-S3 path never showed this, because signing a URL
-calls nothing -- which is why the mobile apps have always worked and the
-website's first upload attempt failed at the last step.
+2. **A store may deny HeadObject.** The Railway bucket answered 403 to it,
+   so `get_available_name` raised `ClientError: An error occurred (403)
+   when calling the HeadObject operation` and EVERY `FileField.save` ended
+   in HTTP 500. Measured on QA from the real traceback.
 
 With overwrite on, `get_available_name` returns the name it was given and
-makes no call at all. Writing the same UUID twice would overwrite it; that
-requires generating the same UUID twice.
+makes no call at all.
+
+WHY THE PUBLIC AND PRIVATE STORAGES DIFFER ON `custom_domain`
+--------------------------------------------------------------
+This is a SECURITY boundary, not a cosmetic one.
+
+Public objects (avatars, vehicle pictures) are served unsigned. On R2 the
+S3 API endpoint is not publicly readable -- a plain URL against it answers
+401 -- so they must be served from the bucket's public hostname instead,
+which is what `AWS_S3_PUBLIC_BASE_URL` carries.
+
+Private documents must never be served that way. Read
+`S3Boto3Storage.url()`: when `custom_domain` is set and there is no
+CloudFront signer, it returns the plain URL **and never signs it**, even
+with `querystring_auth = True`. A `custom_domain` leaking onto the private
+storage would therefore turn every driver's licence into a public URL,
+silently, with no error anywhere. `custom_domain = None` is pinned on the
+private class so a future global `AWS_S3_CUSTOM_DOMAIN` setting cannot do
+that, and a test asserts it.
 """
 
+from urllib.parse import urlparse
+
+from django.conf import settings
 from storages.backends.s3boto3 import S3Boto3Storage
+
+
+def _public_host():
+    """The hostname public objects are served from, or None.
+
+    django-storages wants a HOST, not a URL -- it builds
+    `{protocol}//{custom_domain}/{name}` -- so a configured value like
+    `https://files.saaradhigo.com` has its scheme stripped here rather than
+    producing `https://https://files...` at the point of use.
+    """
+    raw = (getattr(settings, 'AWS_S3_PUBLIC_BASE_URL', '') or '').strip()
+    if not raw:
+        return None
+    if '//' in raw:
+        return (urlparse(raw).netloc or '').rstrip('/') or None
+    return raw.rstrip('/') or None
 
 
 class PublicMediaStorage(S3Boto3Storage):
     default_acl = None
     # See the module docstring: the name is always a fresh uuid4, and the
-    # existence probe this would otherwise do is denied by the bucket.
+    # existence probe this would otherwise do may be denied by the bucket.
     file_overwrite = True
     querystring_auth = False
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault('custom_domain', _public_host())
+        super().__init__(*args, **kwargs)
 
 
 class PrivateDocumentStorage(S3Boto3Storage):
     default_acl = None
     file_overwrite = True
     querystring_auth = True
+    # PINNED. See the module docstring: a custom domain here would make
+    # `url()` return an UNSIGNED link to a driver's licence.
+    custom_domain = None
+
+    def __init__(self, *args, **kwargs):
+        # Defence in depth: refuse the argument too, so no caller can pass
+        # one in and quietly unsign this storage.
+        kwargs['custom_domain'] = None
+        super().__init__(*args, **kwargs)
 
 
 def public_media_storage():

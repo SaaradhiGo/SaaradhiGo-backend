@@ -728,6 +728,8 @@ AWS_REGION=os.environ.get("AWS_REGION")
 AWS_SNS_SENDER_ID=os.environ.get("AWS_SNS_SENDER_ID")
 
 # AWS S3
+from base import object_store as _object_store  # noqa: E402
+
 AWS_S3_BUCKET_NAME=os.environ.get("AWS_S3_BUCKET_NAME", "")
 AWS_S3_REGION=os.environ.get("AWS_S3_REGION", AWS_REGION)
 AWS_STORAGE_BUCKET_NAME=AWS_S3_BUCKET_NAME
@@ -741,17 +743,74 @@ AWS_QUERYSTRING_EXPIRE=int(os.environ.get("AWS_QUERYSTRING_EXPIRE", "900"))
 # every document upload into an HTTP 500. See base/storage_backends.py.
 AWS_S3_FILE_OVERWRITE=True
 AWS_S3_SIGNATURE_VERSION="s3v4"
-AWS_S3_ADDRESSING_STYLE=os.environ.get("AWS_S3_ADDRESSING_STYLE", "virtual")
 
 # Optional S3-compatible endpoint. Unset means real AWS S3, which is what
 # production uses. Set it to point document storage at any S3-compatible store --
-# a Railway bucket for QA, MinIO for local development -- without AWS credentials
+# Cloudflare R2, MinIO for local development -- without AWS credentials
 # existing in that environment at all.
 #
 # django-storages reads AWS_S3_ENDPOINT_URL from settings by itself, so the
 # storage backends need no change; only base.s3.build_s3_client (which constructs
 # its own boto3 client for presigning) has to be told.
+#
+#   Cloudflare R2:  https://<account-id>.r2.cloudflarestorage.com
 AWS_S3_ENDPOINT_URL=os.environ.get("AWS_S3_ENDPOINT_URL") or None
+
+# ADDRESSING STYLE AND REGION ARE DERIVED FROM THE ENDPOINT when they are not
+# set explicitly, because the right answer differs per provider and getting
+# it wrong fails as an opaque 403 SignatureDoesNotMatch rather than as
+# "unsupported".
+#
+#   R2  -> path-style; the bucket is the first PATH segment of
+#          <account-id>.r2.cloudflarestorage.com, and the virtual-hosted
+#          form does not resolve at all.
+#   AWS -> virtual-hosted; botocore otherwise presigns to the global
+#          s3.amazonaws.com host with a regional signature scope, which S3
+#          rejects with 403 on PUT.
+#
+# An explicit environment variable still wins, so an operator can override
+# either without editing code. See base/object_store.py.
+AWS_S3_ADDRESSING_STYLE=(
+    os.environ.get("AWS_S3_ADDRESSING_STYLE")
+    or _object_store.default_addressing_style(AWS_S3_ENDPOINT_URL)
+)
+if not AWS_S3_REGION:
+    # R2 has no regions; `auto` is its only valid sigv4 scope.
+    AWS_S3_REGION = _object_store.default_region(AWS_S3_ENDPOINT_URL) or ""
+AWS_S3_REGION_NAME = AWS_S3_REGION
+
+# The botocore Config django-storages' own client uses, so it signs exactly
+# the way base/s3.py does.
+#
+# IT MUST BE COMPLETE. django-storages applies `addressing_style` and
+# `signature_version` only when `client_config` is None -- read its
+# S3Boto3Storage.__init__ -- so supplying a partial Config here would
+# SILENTLY DROP path-style addressing, and the first write to R2 would fail
+# as an unexplainable 403. Everything the backend would otherwise have set
+# is therefore set here as well.
+from botocore.config import Config as _BotoConfig  # noqa: E402
+
+AWS_S3_CLIENT_CONFIG = _BotoConfig(
+    signature_version=AWS_S3_SIGNATURE_VERSION,
+    s3={"addressing_style": AWS_S3_ADDRESSING_STYLE},
+    # On R2: disables the CRC32 checksum headers botocore 1.36+ adds by
+    # default, which a presigned PUT cannot reproduce. Empty on AWS.
+    **_object_store.client_config_kwargs(AWS_S3_ENDPOINT_URL),
+)
+
+# WHERE PUBLICLY-READABLE FILES ARE SERVED FROM.
+#
+# Avatars and vehicle pictures are public and their URLs carry no signature.
+# On AWS the bucket URL is fine. On R2 the S3 API endpoint is NOT publicly
+# readable -- a plain URL against it answers 401 -- so public objects must be
+# served from the bucket's public hostname instead: either the r2.dev
+# address Cloudflare gives you when you enable public access, or a custom
+# domain bound to the bucket.
+#
+# Applied ONLY to the public storage. It must never reach the private
+# document storage, whose URLs are presigned against the API endpoint; see
+# base/storage_backends.py.
+AWS_S3_PUBLIC_BASE_URL=os.environ.get("AWS_S3_PUBLIC_BASE_URL", "").strip().rstrip("/")
 
 # Razorpay
 RAZORPAY_KEY_ID=os.environ.get("RAZORPAY_KEY_ID", "")

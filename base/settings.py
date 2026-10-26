@@ -734,7 +734,12 @@ AWS_STORAGE_BUCKET_NAME=AWS_S3_BUCKET_NAME
 AWS_S3_REGION_NAME=AWS_S3_REGION
 AWS_DEFAULT_ACL=None
 AWS_QUERYSTRING_EXPIRE=int(os.environ.get("AWS_QUERYSTRING_EXPIRE", "900"))
-AWS_S3_FILE_OVERWRITE=False
+# TRUE, and deliberately. Every upload path is `uuid4().hex` (see
+# base/media.PrefixedUUIDPath), so there is no caller-supplied name to
+# collide with -- and the alternative costs a HeadObject on every save,
+# which this deployment's bucket credentials answer 403 to. That turned
+# every document upload into an HTTP 500. See base/storage_backends.py.
+AWS_S3_FILE_OVERWRITE=True
 AWS_S3_SIGNATURE_VERSION="s3v4"
 AWS_S3_ADDRESSING_STYLE=os.environ.get("AWS_S3_ADDRESSING_STYLE", "virtual")
 

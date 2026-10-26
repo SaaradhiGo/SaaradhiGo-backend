@@ -48,7 +48,7 @@ from .permissions import IsDriver
 from base.utils import success_response
 
 from . import compliance
-from .models import Vehicle
+from .models import Vehicle, VehicleType
 
 logger = logging.getLogger(__name__)
 
@@ -133,9 +133,20 @@ def driver_onboarding(request):
         and expiry_ok
     )
 
+    # THE CATALOGUE, so a page that lets a driver register a car does not
+    # keep its own list of categories. `/pricing/vehicle-types/` is the
+    # rider-facing one and needs a lat/lng -- it answers "what can I be
+    # quoted HERE", which is a different question from "what kind of car do
+    # you drive". A driver registering a vehicle has no pickup point.
+    categories = [
+        {'type': vt.type, 'description': getattr(vt, 'description', '') or ''}
+        for vt in VehicleType.objects.all().order_by('id')
+    ]
+
     return success_response(
         {
             'country': compliance.driver_country_code(driver),
+            'vehicle_types': categories,
             'approved': driver.approved,
             'doc_status': driver.doc_status,
             'doc_rejection_reason': driver.doc_rejection_reason or '',

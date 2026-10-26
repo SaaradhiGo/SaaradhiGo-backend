@@ -140,3 +140,22 @@ class TestItIsTheDriversOwn:
 
         assert body['doc_status'] == 'rejected'
         assert body['doc_rejection_reason'] == 'Licence photo is unreadable.'
+
+
+class TestItCarriesTheVehicleCatalogue:
+    """A page that registers a car must not keep its own list of categories.
+
+    `/pricing/vehicle-types/` is the rider-facing endpoint and needs a
+    lat/lng: it answers "what can I be quoted here", which is not the
+    question "what kind of car do you drive". A driver adding a vehicle has
+    no pickup point.
+    """
+
+    def test_the_categories_are_offered(self, api):
+        VehicleType.objects.get_or_create(type='sedan')
+        VehicleType.objects.get_or_create(type='auto')
+
+        body = _body(api.get(URL))
+
+        types = {c['type'] for c in body['vehicle_types']}
+        assert {'sedan', 'auto'} <= types, types

@@ -33,6 +33,11 @@ class TripListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'pickup_address', 'destination_address',
             'pickup_lat', 'pickup_long', 'destination_lat', 'destination_long',
+            # THE CURRENCY OF THESE FARES. It is stamped on the trip at
+            # write time; without it every client renders a bare number and
+            # picks a symbol for it, which is wrong the moment a second
+            # market exists.
+            'currency',
             'estimated_fare', 'final_fare', 'surge_multiplier',
             'estimated_distance_km', 'actual_distance_km',
             'payment_method', 'payment_status',

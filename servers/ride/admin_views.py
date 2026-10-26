@@ -466,7 +466,17 @@ def build_admin_dashboard_kpis(day_date=None):
         },
         'withdrawals': {
             'pending': withdrawals_pending,
-            'completed_today_amount': str(withdrawals_completed_today_amount),
+            # `completed_today_amount` is None when the day spans markets,
+            # so a console rendering it bare printed "None" there and a
+            # symbol-less number everywhere else. `_display` is the same
+            # treatment GMV already gets, and is what a screen should show.
+            'completed_today_amount': (
+                str(withdrawals_completed_today_amount)
+                if withdrawals_completed_today_amount is not None else None),
+            'completed_today_by_currency': {
+                k: str(v) for k, v in withdrawals_completed_today_by_currency.items()},
+            'completed_today_display': format_totals(
+                withdrawals_completed_today_by_currency),
         },
         'receipts': {
             'issued_today': receipts_issued,

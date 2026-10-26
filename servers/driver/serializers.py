@@ -233,12 +233,19 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
         model = WithdrawalRequest
         fields = [
             'id', 'driver', 'driver_name', 'driver_phone', 'driver_upi_id',
+            # THE CURRENCY OF THE MONEY BEING RELEASED. It is stamped on the
+            # row at write time from the driver's wallet (see
+            # WithdrawalRequest._derive_currency) and was not exposed, so the
+            # payout queue showed a bare number and the console chose a
+            # symbol for it. An approver releasing money must be told which
+            # money.
+            'currency',
             'driver_kyc_approved', 'amount', 'status', 'requested_at',
             'processed_at', 'admin_notes', 'payout_reference_id',
         ]
         read_only_fields = [
-            'id', 'driver', 'status', 'requested_at', 'processed_at',
-            'admin_notes', 'payout_reference_id',
+            'id', 'driver', 'currency', 'status', 'requested_at',
+            'processed_at', 'admin_notes', 'payout_reference_id',
         ]
 
     def get_driver_name(self, obj):

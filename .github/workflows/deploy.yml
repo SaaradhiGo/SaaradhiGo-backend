@@ -260,13 +260,44 @@ jobs:
   # Nothing about the validation gates changes. `needs:` still requires all
   # three to pass before this job runs at all, so an unvalidated commit can
   # never reach EC2 -- that gate is not weakened, moved or made conditional.
+  secret-scan:
+    name: secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks over the commits this run introduces
+        # Only NEW commits are scanned. The full history was scanned once by
+        # hand and recorded (internal docs, AUDIT.md section 24.3); scanning it
+        # on every run would fail forever on a key removed in 2026-09. The
+        # allowlist in .gitleaks.toml names machine-generated files only.
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE:-}" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            RANGE="$HEAD~1..$HEAD"
+          else
+            RANGE="$BASE..$HEAD"
+          fi
+          echo "scanning $RANGE"
+          docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.21.2             git /repo --config /repo/.gitleaks.toml --log-opts="$RANGE"             --redact --no-banner --exit-code 1
+
   deploy:
     name: deploy to EC2 (optional)
     needs: [test, lint, postgres-concurrency]
     runs-on: ubuntu-latest
     # Only deploy from a real push to dev. Prevents accidental deploys from
     # forks, pull_request runs, or workflow_dispatch trial-runs.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    # DISABLED (owner ruling, 2026-10-27): QA runs on Railway and no EC2 target is
+    # in use. Until the owner says an EC2 host exists, this job runs only when a
+    # person triggers it from the Actions tab -- never on a push -- because a job
+    # that deploys the moment somebody sets a secret is a trap. Not deleted, so it
+    # can come back. Record: internal docs repository, AUDIT.md section 14.
+    if: github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Is a deploy target configured?

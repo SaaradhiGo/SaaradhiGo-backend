@@ -92,6 +92,24 @@ class customUser(AbstractUser):
         ),
     )
 
+    # THE PASSWORD IS TEMPORARY UNTIL ITS OWNER HAS CHOSEN ONE.
+    #
+    # `create_operator` hands a new operator a generated password through
+    # the terminal of whoever ran it. That person has seen it, so it is not
+    # yet a secret the operator alone holds. While this is set,
+    # `/auth/admin/login/` accepts the temporary password only together
+    # with a new one (`AUTH_PASSWORD_CHANGE_REQUIRED` otherwise) and issues
+    # no token until the change has happened. Cleared by that change or by
+    # `/auth/password/change/`.
+    must_change_password = models.BooleanField(
+        default=False,
+        help_text=(
+            'Set on an account whose password was issued by someone else. '
+            'Sign-in demands a new password first and issues no token until '
+            'it is set.'
+        ),
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_updated = models.BooleanField(default=False)

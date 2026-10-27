@@ -13,6 +13,8 @@ from servers.admin_audit.services import record_admin_action
 from django.contrib.auth import get_user_model
 from servers.auth_user.serializers import UserModelSerializer
 from servers.auth_user.identity import InvalidEmail, normalize_email
+from servers.auth_user.password_views import _validate_new_password
+from servers.auth_user.session_revocation import revoke_after_credential_change
 from rest_framework.pagination import PageNumberPagination
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
@@ -204,11 +206,26 @@ def admin_login(request):
         # would skip it entirely. A token from this endpoint therefore represents a
         # session that has already presented two factors, and every downstream
         # authorization check can trust it without knowing about MFA at all.
-        if ops_mfa.mfa_required_for(user):
+        #
+        # A PENDING DEVICE IS CONFIRMED HERE, AT FIRST SIGN-IN.
+        #
+        # `create_operator --enrol-mfa` and `enroll_operator_mfa` create the
+        # TOTP device UNCONFIRMED: the secret has been printed in a shell,
+        # but nobody has yet proved an authenticator holds it. Confirming
+        # used to need a second shell run with a live code, which the
+        # operator being enrolled cannot do themselves. So an account with
+        # no confirmed factor and one pending device is asked for a code
+        # like an enrolled one, and the first code that verifies confirms
+        # the device -- the same proof `confirm_totp` always required, made
+        # at the one moment the operator is certainly holding the app.
+        # From then on the account is enrolled and MFA applies as usual.
+        pending = (None if ops_mfa.has_device(user)
+                   else ops_mfa.pending_totp_device(user))
+        if ops_mfa.mfa_required_for(user) or pending is not None:
             # str() first: JSON allows a numeric literal, and a client that
             # sends `"mfa_code": 123456` would otherwise 500 on .strip().
             code = str(request.data.get('mfa_code') or '').strip()
-            if not ops_mfa.has_device(user):
+            if not ops_mfa.has_device(user) and pending is None:
                 # Enforced environment, operator with nothing enrolled. Refused
                 # rather than waved through, with the same generic message so this
                 # does not report which operators lack a second factor.
@@ -228,7 +245,23 @@ def admin_login(request):
                     issue='Second factor required',
                     status=status.HTTP_401_UNAUTHORIZED,
                 )
-            if not ops_mfa.verify_code(user, code):
+            if pending is not None:
+                if not ops_mfa.confirm_totp(pending, code):
+                    login_guard.record_failure(request, identifier)
+                    return _refuse()
+                # No recovery codes are issued on this path: there is no
+                # screen to show them. `enroll_operator_mfa --code` issues
+                # them from a shell, and `reset_operator_mfa` is the way back
+                # in if the device is lost.
+                record_admin_action(
+                    request, action='ops_mfa_enrolled', target_type='operator',
+                    target_id=user.pk,
+                    after={'method': 'totp', 'confirmed_at': 'first_sign_in',
+                           'recovery_codes_issued': 0},
+                    reason='Pending authenticator confirmed by its first '
+                           'valid code at sign-in.',
+                )
+            elif not ops_mfa.verify_code(user, code):
                 login_guard.record_failure(request, identifier)
                 return _refuse()
 
@@ -251,6 +284,51 @@ def admin_login(request):
                     status=status.HTTP_401_UNAUTHORIZED,
                 )
             breakglass.announce_use(user, reason, request=request, channel='api')
+
+        # A TEMPORARY PASSWORD IS REPLACED BEFORE ANY TOKEN EXISTS.
+        #
+        # `create_operator` issues a generated password through somebody
+        # else's terminal, so until the operator has chosen their own it is
+        # not a secret they alone hold. Last, after MFA and break-glass: the
+        # change is made by somebody who has proved every factor, and no
+        # token is minted on the temporary credential at all -- the console
+        # cannot be reached with it, however briefly. The console's
+        # `AUTH_PASSWORD_CHANGE_REQUIRED` step resends the same sign-in with
+        # `new_password` added.
+        if getattr(user, 'must_change_password', False):
+            new_password = request.data.get('new_password')
+            if not new_password:
+                return error_response(
+                    code='AUTH_PASSWORD_CHANGE_REQUIRED',
+                    message='Choose a new password to finish signing in.',
+                    field='new_password',
+                    issue='Password change required',
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+            new_password = str(new_password)
+            if new_password == str(password):
+                return error_response(
+                    code='AUTH_PASSWORD_WEAK',
+                    message='The new password must be different from the '
+                            'temporary one.',
+                    field='new_password',
+                    issue='New password equals the temporary password',
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            invalid = _validate_new_password(new_password, user)
+            if invalid is not None:
+                return invalid
+            user.set_password(new_password)
+            user.must_change_password = False
+            user.save(update_fields=['password', 'must_change_password'])
+            revoke_after_credential_change(
+                user, request,
+                reason='Temporary password replaced at first sign-in.')
+            record_admin_action(
+                request, action='ops_password_changed', target_type='operator',
+                target_id=user.pk, after={'forced': True},
+                reason='Temporary password replaced at first sign-in.',
+            )
 
         login_guard.clear(request, identifier)
         record_admin_action(

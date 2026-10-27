@@ -187,7 +187,9 @@ def change_password(request):
         return invalid
 
     user.set_password(new_password)
-    user.save(update_fields=['password'])
+    # A password the holder chose is, by definition, no longer temporary.
+    user.must_change_password = False
+    user.save(update_fields=['password', 'must_change_password'])
 
     # Outstanding RESET tokens are already invalid: the generator hashes the
     # password hash. JWTs are not -- a refresh token lives 14 days and keeps

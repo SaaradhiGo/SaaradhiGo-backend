@@ -99,6 +99,22 @@ def has_device(user) -> bool:
     return bool(devices_for(user))
 
 
+def pending_totp_device(user):
+    """The newest UNCONFIRMED TOTP device on this account, or None.
+
+    Created by `enroll_totp` and confirmed either by `confirm_totp` from a
+    shell or by the first valid code at sign-in (`admin_login`). It counts
+    for nothing until confirmed: `devices_for` never returns it, so it can
+    neither satisfy a challenge nor make one mandatory in an unenforced
+    environment -- except that the sign-in asks for a code while one is
+    pending, which is how enrolment completes.
+    """
+    if user is None or not getattr(user, 'pk', None):
+        return None
+    return (_totp_model().objects.filter(user=user, confirmed=False)
+            .order_by('-id').first())
+
+
 def mfa_required_for(user) -> bool:
     """Must THIS account present a second factor to sign in?
 

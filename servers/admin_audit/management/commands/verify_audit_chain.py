@@ -19,12 +19,20 @@ Until then the chain means tampering cannot be SILENT: to rewrite history
 undetectably somebody must recompute every subsequent hash, which is a
 deliberate act and not something that happens by accident.
 
+ROWS FROM BEFORE THE CHAIN
+--------------------------
+Rows written before migration 0003 carry no hash. They are reported as
+"pre-chain, protected by anchor": a CHAIN_ANCHOR row (migration 0005)
+records their count and a digest of their content, and this command
+recomputes it. They are never rewritten. An unhashed row anywhere after the
+anchor, or an anchor that disagrees with the rows, is a failure.
+
 Run it on a schedule and alert on a non-zero exit.
 """
 
 from django.core.management.base import BaseCommand
 
-from servers.admin_audit.hashchain import verify_chain
+from servers.admin_audit.hashchain import inspect_chain
 from servers.admin_audit.models import AdminAuditLog
 
 
@@ -38,19 +46,29 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        checked, problems = verify_chain(
-            AdminAuditLog.objects.all(), limit=options['limit'],
-        )
+        report = inspect_chain(AdminAuditLog.objects.all(),
+                               limit=options['limit'])
+        checked, problems = report['checked'], report['problems']
+        pre_chain = report['pre_chain']
 
         if checked == 0:
             self.stdout.write('The audit log is empty. Nothing to verify.')
             return
 
+        if pre_chain and pre_chain['anchor_id'] is not None:
+            self.stdout.write(
+                f"{pre_chain['rows']} pre-chain row(s) (ids "
+                f"{pre_chain['first_id']}–{pre_chain['last_id']}) carry no "
+                f"hash: protected by CHAIN_ANCHOR row {pre_chain['anchor_id']}, "
+                f"digest recomputed and matching."
+            )
+
         if not problems:
+            hashed = checked - (pre_chain['rows'] if pre_chain else 0)
             self.stdout.write(self.style.SUCCESS(
-                f'Audit chain intact: {checked} row(s) verified. '
-                f'Every row hashes to what it stores and links to the row '
-                f'before it.'
+                f'Audit chain intact: {checked} row(s) verified '
+                f'({hashed} hashed). Every hashed row hashes to what it '
+                f'stores and links to the row before it.'
             ))
             return
 

@@ -58,7 +58,7 @@ class Command(BaseCommand):
         if pre_chain and pre_chain['anchor_id'] is not None:
             self.stdout.write(
                 f"{pre_chain['rows']} pre-chain row(s) (ids "
-                f"{pre_chain['first_id']}–{pre_chain['last_id']}) carry no "
+                f"{pre_chain['first_id']}-{pre_chain['last_id']}) carry no "
                 f"hash: protected by CHAIN_ANCHOR row {pre_chain['anchor_id']}, "
                 f"digest recomputed and matching."
             )

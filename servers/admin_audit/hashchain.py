@@ -323,7 +323,7 @@ def inspect_chain(queryset, *, limit=None):
             'id': pre_last_id, 'created_at': pre_last_created,
             'issue': 'unanchored pre-chain rows',
             'detail': (
-                f'{pre_count} row(s) (ids {pre_first_id}–{pre_last_id}) carry '
+                f'{pre_count} row(s) (ids {pre_first_id}-{pre_last_id}) carry '
                 f'no hash and no CHAIN_ANCHOR row vouches for them. Apply '
                 f'admin_audit migration 0005; until then these rows are '
                 f'unverified.'

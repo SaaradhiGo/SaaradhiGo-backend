@@ -33,6 +33,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 
+from base.money import DEFAULT_CURRENCY, MoneyTypeError, parse_input, quantize
 from servers.rider.models import Notification, Wallet, WalletTransaction
 
 
@@ -68,13 +69,20 @@ class CreditResult:
         }
 
 
-def _to_decimal(amount) -> Optional[Decimal]:
+def _rider_currency(user):
+    wallet = Wallet.objects.filter(user_id=user, scope=Wallet.SCOPE_RIDER).first()
+    return wallet.currency if wallet and wallet.currency else DEFAULT_CURRENCY
+
+
+def _to_decimal(amount, user) -> Optional[Decimal]:
+    """The credit amount, rounded once by the money helper in the rider's
+    currency, or None if it is not a positive amount."""
     try:
-        v = Decimal(str(amount)).quantize(Decimal('0.01'))
+        v = quantize(parse_input(amount), _rider_currency(user))
         if v <= 0:
             return None
         return v
-    except (InvalidOperation, TypeError, ValueError):
+    except (InvalidOperation, MoneyTypeError, TypeError, ValueError):
         return None
 
 
@@ -141,7 +149,7 @@ def _issue_credit(
             raise
 
         wallet.balance = projected
-        wallet.save(update_fields=['balance'])
+        wallet.save(update_fields=['balance_minor'])
 
     # Best-effort notification outside the transaction (don't fail the credit
     # if the notification table is unavailable for any reason).
@@ -174,7 +182,7 @@ def issue_refund_credit(user, amount, trip_id, idempotency_key) -> CreditResult:
     Prefer this over `gateway.create_refund(...)` when the rider has opted
     in to "instant credit" (vs the 5-7 day refund-to-original-method).
     """
-    amt = _to_decimal(amount)
+    amt = _to_decimal(amount, user)
     if amt is None:
         return CreditResult(False, None, Decimal('0.00'), reason='invalid_amount')
     return _issue_credit(
@@ -194,7 +202,7 @@ def issue_refund_credit(user, amount, trip_id, idempotency_key) -> CreditResult:
 
 def issue_promo_credit(user, amount, campaign, idempotency_key) -> CreditResult:
     """Credit a rider with a promo / referral / cashback amount."""
-    amt = _to_decimal(amount)
+    amt = _to_decimal(amount, user)
     if amt is None:
         return CreditResult(False, None, Decimal('0.00'), reason='invalid_amount')
     return _issue_credit(
@@ -214,7 +222,7 @@ def issue_promo_credit(user, amount, campaign, idempotency_key) -> CreditResult:
 
 def issue_support_credit(user, amount, ticket_ref, idempotency_key, reason_note='') -> CreditResult:
     """Customer-service goodwill credit (issued by support staff via admin)."""
-    amt = _to_decimal(amount)
+    amt = _to_decimal(amount, user)
     if amt is None:
         return CreditResult(False, None, Decimal('0.00'), reason='invalid_amount')
     return _issue_credit(

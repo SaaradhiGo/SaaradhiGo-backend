@@ -292,9 +292,11 @@ def summarise(rows):
             out['unchanged'] += 1
 
     if considered:
-        out['mean_metric_delta'] = (
-            out['total_metric_delta'] / Decimal(len(considered))
-        ).quantize(Decimal('0.01'))
+        # A money amount, so rounded by the money helper. The rows are one
+        # analysis cohort; the default market's minor unit is its scale.
+        from base.money import DEFAULT_CURRENCY, quantize
+        out['mean_metric_delta'] = quantize(
+            out['total_metric_delta'] / Decimal(len(considered)), DEFAULT_CURRENCY)
     else:
         out['mean_metric_delta'] = None
     return out

@@ -30,7 +30,7 @@ from django.utils import timezone
 from django.utils.html import escape
 from base.countries import get_country
 from base.money import (
-    DEFAULT_CURRENCY, currency_for_trip, format_money,
+    DEFAULT_CURRENCY, currency_for_trip, format_money, quantize,
 )
 
 logger = logging.getLogger(__name__)
@@ -533,6 +533,7 @@ def _receipt_tax(trip, total, rate):
     mode = (getattr(zone, 'tax_mode', '') or 'inclusive')
     rate = Decimal(str(rate or '0'))
     total = Decimal(str(total))
+    currency = currency_for_trip(trip)
 
     if mode == 'additive':
         per_trip_fee = Decimal(str(getattr(zone, 'per_trip_fee', None) or '0'))
@@ -541,16 +542,15 @@ def _receipt_tax(trip, total, rate):
         taxable = total - per_trip_fee
         divisor = (Decimal('1') + rate / Decimal('100'))
         pre_tax = (taxable / divisor) if divisor else taxable
-        amount = (pre_tax * rate / Decimal('100')).quantize(Decimal('0.01'))
+        amount = quantize(pre_tax * rate / Decimal('100'), currency)
     else:
-        amount = (total * rate /
-                  (Decimal('100.00') + rate)).quantize(Decimal('0.01'))
+        amount = quantize(total * rate / (Decimal('100.00') + rate), currency)
 
     return {
         'amount': amount,
         'mode': mode,
         'label': get_country(getattr(zone, 'country', None)).tax_label,
-        'currency': currency_for_trip(trip),
+        'currency': currency,
     }
 
 

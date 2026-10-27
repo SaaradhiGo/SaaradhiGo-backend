@@ -71,7 +71,7 @@ def test_the_cancellation_fee_column_is_deliberately_kept():
 
     When a cancellation policy exists, this is where the amount goes.
     """
-    assert any(f.name == 'cancellation_fee' for f in Trip._meta.get_fields())
+    assert any(f.name == 'cancellation_fee_minor' for f in Trip._meta.get_fields())
 
 
 # ---------------------------------------------------------------------------
@@ -120,8 +120,8 @@ def test_the_cleanup_is_presentation_only(admin_client):
     before = (
         list(TransactionHistory.objects.values()),
         list(WalletTransaction.objects.values()),
-        list(Trip.objects.values('id', 'estimated_fare', 'final_fare',
-                                 'cancellation_fee')),
+        list(Trip.objects.values('id', 'estimated_fare_minor', 'final_fare_minor',
+                                 'cancellation_fee_minor')),
     )
 
     admin_client.get(reverse('transaction_dashboard'))
@@ -130,7 +130,7 @@ def test_the_cleanup_is_presentation_only(admin_client):
     after = (
         list(TransactionHistory.objects.values()),
         list(WalletTransaction.objects.values()),
-        list(Trip.objects.values('id', 'estimated_fare', 'final_fare',
-                                 'cancellation_fee')),
+        list(Trip.objects.values('id', 'estimated_fare_minor', 'final_fare_minor',
+                                 'cancellation_fee_minor')),
     )
     assert after == before

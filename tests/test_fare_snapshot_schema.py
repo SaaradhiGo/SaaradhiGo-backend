@@ -218,13 +218,13 @@ def test_the_default_basis_describes_every_historical_trip(trip):
 def test_writing_a_final_snapshot_does_not_touch_the_trip_or_bill_anyone(trip):
     """The schema is inert. Only a later reviewed change makes anything read it."""
     before = Trip.objects.filter(id=trip.id).values(
-        'estimated_fare', 'final_fare', 'payment_status').first()
+        'estimated_fare_minor', 'final_fare_minor', 'payment_status').first()
 
     _snapshot(trip, snapshot_type=FarePricing.SNAPSHOT_FINAL, version=2,
               finalized_at=timezone.now(), rider_payable=Decimal('150.00'))
 
     after = Trip.objects.filter(id=trip.id).values(
-        'estimated_fare', 'final_fare', 'payment_status').first()
+        'estimated_fare_minor', 'final_fare_minor', 'payment_status').first()
     assert after == before
     assert Trip.objects.get(id=trip.id).final_fare is None
 

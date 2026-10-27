@@ -257,7 +257,7 @@ def test_reading_earnings_changes_no_settlement_state(rider, driver):
     wallet_before = get_wallet(driver.user_id, Wallet.SCOPE_DRIVER).balance
     ledger_before = list(WalletTransaction.objects.order_by('id').values())
     trips_before = list(Trip.objects.order_by('id').values(
-        'id', 'estimated_fare', 'final_fare', 'payment_status',
+        'id', 'estimated_fare_minor', 'final_fare_minor', 'payment_status',
     ))
 
     summarise(settlement_rows(driver))
@@ -265,7 +265,7 @@ def test_reading_earnings_changes_no_settlement_state(rider, driver):
     assert get_wallet(driver.user_id, Wallet.SCOPE_DRIVER).balance == wallet_before
     assert list(WalletTransaction.objects.order_by('id').values()) == ledger_before
     assert list(Trip.objects.order_by('id').values(
-        'id', 'estimated_fare', 'final_fare', 'payment_status',
+        'id', 'estimated_fare_minor', 'final_fare_minor', 'payment_status',
     )) == trips_before
 
 
@@ -448,11 +448,11 @@ def test_both_endpoints_leave_every_financial_row_byte_identical(rider, driver):
     def snapshot():
         return {
             'wallet': Wallet.objects.order_by('id').values_list(
-                'id', 'user_id', 'scope', 'balance'),
+                'id', 'user_id', 'scope', 'balance_minor'),
             'wallet_txns': list(WalletTransaction.objects.order_by('id').values()),
             'history': list(TransactionHistory.objects.order_by('id').values()),
             'trips': list(Trip.objects.order_by('id').values(
-                'id', 'estimated_fare', 'final_fare', 'actual_distance_km',
+                'id', 'estimated_fare_minor', 'final_fare_minor', 'actual_distance_km',
                 'actual_duration_min', 'payment_status', 'payment_method',
                 'surge_multiplier')),
         }

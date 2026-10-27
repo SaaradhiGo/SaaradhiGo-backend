@@ -193,7 +193,7 @@ def test_refund_mode_credit_issues_credit_not_cashfree_refund(
     wallet = Wallet.objects.get(user_id=rider_user)
     assert wallet.balance == Decimal('150.00')
     assert WalletTransaction.objects.filter(
-        user_id=rider_user, purpose='refund', amount=Decimal('150.00')
+        user_id=rider_user, purpose='refund', amount_minor=15000
     ).exists()
 
 

@@ -26,12 +26,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from typing import Optional
 
 from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
+
+from base.money import quantize
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +58,8 @@ class PromoResult:
         }
 
 
-def _two(v: Decimal) -> Decimal:
-    return v.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+def _two(v: Decimal, currency) -> Decimal:
+    return quantize(v, currency)
 
 
 def _compute_discount(promo, fare: Decimal) -> Decimal:
@@ -65,7 +67,7 @@ def _compute_discount(promo, fare: Decimal) -> Decimal:
         return min(promo.discount_value, fare)
     # percent
     pct = promo.discount_value / Decimal('100.00')
-    raw = (fare * pct).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    raw = quantize(fare * pct, promo.currency)
     if promo.max_discount_amount is not None:
         raw = min(raw, promo.max_discount_amount)
     # Discount can never exceed the fare itself.
@@ -114,10 +116,10 @@ def apply_promo(code: str, user, fare: Decimal, zone=None, at=None) -> PromoResu
         return PromoResult(ok=False, code=code, reason='PROMO_LIMIT_REACHED')
 
     discount = _compute_discount(promo, fare)
-    final = max(Decimal('0.00'), _two(fare - discount))
+    final = max(Decimal('0.00'), _two(fare - discount, promo.currency))
     return PromoResult(
         ok=True, code=promo.code,
-        discount_amount=_two(discount), final_fare=final,
+        discount_amount=_two(discount, promo.currency), final_fare=final,
         description=promo.description, reason='',
     )
 
@@ -170,11 +172,11 @@ def redeem_promo(code: str, user, trip, fare: Decimal, zone=None, at=None) -> Pr
             return PromoResult(ok=False, code=code, reason='PROMO_LIMIT_REACHED')
 
         discount = _compute_discount(promo, fare)
-        final = max(Decimal('0.00'), _two(fare - discount))
+        final = max(Decimal('0.00'), _two(fare - discount, promo.currency))
 
         PromoRedemption.objects.create(
-            promo=promo, user=user, trip=trip,
-            discount_amount=_two(discount),
+            promo=promo, user=user, trip=trip, currency=promo.currency,
+            discount_amount=_two(discount, promo.currency),
         )
         promo.redemption_count = F('redemption_count') + 1
         promo.save(update_fields=['redemption_count', 'updated_at'])
@@ -185,6 +187,6 @@ def redeem_promo(code: str, user, trip, fare: Decimal, zone=None, at=None) -> Pr
     )
     return PromoResult(
         ok=True, code=promo.code,
-        discount_amount=_two(discount), final_fare=final,
+        discount_amount=_two(discount, promo.currency), final_fare=final,
         description=promo.description, reason='',
     )

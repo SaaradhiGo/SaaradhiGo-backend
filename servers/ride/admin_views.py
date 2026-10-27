@@ -451,7 +451,7 @@ def build_admin_dashboard_kpis(day_date=None):
         status='completed', processed_at__gte=day_start, processed_at__lt=day_end,
     )
     withdrawals_completed_today_by_currency = sum_by_currency(
-        _withdrawals_today, 'amount')
+        _withdrawals_today, 'amount_minor')
     withdrawals_completed_today_amount = (
         next(iter(withdrawals_completed_today_by_currency.values()),
              Decimal('0.00'))

@@ -3,6 +3,7 @@ from django.contrib.auth import get_user_model
 from base.media import PrefixedUUIDPath, validate_document_file, validate_file_size, validate_image_file
 from base.storage_backends import private_document_storage, public_media_storage
 from base.currency_stamp import CurrencyStampedModel
+from base.money import MinorUnitsAmount
 # Create your models here.
 User=get_user_model()
 class Driver(models.Model):
@@ -367,7 +368,9 @@ class WithdrawalRequest(CurrencyStampedModel, models.Model):
         return None
 
     driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='withdrawal_requests')
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    # Minor units of `currency` (base/money.py); `amount` is the Decimal view.
+    amount_minor = models.BigIntegerField()
+    amount = MinorUnitsAmount('amount_minor')
     # The currency this amount is in, stamped at write time from the trip's
     # zone. Denormalised on purpose: the currency a row was written in is a
     # FACT about that row, not a lookup against today's zone configuration --
@@ -438,7 +441,11 @@ class IncentiveQuest(models.Model):
     title = models.CharField(max_length=256)
     description = models.TextField(blank=True, default='')
     target_trips = models.PositiveIntegerField(help_text='Number of trips required to complete the quest')
-    reward_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    # Minor units of `currency`. Quests are not zone-scoped yet, so the
+    # currency is set explicitly rather than stamped.
+    reward_amount_minor = models.BigIntegerField()
+    reward_amount = MinorUnitsAmount('reward_amount_minor')
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
     start_date = models.DateTimeField()
     end_date = models.DateTimeField()
     is_active = models.BooleanField(default=True)

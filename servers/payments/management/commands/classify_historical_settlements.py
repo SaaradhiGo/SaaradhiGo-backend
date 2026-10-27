@@ -53,7 +53,7 @@ class Command(BaseCommand):
             Trip.objects
             .filter(status_id__status_code='completed')
             .select_related('status_id')
-            .only('id', 'estimated_fare', 'final_fare', 'payment_method',
+            .only('id', 'estimated_fare_minor', 'final_fare_minor', 'currency', 'payment_method',
                   'driver_id', 'status_id')
             .order_by('id')
         )

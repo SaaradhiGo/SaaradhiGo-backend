@@ -380,7 +380,7 @@ def driver_withdrawal_request(request):
             idempotency_key=idempotency_key
         )
         wallet.balance -= amount
-        wallet.save(update_fields=['balance'])
+        wallet.save(update_fields=['balance_minor'])
 
     # Return created withdrawal
     from .serializers import WithdrawalRequestSerializer

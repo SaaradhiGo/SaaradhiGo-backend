@@ -332,7 +332,7 @@ async def test_repeated_retries_never_transition_twice():
             'completed_at': Trip.objects.filter(id=trip.id)
                             .values_list('completed_at', flat=True).first(),
             'final_fare': Trip.objects.filter(id=trip.id)
-                          .values_list('final_fare', flat=True).first(),
+                          .values_list('final_fare_minor', flat=True).first(),
         }
 
     tws, _ = await _open_trip_socket(driver.user_id, trip.id)

@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from django.db.models import Avg, Count, Q, Sum
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 from datetime import timedelta, datetime
 import re
@@ -8,7 +8,7 @@ import re
 from base.market_time import (
     driver_timezone, local_day_start, local_month_start,
 )
-from base.money import DEFAULT_CURRENCY, format_money, normalize_currency
+from base.money import DEFAULT_CURRENCY, format_money, from_minor, normalize_currency, to_minor
 
 from .models import Driver, WithdrawalRequest
 from servers.rider.models import Wallet
@@ -183,6 +183,17 @@ def format_block_remaining(block_remaining):
         return f"{seconds}s"
 
 
+def _rupees(agg):
+    """Convert a UPI report aggregate's `total_amount` (minor units, INR --
+    UPI is an Indian rail) to rupees in place, and derive `avg_amount` from it
+    exactly rather than averaging integers in the database."""
+    total = agg.get('total_amount')
+    count = agg.get('count') or agg.get('total_count') or 0
+    agg['total_amount'] = None if total is None else from_minor(int(total), 'INR')
+    agg['avg_amount'] = (agg['total_amount'] / count) if total is not None and count else None
+    return agg
+
+
 def check_daily_upi_limit(driver, amount):
     """
     Check if driver has exceeded daily UPI limit.
@@ -203,11 +214,11 @@ def check_daily_upi_limit(driver, amount):
         currency='INR',
         requested_at__gte=day_start,
         status__in=['pending', 'approved', 'processed', 'completed']
-    ).aggregate(total=Sum('amount'))['total'] or 0
+    ).aggregate(total=Sum('amount_minor'))['total'] or 0
     
     # NPCI daily limit: ₹1,00,000 (100,000)
     daily_limit = 100000
-    used_today = float(daily_total)
+    used_today = float(from_minor(int(daily_total), 'INR'))
     within_limit = (used_today + amount) <= daily_limit
     
     return within_limit, used_today, daily_limit
@@ -231,11 +242,11 @@ def check_monthly_upi_limit(driver, amount):
         currency='INR',
         requested_at__gte=first_day_of_month,
         status__in=['pending', 'approved', 'processed', 'completed']
-    ).aggregate(total=Sum('amount'))['total'] or 0
+    ).aggregate(total=Sum('amount_minor'))['total'] or 0
     
     # Default monthly limit: ₹2,00,000 (200,000)
     monthly_limit = 200000
-    used_this_month = float(monthly_total)
+    used_this_month = float(from_minor(int(monthly_total), 'INR'))
     within_limit = (used_this_month + amount) <= monthly_limit
     
     return within_limit, used_this_month, monthly_limit
@@ -403,11 +414,14 @@ def detect_upi_fraud(driver, amount, upi_id=None):
         # Scoped to the currency this driver is paid in, because the
         # average is compared against `amount`. Mixing magnitudes across
         # currencies would make a normal payout look like a 90x anomaly.
-        avg_withdrawal = WithdrawalRequest.objects.filter(
+        _currency = driver_currency(driver)
+        _agg = WithdrawalRequest.objects.filter(
             driver=driver,
             status='completed',
-            currency=driver_currency(driver),
-        ).aggregate(avg_amount=Sum('amount') / Count('id'))['avg_amount'] or 0
+            currency=_currency,
+        ).aggregate(total=Sum('amount_minor'), n=Count('id'))
+        avg_withdrawal = (from_minor(int(_agg['total']), _currency) / _agg['n']
+                          if _agg['n'] else 0)
         
         if avg_withdrawal > 0 and amount > avg_withdrawal * 2:
             risk_score += 30
@@ -646,7 +660,7 @@ def get_upi_payout_monitoring_metrics(start_date=None, end_date=None):
     - Fraud detection alerts and resolution time
     - UPI ID verification status distribution
     """
-    from django.db.models import Count, Avg, Sum, F, Q
+    from django.db.models import Count, Sum, F, Q
     from django.db.models.functions import TruncDate
     
     if not start_date:
@@ -667,10 +681,10 @@ def get_upi_payout_monitoring_metrics(start_date=None, end_date=None):
         requested_at__date=today,
         status__in=['completed', 'processing']
     ).aggregate(
-        total_amount=Sum('amount'),
+        total_amount=Sum('amount_minor'),
         count=Count('id'),
-        avg_amount=Avg('amount')
     )
+    _rupees(daily_upi_withdrawals)
     
     # Calculate limit utilization percentage
     daily_limit = 100000  # ₹100,000 daily limit
@@ -847,22 +861,27 @@ def generate_npci_compliance_report(report_date=None):
         requested_at__range=[start_of_day, end_of_day]
     ).aggregate(
         total_count=Count('id'),
-        total_amount=Sum('amount'),
-        avg_amount=Avg('amount'),
+        total_amount=Sum('amount_minor'),
         completed_count=Count('id', filter=Q(status='completed')),
         failed_count=Count('id', filter=Q(status='failed')),
         pending_count=Count('id', filter=Q(status__in=['pending', 'processing']))
     )
+    _rupees(daily_transactions)
     
     # 2. Large transactions (> ₹50,000)
     large_transactions = WithdrawalRequest.objects.filter(
         payout_method='upi',
         currency='INR',
-        amount__gt=50000,
+        amount_minor__gt=to_minor(50000, 'INR'),
         requested_at__range=[start_of_day, end_of_day]
     ).values(
-        'id', 'driver__user__username', 'amount', 'status', 'requested_at'
-    ).order_by('-amount')
+        'id', 'driver__user__username', 'amount_minor', 'status', 'requested_at'
+    ).order_by('-amount_minor')
+    large_transactions = [
+        {**{k: v for k, v in row.items() if k != 'amount_minor'},
+         'amount': from_minor(row['amount_minor'], 'INR')}
+        for row in large_transactions
+    ]
     
     # 3. Monthly limit utilization (for the month containing report_date)
     month_start = report_date.replace(day=1)
@@ -877,9 +896,10 @@ def generate_npci_compliance_report(report_date=None):
         requested_at__range=[month_start_dt, month_end_dt],
         status='completed'
     ).aggregate(
-        total_amount=Sum('amount'),
+        total_amount=Sum('amount_minor'),
         count=Count('id')
     )
+    _rupees(monthly_transactions)
     
     monthly_limit = 200000  # ₹200,000 monthly limit
     monthly_utilization = (monthly_transactions['total_amount'] or 0) / monthly_limit * 100
@@ -1300,8 +1320,8 @@ def trigger_payout_creation(withdrawal):
                 )
                 return False
 
-            wallet.balance += withdrawal_obj.amount
-            wallet.save(update_fields=["balance"])
+            wallet.balance_minor += withdrawal_obj.amount_minor
+            wallet.save(update_fields=["balance_minor"])
 
             WalletTransaction.objects.create(
                 user_id=driver.user_id,
@@ -1700,9 +1720,9 @@ def initiate_upi_payout(withdrawal, driver):
 
         payout_result = gateway.create_upi_payout(
             upi_id=driver.upi_id,
-            amount=withdrawal.amount,
+            amount_minor=withdrawal.amount_minor,
             purpose="payout",
-            currency="INR",
+            currency=withdrawal.currency,
             reference_id=reference_id,
             name=(
                 driver.user_id.full_name

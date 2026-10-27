@@ -51,7 +51,9 @@ def reconcile_stuck_payments():
     from servers.payments.models import Payment, TransactionHistory, PaymentGateway
     from servers.payments.payment_gateways.factory import get_payment_gateway
     from servers.rider.models import WalletTransaction, Wallet
-    from decimal import Decimal, InvalidOperation
+    from decimal import InvalidOperation
+
+    from base.money import parse_input, to_minor
 
     now = timezone.now()
     grace_cutoff = now - timedelta(minutes=RECON_GRACE_MINUTES)
@@ -173,7 +175,7 @@ def reconcile_stuck_payments():
             skipped += 1
             continue
         try:
-            gateway_amount = Decimal(str(info.get('order_amount'))).quantize(Decimal('0.01'))
+            gateway_amount = parse_input(info.get('order_amount'))
         except (InvalidOperation, TypeError):
             logger.warning(f"recon: malformed amount on wallet {order_id}")
             skipped += 1
@@ -184,7 +186,7 @@ def reconcile_stuck_payments():
                 t = WalletTransaction.objects.select_for_update().get(pk=txn.pk)
                 if t.status == 'completed':
                     continue
-                if t.amount != gateway_amount:
+                if t.amount_minor != to_minor(gateway_amount, t.currency):
                     logger.error(
                         f"recon: wallet amount mismatch order={order_id} "
                         f"txn={t.amount} gateway={gateway_amount}; refusing"
@@ -196,8 +198,8 @@ def reconcile_stuck_payments():
                 wallet, _ = Wallet.objects.select_for_update().get_or_create(
                     user_id=t.user_id, scope=Wallet.SCOPE_RIDER,
                 )
-                wallet.balance = wallet.balance + gateway_amount
-                wallet.save(update_fields=['balance'])
+                wallet.balance_minor = wallet.balance_minor + t.amount_minor
+                wallet.save(update_fields=['balance_minor'])
             wallets_settled += 1
             logger.info(
                 f"recon: settled WalletTransaction {txn.pk} for user {txn.user_id_id} "

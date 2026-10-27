@@ -2,6 +2,7 @@ from django.db import models
 from django.contrib.auth import get_user_model
 from servers.driver.models import Vehicle,Driver,VehicleType
 from base.currency_stamp import CurrencyStampedModel
+from base.money import MinorUnitsAmount, as_decimal, from_minor, to_minor
 
 User=get_user_model()
 # Create your models here.
@@ -83,8 +84,12 @@ class Trip(CurrencyStampedModel, models.Model):
     actual_distance_km=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
     estimated_duration_min=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
     actual_duration_min=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
-    estimated_fare=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
-    final_fare=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
+    # Money is integer minor units in `currency` (base/money.py). The bare
+    # names are Decimal views of these columns for code that reads a fare.
+    estimated_fare_minor=models.BigIntegerField(blank=True,null=True)
+    final_fare_minor=models.BigIntegerField(blank=True,null=True)
+    estimated_fare=MinorUnitsAmount('estimated_fare_minor')
+    final_fare=MinorUnitsAmount('final_fare_minor')
     # The currency this amount is in, stamped at write time from the trip's
     # zone. Denormalised on purpose: the currency a row was written in is a
     # FACT about that row, not a lookup against today's zone configuration --
@@ -129,10 +134,12 @@ class Trip(CurrencyStampedModel, models.Model):
         db_index=True,
     )
     cancellation_reason=models.CharField(max_length=255, blank=True, default='')
-    cancellation_fee=models.DecimalField(
-        max_digits=10, decimal_places=2, default=0,
-        help_text='Charged to the cancelling party, per the published cancellation policy.',
+    cancellation_fee_minor=models.BigIntegerField(
+        default=0,
+        help_text='Charged to the cancelling party, per the published cancellation '
+                  'policy. Minor units of `currency`.',
     )
+    cancellation_fee=MinorUnitsAmount('cancellation_fee_minor')
 
     # Zone the pickup fell in, resolved at booking time. Stamped on the row
     # so fare/commission/GST attribution and per-city reporting do not have
@@ -258,11 +265,16 @@ class FarePricing(CurrencyStampedModel, models.Model):
     trip_id=models.ForeignKey(Trip,on_delete=models.CASCADE,related_name='fare_pricing')
 
     # --- the original columns, unchanged ------------------------------------
-    base_fare=models.DecimalField(max_digits=10,decimal_places=2)
-    distance_fare=models.DecimalField(max_digits=10,decimal_places=2)
-    time_fare=models.DecimalField(max_digits=10,decimal_places=2)
+    # Amounts in minor units of `currency`; the bare names are Decimal views.
+    base_fare_minor=models.BigIntegerField()
+    distance_fare_minor=models.BigIntegerField()
+    time_fare_minor=models.BigIntegerField()
     surge_multiplier=models.DecimalField(max_digits=4,decimal_places=2,default=1.00)
-    total_fare=models.DecimalField(max_digits=10,decimal_places=2)
+    total_fare_minor=models.BigIntegerField()
+    base_fare=MinorUnitsAmount('base_fare_minor')
+    distance_fare=MinorUnitsAmount('distance_fare_minor')
+    time_fare=MinorUnitsAmount('time_fare_minor')
+    total_fare=MinorUnitsAmount('total_fare_minor')
     # Stamped at write time from the trip's zone. Denormalised on purpose: the
     # currency a row was written in is a fact about that row, not a lookup
     # against today's zone configuration.
@@ -339,9 +351,12 @@ class FarePricing(CurrencyStampedModel, models.Model):
     # --- the three amounts --------------------------------------------------
     # gross_fare is the commission basis and the driver's economics.
     # rider_payable is what payment captures. They differ only by a discount.
-    gross_fare = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    rider_payable = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    gross_fare_minor = models.BigIntegerField(null=True, blank=True)
+    discount_amount_minor = models.BigIntegerField(null=True, blank=True)
+    rider_payable_minor = models.BigIntegerField(null=True, blank=True)
+    gross_fare = MinorUnitsAmount('gross_fare_minor')
+    discount_amount = MinorUnitsAmount('discount_amount_minor')
+    rider_payable = MinorUnitsAmount('rider_payable_minor')
     promo = models.ForeignKey(
         'ride.PromoCode', on_delete=models.PROTECT, null=True, blank=True,
         related_name='fare_snapshots',
@@ -363,7 +378,8 @@ class FarePricing(CurrencyStampedModel, models.Model):
             models.CheckConstraint(
                 # `condition=`, not the deprecated `check=`: CheckConstraint.check
                 # is removed in Django 6.0 and we are already on 5.2.
-                condition=models.Q(discount_amount__isnull=True) | models.Q(discount_amount__gte=0),
+                condition=(models.Q(discount_amount_minor__isnull=True)
+                           | models.Q(discount_amount_minor__gte=0)),
                 name='farepricing_discount_non_negative',
             ),
         ]
@@ -419,8 +435,10 @@ class Receipt(CurrencyStampedModel, models.Model):
     trip_id=models.ForeignKey(Trip,on_delete=models.CASCADE,related_name='receipts')
     user_id=models.ForeignKey(User,on_delete=models.CASCADE,related_name='receipts')
     receipt_number=models.CharField(max_length=64,unique=True,db_index=True)
-    total_fare=models.DecimalField(max_digits=10,decimal_places=2)
-    gst_amount=models.DecimalField(max_digits=10,decimal_places=2,default=0)
+    total_fare_minor=models.BigIntegerField()
+    gst_amount_minor=models.BigIntegerField(default=0)
+    total_fare=MinorUnitsAmount('total_fare_minor')
+    gst_amount=MinorUnitsAmount('gst_amount_minor')
     # The currency this amount is in, stamped at write time from the trip's
     # zone. Denormalised on purpose: the currency a row was written in is a
     # FACT about that row, not a lookup against today's zone configuration --
@@ -494,7 +512,7 @@ class ChatMessage(models.Model):
         return f'ChatMessage trip={self.trip_id} role={self.sender_role}'
 
 
-class PromoCode(models.Model):
+class PromoCode(CurrencyStampedModel, models.Model):
     """Rider-facing promo code.
 
     Designed for two common cases:
@@ -514,16 +532,26 @@ class PromoCode(models.Model):
     code = models.CharField(max_length=32, unique=True, db_index=True)
     description = models.CharField(max_length=256, blank=True, default='')
 
+    # A flat code's amounts are in this currency: the zone's, or the default
+    # market's for an all-zones code.
+    currency_source_fields = ('zone',)
+
     discount_type = models.CharField(max_length=8, choices=DISCOUNT_TYPE_CHOICES)
-    discount_value = models.DecimalField(max_digits=10, decimal_places=2)
-    # Used only for percent codes -- cap the discount in absolute Rs.
-    max_discount_amount = models.DecimalField(
-        max_digits=10, decimal_places=2, null=True, blank=True,
+    # `discount_value` used to be one Decimal column holding EITHER a percentage
+    # or a rupee amount, depending on `discount_type`. A percentage is a rate
+    # and stays Decimal; an amount is money and is minor units. Exactly one of
+    # these is set, matching `discount_type`.
+    discount_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
     )
-    # Minimum fare required before the code is allowed (Rs).
-    min_fare = models.DecimalField(
-        max_digits=10, decimal_places=2, default=0,
-    )
+    discount_flat_minor = models.BigIntegerField(null=True, blank=True)
+    # Used only for percent codes -- cap the discount in absolute money.
+    max_discount_amount_minor = models.BigIntegerField(null=True, blank=True)
+    # Minimum fare required before the code is allowed.
+    min_fare_minor = models.BigIntegerField(default=0)
+    max_discount_amount = MinorUnitsAmount('max_discount_amount_minor')
+    min_fare = MinorUnitsAmount('min_fare_minor')
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
 
     # Optional zone scope. NULL = applies in all active zones.
     zone = models.ForeignKey(
@@ -555,8 +583,27 @@ class PromoCode(models.Model):
     def __str__(self):
         return self.code
 
+    # The percentage for a percent code, the amount (Decimal, major units) for
+    # a flat one -- the single value the API and the operator forms have always
+    # shown. Set `discount_type` first; the constructor does, because Django
+    # assigns fields before properties.
+    @property
+    def discount_value(self):
+        if self.discount_type == 'flat':
+            return from_minor(self.discount_flat_minor, self.currency)
+        return self.discount_percent
 
-class PromoRedemption(models.Model):
+    @discount_value.setter
+    def discount_value(self, value):
+        if self.discount_type == 'flat':
+            self.discount_flat_minor = to_minor(value, self.currency)
+            self.discount_percent = None
+        else:
+            self.discount_percent = None if value is None else as_decimal(value)
+            self.discount_flat_minor = None
+
+
+class PromoRedemption(CurrencyStampedModel, models.Model):
     """One row per successful (code, user, trip) apply.
 
     Trip is nullable for the "validate at booking time, attach to trip
@@ -571,7 +618,10 @@ class PromoRedemption(models.Model):
         Trip, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='promo_redemptions',
     )
-    discount_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    currency_source_fields = ('trip', 'promo')
+    discount_amount_minor = models.BigIntegerField()
+    discount_amount = MinorUnitsAmount('discount_amount_minor')
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     # Free-form note (e.g. the fare-quote id the user saw when applying)
     notes = models.CharField(max_length=256, blank=True, default='')

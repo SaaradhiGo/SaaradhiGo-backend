@@ -37,6 +37,8 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from base.currency_stamp import CurrencyStampedModel
+from base.money import MinorUnitsAmount
 from servers.driver.models import VehicleType
 
 logger = logging.getLogger(__name__)
@@ -562,7 +564,7 @@ class RateCard(models.Model):
         return True
 
 
-class TripFareShadow(models.Model):
+class TripFareShadow(CurrencyStampedModel, models.Model):
     """What a metered fare *would* have charged, recorded without charging it.
 
     The platform quotes an up-front estimate and never writes `final_fare`, so
@@ -595,10 +597,16 @@ class TripFareShadow(models.Model):
 
     # What the rider was told, copied at observation time so a later edit to
     # the trip cannot silently rewrite history in this table.
-    quoted_fare = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # Minor units of `currency`, the trip's (base/money.py).
+    quoted_fare_minor = models.BigIntegerField(null=True, blank=True)
 
-    shadow_estimate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    shadow_actual = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    shadow_estimate_minor = models.BigIntegerField(null=True, blank=True)
+    shadow_actual_minor = models.BigIntegerField(null=True, blank=True)
+    quoted_fare = MinorUnitsAmount('quoted_fare_minor')
+    shadow_estimate = MinorUnitsAmount('shadow_estimate_minor')
+    shadow_actual = MinorUnitsAmount('shadow_actual_minor')
+    currency_source_fields = ('trip',)
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
 
     # Inputs, so a surprising row can be understood without re-deriving them.
     estimated_distance_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)

@@ -12,7 +12,7 @@ from servers.support.models import SupportTicket,SupportMessage
 from django.core.paginator import Paginator
 from django.db import models, transaction as db_transaction
 from django.db.models.functions import Coalesce
-from django.db.models import (Avg,Count, Q,Sum,F,Max,Value,DecimalField,)
+from django.db.models import (Avg,Count, Q,Sum,F,Max,Value,DecimalField,BigIntegerField,)
 from servers.driver.models import Driver, WithdrawalRequest,VehicleType,Vehicle,DriverSession,DriverCancellation,DriverBankAccount,DriverUPIContact
 from servers.ride.models import (
     ChatMessage,
@@ -48,7 +48,9 @@ logger = logging.getLogger(__name__)
 # same name so existing call sites and tests are unchanged.
 from base.countries import normalize_phone  # noqa: E402
 from base.money import (  # noqa: E402
-    DEFAULT_CURRENCY, charged_fare, format_totals, single_currency_or_none,
+    DEFAULT_CURRENCY, charged_fare, currency_for_zone, format_totals, from_minor,
+    parse_input, quantize,
+    single_currency_or_none,
     sum_by_currency,
 )
 from servers.driver.compliance import (  # noqa: E402
@@ -1972,9 +1974,9 @@ def payment_dashboard(request: HttpRequest) -> HttpResponse:
 
                         # Refund exactly once.
                         if not existing_refund:
-                            wallet.balance += withdrawal.amount
+                            wallet.balance_minor += withdrawal.amount_minor
                             wallet.save(
-                                update_fields=["balance"]
+                                update_fields=["balance_minor"]
                             )
 
                             WalletTransaction.objects.create(
@@ -2403,7 +2405,7 @@ def payment_dashboard(request: HttpRequest) -> HttpResponse:
     # screen asserted it was rupees. Two honest numbers beat one wrong one, so
     # there is deliberately no single `total_gross_revenue` any more.
     total_gross_revenue_by_currency = sum_by_currency(
-        completed_payments, "amount")
+        completed_payments, "amount_minor")
 
     completed_count = completed_payments.count()
 
@@ -2937,7 +2939,10 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
         commission_rate = Decimal(
             str(commission_rate or "0.00"))
     # Calculate platform commission for this trip
-        commission = (fare * commission_rate / Decimal("100")).quantize(Decimal("0.01"))
+        # Rounded by the money helper, the way the settlement itself rounds
+        # it -- this screen previously rounded HALF_EVEN and so disagreed with
+        # the booked commission on a half-paisa tie.
+        commission = quantize(fare * commission_rate / Decimal("100"), trip.currency)
         platform_revenue += commission
         total_commission_rate += (commission_rate * fare )
 # Weighted average take rate across completed trips
@@ -3664,14 +3669,13 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
             # ----------------------------------------------
             # REVENUE
             # ----------------------------------------------
-            revenue=Sum(
+            # Minor units: summed as integers, converted per driver below
+            # with that driver's currency.
+            revenue_minor=Sum(
                 Coalesce(
-                    "trips__final_fare",
-                    "trips__estimated_fare",
-                    output_field=DecimalField(
-                        max_digits=12,
-                        decimal_places=2,
-                    ),
+                    "trips__final_fare_minor",
+                    "trips__estimated_fare_minor",
+                    output_field=BigIntegerField(),
                 ),
                 filter=Q(
                     trips__status_id__status_code="completed"
@@ -3730,7 +3734,9 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
     for driver in page_obj:
         trips = driver.completed_trip_count or 0
         rating = driver.ratings or Decimal("0")
-        revenue = driver.revenue or Decimal("0")
+        row_currency = driver_row_currency(driver)
+        revenue = from_minor(driver.revenue_minor or 0,
+                             row_currency or DEFAULT_CURRENCY)
         distance = driver.distance_km or Decimal("0")
         # ----------------------------------------------
         # DRIVER LOYALTY TIER
@@ -3774,7 +3780,7 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
             # chose a symbol for the number, which is how a dollar total gets
             # a rupee sign. A driver operates in one market, so one code is
             # the right answer -- it just has to be carried, not assumed.
-            "currency": driver_row_currency(driver),
+            "currency": row_currency,
             "status": driver.status,
             "approved": driver.approved,
         })
@@ -4515,9 +4521,10 @@ def ride_detail(request: HttpRequest, trip_id: int) -> HttpResponse:
     latest_receipt = receipts.first()
     commission_rate = commission_percent_for_trip(trip)
     fare_total = fare.total_fare if fare else (trip.final_fare or trip.estimated_fare or Decimal("0"))
-    commission_amount = (
-        fare_total * Decimal(str(commission_rate or "0")) / Decimal("100")
-    ).quantize(Decimal("0.01"))
+    # Rounded by the money helper, as the settlement rounds it.
+    commission_amount = quantize(
+        fare_total * Decimal(str(commission_rate or "0")) / Decimal("100"),
+        trip.currency)
 
     timeline = [
         ("Requested", trip.requested_at),
@@ -4539,7 +4546,7 @@ def ride_detail(request: HttpRequest, trip_id: int) -> HttpResponse:
         "timeline": timeline,
         "commission_rate": commission_rate,
         "commission_amount": commission_amount,
-        "driver_net": (fare_total - commission_amount).quantize(Decimal("0.01")),
+        "driver_net": fare_total - commission_amount,
         "gst_amount": latest_receipt.gst_amount if latest_receipt else None,
         "has_route_trail": False,
     }
@@ -4947,6 +4954,8 @@ def promo_codes(request: HttpRequest) -> HttpResponse:
             code=code,
             description=description,
             discount_type=discount_type,
+            # Before the amounts, so they convert in the zone's currency.
+            currency=currency_for_zone(zone),
             discount_value=discount_value_dec,
             max_discount_amount=max_discount_amount_dec,
             min_fare=min_fare_dec,
@@ -5074,9 +5083,7 @@ def transaction_dashboard(request):
 
     def money(value):
         try:
-            return Decimal(str(value or 0)).quantize(
-                Decimal("0.01")
-            )
+            return quantize(parse_input(value or 0), DEFAULT_CURRENCY)
         except Exception:
             return Decimal("0.00")
 
@@ -5125,7 +5132,7 @@ def transaction_dashboard(request):
     # Per currency. See the note on the payment dashboard above: one number
     # across two currencies is not a total, and the reconciliation screen is
     # exactly where a wrong one would be trusted.
-    rider_total = sum_by_currency(completed_payments, "amount")
+    rider_total = sum_by_currency(completed_payments, "amount_minor")
 
     for payment in completed_payments.iterator(chunk_size=500):
         rider = payment.user_id
@@ -5164,7 +5171,7 @@ def transaction_dashboard(request):
         .order_by("-updated_at")
     )
 
-    refund_total = sum_by_currency(refunded_payments, "amount")
+    refund_total = sum_by_currency(refunded_payments, "amount_minor")
 
     for payment in refunded_payments.iterator(chunk_size=500):
         rider = payment.user_id
@@ -5210,7 +5217,7 @@ def transaction_dashboard(request):
         .order_by("-created_at")
     )
 
-    driver_earning_total = sum_by_currency(earning_history, "amount")
+    driver_earning_total = sum_by_currency(earning_history, "amount_minor")
 
     for txn in earning_history.iterator(chunk_size=500):
         driver = txn.driver_id
@@ -5260,7 +5267,7 @@ def transaction_dashboard(request):
         .order_by("-processed_at", "-requested_at")
     )
 
-    driver_payout_total = sum_by_currency(completed_withdrawals, "amount")
+    driver_payout_total = sum_by_currency(completed_withdrawals, "amount_minor")
 
     for withdrawal in completed_withdrawals.iterator(chunk_size=500):
         driver = withdrawal.driver

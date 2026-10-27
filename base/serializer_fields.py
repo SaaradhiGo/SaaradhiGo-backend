@@ -93,3 +93,24 @@ class S3UploadKeyField(serializers.Field):
         elif callable(storage):
             storage = storage()
         return storage
+
+
+class MoneyField(serializers.DecimalField):
+    """A money attribute in the API's existing shape: the string '135.68'.
+
+    Models store money as integer minor units and expose the old attribute
+    name as a Decimal (`base.money.MinorUnitsAmount`). DRF renders a bare
+    property through `ReadOnlyField`, whose Decimal becomes a JSON FLOAT --
+    a silent contract change for every app. Declaring this field keeps the
+    string the clients have always parsed, and keeps writes validated as
+    before; the model property then rounds once, in the money helper.
+
+    The places come from the currency table (the default market's exponent),
+    not a literal 2.
+    """
+
+    def __init__(self, max_digits=10, **kwargs):
+        from base.money import DEFAULT_CURRENCY, exponent
+
+        kwargs.setdefault('decimal_places', exponent(DEFAULT_CURRENCY))
+        super().__init__(max_digits=max_digits, **kwargs)

@@ -400,10 +400,12 @@ def wallet_payment(request):
         idempotency_key = str(uuid.uuid4())
     
     try:
-        amount_val = float(amount)
+        # Exact from the request onwards; no float touches the ledger.
+        from base.money import parse_input
+        amount_val = parse_input(amount)
         if amount_val <= 0:
             raise ValueError("Amount must be positive")
-    except ValueError:
+    except (ValueError, TypeError):
         return error_response(
             code='INVALID_AMOUNT',
             message='Invalid amount provided',
@@ -433,7 +435,9 @@ def wallet_payment(request):
             )
             
             # Check balance with lock
-            if float(wallet.balance) < amount_val:
+            from base.money import to_minor
+            amount_minor = to_minor(amount_val, wallet.currency)
+            if wallet.balance_minor < amount_minor:
                 return error_response(
                     code='INSUFFICIENT_BALANCE',
                     message='Insufficient wallet balance',
@@ -443,13 +447,14 @@ def wallet_payment(request):
                 )
             
             # Deduct amount from wallet
-            wallet.balance = float(wallet.balance) - amount_val
+            wallet.balance_minor = wallet.balance_minor - amount_minor
             wallet.save()
             
             # Create direct debit transaction
             txn = WalletTransaction.objects.create(
                 user_id=request.user,
-                amount=amount_val,
+                currency=wallet.currency,
+                amount_minor=amount_minor,
                 txn_type='debit',
                 status='completed',
                 purpose=purpose,
@@ -462,7 +467,7 @@ def wallet_payment(request):
             
             return success_response({
                 'transaction_id': txn.id,
-                'amount': str(amount_val),
+                'amount': str(float(amount_val)),  # legacy response text, e.g. '100.0'
                 'new_balance': str(wallet.balance),
                 'purpose': purpose,
                 'reference_id': reference_id,

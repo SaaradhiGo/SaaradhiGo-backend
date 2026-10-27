@@ -147,14 +147,14 @@ def test_every_shadow_quote_refuses_to_record_demand(trip):
 def test_recording_a_shadow_touches_no_money_column(trip, no_surge):
     """The trip's own fare fields must be exactly as they were."""
     before = Trip.objects.filter(id=trip.id).values(
-        'estimated_fare', 'final_fare', 'surge_multiplier',
+        'estimated_fare_minor', 'final_fare_minor', 'surge_multiplier',
         'estimated_distance_km', 'actual_distance_km', 'payment_status',
     ).first()
 
     record_shadow(trip)
 
     after = Trip.objects.filter(id=trip.id).values(
-        'estimated_fare', 'final_fare', 'surge_multiplier',
+        'estimated_fare_minor', 'final_fare_minor', 'surge_multiplier',
         'estimated_distance_km', 'actual_distance_km', 'payment_status',
     ).first()
     assert before == after, 'the shadow must be read-only with respect to the trip'
@@ -230,7 +230,7 @@ def test_context_delta_separates_pricing_drift_from_the_metrics(trip, no_surge):
     # was edited after the rider booked.
     todays = compute_shadow(trip)['shadow_actual']
     trip.estimated_fare = todays - Decimal('20.00')
-    trip.save(update_fields=['estimated_fare'])
+    trip.save(update_fields=['estimated_fare_minor'])
 
     record_shadow(trip)
     row = TripFareShadow.objects.get(trip=trip)

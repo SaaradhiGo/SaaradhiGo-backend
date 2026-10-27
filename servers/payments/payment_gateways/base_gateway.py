@@ -34,13 +34,19 @@ class BasePaymentGateway(ABC):
         """
         return ('INR',)
 
+    # MONEY CROSSES THIS INTERFACE AS INTEGER MINOR UNITS, with its currency:
+    # `amount_minor=13568, currency='INR'` is Rs 135.68. Razorpay and Stripe
+    # take minor units and pass the integer straight through. An adapter whose
+    # provider wants major units (Cashfree) converts at its own boundary with
+    # `base.money.to_gateway_major` / `to_major_string`, and nowhere else.
+
     @abstractmethod
-    def create_order(self, amount: float, trip_id: int, currency: str = 'INR') -> Optional[Dict[str, Any]]:
+    def create_order(self, amount_minor: int, trip_id: int, currency: str = 'INR') -> Optional[Dict[str, Any]]:
         """
         Create a payment order.
-        
+
         Args:
-            amount: Amount in currency units (e.g., INR)
+            amount_minor: Amount in integer minor units of `currency` (paise, cents)
             trip_id: Trip ID for reference
             currency: Currency code (default: 'INR')
             
@@ -83,13 +89,15 @@ class BasePaymentGateway(ABC):
         pass
     
     @abstractmethod
-    def create_refund(self, payment_id: str, amount: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    def create_refund(self, payment_id: str, amount_minor: Optional[int] = None,
+                      currency: str = 'INR') -> Optional[Dict[str, Any]]:
         """
         Create a refund for a payment.
-        
+
         Args:
             payment_id: Gateway payment ID
-            amount: Amount to refund (None = full refund)
+            amount_minor: Integer minor units to refund (None = full refund)
+            currency: Currency code of `amount_minor`
             
         Returns:
             Refund object or None on failure
@@ -117,7 +125,7 @@ class BasePaymentGateway(ABC):
     def create_upi_payout(
         self,
         upi_id: str,
-        amount: float,
+        amount_minor: int,
         purpose: str = "payout",
         currency: str = "INR",
         reference_id: Optional[str] = None,

@@ -174,40 +174,54 @@ def _serialize_wallet(user):
         return None
 
 
+def _export_rows(qs, fields, money=()):
+    """`fields` of each row as strings, with each `money` field read from its
+    minor-unit column and written in major units -- '135.68', the shape this
+    export has always had."""
+    from base.money import from_minor
+
+    columns = [f'{f}_minor' if f in money else f for f in fields]
+    if money:
+        columns.append('currency')
+    out = []
+    for row in qs.values(*columns)[:500]:
+        record = {}
+        for f in fields:
+            v = from_minor(row[f'{f}_minor'], row['currency']) if f in money else row[f]
+            record[f] = str(v) if v is not None else None
+        out.append(record)
+    return out
+
+
 def _serialize_trips(user):
     from servers.ride.models import Trip
-    qs = (
-        Trip.objects.filter(user_id=user)
-        .order_by('-requested_at')
-        .values(
-            'id', 'pickup_address', 'destination_address',
-            'estimated_fare', 'final_fare', 'payment_method',
-            'payment_status', 'requested_at', 'completed_at',
-            'cancelled_at',
-        )[:500]
+    return _export_rows(
+        Trip.objects.filter(user_id=user).order_by('-requested_at'),
+        ['id', 'pickup_address', 'destination_address',
+         'estimated_fare', 'final_fare', 'payment_method',
+         'payment_status', 'requested_at', 'completed_at',
+         'cancelled_at'],
+        money=('estimated_fare', 'final_fare'),
     )
-    return [{k: str(v) if v is not None else None for k, v in row.items()} for row in qs]
 
 
 def _serialize_payments(user):
     from servers.payments.models import Payment
-    qs = (
-        Payment.objects.filter(user_id=user)
-        .order_by('-created_at')
-        .values('id', 'trip_id', 'amount', 'method', 'status', 'created_at')[:500]
+    return _export_rows(
+        Payment.objects.filter(user_id=user).order_by('-created_at'),
+        ['id', 'trip_id', 'amount', 'method', 'status', 'created_at'],
+        money=('amount',),
     )
-    return [{k: str(v) if v is not None else None for k, v in row.items()} for row in qs]
 
 
 def _serialize_wallet_transactions(user):
     try:
         from servers.rider.models import WalletTransaction
-        qs = (
-            WalletTransaction.objects.filter(user_id=user)
-            .order_by('-created_at')
-            .values('id', 'amount', 'txn_type', 'status', 'created_at')[:500]
+        return _export_rows(
+            WalletTransaction.objects.filter(user_id=user).order_by('-created_at'),
+            ['id', 'amount', 'txn_type', 'status', 'created_at'],
+            money=('amount',),
         )
-        return [{k: str(v) if v is not None else None for k, v in row.items()} for row in qs]
     except Exception:
         return []
 

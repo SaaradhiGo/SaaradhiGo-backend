@@ -452,7 +452,7 @@ def _payment_rows(trip_id):
     from servers.payments.models import Payment
 
     return list(Payment.objects.filter(trip_id_id=trip_id)
-                .values_list('id', 'amount', 'status'))
+                .values_list('id', 'amount_minor', 'status'))
 
 
 def _txn_rows(trip_id):
@@ -485,7 +485,7 @@ def _trip_money(trip_id):
         'wallet': _wallet_rows(trip_id),
         'receipts': _receipt_rows(trip_id),
         'final_fare': Trip.objects.filter(id=trip_id)
-                      .values_list('final_fare', flat=True).first(),
+                      .values_list('final_fare_minor', flat=True).first(),
         'completed_at': Trip.objects.filter(id=trip_id)
                         .values_list('completed_at', flat=True).first(),
     }

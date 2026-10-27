@@ -9,6 +9,7 @@ from servers.payments import urls as payments_urls
 from servers.sos import urls as sos_urls
 from servers.pricing import urls as pricing_urls
 from servers.support import urls as support_urls
+from servers.admin_access import urls as admin_access_urls
 
 urlpatterns = [
     path('uploads/presign/', presign_upload),
@@ -20,4 +21,5 @@ urlpatterns = [
     path('sos/', include(sos_urls.urlpatterns)),
     path('pricing/', include(pricing_urls)),
     path('support/', include(support_urls)),
+    path('admin-access/', include(admin_access_urls.urlpatterns)),
 ]

@@ -16,6 +16,7 @@ serves live fleet positions from Redis, not the durable trail, and it is gated o
 `IsAuthenticated, IsAdmin`; both facts are asserted below.
 """
 
+from conftest import grant_legacy_equivalent
 import json
 from decimal import Decimal
 
@@ -234,6 +235,8 @@ def test_live_locations_serve_redis_not_the_durable_trail(ride, db):
     admin = User.objects.create_user(phone_number='+919851000099', role='admin')
     admin.is_staff = True
     admin.save()
+    # Works under both access models; see `grant_legacy_equivalent`.
+    grant_legacy_equivalent(admin)
 
     resp = _api(admin).get('/api/v1/ride/admin/live-locations/')
     assert resp.status_code == 200, resp.content

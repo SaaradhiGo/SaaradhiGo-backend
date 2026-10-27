@@ -213,3 +213,51 @@ def test_a_driver_cannot_reach_the_admin_kyc_endpoint(api, driver):
 
     driver.refresh_from_db()
     assert driver.approved is False
+
+
+# ---------------------------------------------------------------------------
+# 5. The review outcome: readable by the driver, writable only by an operator
+# ---------------------------------------------------------------------------
+#
+# `doc_status` and `doc_rejection_reason` are newly exposed on the driver's
+# own profile. They had to be: a driver whose documents an operator rejected
+# saw only `approved: false`, which is identical to what a driver who has
+# uploaded nothing sees. They were told "not approved", never told why, and
+# never told there was a reason to read.
+#
+# Exposing a field on a PATCHable serializer is exactly how a self-approval
+# hole gets opened, so the write side is asserted shut here too.
+
+@pytest.mark.django_db
+def test_a_driver_can_read_why_they_were_rejected(api, driver):
+    driver.doc_status = 'rejected'
+    driver.doc_rejection_reason = 'Licence photo is unreadable.'
+    driver.save(update_fields=['doc_status', 'doc_rejection_reason'])
+
+    # The READ endpoint, not the update one. `/driver/driver/update/` is
+    # PATCH-only and answers 405 to a GET.
+    resp = api.get('/api/v1/driver/driver/profile/')
+
+    assert resp.status_code == 200, resp.content.decode()
+    body = resp.json()['data']
+    assert body['doc_status'] == 'rejected'
+    assert body['doc_rejection_reason'] == 'Licence photo is unreadable.'
+
+
+@pytest.mark.django_db
+def test_a_driver_cannot_write_their_own_review_outcome(api, driver):
+    driver.doc_status = 'rejected'
+    driver.doc_rejection_reason = 'Licence photo is unreadable.'
+    driver.save(update_fields=['doc_status', 'doc_rejection_reason'])
+
+    api.patch(
+        PROFILE,
+        {'doc_status': 'approved', 'doc_rejection_reason': '', 'approved': True},
+        format='json',
+    )
+
+    driver.refresh_from_db()
+    assert driver.approved is False, 'a driver approved themselves'
+    assert driver.doc_status != 'approved', (
+        'a driver wrote their own document review outcome'
+    )

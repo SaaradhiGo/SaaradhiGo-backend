@@ -5,6 +5,8 @@ import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import AnonymousUser
+
+from servers.driver.qa_eligibility import may_operate
 from django.core.cache import cache
 from base.utils import generate_otp
 from base.money import currency_for_trip, format_money
@@ -163,7 +165,10 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             logger.info("WS reject 4003: user has no driver profile")
             await self.close(code=4003)
             return
-        if not self.driver.approved:
+        # `may_operate`, not `approved`: a QA test driver carries simulated
+        # eligibility that is honoured ONLY in a QA environment. `approved`
+        # still means a real document review and nothing else.
+        if not may_operate(self.driver):
             await self.close(code=4004)
             return
         lat = self.scope.get('lat')
@@ -457,7 +462,21 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     'fatigue': status.to_dict(),
                 }
             self.driver.status = "online"
-            self.driver.save()
+            # ONLY the status column.
+            #
+            # `self.driver` is loaded once in connect() and held for the life
+            # of the socket, so a bare save() writes every column back from a
+            # snapshot that may be hours old. A trip completing meanwhile
+            # increments `total_trips` in the database with F(); the next
+            # toggle used to overwrite it, which is how driver #8 reported 3
+            # completed trips against an authoritative 4.
+            #
+            # `total_trips` was only the visible casualty. The same write
+            # reverted anything else changed during the session -- `ratings`,
+            # `approved`, `qa_simulated_eligibility`, `active_vehicle`. An
+            # operator approving a driver's KYC mid-shift would have had that
+            # decision silently undone when the driver went offline.
+            self.driver.save(update_fields=['status'])
             record_session_start(self.driver)
             return {'ok': True, 'fatigue': status.to_dict()}
         except Exception as e:
@@ -470,7 +489,8 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         try:
             from servers.driver.fatigue import record_session_end
             self.driver.status = "off"
-            self.driver.save()
+            # Scoped for the same reason as going online, above.
+            self.driver.save(update_fields=['status'])
             record_session_end(self.driver, reason='offline')
             return {'ok': True}
         except Exception as e:
@@ -1138,13 +1158,35 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             current_status = await self._current_trip_status()
         except Exception:  # noqa: BLE001 -- a greeting must not fail the connect
             logger.exception('trip_status_on_connect_failed')
-        await self.send(text_data=json.dumps({
+
+        greeting = {
             'type': 'connection_established',
             'trip_id': self.trip_id,
             'subscribed': self.in_trip_group,
             'trip_status': current_status,
             'message': 'Connected to trip updates',
-        }))
+        }
+
+        # THE PICKUP PIN, for the RIDER only.
+        #
+        # It was broadcast exactly once, inside the `accept` event. A rider who
+        # reloaded the page, lost the socket for a moment, or simply opened
+        # their trip from another tab never saw it again -- and the driver
+        # cannot start the trip without it, so the ride could not begin at all.
+        # The greeting already exists to let a client "discover durable truth
+        # rather than infer it"; the PIN is part of that truth.
+        #
+        # Rider only, and only while it is still needed: once the trip is
+        # in_progress or terminal the PIN proves nothing and is not re-sent.
+        if self.participation == 'rider' and current_status in (
+            'accepted', 'reached',
+        ):
+            try:
+                greeting['otp'] = await self._current_trip_otp()
+            except Exception:  # noqa: BLE001 -- never fail the connect over this
+                logger.exception('trip_otp_on_connect_failed')
+
+        await self.send(text_data=json.dumps(greeting))
         await self._start_location_pump()
 
     async def disconnect(self, close_code):
@@ -1173,6 +1215,22 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 'trip_status': status,
                 'close_code': close_code,
             })
+
+    @database_sync_to_async
+    def _current_trip_otp(self):
+        """The pickup PIN for this trip, as a string, or None.
+
+        Read from PostgreSQL for the same reason the status is: the rider is
+        about to read this number aloud to a driver, so it has to be the
+        committed one.
+        """
+        from servers.ride.models import Trip
+
+        otp = (Trip.objects
+               .filter(id=self.trip_id)
+               .values_list('otp', flat=True)
+               .first())
+        return str(otp) if otp is not None else None
 
     @database_sync_to_async
     def _current_trip_status(self):
@@ -1520,14 +1578,38 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     # -- Event handlers --
 
     async def trip_status_update(self, event):
-        """Broadcast trip status to all participants."""
-        await self.send(text_data=json.dumps({
+        """Broadcast trip status to all participants.
+
+        The accept event reaches this group carrying the pickup PIN, but the
+        payload below is built from a fixed set of keys, so `otp` was dropped
+        on the way out. A rider watching their own trip on this socket -- the
+        website does exactly that, from the moment the trip is created --
+        therefore never learned the PIN, and the ride could not be started at
+        all. Found by running trip #88 end to end: the driver accepted,
+        reached the pickup and asked for a number the rider had no way to see.
+
+        The PIN goes to the RIDER only. The driver must be told it out loud by
+        the passenger -- that is the entire point of it -- so it is gated the
+        same way `driver_location_update` is gated, by participation rather
+        than by trusting the sender to omit it.
+        """
+        payload = {
             'type': 'trip_status_update',
             'trip_id': event['trip_id'],
             'status': event['status'],
             'message': event.get('message', ''),
             'driver_id': event.get('driver_id'),
-        }))
+        }
+
+        if getattr(self, 'participation', None) == 'rider':
+            otp = event.get('otp')
+            if otp is not None and str(otp).strip() != '':
+                payload['otp'] = str(otp)
+            for key in ('driver_info', 'vehicle_info'):
+                if event.get(key):
+                    payload[key] = event[key]
+
+        await self.send(text_data=json.dumps(payload))
 
     async def driver_location_update(self, event):
         """Forward live driver location to the RIDER on this trip.
@@ -1607,7 +1689,7 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         current = trip.status_id.status_code if trip.status_id else None
         if current not in (None, 'requested'):
             return 'none'
-        if not driver.approved or (driver.status or '').strip().lower() == 'blocked':
+        if not may_operate(driver) or (driver.status or '').strip().lower() == 'blocked':
             return 'none'
         return 'candidate_driver'
 
@@ -1690,7 +1772,7 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 except Driver.DoesNotExist:
                     return {'success': False, 'error': 'Driver profile not found'}
 
-                if not driver.approved:
+                if not may_operate(driver):
                     return {
                         'success': False,
                         'error': 'Your driver profile is not approved yet. '
@@ -1782,6 +1864,21 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 trip.driver_id = driver
                 trip.status_id = status_obj
                 trip.accepted_at = timezone.now()
+
+                # Record WHICH VEHICLE is doing this ride.
+                #
+                # `Trip.vehicle_id` had no assignment anywhere in the codebase,
+                # so it was null on every trip ever taken -- and the rider's
+                # own history serialises `vehicle_info` from it, so that field
+                # was permanently null too. Found on trip #90: a sedan was
+                # booked, dispatched, driven and paid for, and the ride the
+                # rider could read back named no vehicle at all.
+                #
+                # The accept broadcast already reads `driver.active_vehicle`
+                # to tell the rider what to look for at the kerb; this stores
+                # the same thing, so what was shown and what is on the record
+                # cannot drift apart.
+                trip.vehicle_id = driver.active_vehicle
 
                 # Generate and save OTP for the trip
                 otp = generate_otp(6)
@@ -2033,6 +2130,32 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     trip.completed_at = timezone.now()
                     # Create payment on trip completion within the same transaction
                     self._create_payment_on_complete(trip)
+
+                    # Count the trip against the driver.
+                    #
+                    # `Driver.total_trips` is read by the console, the driver
+                    # profile and the admin APIs, and was incremented by
+                    # NOTHING -- it stayed 0 for every driver forever. Trip
+                    # #81 completed and the counter did not move.
+                    #
+                    # This runs on the TRANSITION into 'completed', not on
+                    # seeing the state: the guard above returns
+                    # `already_in_target_state` for a replayed completion and
+                    # never reaches here, so a retried ack cannot count the
+                    # same trip twice. A cancelled trip takes the other
+                    # branch and is never counted.
+                    #
+                    # F() so the increment happens in the database, inside the
+                    # transaction that is already holding this trip row --
+                    # read-modify-write in Python would lose a concurrent
+                    # completion by the same driver.
+                    if trip.driver_id_id is not None:
+                        from django.db.models import F as _F
+                        from servers.driver.models import Driver as _Driver
+
+                        _Driver.objects.filter(id=trip.driver_id_id).update(
+                            total_trips=_F('total_trips') + 1,
+                        )
 
                     fare = trip.final_fare or trip.estimated_fare
                     # Formatted in the trip's own currency. This was

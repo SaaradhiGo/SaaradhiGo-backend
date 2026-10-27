@@ -56,6 +56,10 @@ INSTALLED_APPS = [
     'servers.ride',
     'servers.payments',
     'servers.admin_audit',
+    # Geo hierarchy, editable roles and scoped assignments. Admin authority
+    # is never global by default: SaaradhiGo operates in more than one
+    # country and US rules are state-level.
+    'servers.admin_access',
     'servers.sos',
     'servers.pricing',
     'servers.support',
@@ -118,8 +122,108 @@ REST_FRAMEWORK = {
         'otp_request': '5/hour',
         'otp_request_burst': '2/min',
         'otp_verify': '10/hour',
+        # Email+password. Deliberately tighter than the OTP rates: an OTP is
+        # a one-time code the user is waiting for, whereas a password attempt
+        # is a guess.
+        'email_login': '20/hour',
+        # These two SEND MAIL, so the cap also protects a third party's inbox
+        # from being used as a spam target.
+        'password_reset': '5/hour',
+        # Place lookups from a SIGNED-OUT visitor on the public homepage.
+        # Each one costs a Places call, so this is a spend cap, not a
+        # security control. Generous enough to type two addresses with
+        # autocomplete firing as you go; far too small to be worth scraping.
+        # Signed-in riders bypass it entirely (see GuestMapsThrottle).
+        # Sized against SHARED ADDRESSES, not against one person. Mobile
+        # carriers in India put large numbers of subscribers behind a single
+        # CGNAT address, and an office does the same, so a cap tuned to one
+        # visitor's typing would lock out everyone else on that address. A
+        # debounced autocomplete spends roughly 10-20 calls on a booking
+        # attempt, so this allows about ten visitors an hour per address.
+        'guest_maps': '180/hour',
+        # Fare quotes for a visitor who has not signed in. A real rider
+        # prices one trip and presses "Show fares" once, which is four
+        # requests sharing one cached distance lookup. 120/hour is roughly
+        # thirty such trips from one address per hour -- far above honest
+        # use, far below a bill worth worrying about.
+        'guest_fare': '120/hour',
+        # One route per trip, cached for five minutes server-side; a
+        # visitor who re-centres the map does not buy another.
+        'guest_route': '120/hour',
+        # The ceiling that actually bounds the bill. The per-IP cap is keyed
+        # on a client-supplied header and can be walked around by rotating
+        # it; this bucket is shared by every anonymous request and cannot.
+        # At Places list-pricing this caps anonymous spend near USD 1.70 an
+        # hour in the worst case, which is a bad day rather than an
+        # incident. Raise it when real traffic justifies it -- with a figure
+        # measured from the logs, not a guess.
+        'guest_maps_global': '600/hour',
+        # The un-evadable ceiling on anonymous fare quotes. Sized so the
+        # worst hour of a scripted abuse run is a few hundred distance
+        # lookups, not an unbounded number.
+        'guest_fare_global': '400/hour',
+        'guest_route_global': '400/hour',
     },
 }
+# --- Email delivery ----------------------------------------------------------
+#
+# There was NO email configuration in this file. Django's defaults are SMTP on
+# localhost:25, which does not exist on Railway, so every receipt email has
+# been failing silently: the Receipt row is written, `send_failure_reason` is
+# populated, and nothing surfaces it.
+#
+# Now configured from the environment, with an explicit development default.
+# `base/auth_email.py` reports delivery as FAILED rather than pretending, so an
+# unconfigured deployment is visible in the log instead of in a column.
+#
+# To make mail work, the owner sets (per environment):
+#   EMAIL_HOST, EMAIL_PORT, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD,
+#   EMAIL_USE_TLS, DEFAULT_FROM_EMAIL
+# AWS SES SMTP is the natural choice here since the stack already uses SES for
+# SMS; it needs a verified sender domain, which is an owner action.
+_email_backend_default = (
+    'django.core.mail.backends.console.EmailBackend' if DEBUG
+    else 'django.core.mail.backends.smtp.EmailBackend'
+)
+EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', _email_backend_default)
+EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() in ('1', 'true', 'yes')
+EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', '10'))
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', '')
+
+# Who a NON-PRODUCTION deployment is allowed to email.
+#
+# The accident this prevents: QA is pointed at real SES, QA's database holds a
+# real customer's address (restored from a dump, or typed into a test account),
+# somebody exercises password reset, and a reset link for a live account lands
+# in that person's inbox.
+#
+# Comma-separated. An entry starting with '@' matches a whole domain:
+#   AUTH_EMAIL_ALLOWLIST="qa@deeptrics.com,@saaradhigo.com"
+#
+# Enforced by base/auth_email.py whenever ENVIRONMENT != 'production' AND the
+# backend actually delivers. An empty allowlist on a delivering non-production
+# deployment blocks ALL mail, deliberately: the safe default for "we do not yet
+# know who we may write to" is nobody.
+#
+# SES sandbox mode restricts recipients too, but that is an AWS account state
+# nobody in this repo controls or can assert. This is the copy we own.
+AUTH_EMAIL_ALLOWLIST = [
+    entry.strip().lower()
+    for entry in os.environ.get('AUTH_EMAIL_ALLOWLIST', '').split(',')
+    if entry.strip()
+]
+
+# How long a password-reset or email-verification link stays valid.
+#
+# Django's default is 3 days. Two hours is enough for a person who just asked
+# for the link and short enough that an address compromised later is not a way
+# into the account. `PasswordResetTokenGenerator` reads this setting directly.
+PASSWORD_RESET_TIMEOUT = int(os.environ.get('PASSWORD_RESET_TIMEOUT', 2 * 60 * 60))
+
 from datetime import timedelta
 # JWT lifetimes match the system-design doc:
 #   - Access:  15 min (short window; minimises blast radius of a leaked token)
@@ -152,11 +256,18 @@ PLATFORM_LEGAL_ENTITY = os.environ.get(
 )
 
 # Domain used to build the operational contact addresses shown to drivers.
-# Previously hardcoded to vahango.com, a domain this platform does not appear to
-# use -- so a driver's grievance email would have gone nowhere. Still needs a
-# human to confirm these mailboxes actually exist and are monitored.
+#
+# THE OFFICIAL DOMAIN IS saaradhigo.com. This was hardcoded to vahango.com
+# (a domain this platform does not use), then saaradhigo.in (which publishes
+# no MX record, so a driver's grievance email bounced). `.com` publishes Zoho
+# MX, SPF and DMARC, so mail to it is deliverable.
+#
+# Deliverable is not the same as read: each mailbox built from this domain --
+# tech-support@, fraud-team@, compliance@, operations@ -- still has to exist
+# in Zoho and be monitored by a person before the MVA-2020 grievance
+# obligation is met. That is an owner action, not a code change.
 PLATFORM_CONTACT_DOMAIN = os.environ.get(
-    'PLATFORM_CONTACT_DOMAIN', 'saaradhigo.in',
+    'PLATFORM_CONTACT_DOMAIN', 'saaradhigo.com',
 )
 
 SIMPLE_JWT = {
@@ -508,6 +619,24 @@ logger.info(f"Loaded {len(TEST_PHONE_NUMBERS)} test phone numbers for OTP bypass
 ENVIRONMENT = os.environ.get('ENVIRONMENT', 'production' if not DEBUG else 'development')
 IS_PRODUCTION = ENVIRONMENT.strip().lower() == 'production'
 
+# ---------------------------------------------------------------------------
+# Admin access: closing the legacy path
+# ---------------------------------------------------------------------------
+# False while `ops_role` holders are still being migrated to AdminAssignment
+# rows. In that state an unmigrated operator keeps today's unscoped access and
+# every such grant is logged by `servers.admin_access.bridge`.
+#
+# Set to True once `list_admin_access` shows an assignment against every
+# operator and the 'via LEGACY ops_role' warnings have stopped. After that an
+# account with no assignment can do nothing, which is the intended end state —
+# so flipping this before the migration finishes locks people out.
+#
+# Default False DELIBERATELY, including in production: the alternative is a
+# deploy that silently removes every operator's access.
+ADMIN_ACCESS_STRICT = os.environ.get(
+    'ADMIN_ACCESS_STRICT', 'false'
+).strip().lower() in {'1', 'true', 'yes'}
+
 if IS_PRODUCTION:
     from django.core.exceptions import ImproperlyConfigured as _Improper
 
@@ -541,6 +670,33 @@ if IS_PRODUCTION:
                 f'{_qa_only} is set. It exists to create an admin account in QA, '
                 'and in production it is a back door into payout approval and KYC.'
             )
+
+    # A PRODUCTION THAT CANNOT SEND MAIL CANNOT COMPLETE A SIGN-UP.
+    #
+    # `email_login` refuses an unverified address and verification happens by
+    # clicking a link in an email. Without a mail backend those two make a
+    # lock with no key: the account is created, the screen says "check your
+    # email", nothing is sent, and the person can never sign in. QA hit
+    # exactly that.
+    #
+    # Registration compensates off production by marking the address
+    # verified instead. This guard is what keeps that branch unreachable
+    # here: production either delivers mail or refuses to start, so it can
+    # never be the deployment that accepts a password for an address nobody
+    # proved they own.
+    _mail_ok, _mail_why = (True, '')
+    try:
+        from base.auth_email import delivery_is_configured as _delivery_check
+
+        _mail_ok, _mail_why = _delivery_check()
+    except Exception as _exc:  # pragma: no cover - import-time safety only
+        _mail_ok, _mail_why = False, f'could not be checked ({_exc})'
+    if not _mail_ok:
+        _production_faults.append(
+            f'Email delivery is not configured ({_mail_why}). Verification '
+            'links cannot be sent, so nobody could finish signing up, and '
+            'password reset would be silently dead.'
+        )
 
     # A production deployment still pointing at QA infrastructure writes real
     # customer data into a test system, or reads test data as if it were real.
@@ -594,25 +750,89 @@ AWS_REGION=os.environ.get("AWS_REGION")
 AWS_SNS_SENDER_ID=os.environ.get("AWS_SNS_SENDER_ID")
 
 # AWS S3
+from base import object_store as _object_store  # noqa: E402
+
 AWS_S3_BUCKET_NAME=os.environ.get("AWS_S3_BUCKET_NAME", "")
 AWS_S3_REGION=os.environ.get("AWS_S3_REGION", AWS_REGION)
 AWS_STORAGE_BUCKET_NAME=AWS_S3_BUCKET_NAME
 AWS_S3_REGION_NAME=AWS_S3_REGION
 AWS_DEFAULT_ACL=None
 AWS_QUERYSTRING_EXPIRE=int(os.environ.get("AWS_QUERYSTRING_EXPIRE", "900"))
-AWS_S3_FILE_OVERWRITE=False
+# TRUE, and deliberately. Every upload path is `uuid4().hex` (see
+# base/media.PrefixedUUIDPath), so there is no caller-supplied name to
+# collide with -- and the alternative costs a HeadObject on every save,
+# which this deployment's bucket credentials answer 403 to. That turned
+# every document upload into an HTTP 500. See base/storage_backends.py.
+AWS_S3_FILE_OVERWRITE=True
 AWS_S3_SIGNATURE_VERSION="s3v4"
-AWS_S3_ADDRESSING_STYLE=os.environ.get("AWS_S3_ADDRESSING_STYLE", "virtual")
 
 # Optional S3-compatible endpoint. Unset means real AWS S3, which is what
 # production uses. Set it to point document storage at any S3-compatible store --
-# a Railway bucket for QA, MinIO for local development -- without AWS credentials
+# Cloudflare R2, MinIO for local development -- without AWS credentials
 # existing in that environment at all.
 #
 # django-storages reads AWS_S3_ENDPOINT_URL from settings by itself, so the
 # storage backends need no change; only base.s3.build_s3_client (which constructs
 # its own boto3 client for presigning) has to be told.
+#
+#   Cloudflare R2:  https://<account-id>.r2.cloudflarestorage.com
 AWS_S3_ENDPOINT_URL=os.environ.get("AWS_S3_ENDPOINT_URL") or None
+
+# ADDRESSING STYLE AND REGION ARE DERIVED FROM THE ENDPOINT when they are not
+# set explicitly, because the right answer differs per provider and getting
+# it wrong fails as an opaque 403 SignatureDoesNotMatch rather than as
+# "unsupported".
+#
+#   R2  -> path-style; the bucket is the first PATH segment of
+#          <account-id>.r2.cloudflarestorage.com, and the virtual-hosted
+#          form does not resolve at all.
+#   AWS -> virtual-hosted; botocore otherwise presigns to the global
+#          s3.amazonaws.com host with a regional signature scope, which S3
+#          rejects with 403 on PUT.
+#
+# An explicit environment variable still wins, so an operator can override
+# either without editing code. See base/object_store.py.
+AWS_S3_ADDRESSING_STYLE=(
+    os.environ.get("AWS_S3_ADDRESSING_STYLE")
+    or _object_store.default_addressing_style(AWS_S3_ENDPOINT_URL)
+)
+if not AWS_S3_REGION:
+    # R2 has no regions; `auto` is its only valid sigv4 scope.
+    AWS_S3_REGION = _object_store.default_region(AWS_S3_ENDPOINT_URL) or ""
+AWS_S3_REGION_NAME = AWS_S3_REGION
+
+# The botocore Config django-storages' own client uses, so it signs exactly
+# the way base/s3.py does.
+#
+# IT MUST BE COMPLETE. django-storages applies `addressing_style` and
+# `signature_version` only when `client_config` is None -- read its
+# S3Boto3Storage.__init__ -- so supplying a partial Config here would
+# SILENTLY DROP path-style addressing, and the first write to R2 would fail
+# as an unexplainable 403. Everything the backend would otherwise have set
+# is therefore set here as well.
+from botocore.config import Config as _BotoConfig  # noqa: E402
+
+AWS_S3_CLIENT_CONFIG = _BotoConfig(
+    signature_version=AWS_S3_SIGNATURE_VERSION,
+    s3={"addressing_style": AWS_S3_ADDRESSING_STYLE},
+    # On R2: disables the CRC32 checksum headers botocore 1.36+ adds by
+    # default, which a presigned PUT cannot reproduce. Empty on AWS.
+    **_object_store.client_config_kwargs(AWS_S3_ENDPOINT_URL),
+)
+
+# WHERE PUBLICLY-READABLE FILES ARE SERVED FROM.
+#
+# Avatars and vehicle pictures are public and their URLs carry no signature.
+# On AWS the bucket URL is fine. On R2 the S3 API endpoint is NOT publicly
+# readable -- a plain URL against it answers 401 -- so public objects must be
+# served from the bucket's public hostname instead: either the r2.dev
+# address Cloudflare gives you when you enable public access, or a custom
+# domain bound to the bucket.
+#
+# Applied ONLY to the public storage. It must never reach the private
+# document storage, whose URLs are presigned against the API endpoint; see
+# base/storage_backends.py.
+AWS_S3_PUBLIC_BASE_URL=os.environ.get("AWS_S3_PUBLIC_BASE_URL", "").strip().rstrip("/")
 
 # Razorpay
 RAZORPAY_KEY_ID=os.environ.get("RAZORPAY_KEY_ID", "")
@@ -723,6 +943,43 @@ FARE_SHADOW_LOOKBACK_HOURS = int(os.environ.get('FARE_SHADOW_LOOKBACK_HOURS', '7
 
 GOOGLE_MAPS_API_KEY=os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
+# Which Places API the maps adapters speak: "new" (default) or "legacy".
+#
+# Places API (Legacy) cannot be enabled on Google Cloud projects created from
+# October 2026, so a fresh project can only use "new". Projects that already
+# have legacy access can set "legacy" and keep the old endpoints.
+GOOGLE_PLACES_API_VERSION = os.environ.get("GOOGLE_PLACES_API_VERSION", "new")
+
+# CARTO basemap key for the admin God View map.
+#
+# CARTO stopped serving raster tiles unkeyed in September 2026 -- an unkeyed
+# request returns HTTP 200 whose image is the words "API KEY REQUIRED". The
+# key is free, needs no CARTO account, and allows 1M commercial tile requests
+# a month. Blank is handled: the console says the map is unconfigured rather
+# than drawing a grid of watermarks.
+CARTO_BASEMAP_API_KEY = os.environ.get("CARTO_BASEMAP_API_KEY", "")
+
+# --- Firebase Cloud Messaging ------------------------------------------------
+#
+# `servers/auth_user/services.py` only ever looked for a service-account FILE,
+# at a path that was not configurable because this setting did not exist. The
+# file is gitignored and is not in the deployed image, so `firebase_admin` was
+# never initialised anywhere and EVERY push was skipped -- for both apps, for
+# the whole life of the project. Dispatch's FCM leg has been dead and the
+# WebSocket has carried every ride offer alone.
+#
+# FIREBASE_CREDENTIALS_JSON holds the service-account JSON itself, which is
+# what a platform with environment variables and an ephemeral filesystem can
+# supply. Owner action: create a service account for the Firebase project,
+# download its key, and set this variable. It is a private key -- it must
+# never be committed, logged, or echoed.
+#
+# The file path remains supported for local development.
+FIREBASE_CREDENTIALS_JSON = os.environ.get('FIREBASE_CREDENTIALS_JSON', '')
+FIREBASE_CREDENTIALS_PATH = os.environ.get(
+    'FIREBASE_CREDENTIALS_PATH', 'firebase-credentials.json',
+)
+
 # When no RateCard governs a pickup, may we quote the hardcoded fallback
 # fare? Yes in dev/CI so a fresh DB is usable; no in production, where a
 # missing card means a city was seeded wrong and quoting a made-up price
@@ -787,6 +1044,20 @@ if os.environ.get('DB_HOST'):
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 
+# Sign in to the operator console with either identifier.
+#
+# USERNAME_FIELD is phone_number, so ModelBackend alone means the console
+# form accepts a phone and nothing else -- while the API had offered
+# /auth/email/login/ for a while. Two sign-in surfaces for one account, and
+# the identifier most people remember worked on only one of them.
+#
+# Order matters: ModelBackend stays FIRST, so every existing phone+password
+# sign-in takes exactly the path it always did. The email backend only
+# engages for an identifier containing '@'.
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+    'base.auth_backends.EmailOrPhoneBackend',
+]
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',

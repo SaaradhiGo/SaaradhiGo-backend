@@ -5,8 +5,9 @@ a Celery task and returns immediately. The actual FCM round-trip runs in
 the worker so request/WS handlers don't block on Google's latency.
 """
 
-import os
+import json
 import logging
+import os
 
 from celery import shared_task
 from django.conf import settings
@@ -17,21 +18,59 @@ from firebase_admin import credentials, messaging
 logger = logging.getLogger(__name__)
 
 
+def _firebase_credentials():
+    """Service-account credentials, from the environment or a file.
+
+    WHY THE ENVIRONMENT MATTERS HERE
+    --------------------------------
+    This read `FIREBASE_CREDENTIALS_PATH` only -- a FILE path, defaulting to
+    `firebase-credentials.json` in BASE_DIR. That file is gitignored and is
+    not in the image, and `FIREBASE_CREDENTIALS_PATH` was not even defined in
+    settings, so there was no supported way to configure it on Railway at all.
+    Every deployment therefore logged "Firebase credentials not found" and
+    skipped every push: `send_push_notification_task` returns False at the
+    `firebase_admin._apps` check before it looks at a token.
+
+    So push has never worked in any deployment, for either app, however
+    correct the clients were. Dispatch's FCM leg has been dead the whole time
+    and the WebSocket has been carrying every offer alone.
+
+    `FIREBASE_CREDENTIALS_JSON` holds the service-account JSON itself, which
+    is what a platform with environment variables and no persistent filesystem
+    can actually supply. The file path still works for local development.
+    """
+    raw = (getattr(settings, 'FIREBASE_CREDENTIALS_JSON', '') or '').strip()
+    if raw:
+        try:
+            return credentials.Certificate(json.loads(raw)), 'FIREBASE_CREDENTIALS_JSON'
+        except Exception as exc:  # noqa: BLE001
+            # Never log the value: it is a private key.
+            logger.error(
+                'FIREBASE_CREDENTIALS_JSON is set but unusable (%s): %s',
+                type(exc).__name__, exc,
+            )
+            return None, None
+
+    cred_path = getattr(settings, 'FIREBASE_CREDENTIALS_PATH', '') or 'firebase-credentials.json'
+    if not os.path.isabs(cred_path):
+        cred_path = os.path.join(settings.BASE_DIR, cred_path)
+    if os.path.exists(cred_path):
+        return credentials.Certificate(cred_path), cred_path
+    return None, None
+
+
 # Initialize Firebase on module load if credentials exist.
 try:
     if not firebase_admin._apps:
-        cred_path = getattr(settings, 'FIREBASE_CREDENTIALS_PATH', 'firebase-credentials.json')
-        if not os.path.isabs(cred_path):
-            cred_path = os.path.join(settings.BASE_DIR, cred_path)
-
-        if os.path.exists(cred_path):
-            cred = credentials.Certificate(cred_path)
+        cred, source = _firebase_credentials()
+        if cred is not None:
             firebase_admin.initialize_app(cred)
-            logger.info("Firebase Admin initialized successfully.")
+            logger.info('Firebase Admin initialized from %s.', source)
         else:
             logger.warning(
-                f"Firebase credentials not found at {cred_path}. "
-                "Push notifications will be disabled."
+                'No Firebase credentials. Push notifications are DISABLED. '
+                'Set FIREBASE_CREDENTIALS_JSON (the service-account JSON) or '
+                'place the file at FIREBASE_CREDENTIALS_PATH.'
             )
 except Exception as e:
     logger.error(f"Failed to initialize Firebase Admin: {str(e)}")

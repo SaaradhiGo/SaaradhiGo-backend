@@ -133,6 +133,39 @@ def format_money(amount, currency=DEFAULT_CURRENCY, with_symbol=True):
 # Aggregates
 # ---------------------------------------------------------------------------
 
+def charged_fare():
+    """The amount a completed trip actually charged, as a DB expression.
+
+    WHY THIS EXISTS
+    ---------------
+    `Trip.final_fare` is written in exactly one place -- `ride/promos.py`, when
+    a promo code is applied. Every ordinary trip completes with it NULL,
+    because the rider is quoted up front and pays the quote.
+
+    Every per-trip consumer in this codebase already knows that and reads
+    `trip.final_fare or trip.estimated_fare`. The AGGREGATES did not: they
+    summed `Sum('final_fare')`, so the operator console's GMV and revenue
+    counted promo trips and nothing else. Trip #81 settled ₹135.68 in cash and
+    the dashboard reported ₹0.00.
+
+    This is the same rule as an expression, so the aggregates and the
+    per-trip views can no longer disagree about what a trip charged.
+
+    It does NOT invent money: a trip with neither fare contributes zero, and
+    a promo trip contributes its discounted `final_fare`, which is what was
+    charged.
+    """
+    from django.db.models import DecimalField, Value
+    from django.db.models.functions import Coalesce
+
+    return Coalesce(
+        'final_fare',
+        'estimated_fare',
+        Value(0, output_field=DecimalField(max_digits=12, decimal_places=2)),
+        output_field=DecimalField(max_digits=12, decimal_places=2),
+    )
+
+
 def sum_by_currency(queryset, field, currency_field='currency'):
     """Total `field`, grouped by currency. Returns an OrderedDict.
 
@@ -146,6 +179,9 @@ def sum_by_currency(queryset, field, currency_field='currency'):
     """
     from django.db.models import Sum
 
+    # `field` may be a column name OR an expression -- `charged_fare()` is
+    # passed here by the revenue aggregates, because the column they used to
+    # sum is NULL on every trip without a promo.
     rows = (queryset
             .values(currency_field)
             .annotate(_total=Sum(field))

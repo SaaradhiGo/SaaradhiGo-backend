@@ -2,7 +2,8 @@
 
 This document provides exhaustive, unrestrictive details for every API endpoint in the VahanGo platform.
 Each endpoint includes required variables, optional variables, and fully expanded request and response samples.
-**Base-URL**: https://dev.api.saaradhigo.in/
+**Base-URL (QA)**: https://backend-qa-811d.up.railway.app/  
+**Base-URL (production target)**: https://api.saaradhigo.com/ _(DNS not yet configured)_
 ---
 ## Universal Guidelines
 - **Content-Type**: `application/json` (except for profile/vehicle file uploads which require `multipart/form-data`).

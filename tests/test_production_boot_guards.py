@@ -46,6 +46,13 @@ _SAFE_PRODUCTION_ENV = {
     'CASHFREE_WEBHOOK_SECRET': 'rehearsal-only',
     'BACKEND_URL': 'https://api.example.in',
     'FRONTEND_URL': 'https://ops.example.in',
+    # A production that cannot send mail cannot complete a sign-up: the
+    # account is created unverified and the verification link never leaves
+    # the machine. So a mail backend is part of what "correct" means here,
+    # and the guard below proves its absence is refused.
+    'EMAIL_BACKEND': 'django.core.mail.backends.smtp.EmailBackend',
+    'EMAIL_HOST': 'smtp.example.in',
+    'DEFAULT_FROM_EMAIL': 'no-reply@example.in',
     'DJANGO_SETTINGS_MODULE': 'base.settings',
 }
 
@@ -63,7 +70,8 @@ def _boot(**overrides):
         # contaminate the rehearsal.
         if not k.startswith(('DJANGO_', 'DB_', 'AWS_', 'CASHFREE_', 'QA_',
                              'TEST_PHONE', 'ALLOWED_', 'REDIS_', 'DEBUG',
-                             'ENVIRONMENT', 'BACKEND_URL', 'FRONTEND_URL'))
+                             'ENVIRONMENT', 'BACKEND_URL', 'FRONTEND_URL',
+                             'EMAIL_', 'DEFAULT_FROM_EMAIL'))
     }
     env.update(_SAFE_PRODUCTION_ENV)
     for key, value in overrides.items():
@@ -233,3 +241,17 @@ def test_all_faults_are_reported_together():
     assert 'DJANGO_SECRET_KEY' in out
     assert 'TEST_PHONE_NUMBERS' in out
     assert 'QA_ADMIN_BOOTSTRAP_PASSWORD' in out
+
+
+def test_production_refuses_to_boot_without_a_mail_backend():
+    """Verification links are how a sign-up finishes. No mail, no sign-up.
+
+    Registration compensates for an undeliverable environment by marking the
+    address verified, which is right for QA and wrong for production: there
+    it would accept a password for an address nobody proved they own. This
+    guard is what keeps that branch unreachable in production.
+    """
+    rc, err = _boot(EMAIL_BACKEND=None, EMAIL_HOST=None, DEFAULT_FROM_EMAIL=None)
+
+    assert rc != 0, 'production booted with no way to send a verification link'
+    assert 'Email delivery is not configured' in err, err[-600:]

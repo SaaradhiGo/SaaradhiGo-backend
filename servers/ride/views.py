@@ -4,8 +4,21 @@ from decimal import Decimal
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from base.utils import success_response, error_response
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.decorators import (
+    api_view,
+    permission_classes,
+    throttle_classes,
+)
+
+from base.throttles import (
+    GuestFareGlobalThrottle,
+    GuestFareThrottle,
+    GuestMapsGlobalThrottle,
+    GuestMapsThrottle,
+    GuestRouteGlobalThrottle,
+    GuestRouteThrottle,
+)
 from servers.ride.models import Trip, FarePricing
 from servers.ride.serializers import TripListSerializer, TripDetailSerializer
 from servers.ride.utils import estimate_amount, validate_distance
@@ -28,10 +41,27 @@ def _money_str(value):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+@throttle_classes([GuestFareThrottle, GuestFareGlobalThrottle])
 def estimate_fare(request):
     """
     Estimate fare for a trip before rider confirms.
+
+    OPEN TO A VISITOR WHO HAS NOT SIGNED IN, DELIBERATELY. Asking someone to
+    create an account before telling them what a ride costs is asking them
+    to commit before they know the price, and it is the one number they came
+    for. Sign-in moves to the point of CONFIRMING a trip, which is where it
+    belongs: that is when a ride is actually being created against a person.
+
+    What that does NOT mean is an open distance API. Each distinct trip
+    costs one Google Distance Matrix call -- cached, so quoting four vehicle
+    classes for one trip costs one call -- and anonymous callers are bounded
+    by a per-IP cap and an un-evadable global ceiling. A signed-in rider
+    skips both.
+
+    Nothing here reads the caller's identity except `rider_id`, which is
+    optional: it records a demand ping for surge and is simply absent for a
+    guest.
     
     Expected request data:
     {
@@ -134,7 +164,9 @@ def estimate_fare(request):
         vehicle_type=vehicle_type,
         pickup_lat=pickup_lat,
         pickup_long=pickup_long,
-        rider_id=request.user.id,
+        # None for a guest. `estimate_amount` takes it as optional and
+        # only uses it to record a demand ping for surge.
+        rider_id=getattr(request.user, 'id', None),
     )
 
     return success_response({
@@ -1357,10 +1389,51 @@ from servers.redis_client import check_maps_rate_limit, get_cached_map_data, cac
 from servers.ride.maps_utils import (
     google_places_autocomplete, google_directions, google_place_details,
     google_geocode,
+    MapsFailure, NOT_CONFIGURED, QUOTA_EXCEEDED, PERMISSION_DENIED,
 )
 
+
+def _maps_error_response():
+    """Turn the adapter's failure reason into an answer that explains itself.
+
+    The CODE stays `API_ERROR` in every case on purpose: the website and both
+    apps already treat that code as "maps is unavailable, say so and do not
+    invent places", and changing it would silently break that handling. What
+    changes is the message -- an unconfigured deployment, an exhausted quota
+    and a rejected key used to be indistinguishable, so the most common
+    situation in QA (no key at all) read as an outage.
+    """
+    reason = MapsFailure.reason()
+    if reason == NOT_CONFIGURED:
+        message = ('Maps is not configured on this deployment. Destination '
+                   'search is unavailable until a provider key is set.')
+        issue = 'GOOGLE_MAPS_API_KEY is not set'
+    elif reason == QUOTA_EXCEEDED:
+        message = ('The maps provider has refused further requests for now '
+                   '(quota exceeded). Try again later.')
+        issue = 'provider quota exceeded'
+    elif reason == PERMISSION_DENIED:
+        message = ('The maps provider rejected this request. The key may be '
+                   'invalid, or this API may not be enabled for the project.')
+        issue = 'provider rejected the credentials or the API is not enabled'
+    else:
+        message = 'Failed to fetch data from Maps API'
+        issue = 'Upstream service error'
+
+    return error_response(
+        code='API_ERROR',
+        message=message,
+        field='api',
+        issue=issue,
+        status=status.HTTP_502_BAD_GATEWAY,
+    )
+
+# Place SEARCH is open to guests so the public homepage can offer a real
+# pickup and destination before asking anyone to sign in. It looks a place
+# up and nothing else. Ride operations below stay authenticated.
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+@throttle_classes([GuestMapsThrottle, GuestMapsGlobalThrottle])
 def proxy_geocode(request):
     """
     Proxy for Google Places Autocomplete/Geocode.
@@ -1395,13 +1468,7 @@ def proxy_geocode(request):
 
     result = google_places_autocomplete(search_text, location=location)
     if result is None:
-        return error_response(
-            code='API_ERROR',
-            message='Failed to fetch data from Maps API',
-            field='api',
-            issue='Upstream service error',
-            status=status.HTTP_502_BAD_GATEWAY
-        )
+        return _maps_error_response()
 
     # Cache for 30 days
     cache_map_data(cache_key, result, ttl_seconds=30*24*60*60)
@@ -1448,20 +1515,18 @@ def proxy_reverse_geocode(request):
 
     result = google_geocode(latlng=f'{lat},{lng}')
     if result is None:
-        return error_response(
-            code='API_ERROR',
-            message='Failed to fetch data from Maps API',
-            field='api',
-            issue='Upstream service error',
-            status=status.HTTP_502_BAD_GATEWAY
-        )
+        return _maps_error_response()
 
     cache_map_data(cache_key, result, ttl_seconds=7*24*60*60)
     return success_response(result, status.HTTP_200_OK)
 
 
+# Open to guests for the same reason as `proxy_geocode`: resolving the
+# suggestion a visitor picked into coordinates is part of searching, and
+# without it the homepage could only hand over free text.
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+@throttle_classes([GuestMapsThrottle, GuestMapsGlobalThrottle])
 def proxy_place_details(request):
     """Proxy for Google Place Details.
 
@@ -1501,21 +1566,29 @@ def proxy_place_details(request):
 
     result = google_place_details(place_id, session_token=session_token)
     if result is None:
-        return error_response(
-            code='API_ERROR',
-            message='Failed to fetch data from Maps API',
-            field='api',
-            issue='Upstream service error',
-            status=status.HTTP_502_BAD_GATEWAY
-        )
+        return _maps_error_response()
 
     # A place's coordinates don't move. Cache for 30 days like geocode.
     cache_map_data(cache_key, result, ttl_seconds=30*24*60*60)
     return success_response(result, status.HTTP_200_OK)
 
 
+# The ROUTE LINE is part of the same picture as the markers, and a guest
+# already has the markers.
+#
+# This was `IsAuthenticated` while place search and place details had
+# already been opened to guests, so a visitor who had not signed in saw the
+# map, their pickup and their drop -- and no road drawn between them, plus a
+# 401 on the console of every booking page. Two halves of one picture
+# disagreeing about who may see it.
+#
+# Capped on its own budget rather than sharing the place-search one: a route
+# is the more expensive call, and a visitor who has spent their search
+# budget should still see the trip they have already built. The result is
+# cached for five minutes server-side, so panning the map buys nothing.
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+@throttle_classes([GuestRouteThrottle, GuestRouteGlobalThrottle])
 def proxy_directions(request):
     """
     Proxy for Google Directions.
@@ -1524,8 +1597,13 @@ def proxy_directions(request):
         "dest_lat": float, "dest_lng": float
     }
     """
-    user_id = request.user.id
-    if not check_maps_rate_limit(user_id, limit=100, period=3600):
+    # Anonymous callers have no id to key the per-user counter on; the two
+    # throttle classes above are what bounds them. A signed-in rider keeps
+    # the existing per-user cap as well.
+    user_id = getattr(request.user, 'id', None)
+    if user_id is not None and not check_maps_rate_limit(
+        user_id, limit=100, period=3600
+    ):
         return error_response(
             code='RATE_LIMIT_EXCEEDED',
             message='You have exceeded your API rate limit',
@@ -1570,13 +1648,7 @@ def proxy_directions(request):
 
     result = google_directions(origin_lat, origin_lng, dest_lat, dest_lng)
     if result is None:
-        return error_response(
-            code='API_ERROR',
-            message='Failed to fetch data from Maps API',
-            field='api',
-            issue='Upstream service error',
-            status=status.HTTP_502_BAD_GATEWAY
-        )
+        return _maps_error_response()
 
     # Cache for 5 minutes
     cache_map_data(cache_key, result, ttl_seconds=300)

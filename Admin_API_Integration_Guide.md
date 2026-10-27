@@ -16,7 +16,7 @@ Do not hardcode the API base URL. Use environment variables (e.g. via `python-do
 ```python
 # settings.py
 import os
-API_BASE_URL = os.environ.get('API_BASE_URL', 'https://dev.api.saaradhigo.in')
+API_BASE_URL = os.environ.get('API_BASE_URL', 'https://backend-qa-811d.up.railway.app')
 ```
 
 ### B. Handling Static Files

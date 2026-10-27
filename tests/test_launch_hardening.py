@@ -231,6 +231,86 @@ def test_credit_driver_wallet_is_idempotent_on_balance(completed_trip):
     assert first == second
 
 
+# The guards below were written and reasoned about, but never actually fired
+# in a test: the settlement row count was checked, the behaviour around it was
+# not. A driver's phone retries a WebSocket frame whenever the connection
+# wobbles mid-fare, which is exactly when it is least convenient to discover
+# that the retry was treated as a second collection.
+
+@pytest.mark.django_db
+def test_a_retried_cash_confirmation_is_reported_as_already_done(completed_trip):
+    """The retry must succeed quietly, not surface an error to the driver.
+
+    A driver who is told "that failed" after collecting the fare taps again,
+    or calls support. The second frame is the same instruction, not a second
+    payment.
+    """
+    from servers.consumers import TripStatusConsumer
+
+    trip, _, _ = completed_trip
+    trip.payments.all().delete()
+
+    consumer = TripStatusConsumer()
+    consumer._create_payment_on_complete(trip)
+    consumer.trip_id = trip.id
+
+    first = consumer._confirm_cash_payment.__wrapped__(consumer)
+    second = consumer._confirm_cash_payment.__wrapped__(consumer)
+
+    assert first['success'] is True
+    assert second['success'] is True, 'a retried frame must not look like a failure'
+    assert 'already' in second['message'].lower()
+
+
+@pytest.mark.django_db
+def test_a_retried_cash_confirmation_does_not_create_a_second_payment(completed_trip):
+    """One ride, one fare. Two Payment rows is money invented from a retry."""
+    from servers.consumers import TripStatusConsumer
+
+    trip, _, _ = completed_trip
+    trip.payments.all().delete()
+
+    consumer = TripStatusConsumer()
+    consumer._create_payment_on_complete(trip)
+    consumer.trip_id = trip.id
+    consumer._confirm_cash_payment.__wrapped__(consumer)
+    consumer._confirm_cash_payment.__wrapped__(consumer)
+
+    payments = trip.payments.filter(method='cash')
+    assert payments.count() == 1, f'got {payments.count()} cash payments for one ride'
+    assert payments.first().status == 'completed'
+
+    trip.refresh_from_db()
+    assert trip.payment_status == 'completed'
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('status', ['accepted', 'reached', 'in_progress', 'cancelled'])
+def test_cash_cannot_be_confirmed_before_the_ride_is_over(completed_trip, status):
+    """Collecting the fare mid-ride, or on a cancelled one, is not a payment.
+
+    Without this gate the assigned driver could mark the fare collected while
+    the rider was still in the car -- or before they ever got in.
+    """
+    from servers.consumers import TripStatusConsumer
+
+    trip, _, _ = completed_trip
+    trip.payments.all().delete()
+
+    consumer = TripStatusConsumer()
+    consumer._create_payment_on_complete(trip)
+
+    trip.status_id, _ = TripStatus.objects.get_or_create(status_code=status)
+    trip.save(update_fields=['status_id'])
+
+    consumer.trip_id = trip.id
+    result = consumer._confirm_cash_payment.__wrapped__(consumer)
+
+    assert result['success'] is False
+    assert status in result['error']
+    assert trip.payments.filter(method='cash', status='completed').count() == 0
+
+
 # ---------------------------------------------------------------------------
 # 6. Driver phone numbers are not readable by trip-id enumeration
 # ---------------------------------------------------------------------------

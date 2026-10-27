@@ -19,6 +19,8 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from django.conf import settings
+
+from base import object_store
 from django.core.exceptions import ValidationError
 
 from base.media import (
@@ -46,21 +48,34 @@ def build_s3_client():
     rejects with 403 SignatureDoesNotMatch on PUT — virtual style makes
     the presign host <bucket>.s3.<region>.amazonaws.com.
     """
+    # An S3-compatible endpoint when one is configured, real AWS S3 otherwise.
+    # Threaded through here because this function builds its own client for
+    # presigning; the django-storages backends already read the same setting.
+    endpoint_url = getattr(settings, "AWS_S3_ENDPOINT_URL", None) or None
+
     region = (
         settings.AWS_S3_REGION_NAME
         or settings.AWS_REGION
         or os.environ.get("AWS_DEFAULT_REGION")
+        # R2 has no regions; its only valid scope is `auto`. Falling back to
+        # it here means an R2 deployment does not have to set a region whose
+        # only correct value is a constant.
+        or object_store.default_region(endpoint_url)
     )
     if not region:
         raise ValidationError(
             "S3 region is not configured. Set AWS_S3_REGION "
             "(or AWS_REGION / AWS_DEFAULT_REGION) to the bucket's region."
         )
-    addressing_style = getattr(settings, "AWS_S3_ADDRESSING_STYLE", None) or "virtual"
-    # An S3-compatible endpoint when one is configured, real AWS S3 otherwise.
-    # Threaded through here because this function builds its own client for
-    # presigning; the django-storages backends already read the same setting.
-    endpoint_url = getattr(settings, "AWS_S3_ENDPOINT_URL", None) or None
+
+    # Addressing style, region and checksum behaviour all come from
+    # base/object_store.py, which is also what the django-storages backends
+    # read. Two clients that disagree on any of them produce a signature the
+    # server rejects, on whichever path happens to be exercised first.
+    addressing_style = (
+        getattr(settings, "AWS_S3_ADDRESSING_STYLE", None)
+        or object_store.default_addressing_style(endpoint_url)
+    )
     return boto3.client(
         "s3",
         region_name=region,
@@ -70,6 +85,7 @@ def build_s3_client():
         config=Config(
             signature_version="s3v4",
             s3={"addressing_style": addressing_style},
+            **object_store.client_config_kwargs(endpoint_url),
         ),
     )
 

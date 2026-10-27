@@ -5,6 +5,7 @@ from .views import (
     driver_withdrawal_balance, driver_withdrawal_request, driver_withdrawal_history, driver_withdrawal_block_status,
     driver_incentives, driver_elite_status
 )
+from .onboarding_views import driver_onboarding
 from .admin_views import (
     list_drivers_admin, retrieve_driver_admin, driver_full_detail_admin,
     update_kyc_status_admin, delete_driver_admin, get_vehicle_details,
@@ -18,6 +19,10 @@ urlpatterns = [
     # Driver
     path('driver/update/',update_driver_profile),
     path('driver/profile/',get_driver_profile),
+    # What this driver still has to supply before an operator can approve
+    # them, computed from the same compliance rules the console reviews
+    # against. See onboarding_views for why it is not a second list.
+    path('driver/onboarding/', driver_onboarding),
     path('driver/incentives/', driver_incentives),
     path('driver/elite-status/', driver_elite_status),
     # Earnings

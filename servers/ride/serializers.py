@@ -25,6 +25,7 @@ class TripListSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
     driver_name = serializers.SerializerMethodField()
     vehicle_info = serializers.SerializerMethodField()
+    requested_vehicle_type = serializers.SerializerMethodField()
     user=serializers.SerializerMethodField()
     
     class Meta:
@@ -32,10 +33,15 @@ class TripListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'pickup_address', 'destination_address',
             'pickup_lat', 'pickup_long', 'destination_lat', 'destination_long',
+            # THE CURRENCY OF THESE FARES. It is stamped on the trip at
+            # write time; without it every client renders a bare number and
+            # picks a symbol for it, which is wrong the moment a second
+            # market exists.
+            'currency',
             'estimated_fare', 'final_fare', 'surge_multiplier',
             'estimated_distance_km', 'actual_distance_km',
             'payment_method', 'payment_status',
-            'status', 'driver_name', 'vehicle_info',
+            'status', 'driver_name', 'vehicle_info', 'requested_vehicle_type',
             'requested_at', 'completed_at', 'cancelled_at','estimated_duration_min','actual_duration_min','user'
         ]
 
@@ -58,6 +64,18 @@ class TripListSerializer(serializers.ModelSerializer):
                 'type': str(v.vehicle_type_id) if v.vehicle_type_id else None,
             }
         return None
+    def get_requested_vehicle_type(self, obj):
+        """The category the RIDER chose, which exists from the moment they book.
+
+        `vehicle_info` describes the car that turned up, so it is null until a
+        driver accepts -- and null forever on a trip nobody accepted. A rider
+        reopening their own ride needs to see what they asked for, which is
+        this. The admin dashboard already reads this field; the rider's own
+        history did not expose it.
+        """
+        vt = obj.requested_vehicle_type
+        return str(vt) if vt else None
+
     def get_user(self,obj):
         return obj.user_id.full_name
 

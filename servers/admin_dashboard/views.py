@@ -1,6 +1,7 @@
 from datetime import datetime, time, timedelta
 import csv
 from functools import wraps
+from django.conf import settings
 from django.utils import timezone
 from django.contrib.auth import authenticate, login as auth_login, logout as auth_logout
 from django.http import HttpRequest, HttpResponse
@@ -22,6 +23,7 @@ from servers.ride.models import (
 )
 from servers.pricing.services import commission_percent_for_trip
 from servers.pricing.models import ServiceZone, RateCard
+from servers.admin_access import breakglass
 from decimal import Decimal, InvalidOperation
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST,require_http_methods
@@ -46,7 +48,8 @@ logger = logging.getLogger(__name__)
 # same name so existing call sites and tests are unchanged.
 from base.countries import normalize_phone  # noqa: E402
 from base.money import (  # noqa: E402
-    DEFAULT_CURRENCY, format_totals, single_currency_or_none, sum_by_currency,
+    DEFAULT_CURRENCY, charged_fare, format_totals, single_currency_or_none,
+    sum_by_currency,
 )
 from servers.driver.compliance import (  # noqa: E402
     VEHICLE_DOCUMENT_COLUMNS, document_description, document_label,
@@ -158,8 +161,36 @@ def login(request: HttpRequest) -> HttpResponse:
                         'ops_login_refused_no_mfa_device user_id=%s', user.id)
                     error = login_guard.GENERIC_REFUSAL
                 else:
+                    # BREAK-GLASS: a reason, before the session.
+                    #
+                    # Enforced on BOTH doors. Requiring it only on the API
+                    # would leave this form as the quiet way in, which
+                    # defeats the entire mechanism.
+                    bg_reason = None
+                    if breakglass.is_break_glass(user):
+                        try:
+                            bg_reason = breakglass.validate_reason(
+                                request.POST.get('reason')
+                            )
+                        except breakglass.ReasonRequired as exc:
+                            # Not a guard failure: the credential was
+                            # correct. The form re-renders asking why, and
+                            # `break_glass` tells the template to show the
+                            # field.
+                            return render(
+                                request, 'admin_pages/login.html',
+                                {'error': str(exc), 'break_glass': True,
+                                 'phone_number': phone_number},
+                            )
+
                     login_guard.clear(request, phone_number)
                     auth_login(request, user)
+                    if bg_reason is not None:
+                        # After auth_login, so the audit row is attributed
+                        # to the account that signed in.
+                        breakglass.announce_use(
+                            user, bg_reason, request=request, channel='console',
+                        )
                     if ops_mfa.mfa_required_for(user):
                         # The password was correct; the session is NOT yet
                         # verified. auth_login started it, OTPMiddleware will
@@ -224,7 +255,19 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         # Never let a stats failure blank the whole map page — the live
         # WebSocket driver feed is still useful on its own.
         kpis = None
-    return render(request, 'admin_pages/fleet_monitor.html', {"kpis": kpis})
+
+    # CARTO stopped serving raster basemap tiles without a key in September
+    # 2026: an unkeyed request returns HTTP 200 whose image IS the words
+    # "API KEY REQUIRED", so the God View map looked broken rather than
+    # unconfigured. Confirmed by fetching a tile and inspecting it.
+    #
+    # The key is free and carries no account requirement; it is passed to the
+    # template so the tile URL can be built with it, and the template says so
+    # plainly when it is absent instead of rendering a wall of watermarks.
+    return render(request, 'admin_pages/fleet_monitor.html', {
+        "kpis": kpis,
+        "carto_api_key": getattr(settings, 'CARTO_BASEMAP_API_KEY', ''),
+    })
 from urllib.parse import urlencode
 from django.db import transaction
 @admin_required
@@ -1659,6 +1702,14 @@ def driver_onboarding(request: HttpRequest) -> HttpResponse:
 
             # KYC
             "status": doc_status,
+
+            # A QA test account carrying SIMULATED dispatch eligibility.
+            # Surfaced so the console can label it: its documents are
+            # placeholders, `approved` is still false, and it is dispatchable
+            # only in a QA environment.
+            "qa_simulated_eligibility": bool(
+                getattr(driver, "qa_simulated_eligibility", False)
+            ),
 
             # Driver operational status
             "driver_status": driver_status,
@@ -3751,7 +3802,7 @@ def driver_loyalty(request: HttpRequest) -> HttpResponse:
         # amount per currency rather than summed into a number that is not an
         # amount of money in any of them.
         "total_revenue_display": format_totals(
-            sum_by_currency(completed_trips, "final_fare")
+            sum_by_currency(completed_trips, charged_fare())
         ),
         # ----------------------------------------------
         # RATING
@@ -5820,7 +5871,7 @@ def driver_profile(request, driver_id):
     # then the page shows both totals rather than their meaningless sum.
     completed_trips_qs = trips_qs.filter(status_id__status_code="completed")
 
-    revenue_by_currency = sum_by_currency(completed_trips_qs, "final_fare")
+    revenue_by_currency = sum_by_currency(completed_trips_qs, charged_fare())
 
     total_revenue = (
         list(revenue_by_currency.values())[0] if len(revenue_by_currency) == 1

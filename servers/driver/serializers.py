@@ -35,9 +35,40 @@ class DriverProfileSerializer(serializers.ModelSerializer):
     license_doc_back = S3UploadKeyField(kind="license_doc_back", required=False, allow_null=True)
     active_vehicle_details = VehicleSerializer(source='active_vehicle', read_only=True)
 
+    # MAY THIS DRIVER OPERATE RIGHT NOW -- which is not the same question as
+    # "has a human approved their documents".
+    #
+    # The app used to decide both its routing and its go-online control from
+    # `approved` alone, so a QA test driver with simulated eligibility was
+    # accepted by the server's dispatch sockets and still sent to the
+    # onboarding wizard by the app: eligible on the backend, invisible on the
+    # device.
+    #
+    # `approved` keeps its meaning and is untouched. This additive field says
+    # what the three WebSocket gates already decide, so the client and the
+    # server stop disagreeing. Read-only, computed, and never writable.
+    dispatch_eligible = serializers.SerializerMethodField()
+    qa_simulated_eligibility = serializers.BooleanField(read_only=True)
+
+    def get_dispatch_eligible(self, obj) -> bool:
+        from servers.driver.qa_eligibility import may_operate
+
+        return may_operate(obj)
+
     class Meta:
         model = Driver
-        fields = ['id', 'license_doc', 'license_doc_back', 'license_expiry', 'active_vehicle', 'active_vehicle_details', 'status', 'approved', 'total_trips', 'ratings']
+        # `doc_status` and `doc_rejection_reason` are READ-ONLY and were
+        # not exposed at all, so a driver whose documents an operator had
+        # rejected saw only `approved: false` -- the same thing a driver who
+        # had never uploaded anything sees. They were told "not approved"
+        # and never told why, or that there was a reason to read. A review
+        # outcome nobody can read is not a review.
+        fields = ['id', 'license_doc', 'license_doc_back', 'license_expiry',
+                  'active_vehicle', 'active_vehicle_details', 'status',
+                  'approved', 'doc_status', 'doc_rejection_reason',
+                  'doc_status_updated_at', 'uploaded_timestamp',
+                  'dispatch_eligible', 'qa_simulated_eligibility',
+                  'total_trips', 'ratings']
         # Defence in depth. This serializer is only ever bound to a DRIVER'S OWN
         # token, and `update_driver_profile` already builds its payload from a
         # four-field allow-list -- so `approved` was never reachable in practice.
@@ -51,7 +82,15 @@ class DriverProfileSerializer(serializers.ModelSerializer):
         # approval is unaffected -- it uses KYCApprovalSerializer, which declares
         # `approved` and `status` writable and enforces the MVA-2020 document
         # checks before allowing approved=True.
-        read_only_fields = ['approved', 'status', 'total_trips', 'ratings']
+        # DEFENCE IN DEPTH. This serializer is bound to a DRIVER'S OWN
+        # profile on a PATCH they control, so anything a driver must not be
+        # able to set about themselves is listed here as well as being
+        # enforced elsewhere. The review outcome is decided by an operator
+        # through the KYC endpoint; a driver may read it and nothing more.
+        read_only_fields = ['approved', 'status', 'total_trips', 'ratings',
+                            'dispatch_eligible', 'qa_simulated_eligibility',
+                            'doc_status', 'doc_rejection_reason',
+                            'doc_status_updated_at', 'uploaded_timestamp']
 
 
 class DriverBankAccountSerializer(serializers.ModelSerializer):
@@ -194,12 +233,19 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
         model = WithdrawalRequest
         fields = [
             'id', 'driver', 'driver_name', 'driver_phone', 'driver_upi_id',
+            # THE CURRENCY OF THE MONEY BEING RELEASED. It is stamped on the
+            # row at write time from the driver's wallet (see
+            # WithdrawalRequest._derive_currency) and was not exposed, so the
+            # payout queue showed a bare number and the console chose a
+            # symbol for it. An approver releasing money must be told which
+            # money.
+            'currency',
             'driver_kyc_approved', 'amount', 'status', 'requested_at',
             'processed_at', 'admin_notes', 'payout_reference_id',
         ]
         read_only_fields = [
-            'id', 'driver', 'status', 'requested_at', 'processed_at',
-            'admin_notes', 'payout_reference_id',
+            'id', 'driver', 'currency', 'status', 'requested_at',
+            'processed_at', 'admin_notes', 'payout_reference_id',
         ]
 
     def get_driver_name(self, obj):

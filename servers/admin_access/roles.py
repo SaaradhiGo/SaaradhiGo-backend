@@ -1,0 +1,171 @@
+"""The permission catalogue and the eight seeded roles.
+
+PERMISSIONS ARE STRINGS, AND THE LIST IS CLOSED
+-----------------------------------------------
+`ALL_PERMISSIONS` is the whole vocabulary. A role carrying a permission
+that is not in it is a typo that would otherwise grant nothing silently —
+the worst kind of access bug, because it fails open on the next refactor
+when somebody "fixes" the spelling.
+
+`pii.view` IS A PERMISSION, NOT A ROLE PROPERTY
+-----------------------------------------------
+The brief says the Analyst sees no PII. Making that a boolean on the role
+would mean every future role has to remember to set it. As a permission it
+is simply absent, and the masking layer asks one question of every caller:
+"do you hold `pii.view` here?" Safety Officers get it so they can unmask a
+contact during a live incident; Analysts never do.
+
+SUPER ADMIN IS THE ONLY GLOBAL ROLE
+------------------------------------
+Everything else is held somewhere: a country, a state, a city. That is what
+stops an India hire quietly acquiring the USA.
+"""
+
+# --- the catalogue --------------------------------------------------------
+
+PERMISSIONS = {
+    # Reading
+    'trip.read': 'View trips and their fare breakdowns',
+    'rider.read': 'View rider profiles and history',
+    'driver.read': 'View driver profiles and history',
+    'support.read': 'View support tickets',
+    'finance.read': 'View ledgers, payouts and settlements',
+    'report.read': 'View dashboards and reports',
+    'audit.read': 'View the admin audit log',
+
+    # Personal data. Held separately from every read above, so a role can
+    # see the work without seeing the person.
+    'pii.view': 'Reveal masked personal data (each reveal is logged)',
+
+    # Acting
+    'trip.write': 'Cancel, adjust or flag a trip',
+    'rider.write': 'Block, credit or amend a rider account',
+    'driver.write': 'Suspend, reinstate or amend a driver account',
+    'driver.kyc': 'Approve or reject driver and vehicle documents',
+    'driver.deactivate': 'Permanently deactivate a driver',
+    'support.reply': 'Reply to and resolve support tickets',
+    'support.refund': 'Issue a refund within the role limit',
+    'finance.payout': 'Approve and execute payout runs',
+    'finance.adjust': 'Post a ledger adjustment',
+    'pricing.write': 'Change fare cards, multipliers and commission',
+    'zone.write': 'Draw and publish zones and geofences',
+    'promo.write': 'Create and amend promotions and incentives',
+    'notify.send': 'Send campaigns to riders or drivers',
+    'safety.respond': 'Act on SOS and incidents',
+    'fraud.review': 'Review and action fraud flags',
+
+    # Running the platform itself
+    'admin.manage': 'Create admins, roles and assignments',
+    'platform.settings': 'Cities, feature flags, app versions',
+    'approval.check': 'Act as the second approver on a maker-checker request',
+}
+
+ALL_PERMISSIONS = frozenset(PERMISSIONS)
+
+#: The role code that may only ever be held at Global.
+SUPER_ADMIN = 'super_admin'
+
+#: How many active Super Admins the platform must keep. A floor that
+#: demotion is blocked from crossing -- NOT a requirement to fill
+#: immediately, so a fresh environment is not forced to promote a test
+#: account to reach it.
+MIN_SUPER_ADMINS = 2
+
+
+# --- the eight seeded roles ----------------------------------------------
+
+ROLE_TEMPLATES = [
+    {
+        'code': SUPER_ADMIN,
+        'name': 'Super Admin',
+        'description': 'Everything, everywhere. Manages admins and roles. '
+                       'Held only at Global, and only by named individuals.',
+        'is_global_only': True,
+        'permissions': sorted(ALL_PERMISSIONS),
+    },
+    {
+        'code': 'city_ops_manager',
+        'name': 'City Ops Manager',
+        'description': 'Runs live operations for their scope: drivers, '
+                       'zones, incentives. Proposes pricing; cannot publish it.',
+        'permissions': [
+            'trip.read', 'trip.write', 'rider.read', 'driver.read',
+            'driver.write', 'support.read', 'report.read', 'zone.write',
+            'promo.write', 'pii.view',
+        ],
+    },
+    {
+        'code': 'support_agent',
+        'name': 'Support Agent',
+        'description': 'Handles tickets and issues refunds up to the '
+                       'configured limit. Sees masked contact details.',
+        'permissions': [
+            'trip.read', 'rider.read', 'driver.read',
+            'support.read', 'support.reply', 'support.refund',
+        ],
+    },
+    {
+        'code': 'safety_officer',
+        'name': 'Safety Officer',
+        'description': 'SOS queue, incidents and emergency actions. May '
+                       'unmask a contact during a live incident.',
+        'permissions': [
+            'trip.read', 'rider.read', 'driver.read', 'driver.write',
+            'safety.respond', 'support.read',
+            # The one role that must be able to reach a person immediately.
+            'pii.view',
+        ],
+    },
+    {
+        'code': 'kyc_verifier',
+        'name': 'KYC Verifier',
+        'description': 'Reviews driver and vehicle documents. Sees identity '
+                       'documents, which is the job.',
+        'permissions': [
+            'driver.read', 'driver.kyc', 'trip.read', 'pii.view',
+        ],
+    },
+    {
+        'code': 'finance',
+        'name': 'Finance',
+        'description': 'Payouts, settlements, ledgers, refunds above the '
+                       'support limit, invoices and reconciliation.',
+        'permissions': [
+            'trip.read', 'driver.read', 'rider.read', 'support.read',
+            'finance.read', 'finance.payout', 'finance.adjust',
+            'support.refund', 'report.read', 'pii.view',
+        ],
+    },
+    {
+        'code': 'marketing',
+        'name': 'Marketing',
+        'description': 'Promotions, coupons, referrals and rider '
+                       'communications. No access to individuals.',
+        'permissions': [
+            'promo.write', 'notify.send', 'report.read',
+        ],
+    },
+    {
+        'code': 'analyst',
+        'name': 'Read-only / Analyst',
+        'description': 'Dashboards and reports. Explicitly NO personal data '
+                       '— `pii.view` is absent and must stay absent.',
+        'permissions': [
+            'trip.read', 'driver.read', 'rider.read', 'report.read',
+        ],
+    },
+]
+
+
+def validate_templates():
+    """Every seeded permission must exist in the catalogue.
+
+    Called by the seed command and by a test, so a typo in a role template
+    fails loudly instead of granting nothing.
+    """
+    problems = []
+    for template in ROLE_TEMPLATES:
+        unknown = set(template['permissions']) - ALL_PERMISSIONS
+        if unknown:
+            problems.append(f"{template['code']}: unknown {sorted(unknown)}")
+    return problems

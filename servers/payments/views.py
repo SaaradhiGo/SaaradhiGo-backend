@@ -1895,12 +1895,32 @@ def switch_payment_method(request):
                 cashfree_order_id=order.get('order_id') if order else None,
             )
         else:
+            # Cash. Selecting it is NOT settlement: the money has not
+            # moved, and the row has to stay findable by whoever settles
+            # it later.
+            #
+            # This branch used to write method='wallet', status='processing'
+            # -- wrong on both counts. The driver confirms collection over
+            # the trip WebSocket, and that handler finds the row with
+            # `trip.payments.filter(method='cash')`. Labelled 'wallet', the
+            # row was invisible to it: the driver got 'No cash payment found
+            # for this trip' and the trip could never settle. It also
+            # reported a cash fare as a wallet payment in every report that
+            # groups by method.
+            #
+            # 'cash'/'pending' is exactly what _create_payment_on_complete
+            # writes for a trip booked as cash, so a switched trip and a
+            # natively-cash trip are now the same shape downstream.
+            #
+            # No credit_driver_wallet() here on purpose: the driver is
+            # credited when collection is confirmed, not when the rider
+            # says they intend to pay cash.
             new_payment = Payment.objects.create(
                 trip_id=trip,
                 user_id=request.user,
                 amount=amount,
-                method='wallet',
-                status='processing',
+                method='cash',
+                status='pending',
             )
         
         # Link payments

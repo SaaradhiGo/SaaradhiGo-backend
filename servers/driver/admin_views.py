@@ -1,10 +1,18 @@
 import logging
+
+from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
+from base.money import charged_fare
 from base.utils import success_response, error_response
 from base.permissions import (
     CAP_DRIVER_KYC, CAP_FINANCE_PAYOUT, IsAdmin, RequiresCapability,
+)
+from servers.admin_access.bridge import ScopedPermission, in_scope
+from servers.admin_access.masking import mask_for
+from servers.admin_access.scoping import (
+    ScopeNotHeld, scoped, scoped_or_none, scoped_to_request,
 )
 from servers.driver.models import Driver,Vehicle
 from servers.driver.serializers import DriverAdminListSerializer, DriverAdminDetailSerializer, KYCApprovalSerializer, VehicleSerializer
@@ -13,12 +21,25 @@ from rest_framework.pagination import PageNumberPagination
 logger = logging.getLogger(__name__)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def list_drivers_admin(request):
     """
-    List all drivers. Can be filtered by 'approved' and 'status'.
+    List drivers IN THE CALLER'S SCOPE. Can be filtered by 'approved' and 'status'.
+
+    `scoped()` is what restricts this to the caller's cities; without it the
+    permission check above would pass and the endpoint would still return
+    every driver in both countries.
     """
-    drivers = Driver.objects.all().select_related('user_id').order_by('-id')
+    try:
+        drivers = scoped_to_request(
+            request, Driver.objects.select_related('user_id', 'home_city')
+        ).order_by('-id')
+    except ScopeNotHeld as exc:
+        return error_response(
+            code='SCOPE_NOT_HELD', message=str(exc), field='scope',
+            issue='Requested scope is outside your assignments',
+            status=status.HTTP_403_FORBIDDEN,
+        )
     
     # Filter configuration
     approved = request.query_params.get('approved')
@@ -38,20 +59,35 @@ def list_drivers_admin(request):
     page = paginator.paginate_queryset(drivers, request)
     
     serializer = DriverAdminListSerializer(page, many=True)
-    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
+    # Masked on the way OUT, not in the console: an operator without
+    # `pii.view` is never SENT the number, so there is nothing in the
+    # payload, the network tab or a captured response body to reveal.
+    body = mask_for(
+        request.user,
+        paginator.get_paginated_response(serializer.data).data,
+    )
+    return success_response(body, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def retrieve_driver_admin(request, driver_id):
     """
-    Retrieve details of a single driver by its ID (along with user profile and vehicles).
+    Retrieve one driver by ID, IF they are in the caller's scope.
+
+    Fetched through `scoped_or_404` rather than by bare id: this used to be
+    `Driver.objects.get(id=driver_id)`, so any operator could read any
+    driver in any country by incrementing the id.
     """
-    try:
-        driver = Driver.objects.prefetch_related('user_id', 'vehicle_set').get(id=driver_id)
-        serializer = DriverAdminDetailSerializer(driver)
-        return success_response(serializer.data, status.HTTP_200_OK)
-    except Driver.DoesNotExist:
+    driver = scoped_or_none(
+        request.user,
+        Driver.objects.prefetch_related('user_id', 'vehicle_set'),
+        id=driver_id,
+    )
+    if driver is None:
+        # Same answer whether the driver does not exist or is another
+        # city's: a distinguishable 403 would let an out-of-scope operator
+        # enumerate ids. See `scoped_or_none`.
         return error_response(
             code="NOT_FOUND",
             message="Driver not found",
@@ -59,10 +95,76 @@ def retrieve_driver_admin(request, driver_id):
             issue=f"No driver matches id {driver_id}",
             status=status.HTTP_404_NOT_FOUND
         )
+    serializer = DriverAdminDetailSerializer(driver)
+    return success_response(
+        mask_for(request.user, serializer.data, driver.home_city),
+        status.HTTP_200_OK,
+    )
+
+
+def _compliance_payload(driver):
+    """The review checklist: what this driver's country requires, and what
+    is on file.
+
+    Built by `servers/driver/compliance.py` -- the same functions that build
+    the driver's own onboarding checklist -- so an operator and the driver
+    they are reviewing cannot be looking at different lists, and a country
+    whose rules change changes both screens at once.
+    """
+    from servers.driver import compliance
+
+    vehicle = driver.active_vehicle or driver.vehicle_set.order_by('id').first()
+
+    def rows(checks):
+        return [
+            {
+                'key': key,
+                'label': check['label'],
+                'description': compliance.document_description(key),
+                'present': check['present'],
+                # False where the requirement has no column to store it in.
+                # Reported rather than hidden: treating an unrecordable
+                # document as satisfied is how an unverified driver gets
+                # approved.
+                'recordable': check['applicable'],
+            }
+            for key, check in checks.items()
+        ]
+
+    driver_rows = rows(compliance.evaluate_driver(driver))
+    vehicle_rows = rows(compliance.evaluate_vehicle(vehicle, driver)) if vehicle else []
+
+    return {
+        'country': compliance.driver_country_code(driver),
+        'driver_documents': driver_rows,
+        'vehicle_documents': vehicle_rows,
+        'missing': [r['key'] for r in driver_rows + vehicle_rows
+                    if not (r['present'] and r['recordable'])],
+    }
+
+
+def _document_url(field):
+    """A time-limited link to a private document, or None.
+
+    `FileField.url` on the private storage produces a PRESIGNED url that
+    expires (AWS_QUERYSTRING_EXPIRE, 15 minutes by default). It signs
+    locally and makes no network call, so a broken bucket cannot make this
+    raise -- but a misconfigured one can, and an operator losing the whole
+    driver page because one document link could not be built would be a
+    worse outcome than a missing link.
+    """
+    if not field:
+        return None
+    try:
+        return field.url
+    except Exception:
+        logger.exception('document_url_failed name=%s', getattr(field, 'name', '?'))
+        return None
+
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def driver_full_detail_admin(request, driver_id):
     """Driver aggregate for the ops console driver-detail page.
 
@@ -93,11 +195,17 @@ def driver_full_detail_admin(request, driver_id):
     from django.db.models import Sum
     from django.utils import timezone
 
-    try:
-        driver = Driver.objects.select_related(
+    # Scoped: this endpoint returns the driver's licence images, every
+    # vehicle credential and their earnings. Out of scope answers NOT_FOUND,
+    # the same as a driver who does not exist.
+    driver = scoped_or_none(
+        request.user,
+        Driver.objects.select_related(
             'user_id', 'active_vehicle', 'active_vehicle__vehicle_type_id',
-        ).get(id=driver_id)
-    except Driver.DoesNotExist:
+        ),
+        id=driver_id,
+    )
+    if driver is None:
         return error_response(
             code='NOT_FOUND', message='Driver not found.',
             field='driver_id', issue=f'No driver {driver_id}',
@@ -140,6 +248,17 @@ def driver_full_detail_admin(request, driver_id):
             'fitness_expiry': v.fitness_expiry.isoformat() if v.fitness_expiry else None,
             'puc_expiry': v.puc_expiry.isoformat() if v.puc_expiry else None,
             'is_active_vehicle': bool(driver.active_vehicle_id and driver.active_vehicle_id == v.id),
+            # THE DOCUMENTS THEMSELVES. The console showed expiry DATES and
+            # no way to open the paperwork, so an operator was asked to
+            # approve a driver to carry paying passengers while looking at
+            # four em-dashes. Each link is presigned and short-lived.
+            'rc_doc_url': _document_url(v.rc_doc),
+            'insurance_doc_url': _document_url(v.insurance_doc),
+            'permit_doc_url': _document_url(v.permit_doc),
+            'fitness_doc_url': _document_url(v.fitness_doc),
+            'puc_doc_url': _document_url(v.puc_doc),
+            'inspection_doc_url': _document_url(v.inspection_doc),
+            'vehicle_pic_url': _document_url(v.vehicle_pic),
         })
 
     # ---- fatigue status (computes live + persists lockout if breached) ----
@@ -244,9 +363,17 @@ def driver_full_detail_admin(request, driver_id):
         completed_qs = Trip.objects.filter(
             driver_id=driver, status_id__status_code='completed',
         )
-        lifetime = completed_qs.aggregate(s=Sum('final_fare'))['s'] or Decimal('0.00')
-        today_amt = completed_qs.filter(completed_at__gte=today_start).aggregate(s=Sum('final_fare'))['s'] or Decimal('0.00')
-        month_amt = completed_qs.filter(completed_at__gte=month_start).aggregate(s=Sum('final_fare'))['s'] or Decimal('0.00')
+        # `charged_fare()`, not 'final_fare'. That column is written only when
+        # a promo is applied, so these three totals read 0.00 for a driver
+        # whose every trip was an ordinary one -- which is most drivers.
+        #
+        # NOTE this is GROSS FARE COLLECTED on the driver's trips, not the
+        # driver's take-home: commission is deducted elsewhere, and these two
+        # are deliberately different numbers.
+        fare = charged_fare()
+        lifetime = completed_qs.aggregate(s=Sum(fare))['s'] or Decimal('0.00')
+        today_amt = completed_qs.filter(completed_at__gte=today_start).aggregate(s=Sum(fare))['s'] or Decimal('0.00')
+        month_amt = completed_qs.filter(completed_at__gte=month_start).aggregate(s=Sum(fare))['s'] or Decimal('0.00')
         earnings_payload['lifetime'] = str(lifetime)
         earnings_payload['today'] = str(today_amt)
         earnings_payload['this_month'] = str(month_amt)
@@ -266,8 +393,8 @@ def driver_full_detail_admin(request, driver_id):
         'ratings': str(driver.ratings),
         'total_trips': driver.total_trips,
         'license_expiry': driver.license_expiry.isoformat() if driver.license_expiry else None,
-        'license_doc_url': driver.license_doc.url if driver.license_doc else None,
-        'license_doc_back_url': driver.license_doc_back.url if driver.license_doc_back else None,
+        'license_doc_url': _document_url(driver.license_doc),
+        'license_doc_back_url': _document_url(driver.license_doc_back),
         'upi_id': driver.upi_id,
         'fatigue_lockout_until': driver.fatigue_lockout_until.isoformat() if driver.fatigue_lockout_until else None,
         'user': {
@@ -285,11 +412,23 @@ def driver_full_detail_admin(request, driver_id):
         'withdrawals': withdrawals_payload,
         'recent_trips': recent_trips,
         'earnings': earnings_payload,
+        # WHAT THIS DRIVER'S COUNTRY REQUIRES, and which of it is on file.
+        # Computed by servers/driver/compliance.py -- the same functions
+        # that build the driver's own checklist -- so the operator and the
+        # driver cannot be looking at different lists.
+        'compliance': _compliance_payload(driver),
+        'doc_status': driver.doc_status,
+        'doc_rejection_reason': driver.doc_rejection_reason or '',
     }
-    return success_response(payload, status.HTTP_200_OK)
+    # This payload carries the person at several depths -- the driver, the
+    # user, emergency contacts -- which is why `mask_people` recurses
+    # rather than masking only the top level.
+    return success_response(
+        mask_for(request.user, payload, driver.home_city), status.HTTP_200_OK,
+    )
 
 @api_view(['PATCH'])
-@permission_classes([IsAuthenticated, RequiresCapability(CAP_DRIVER_KYC)])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.kyc')])
 def update_kyc_status_admin(request, driver_id):
     """
     Approve or reject KYC for a driver (updates 'approved' and/or 'status').
@@ -297,7 +436,9 @@ def update_kyc_status_admin(request, driver_id):
     from servers.admin_audit.services import record_admin_action
 
     try:
-        driver = Driver.objects.get(id=driver_id)
+        driver = scoped_or_none(request.user, Driver.objects.all(), id=driver_id)
+        if driver is None:
+            raise Driver.DoesNotExist
         before = {
             'approved': driver.approved,
             'status': driver.status,
@@ -306,6 +447,27 @@ def update_kyc_status_admin(request, driver_id):
         serializer = KYCApprovalSerializer(driver, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
+
+            # THE REVIEW OUTCOME, WHERE THE DRIVER CAN READ IT.
+            #
+            # The reason an operator typed went to the audit log and nowhere
+            # else: `KYCApprovalSerializer` only writes `approved` and
+            # `status`, so `doc_status` stayed 'pending' forever and
+            # `doc_rejection_reason` was never written at all. The driver's
+            # screen showed "not approved" with no reason, which is
+            # identical to what a driver who has uploaded nothing sees --
+            # and the operator believed they had explained themselves.
+            approved = serializer.validated_data.get('approved')
+            if approved is not None:
+                driver.doc_status = 'approved' if approved else 'rejected'
+                driver.doc_rejection_reason = (
+                    '' if approved else (request.data.get('reason') or '').strip()
+                )
+                driver.doc_status_updated_at = timezone.now()
+                driver.save(update_fields=[
+                    'doc_status', 'doc_rejection_reason', 'doc_status_updated_at',
+                ])
+
             driver.refresh_from_db()
             after = {
                 'approved': driver.approved,
@@ -339,7 +501,7 @@ def update_kyc_status_admin(request, driver_id):
         )
 
 @api_view(['DELETE'])
-@permission_classes([IsAuthenticated, RequiresCapability(CAP_DRIVER_KYC)])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.deactivate')])
 def delete_driver_admin(request, driver_id):
     """
     Delete a driver profile and their associated objects.
@@ -347,7 +509,9 @@ def delete_driver_admin(request, driver_id):
     from servers.admin_audit.services import record_admin_action
 
     try:
-        driver = Driver.objects.get(id=driver_id)
+        driver = scoped_or_none(request.user, Driver.objects.all(), id=driver_id)
+        if driver is None:
+            raise Driver.DoesNotExist
         snapshot = {
             'approved': driver.approved,
             'status': driver.status,
@@ -374,12 +538,16 @@ def delete_driver_admin(request, driver_id):
             status=status.HTTP_404_NOT_FOUND
         )
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def get_vehicle_details(request, driver_id):
     """
     Get details of a vehicle by its ID.
     """
     try:
+        # Scoped through the driver: a vehicle's documents are the
+        # driver's documents.
+        if scoped_or_none(request.user, Driver.objects.all(), id=driver_id) is None:
+            raise Vehicle.DoesNotExist
         vehicle_objects = Vehicle.objects.filter(driver_id=driver_id)
         serializer = VehicleSerializer(vehicle_objects, many=True)
         return success_response(serializer.data, status.HTTP_200_OK)
@@ -396,7 +564,7 @@ def get_vehicle_details(request, driver_id):
 # ── Admin Withdrawal Management ──────────────────────────
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.read')])
 def list_withdrawals_admin(request):
     """
     GET /api/admin/withdrawals/
@@ -409,7 +577,19 @@ def list_withdrawals_admin(request):
     from django.utils import timezone
     from datetime import timedelta
 
-    withdrawals = WithdrawalRequest.objects.all().select_related('driver', 'driver__user_id').order_by('-requested_at')
+    try:
+        withdrawals = scoped_to_request(
+            request,
+            WithdrawalRequest.objects.select_related(
+                'driver', 'driver__user_id', 'driver__home_city',
+            ),
+        ).order_by('-requested_at')
+    except ScopeNotHeld as exc:
+        return error_response(
+            code='SCOPE_NOT_HELD', message=str(exc), field='scope',
+            issue='Requested scope is outside your assignments',
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     # Filter by status
     status_filter = request.query_params.get('status')
@@ -443,11 +623,17 @@ def list_withdrawals_admin(request):
     paginator.max_page_size = 50
     page = paginator.paginate_queryset(withdrawals, request)
     serializer = WithdrawalRequestSerializer(page, many=True)
-    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
+    # A payout queue names the person being paid. Finance holds `pii.view`;
+    # a role that does not must still be able to see the QUEUE.
+    body = mask_for(
+        request.user,
+        paginator.get_paginated_response(serializer.data).data,
+    )
+    return success_response(body, status.HTTP_200_OK)
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, RequiresCapability(CAP_FINANCE_PAYOUT)])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.payout')])
 def approve_withdrawal_admin(request, withdrawal_id):
     """
     POST /api/admin/withdrawals/{id}/approve/
@@ -471,6 +657,11 @@ def approve_withdrawal_admin(request, withdrawal_id):
                     .select_related('driver', 'driver__user_id')
                     .get(id=withdrawal_id)
                 )
+                # Scope checked AFTER the lock, not in the query: see
+                # `in_scope`. Answers NOT_FOUND, identical to a missing
+                # row, so another city's withdrawal ids cannot be probed.
+                if not in_scope(request.user, withdrawal, 'finance.payout'):
+                    raise WithdrawalRequest.DoesNotExist
             except WithdrawalRequest.DoesNotExist:
                 return error_response(
                     code="NOT_FOUND",
@@ -532,7 +723,7 @@ def approve_withdrawal_admin(request, withdrawal_id):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, RequiresCapability(CAP_FINANCE_PAYOUT)])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.payout')])
 def reject_withdrawal_admin(request, withdrawal_id):
     """
     POST /api/admin/withdrawals/{id}/reject/
@@ -560,6 +751,11 @@ def reject_withdrawal_admin(request, withdrawal_id):
                     .select_related('driver')
                     .get(id=withdrawal_id)
                 )
+                # Scope checked AFTER the lock, not in the query: see
+                # `in_scope`. Answers NOT_FOUND, identical to a missing
+                # row, so another city's withdrawal ids cannot be probed.
+                if not in_scope(request.user, withdrawal, 'finance.payout'):
+                    raise WithdrawalRequest.DoesNotExist
             except WithdrawalRequest.DoesNotExist:
                 return error_response(
                     code="NOT_FOUND",
@@ -737,7 +933,7 @@ def reject_withdrawal_admin(request, withdrawal_id):
     )
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, RequiresCapability(CAP_FINANCE_PAYOUT)])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.payout')])
 def bulk_action_withdrawal_admin(request):
     """
     POST /api/admin/withdrawals/bulk-action/
@@ -805,6 +1001,9 @@ def bulk_action_withdrawal_admin(request):
                         .select_related('driver')
                         .get(id=wid)
                     )
+                    if not in_scope(request.user, w, 'finance.payout'):
+                        # Indistinguishable from "no such withdrawal".
+                        raise WithdrawalRequest.DoesNotExist
                 except WithdrawalRequest.DoesNotExist:
                     skipped_ids.append(wid)
                     continue

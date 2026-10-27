@@ -30,6 +30,7 @@ operator JWT from an endpoint that was also completely unthrottled. Four separat
 definitions of "operator" existed; an attacker needs only the most permissive one.
 """
 
+from conftest import grant_legacy_equivalent
 import time
 
 import pytest
@@ -103,11 +104,17 @@ def driver():
 
 @pytest.fixture
 def operator():
-    """What `bootstrap_qa_operator` produces: role admin AND is_staff."""
-    return User.objects.create_user(
+    """What `bootstrap_qa_operator` produces: role admin AND is_staff.
+
+    Plus the assignment that replaces `ops_role`, so this fixture is a
+    working operator under the strict model as well as the legacy one.
+    """
+    user = User.objects.create_user(
         phone_number='+919722000001', role='admin', username='+919722000001',
         is_staff=True, password=OPERATOR_PASSWORD,
     )
+    grant_legacy_equivalent(user)
+    return user
 
 
 # ===========================================================================

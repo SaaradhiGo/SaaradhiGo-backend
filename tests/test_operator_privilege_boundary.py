@@ -35,6 +35,7 @@ a payout button to a non-operator is not authorization -- it is layout. Every te
 below holds a real token and calls the endpoint itself.
 """
 
+from conftest import grant_legacy_equivalent
 import pytest
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
@@ -100,11 +101,17 @@ def driver_row(driver):
 
 @pytest.fixture
 def real_operator():
-    """What `bootstrap_qa_operator` creates: role admin AND is_staff."""
-    return User.objects.create_user(
+    """What `bootstrap_qa_operator` creates: role admin AND is_staff.
+
+    Plus the assignment that replaces `ops_role`, so "a legitimate
+    operator is allowed" stays true after the platform goes strict.
+    """
+    user = User.objects.create_user(
         phone_number='+919712000001', role='admin', username='+919712000001',
         is_staff=True, password='operator-not-a-real-secret',
     )
+    grant_legacy_equivalent(user)
+    return user
 
 
 # ===========================================================================

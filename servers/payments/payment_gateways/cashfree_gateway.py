@@ -19,6 +19,21 @@ from .base_gateway import BasePaymentGateway
 
 logger = logging.getLogger(__name__)
 
+def _fallback_customer_email():
+    """A placeholder address for a payer who has not given us one.
+
+    Cashfree requires a customer email on the order. This was the hardcoded
+    `noreply@saaradhigo.in`, a domain with no MX record, so the gateway was
+    handed an address that could never receive the receipt it may try to
+    send. It now follows PLATFORM_CONTACT_DOMAIN, which is the official
+    domain, so the placeholder at least belongs to us and resolves.
+    """
+    from django.conf import settings
+
+    domain = getattr(settings, 'PLATFORM_CONTACT_DOMAIN', 'saaradhigo.com')
+    return 'noreply@%s' % domain
+
+
 
 class PayoutDispatchUnknown(Exception):
     """The payout request may or may not have reached the provider.
@@ -126,7 +141,7 @@ class CashfreeGateway(BasePaymentGateway):
                 "customer_details": {
                     "customer_id": str(ref),
                     "customer_phone": customer_phone or "9999999999",
-                    "customer_email": customer_email or "noreply@saaradhigo.in",
+                    "customer_email": customer_email or _fallback_customer_email(),
                 },
                 "order_meta": {
                     "notify_url": notify_url,

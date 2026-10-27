@@ -19,6 +19,8 @@ is an operational decision, and a redeploy must not quietly undo it.
 import os
 
 from django.core.management.base import BaseCommand, CommandError
+
+from base.seeding import require_seedable_environment
 from django.db import transaction
 
 from servers.admin_access.models import (
@@ -96,6 +98,9 @@ class Command(BaseCommand):
             self._link_existing_rows()
 
         if options['test_admins']:
+            # Geo nodes and roles above are configuration and run everywhere;
+            # test admins are test data and go through the shared gate.
+            require_seedable_environment('the QA test admins')
             self._refuse_in_production()
             self._seed_test_admins(nodes)
 

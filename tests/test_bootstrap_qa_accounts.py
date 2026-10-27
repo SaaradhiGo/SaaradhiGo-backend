@@ -22,19 +22,26 @@ ENV = {
     'ENVIRONMENT': 'qa',
     'DEBUG_ENV': 'True',
     'QA_ADMIN_BOOTSTRAP_PHONE': '+919850000001',
-    'QA_ADMIN_BOOTSTRAP_EMAIL': 'qa.admin@deeptrics.com',
+    'QA_ADMIN_BOOTSTRAP_EMAIL': 'qa.admin@saaradhigo.test',
     'QA_ADMIN_BOOTSTRAP_PASSWORD': PASSWORD,
     'QA_RIDER_BOOTSTRAP_PHONE': '+919850000002',
-    'QA_RIDER_BOOTSTRAP_EMAIL': 'qa.rider@deeptrics.com',
+    'QA_RIDER_BOOTSTRAP_EMAIL': 'qa.rider@saaradhigo.test',
     'QA_RIDER_BOOTSTRAP_PASSWORD': PASSWORD,
     'QA_DRIVER_BOOTSTRAP_PHONE': '+919850000003',
-    'QA_DRIVER_BOOTSTRAP_EMAIL': 'qa.driver@deeptrics.com',
+    'QA_DRIVER_BOOTSTRAP_EMAIL': 'qa.driver@saaradhigo.test',
     'QA_DRIVER_BOOTSTRAP_PASSWORD': PASSWORD,
 }
 
 
 @pytest.fixture
-def qa_env(monkeypatch):
+def qa_env(monkeypatch, settings):
+    # The seed gate (base/seeding.py) refuses to load test accounts where OTP
+    # gating is off, because the seeded numbers are a real-looking range. QA
+    # sets TEST_PHONE_NUMBERS; so must the fixture that stands in for QA.
+    settings.TEST_PHONE_NUMBERS = {
+        '+919999000001': '100001', '+919999000002': '100002',
+        '+919999000009': '100009',
+    }
     for k, v in ENV.items():
         monkeypatch.setenv(k, v)
     return ENV
@@ -126,7 +133,7 @@ class TestItRefusesRatherThanGuessing:
     def test_it_will_not_re_role_an_existing_account(self, qa_env):
         User.objects.create_user(
             phone_number='+919850000002', username='+919850000002',
-            role='driver', email='someone@deeptrics.com')
+            role='driver', email='someone@saaradhigo.test')
 
         with pytest.raises(CommandError, match='Refusing to change it'):
             _run()

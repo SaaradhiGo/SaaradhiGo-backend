@@ -48,6 +48,8 @@ import os
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
+
+from base.seeding import require_seedable_environment
 from django.db import transaction
 
 User = get_user_model()
@@ -66,6 +68,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        require_seedable_environment('the QA operator account')
         environment = (os.environ.get('ENVIRONMENT') or '').strip().lower()
         debug_env = (os.environ.get('DEBUG_ENV') or 'False').strip()
 

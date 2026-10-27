@@ -32,6 +32,8 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
+
+from base.seeding import require_seedable_environment
 from django.db import transaction
 from rest_framework_simplejwt.tokens import AccessToken
 
@@ -58,6 +60,7 @@ class Command(BaseCommand):
                             help='Emit the token map as JSON on stdout.')
 
     def handle(self, *args, **options):
+        require_seedable_environment('the load-test fixtures')
         env = (os.environ.get('ENVIRONMENT') or '').strip().lower()
         if env != 'load':
             raise CommandError(

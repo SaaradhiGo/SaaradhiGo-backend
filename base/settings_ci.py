@@ -49,6 +49,12 @@ _TEST_ENV_DEFAULTS = {
     # a real DEFAULT_FROM_EMAIL on a verified SES sender domain -- an owner
     # action, documented in the SES setup runbook.
     'DEFAULT_FROM_EMAIL': 'no-reply@ci.saaradhigo.test',
+
+    # OTP gating ON, as every non-production environment must have it. The
+    # seed gate (base/seeding.py) refuses to load test accounts without it,
+    # because the seeded numbers are a real-looking range. test_seed_guard.py
+    # empties this deliberately to prove the refusal.
+    'TEST_PHONE_NUMBERS': '+919999000001:100001,+919999000002:100002,+919999000009:100009',
 }
 
 for _key, _value in _TEST_ENV_DEFAULTS.items():

@@ -51,6 +51,8 @@ import os
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
+
+from base.seeding import require_seedable_environment
 from django.db import transaction
 from django.utils import timezone
 
@@ -86,6 +88,8 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        # One gate for every test-account seed; see base/seeding.py.
+        require_seedable_environment('the QA bootstrap accounts')
         self._refuse_in_production()
 
         wanted = options.get('role')

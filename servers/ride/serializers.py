@@ -1,9 +1,15 @@
 from rest_framework import serializers
+from base.serializer_fields import MoneyField
 from servers.ride.models import Trip, FarePricing, Rating
 from servers.driver.models import Driver, Vehicle
 
 
 class FarePricingSerializer(serializers.ModelSerializer):
+    base_fare = MoneyField()
+    distance_fare = MoneyField()
+    time_fare = MoneyField()
+    total_fare = MoneyField()
+
     class Meta:
         model = FarePricing
         fields = ['base_fare', 'distance_fare', 'time_fare', 'surge_multiplier', 'total_fare']
@@ -27,7 +33,9 @@ class TripListSerializer(serializers.ModelSerializer):
     vehicle_info = serializers.SerializerMethodField()
     requested_vehicle_type = serializers.SerializerMethodField()
     user=serializers.SerializerMethodField()
-    
+    estimated_fare = MoneyField(read_only=True, allow_null=True)
+    final_fare = MoneyField(read_only=True, allow_null=True)
+
     class Meta:
         model = Trip
         fields = [

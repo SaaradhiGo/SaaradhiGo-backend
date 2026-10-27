@@ -76,7 +76,7 @@ def driver(db):
     d = Driver.objects.create(user_id=u, approved=True, upi_id='qa-test@upi')
     w = get_wallet(u, Wallet.SCOPE_DRIVER)
     w.balance = Decimal('5000.00')
-    w.save(update_fields=['balance'])
+    w.save(update_fields=['balance_minor'])
     return d
 
 
@@ -279,7 +279,7 @@ def test_a_network_failure_after_the_request_raises_unknown(monkeypatch):
 
     with pytest.raises(PayoutDispatchUnknown):
         gw.create_upi_payout(
-            upi_id='x@upi', amount=Decimal('100.00'), reference_id='ref-1',
+            upi_id='x@upi', amount_minor=10000, reference_id='ref-1',
         )
 
 
@@ -301,7 +301,7 @@ def test_a_5xx_raises_unknown_because_the_provider_may_have_accepted(monkeypatch
 
     with pytest.raises(PayoutDispatchUnknown):
         gw.create_upi_payout(
-            upi_id='x@upi', amount=Decimal('100.00'), reference_id='ref-2',
+            upi_id='x@upi', amount_minor=10000, reference_id='ref-2',
         )
 
 
@@ -323,7 +323,7 @@ def test_a_4xx_is_a_definite_rejection_and_returns_none(monkeypatch):
     monkeypatch.setattr(mod.requests, 'post', lambda *a, **k: _Resp())
 
     assert gw.create_upi_payout(
-        upi_id='x@upi', amount=Decimal('100.00'), reference_id='ref-3',
+        upi_id='x@upi', amount_minor=10000, reference_id='ref-3',
     ) is None
 
 
@@ -333,11 +333,11 @@ def test_validation_failures_never_reach_the_network_and_are_not_unknown():
     gw = _gateway_instance()
 
     assert gw.create_upi_payout(
-        upi_id='', amount=Decimal('100.00'), reference_id='r',
+        upi_id='', amount_minor=10000, reference_id='r',
     ) is None
     assert gw.create_upi_payout(
-        upi_id='x@upi', amount=Decimal('0.00'), reference_id='r',
+        upi_id='x@upi', amount_minor=0, reference_id='r',
     ) is None
     assert gw.create_upi_payout(
-        upi_id='x@upi', amount='not-a-number', reference_id='r',
+        upi_id='x@upi', amount_minor='not-a-number', reference_id='r',
     ) is None

@@ -15,9 +15,19 @@ import base64
 from typing import Optional, Dict, Any
 from django.conf import settings
 
+from base.money import to_gateway_major, to_major_string
+
 from .base_gateway import BasePaymentGateway
 
 logger = logging.getLogger(__name__)
+
+
+def _positive_minor(amount_minor):
+    """A usable amount: a positive int of minor units. Not a bool, not a
+    Decimal, not a float -- the interface is integers, and a Decimal arriving
+    here means a caller still passing major units, 100x too small."""
+    return (isinstance(amount_minor, int) and not isinstance(amount_minor, bool)
+            and amount_minor > 0)
 
 def _fallback_customer_email():
     """A placeholder address for a payer who has not given us one.
@@ -100,7 +110,7 @@ class CashfreeGateway(BasePaymentGateway):
 
     def create_order(
         self,
-        amount,
+        amount_minor,
         trip_id=None,
         currency: str = 'INR',
         customer_id=None,
@@ -134,8 +144,10 @@ class CashfreeGateway(BasePaymentGateway):
             if not notify_url.startswith("http"):
                 notify_url = f"http://{notify_url}"
 
+            # Cashfree takes MAJOR units as a JSON number. Converted once, here.
+            order_amount = to_gateway_major(amount_minor, currency)
             payload = {
-                "order_amount": float(amount),
+                "order_amount": order_amount,
                 "order_currency": currency,
                 "order_id": order_id,
                 "customer_details": {
@@ -147,7 +159,8 @@ class CashfreeGateway(BasePaymentGateway):
                     "notify_url": notify_url,
                 },
             }
-            logger.debug("Cashfree create_order for trip=%s amount=%s", trip_id, amount)
+            logger.debug("Cashfree create_order for trip=%s amount_minor=%s %s",
+                         trip_id, amount_minor, currency)
             response = requests.post(
                 url, headers=headers, json=payload,
                 timeout=self.HTTP_TIMEOUT_SECONDS,
@@ -162,7 +175,7 @@ class CashfreeGateway(BasePaymentGateway):
                 'gateway_order_id': order_id,
                 'order_id': order_id,
                 'payment_session_id': data.get('payment_session_id'),
-                'order_amount': float(amount),
+                'order_amount': order_amount,
                 'payment_link': data.get('payment_link'),
                 'cf_order_id': data.get('cf_order_id'),
             }
@@ -237,7 +250,8 @@ class CashfreeGateway(BasePaymentGateway):
             logger.error(f"Webhook signature verification failed: {e}")
             return False
 
-    def create_refund(self, payment_id: str, amount: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    def create_refund(self, payment_id: str, amount_minor: Optional[int] = None,
+                      currency: str = 'INR') -> Optional[Dict[str, Any]]:
         """Create a Cashfree refund using PG SDK.
 
         Note: Cashfree's PGOrderCreateRefund is keyed on the *order id*, not the
@@ -246,15 +260,15 @@ class CashfreeGateway(BasePaymentGateway):
         order_id (or the equivalent stored on `Payment.cashfree_order_id`).
         Passing a cf_payment_id will return 404 at Cashfree.
 
-        `amount` is required. Cashfree rejects 0-amount refunds; passing None
+        `amount_minor` is required. Cashfree rejects 0-amount refunds; passing None
         is a caller bug, so we fail fast rather than letting the gateway
         produce a confusing 400.
         """
         if not self.pg_client:
             return None
-        if amount is None or float(amount) <= 0:
+        if not _positive_minor(amount_minor):
             logger.error(
-                f"CashfreeGateway.create_refund: amount must be positive, got {amount} "
+                f"CashfreeGateway.create_refund: amount_minor must be a positive int, got {amount_minor!r} "
                 f"(order_id={payment_id})"
             )
             return None
@@ -264,7 +278,7 @@ class CashfreeGateway(BasePaymentGateway):
             refund_id = f"refund_{payment_id}_{int(time.time())}"
 
             refund_request = OrderCreateRefundRequest(
-                refund_amount=float(amount),
+                refund_amount=to_gateway_major(amount_minor, currency),
                 refund_id=refund_id,
                 refund_note="Trip cancellation"
             )
@@ -395,7 +409,7 @@ class CashfreeGateway(BasePaymentGateway):
     def create_upi_payout(
         self,
         upi_id: str,
-        amount,
+        amount_minor,
         purpose: str = "payout",
         currency: str = "INR",
         reference_id: Optional[str] = None,
@@ -417,13 +431,8 @@ class CashfreeGateway(BasePaymentGateway):
         if not upi_id:
             logger.error("create_upi_payout: upi_id is required")
             return None
-        try:
-            amount_val = float(amount)
-        except (TypeError, ValueError):
-            logger.error(f"create_upi_payout: bad amount {amount!r}")
-            return None
-        if amount_val <= 0:
-            logger.error(f"create_upi_payout: non-positive amount {amount_val}")
+        if not _positive_minor(amount_minor):
+            logger.error(f"create_upi_payout: amount_minor must be a positive int, got {amount_minor!r}")
             return None
 
         token = self._get_payout_token()
@@ -434,7 +443,8 @@ class CashfreeGateway(BasePaymentGateway):
 
         payload = {
             "beneId": "",  # leaving empty triggers in-line beneficiary mode
-            "amount": str(round(amount_val, 2)),
+            # Major units as a decimal string, exact: 50000 paise -> "500.00".
+            "amount": to_major_string(amount_minor, currency),
             "transferId": transfer_id,
             "transferMode": "upi",
             "remarks": purpose or "Driver earnings payout",

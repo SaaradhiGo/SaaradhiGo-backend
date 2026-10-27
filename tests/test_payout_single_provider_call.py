@@ -68,7 +68,7 @@ def driver(db):
     # Fund the settlement wallet so the debit at request time is realistic.
     w = get_wallet(u, Wallet.SCOPE_DRIVER)
     w.balance = Decimal('5000.00')
-    w.save(update_fields=['balance'])
+    w.save(update_fields=['balance_minor'])
     return d
 
 

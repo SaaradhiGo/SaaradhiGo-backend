@@ -13,7 +13,9 @@ from django.views.decorators.http import require_POST
 from django.http import JsonResponse
 from django.db import models, transaction, IntegrityError
 from base.utils import success_response, error_response
-from base.money import currency_for_trip, format_money, normalize_currency
+from base.money import (
+    currency_for_trip, format_money, from_minor, normalize_currency, parse_input, to_minor,
+)
 from servers.payments.models import Payment, TransactionHistory, PaymentGateway, WebhookEvent
 from servers.payments.payment_gateways.factory import get_payment_gateway, get_payment_gateway_for_payments, get_payment_gateway_for_payouts
 from servers.ride.models import Trip
@@ -125,7 +127,8 @@ def create_order(request):
         )
 
     # Use final_fare if available, otherwise estimated_fare
-    amount = trip.final_fare or trip.estimated_fare
+    amount_minor = trip.final_fare_minor or trip.estimated_fare_minor
+    amount = from_minor(amount_minor, trip.currency)
     if not amount or amount <= 0:
         return error_response(
             code='INVALID_AMOUNT',
@@ -155,7 +158,7 @@ def create_order(request):
         return currency_error
 
     order = gateway.create_order(
-        amount=amount,
+        amount_minor=amount_minor,
         trip_id=trip.id,
         currency=pay_currency,
         customer_id=str(request.user.id),
@@ -208,7 +211,7 @@ def create_order(request):
         'gateway': gateway.get_name(),
         'gateway_order_id': order.get('id') or order.get('order_id'),
         'amount': str(amount),
-        'amount_paise': order.get('amount') or str(int(amount * 100)),
+        'amount_paise': order.get('amount') or str(amount_minor),
         'currency': order.get('currency') or pay_currency,
         'trip_id': trip.id,
         'description': f'Payment for Trip #{trip.id}',
@@ -564,7 +567,7 @@ def _handle_cashfree_webhook(payload, gateway):
                     status=200,
                 )
             try:
-                gateway_amount = Decimal(str(order_info.get('order_amount'))).quantize(Decimal('0.01'))
+                gateway_amount = parse_input(order_info.get('order_amount'))
             except (InvalidOperation, TypeError):
                 logger.error(
                     f"Cashfree Webhook: malformed amount from gateway "
@@ -585,7 +588,9 @@ def _handle_cashfree_webhook(payload, gateway):
                 if wallet_txn.status == 'completed':
                     return JsonResponse({'status': 'already_completed'}, status=200)
 
-                if wallet_txn.amount != gateway_amount:
+                # Compared in minor units: the gateway's major-unit number is
+                # converted by the money helper, once.
+                if wallet_txn.amount_minor != to_minor(gateway_amount, wallet_txn.currency):
                     logger.error(
                         f"Cashfree Webhook: wallet amount mismatch order={order_id} "
                         f"txn={wallet_txn.amount} gateway={gateway_amount}; refusing"
@@ -603,8 +608,8 @@ def _handle_cashfree_webhook(payload, gateway):
                 wallet, _ = Wallet.objects.select_for_update().get_or_create(
                     user_id=wallet_txn.user_id, scope=Wallet.SCOPE_RIDER,
                 )
-                wallet.balance = wallet.balance + gateway_amount  # Decimal + Decimal
-                wallet.save(update_fields=['balance'])
+                wallet.balance_minor = wallet.balance_minor + wallet_txn.amount_minor
+                wallet.save(update_fields=['balance_minor'])
 
             logger.info(
                 f"Cashfree Webhook: Wallet Top-up {wallet_txn.id} "
@@ -647,7 +652,7 @@ def _handle_cashfree_webhook(payload, gateway):
             )
 
         try:
-            gateway_amount = Decimal(str(order_info.get('order_amount'))).quantize(Decimal('0.01'))
+            gateway_amount = parse_input(order_info.get('order_amount'))
         except (InvalidOperation, TypeError):
             logger.error(
                 "Cashfree Webhook: malformed amount from gateway for trip order %s: %s",
@@ -657,7 +662,7 @@ def _handle_cashfree_webhook(payload, gateway):
                 {'status': 'skipped', 'reason': 'malformed gateway amount'}, status=200,
             )
 
-        if Decimal(str(payment.amount)).quantize(Decimal('0.01')) != gateway_amount:
+        if payment.amount_minor != to_minor(gateway_amount, payment.currency):
             logger.error(
                 "Cashfree Webhook: trip amount mismatch order=%s payment=%s gateway=%s; refusing",
                 order_id, payment.amount, gateway_amount,
@@ -997,8 +1002,8 @@ def _handle_cashfree_payout_webhook(payload, gateway):
             )
             return False
 
-        wallet.balance += withdrawal_obj.amount
-        wallet.save(update_fields=["balance"])
+        wallet.balance_minor += withdrawal_obj.amount_minor
+        wallet.save(update_fields=["balance_minor"])
 
         WalletTransaction.objects.create(
             user_id=withdrawal_obj.driver.user_id,
@@ -1496,7 +1501,6 @@ def refund_payment(request):
         )
 
     from servers.rider.models import Wallet
-    from decimal import Decimal
 
     # The whole refund flow runs inside one atomic block so the gateway call,
     # the payment status flip, the driver wallet reversal, and the ledger row
@@ -1548,7 +1552,9 @@ def refund_payment(request):
                 )
                 refund_mode = 'original'
         if refund_mode == 'original':
-            refund = gateway.create_refund(refund_order_id, amount=locked_payment.amount)
+            refund = gateway.create_refund(
+                refund_order_id, amount_minor=locked_payment.amount_minor,
+                currency=locked_payment.currency)
             if not refund:
                 return error_response(
                     code='REFUND_FAILED',
@@ -1583,10 +1589,10 @@ def refund_payment(request):
                 .first()
             )
             if driver_wallet:
-                driver_wallet.balance = (
-                    Decimal(str(driver_wallet.balance)) - credit_amount
+                driver_wallet.balance_minor = (
+                    driver_wallet.balance_minor - credit_txn.amount_minor
                 )
-                driver_wallet.save(update_fields=['balance'])
+                driver_wallet.save(update_fields=['balance_minor'])
 
             TransactionHistory.objects.create(
                 trip_id=trip,
@@ -1877,7 +1883,7 @@ def switch_payment_method(request):
             if currency_error is not None:
                 return currency_error
             order = gateway.create_order(
-                amount=float(amount),
+                amount_minor=trip.final_fare_minor or trip.estimated_fare_minor,
                 trip_id=trip.id,
                 currency=pay_currency,
                 customer_id=str(request.user.id),
@@ -2030,7 +2036,7 @@ def retry_payment(request):
         if currency_error is not None:
             return currency_error
         order = gateway.create_order(
-            amount=float(amount),
+            amount_minor=trip.final_fare_minor or trip.estimated_fare_minor,
             trip_id=trip.id,
             currency=pay_currency,
             customer_id=str(request.user.id),

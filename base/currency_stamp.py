@@ -28,7 +28,11 @@ fills a blank or the bare default.
 
 import logging
 
-from base.money import DEFAULT_CURRENCY, normalize_currency
+from base.money import (
+    DEFAULT_CURRENCY,
+    assert_currency_change_keeps_scale,
+    normalize_currency,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +97,9 @@ class CurrencyStampedModel:
                     DEFAULT_CURRENCY,
                 )
                 after = DEFAULT_CURRENCY
+        # Amounts were converted to minor units with `before`; a stamp to a
+        # currency of a different scale would reinterpret them.
+        assert_currency_change_keeps_scale(self, before, after)
         self.currency = after
 
         # Widen `update_fields` ONLY if the stamp actually changed.

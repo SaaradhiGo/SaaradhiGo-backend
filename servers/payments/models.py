@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth import get_user_model
 from base.currency_stamp import CurrencyStampedModel
+from base.money import MinorUnitsAmount
 
 User = get_user_model()
 
@@ -32,7 +33,9 @@ class Payment(CurrencyStampedModel, models.Model):
 
     trip_id = models.ForeignKey('ride.Trip', on_delete=models.CASCADE, related_name='payments')
     user_id = models.ForeignKey(User, on_delete=models.CASCADE, related_name='payments')
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    # Minor units of `currency` (base/money.py); `amount` is the Decimal view.
+    amount_minor = models.BigIntegerField()
+    amount = MinorUnitsAmount('amount_minor')
     method = models.CharField(max_length=20, choices=METHOD_CHOICES)
     # Stamped at write time from the trip's zone. Denormalised on purpose: the
     # currency a row was written in is a fact about that row, not a lookup
@@ -114,7 +117,9 @@ class TransactionHistory(CurrencyStampedModel, models.Model):
     user_id = models.ForeignKey(User, on_delete=models.CASCADE, related_name='transactions')
     driver_id = models.ForeignKey('driver.Driver', on_delete=models.CASCADE, related_name='transactions')
     withdrawal_request = models.ForeignKey('driver.WithdrawalRequest', on_delete=models.SET_NULL, null=True, blank=True, related_name='transactions')
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    # Minor units of `currency` (base/money.py); `amount` is the Decimal view.
+    amount_minor = models.BigIntegerField()
+    amount = MinorUnitsAmount('amount_minor')
     method = models.CharField(max_length=50)
     # Stamped at write time from the trip's zone. Denormalised on purpose: the
     # currency a row was written in is a fact about that row, not a lookup
@@ -259,14 +264,19 @@ class TripSettlement(CurrencyStampedModel, models.Model):
     )
 
     # The fare the settlement was computed on.
-    gross_fare = models.DecimalField(max_digits=10, decimal_places=2)
+    # Amounts are minor units of `currency` (base/money.py); the bare names are
+    # Decimal views.
+    gross_fare_minor = models.BigIntegerField()
     # The rate AS APPLIED, not a pointer to a card that can be superseded.
     commission_percent = models.DecimalField(max_digits=5, decimal_places=2)
     # Stored rather than derived, because rounding is part of the answer.
-    commission_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    commission_amount_minor = models.BigIntegerField()
     # gross_fare - commission_amount, stored so the identity is asserted at write
-    # time rather than recomputed by every reader.
-    driver_net = models.DecimalField(max_digits=10, decimal_places=2)
+    # time rather than recomputed by every reader. In integers it is exact.
+    driver_net_minor = models.BigIntegerField()
+    gross_fare = MinorUnitsAmount('gross_fare_minor')
+    commission_amount = MinorUnitsAmount('commission_amount_minor')
+    driver_net = MinorUnitsAmount('driver_net_minor')
     # Stamped at write time from the trip's zone. Denormalised on purpose: the
     # currency a row was written in is a fact about that row, not a lookup
     # against today's zone configuration.
@@ -301,11 +311,11 @@ class TripSettlement(CurrencyStampedModel, models.Model):
                 name='tripsettlement_one_original_per_trip',
             ),
             models.CheckConstraint(
-                condition=models.Q(commission_amount__gte=0),
+                condition=models.Q(commission_amount_minor__gte=0),
                 name='tripsettlement_commission_non_negative',
             ),
             models.CheckConstraint(
-                condition=models.Q(gross_fare__gte=0),
+                condition=models.Q(gross_fare_minor__gte=0),
                 name='tripsettlement_gross_non_negative',
             ),
         ]

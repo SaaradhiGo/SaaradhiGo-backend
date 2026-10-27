@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.db import models
 from django.contrib.auth import get_user_model
 from base.currency_stamp import CurrencyStampedModel
+from base.money import MinorUnitsAmount
 
 User=get_user_model()
 class Rider(models.Model):
@@ -59,11 +60,12 @@ class Wallet(models.Model):
     scope=models.CharField(
         max_length=16, choices=SCOPE_CHOICES, default=SCOPE_RIDER, db_index=True,
     )
-    # default uses Decimal explicitly so a freshly-constructed Wallet
-    # instance holds a Decimal in memory (not a Python float). The
-    # mismatch caused `wallet.balance + Decimal(amount)` to TypeError on
-    # the first ever top-up. See QA-7 in the Phase-0 QA report.
-    balance=models.DecimalField(max_digits=12,decimal_places=2,default=Decimal('0.00'))
+    # Minor units of `currency` (base/money.py). `balance` reads as a Decimal,
+    # so `wallet.balance + Decimal(amount)` -- the QA-7 top-up crash, when a
+    # fresh instance held a float -- cannot recur: the column is an integer
+    # and the view is always a Decimal.
+    balance_minor=models.BigIntegerField(default=0)
+    balance=MinorUnitsAmount('balance_minor')
     # The currency this amount is in, stamped at write time from the trip's
     # zone. Denormalised on purpose: the currency a row was written in is a
     # FACT about that row, not a lookup against today's zone configuration --
@@ -140,7 +142,9 @@ class WalletTransaction(CurrencyStampedModel, models.Model):
         return None
 
     user_id = models.ForeignKey(User, on_delete=models.CASCADE, related_name='wallet_transactions')
-    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    # Minor units of `currency` (base/money.py); `amount` is the Decimal view.
+    amount_minor = models.BigIntegerField()
+    amount = MinorUnitsAmount('amount_minor')
     # The currency this amount is in, stamped at write time from the trip's
     # zone. Denormalised on purpose: the currency a row was written in is a
     # FACT about that row, not a lookup against today's zone configuration --

@@ -35,10 +35,32 @@ against today's configuration. Same reasoning as `Trip.zone_code` and
 `sum_by_currency` exists because the honest answer to "what is total revenue" across two
 markets is two numbers. A function that returns one number there is a function that
 lies, so this module does not provide one.
+
+INTEGER MINOR UNITS (owner decision, 2026-10-26)
+------------------------------------------------
+Every stored amount is a `BigIntegerField` of minor units -- paise, cents -- beside the
+row's ISO 4217 `currency`. It replaced `Decimal(10,2)` before launch, because pre-launch
+is the cheapest moment, because the gateways speak minor units, and because an integer
+ledger has no rounding ambiguity: 13568 paise is 13568 paise in every language, driver
+and database.
+
+Rates and multipliers -- per km, per minute, surge, commission %, tax % -- stay
+`Decimal`. Arithmetic runs in Decimal and is rounded ONCE, half-up, by `to_minor`, at
+the moment it becomes a stored amount. Nothing else in the codebase rounds money.
+
+The digits per currency come from `CURRENCIES`, never from a literal 100: JPY has none
+and KWD has three, and `amount * 100` is how a yen fare becomes a hundred times too big.
+
+A model keeps its old attribute name as a `MinorUnitsAmount` property, so `trip.estimated_fare`
+still reads as `Decimal('135.68')`. The column behind it is `estimated_fare_minor`, and
+the ORM only knows the column: `filter(estimated_fare=...)`, `Sum('estimated_fare')` and
+`update_fields=['estimated_fare']` all raise. That is deliberate -- a query that used
+to see rupees and would now see paise must fail, not be silently 100x wrong.
 """
 
 import logging
 from collections import OrderedDict
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
 from base.countries import COUNTRIES, DEFAULT_COUNTRY_CODE, get_country
@@ -46,20 +68,35 @@ from base.countries import COUNTRIES, DEFAULT_COUNTRY_CODE, get_country
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal('0.00')
-CENTS = Decimal('0.01')
 
-# ISO 4217 codes this platform can price in. Deliberately a short allow-list
-# rather than "any three letters": an unknown currency on a money row is a
-# configuration error that must fail at the boundary, not become data.
-SUPPORTED_CURRENCIES = frozenset({'INR', 'USD'})
+# The one rounding rule for money. Used by `to_minor` and nowhere else.
+ROUNDING = ROUND_HALF_UP
+
+
+@dataclass(frozen=True)
+class Currency:
+    code: str       # ISO 4217
+    exponent: int   # ISO 4217 minor-unit digits: 2 for INR/USD, 0 for JPY, 3 for KWD
+    symbol: str
+
+
+# The currency table. Deliberately a short allow-list rather than "any three
+# letters": an unknown currency on a money row is a configuration error that
+# must fail at the boundary, not become data. Adding a market means adding a row
+# here with its ISO 4217 exponent -- and nothing else, because every conversion
+# reads the exponent from this table.
+CURRENCIES = {
+    'INR': Currency('INR', 2, '₹'),
+    'USD': Currency('USD', 2, '$'),
+}
+
+SUPPORTED_CURRENCIES = frozenset(CURRENCIES)
 
 DEFAULT_CURRENCY = get_country(DEFAULT_COUNTRY_CODE).currency
 
-# Minor units per currency. Both of ours are 2, but JPY is 0 and KWD is 3, and
-# quantizing a yen amount to 2 places invents precision that does not exist.
-_MINOR_UNITS = {'INR': 2, 'USD': 2}
 
-_SYMBOLS = {'INR': '₹', 'USD': '$'}
+class MoneyTypeError(TypeError):
+    """A float, a bool or something non-numeric reached a money value."""
 
 
 def is_supported(currency):
@@ -86,26 +123,115 @@ def normalize_currency(currency, fallback=None):
     return chosen
 
 
-def minor_units(currency):
-    return _MINOR_UNITS.get(normalize_currency(currency), 2)
+def exponent(currency):
+    """ISO 4217 minor-unit digits for `currency`, from `CURRENCIES`.
+
+    Strict, unlike `normalize_currency`: converting an amount in a currency we
+    do not know would guess its scale, and a guessed scale is a 100x error.
+    """
+    code = str(currency or '').upper().strip()
+    try:
+        return CURRENCIES[code].exponent
+    except KeyError:
+        raise ValueError(f'unsupported currency {currency!r}: not in CURRENCIES') from None
+
+
+# Kept for existing callers; `exponent` is the name the minor-unit code uses.
+minor_units = exponent
 
 
 def quantum(currency):
     """The smallest representable amount, e.g. Decimal('0.01') for USD/INR."""
-    places = minor_units(currency)
-    return Decimal(1).scaleb(-places) if places else Decimal(1)
+    return Decimal(1).scaleb(-exponent(currency))
 
 
-def quantize(amount, currency=DEFAULT_CURRENCY):
-    """Round to this currency's minor unit, half-up.
+def as_decimal(amount):
+    """`amount` as a Decimal, refusing anything that is not already exact.
 
-    Half-up, not banker's rounding: it is what every fare table in both markets
-    assumes, and the existing pricing code already rounds this way. Changing the
-    mode here would move prices.
+    Accepts Decimal, int and numeric strings. Refuses float -- `0.1 + 0.2` is
+    `0.30000000000000004`, and a float that reaches money has already lost
+    the paisa it was carrying -- and bool, which is an int to Python and a bug
+    everywhere else. Refuses NaN and infinity, which Decimal would otherwise
+    carry silently into a ledger.
+    """
+    if isinstance(amount, bool) or isinstance(amount, float):
+        raise MoneyTypeError(
+            f'{type(amount).__name__} {amount!r} reached money; pass a Decimal, '
+            f'an int or a numeric string')
+    if isinstance(amount, Decimal):
+        value = amount
+    elif isinstance(amount, (int, str)):
+        try:
+            value = Decimal(amount.strip() if isinstance(amount, str) else amount)
+        except ArithmeticError:
+            raise MoneyTypeError(f'{amount!r} is not a number') from None
+    else:
+        raise MoneyTypeError(f'{type(amount).__name__} {amount!r} reached money')
+    if not value.is_finite():
+        raise MoneyTypeError(f'{amount!r} is not a finite amount')
+    return value
+
+
+def parse_input(value):
+    """An amount from a REQUEST, as a Decimal. The only float this module takes.
+
+    A JSON body's `{"amount": 45.5}` reaches Python as the float 45.5, and its
+    `str()` is the shortest text that round-trips -- '45.5', exactly what the
+    client sent. So a float is accepted here, at the parsing boundary, and
+    nowhere else: inside the platform a float in money is a bug, and
+    `as_decimal` refuses it.
+    """
+    if isinstance(value, float):
+        value = str(value)
+    return as_decimal(value)
+
+
+def to_minor(amount, currency):
+    """Major units (Decimal) -> integer minor units. THE rounding point.
+
+    Half-up, once. This is the only function in the codebase that rounds a
+    money amount; everything that produces a stored amount comes through here,
+    with its arithmetic still unrounded.
+
+        >>> to_minor(Decimal('135.675'), 'INR')
+        13568
     """
     if amount is None:
         return None
-    return Decimal(str(amount)).quantize(quantum(currency), rounding=ROUND_HALF_UP)
+    scaled = as_decimal(amount).scaleb(exponent(currency))
+    return int(scaled.quantize(Decimal(1), rounding=ROUNDING))
+
+
+def from_minor(minor, currency):
+    """Integer minor units -> Decimal major units. Exact; never rounds.
+
+    The result carries exactly the currency's digits, so `str()` of it is the
+    shape the API has always returned: 13568 INR -> Decimal('135.68'), 12300
+    -> Decimal('123.00').
+    """
+    if minor is None:
+        return None
+    if isinstance(minor, bool) or not isinstance(minor, int):
+        raise MoneyTypeError(
+            f'minor units must be an int, got {type(minor).__name__} {minor!r}')
+    return Decimal(minor).scaleb(-exponent(currency))
+
+
+def quantize(amount, currency=DEFAULT_CURRENCY):
+    """Round a major-unit amount to this currency's minor unit, via `to_minor`.
+
+    Half-up, through the same single rounding point, so a value quantized here
+    and a value stored are always the same value.
+    """
+    if amount is None:
+        return None
+    return from_minor(to_minor(amount, currency), currency)
+
+
+def to_major_string(minor, currency):
+    """'135.68' -- the API's existing string shape for a money value."""
+    value = from_minor(minor, currency)
+    return None if value is None else str(value)
 
 
 def format_money(amount, currency=DEFAULT_CURRENCY, with_symbol=True):
@@ -118,11 +244,11 @@ def format_money(amount, currency=DEFAULT_CURRENCY, with_symbol=True):
     if amount is None:
         amount = ZERO
     value = quantize(amount, code)
-    places = minor_units(code)
+    places = exponent(code)
     text = f'{value:,.{places}f}'
     if not with_symbol:
         return text
-    symbol = _SYMBOLS.get(code, code + ' ')
+    symbol = CURRENCIES[code].symbol
     country = next((c for c in COUNTRIES.values() if c.currency == code), None)
     if country is not None and country.symbol_position == 'suffix':
         return f'{text} {symbol}'
@@ -154,44 +280,62 @@ def charged_fare():
     It does NOT invent money: a trip with neither fare contributes zero, and
     a promo trip contributes its discounted `final_fare`, which is what was
     charged.
+
+    In MINOR units, like every money column: sum it with `sum_by_currency`,
+    which converts per currency.
     """
-    from django.db.models import DecimalField, Value
+    from django.db.models import BigIntegerField, Value
     from django.db.models.functions import Coalesce
 
     return Coalesce(
-        'final_fare',
-        'estimated_fare',
-        Value(0, output_field=DecimalField(max_digits=12, decimal_places=2)),
-        output_field=DecimalField(max_digits=12, decimal_places=2),
+        'final_fare_minor',
+        'estimated_fare_minor',
+        Value(0, output_field=BigIntegerField()),
+        output_field=BigIntegerField(),
     )
 
 
 def sum_by_currency(queryset, field, currency_field='currency'):
-    """Total `field`, grouped by currency. Returns an OrderedDict.
+    """Total a minor-unit `field`, grouped by currency. Returns an OrderedDict
+    of Decimal major units.
 
     The only honest shape for a cross-market total. There is deliberately no
     `total_revenue(queryset)` in this module: with two currencies in one table,
     a single number is either wrong or silently restricted to one market, and
     both are worse than two numbers.
 
-        >>> sum_by_currency(Trip.objects.completed(), 'final_fare')
+        >>> sum_by_currency(Trip.objects.completed(), charged_fare())
         OrderedDict([('INR', Decimal('45200.00')), ('USD', Decimal('1310.50'))])
+
+    The sum is taken in integers, so it is exact; the conversion back to major
+    units happens once per currency, here.
     """
     from django.db.models import Sum
 
     # `field` may be a column name OR an expression -- `charged_fare()` is
     # passed here by the revenue aggregates, because the column they used to
     # sum is NULL on every trip without a promo.
+    if isinstance(field, str) and not field.endswith('_minor'):
+        raise ValueError(
+            f'sum_by_currency({field!r}): money is stored in minor units; '
+            f'sum the {field}_minor column')
     rows = (queryset
             .values(currency_field)
             .annotate(_total=Sum(field))
             .order_by(currency_field))
-    out = OrderedDict()
+    totals = OrderedDict()
     for row in rows:
         code = normalize_currency(row.get(currency_field))
-        total = row.get('_total') or ZERO
-        out[code] = quantize(out.get(code, ZERO) + total, code)
-    return out
+        totals[code] = totals.get(code, 0) + int(row.get('_total') or 0)
+    return OrderedDict((code, from_minor(minor, code)) for code, minor in totals.items())
+
+
+def sum_minor(queryset, field):
+    """Integer total of a minor-unit column, for a queryset already known to be
+    in ONE currency. 0 for an empty queryset."""
+    from django.db.models import Sum
+
+    return int(queryset.aggregate(_t=Sum(field))['_t'] or 0)
 
 
 def single_currency_or_none(queryset, currency_field='currency'):
@@ -246,3 +390,90 @@ def currency_for_trip(trip):
     if stamped:
         return normalize_currency(stamped)
     return currency_for_zone(getattr(trip, 'zone', None))
+
+
+# ---------------------------------------------------------------------------
+# Models: an integer column, read and written as a Decimal
+# ---------------------------------------------------------------------------
+
+class MinorUnitsAmount(property):
+    """`trip.estimated_fare` as a Decimal, stored as `trip.estimated_fare_minor`.
+
+    Declared on a model beside the integer column it fronts:
+
+        estimated_fare_minor = models.BigIntegerField(null=True, blank=True)
+        estimated_fare = MinorUnitsAmount('estimated_fare_minor')
+
+    Reading converts exactly with the row's own currency. Writing goes through
+    `to_minor`, so an unrounded Decimal assigned here is rounded once, half-up,
+    exactly where it becomes stored -- and a float is refused.
+
+    A `property` subclass on purpose: Django lets a model constructor set any
+    `property` by keyword, so `Trip.objects.create(estimated_fare=q['total_fare'])`
+    keeps working. Query APIs do not see it, which is the point -- see the
+    module docstring.
+    """
+
+    def __init__(self, minor_field, currency_field='currency'):
+        self.minor_field = minor_field
+        self.currency_field = currency_field
+
+        def fget(instance):
+            return from_minor(getattr(instance, minor_field),
+                              getattr(instance, currency_field))
+
+        def fset(instance, value):
+            setattr(instance, minor_field,
+                    to_minor(value, getattr(instance, currency_field)))
+
+        super().__init__(fget, fset, doc=f'Decimal view of `{minor_field}`.')
+
+    def __set_name__(self, owner, name):
+        # Recorded so the currency stamp can check that a change of currency
+        # does not change the scale of an amount already written.
+        owner._money_minor_fields = (
+            tuple(getattr(owner, '_money_minor_fields', ())) + (self.minor_field,))
+
+
+def assert_currency_change_keeps_scale(instance, before, after):
+    """Refuse a currency change that would reinterpret stored minor units.
+
+    An amount is converted to minor units with the row's currency at the moment
+    it is assigned. The currency stamp can change that currency afterwards, at
+    save. While both are 2-digit currencies that changes nothing; between INR
+    and JPY it would turn 13568 paise into 13568 yen. That is refused here
+    rather than silently rescaled, because a rescale would be a second rounding.
+    """
+    if not before or not after or before == after:
+        return
+    try:
+        same_scale = exponent(before) == exponent(after)
+    except ValueError:
+        return
+    if same_scale:
+        return
+    held = [f for f in getattr(type(instance), '_money_minor_fields', ())
+            if getattr(instance, f, None) not in (None, 0)]
+    if held:
+        raise ValueError(
+            f'{type(instance).__name__}: currency changing {before} -> {after} '
+            f'after amounts were set in {before} ({", ".join(held)}). Set the '
+            f'currency before assigning amounts.')
+
+
+# ---------------------------------------------------------------------------
+# Gateways
+# ---------------------------------------------------------------------------
+
+def to_gateway_major(minor, currency):
+    """Integer minor units -> the JSON number a MAJOR-unit gateway API wants.
+
+    Razorpay and Stripe take minor units and get the integer unchanged.
+    Cashfree's `order_amount`, `refund_amount` and payout `amount` are major
+    units (rupees), as JSON numbers. This is the one place that produces one:
+    exact Decimal first, and only then the float that JSON serialisation
+    needs. An amount below 2**53 minor units round-trips through a double
+    exactly to the digits shown, which is every amount this platform carries.
+    """
+    value = from_minor(minor, currency)
+    return float(value)

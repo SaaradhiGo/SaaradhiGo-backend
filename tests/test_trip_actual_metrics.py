@@ -308,7 +308,7 @@ def test_record_actuals_writes_only_the_two_actual_columns(trip, driver):
     _straight_line(trip, driver, trip.started_at, 5)
 
     Trip.objects.filter(id=trip.id).update(
-        final_fare=Decimal('199.00'), estimated_fare=Decimal('150.00'),
+        final_fare_minor=19900, estimated_fare_minor=15000,
     )
     assert trip.final_fare is None, 'the in-memory instance is deliberately stale'
 

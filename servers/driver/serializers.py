@@ -3,6 +3,7 @@ from decimal import Decimal
 from rest_framework import serializers
 from .models import Vehicle, VehicleType, Driver, WithdrawalRequest, DriverBankAccount, IncentiveQuest
 from servers.auth_user.serializers import UserModelSerializer
+from base.serializer_fields import MoneyField
 from base.serializer_fields import S3UploadKeyField
 from django.utils import timezone
 
@@ -102,7 +103,8 @@ class DriverBankAccountSerializer(serializers.ModelSerializer):
 class IncentiveQuestSerializer(serializers.ModelSerializer):
     progress_trips = serializers.IntegerField(read_only=True, default=0)
     is_completed = serializers.BooleanField(read_only=True, default=False)
-    
+    reward_amount = MoneyField()
+
     class Meta:
         model = IncentiveQuest
         fields = ['id', 'title', 'description', 'target_trips', 'reward_amount', 'start_date', 'end_date', 'progress_trips', 'is_completed']
@@ -228,6 +230,7 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
     driver_phone = serializers.SerializerMethodField()
     driver_upi_id = serializers.CharField(source='driver.upi_id', read_only=True, default='')
     driver_kyc_approved = serializers.BooleanField(source='driver.approved', read_only=True, default=False)
+    amount = MoneyField()
 
     class Meta:
         model = WithdrawalRequest
@@ -273,9 +276,8 @@ class WithdrawalRequestCreateSerializer(serializers.ModelSerializer):
     has the driver and therefore the currency, owns the threshold.
     """
 
+    amount = MoneyField(required=True, min_value=Decimal('0.01'))
+
     class Meta:
         model = WithdrawalRequest
         fields = ['amount']
-        extra_kwargs = {
-            'amount': {'required': True, 'min_value': Decimal('0.01')}
-        }

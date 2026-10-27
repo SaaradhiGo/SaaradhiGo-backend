@@ -4,7 +4,7 @@ from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
-from base.money import charged_fare
+from base.money import charged_fare, sum_minor, to_major_string
 from base.utils import success_response, error_response
 from base.permissions import (
     CAP_DRIVER_KYC, CAP_FINANCE_PAYOUT, IsAdmin, RequiresCapability,
@@ -371,18 +371,18 @@ def driver_full_detail_admin(request, driver_id):
         # driver's take-home: commission is deducted elsewhere, and these two
         # are deliberately different numbers.
         fare = charged_fare()
-        lifetime = completed_qs.aggregate(s=Sum(fare))['s'] or Decimal('0.00')
-        today_amt = completed_qs.filter(completed_at__gte=today_start).aggregate(s=Sum(fare))['s'] or Decimal('0.00')
-        month_amt = completed_qs.filter(completed_at__gte=month_start).aggregate(s=Sum(fare))['s'] or Decimal('0.00')
-        earnings_payload['lifetime'] = str(lifetime)
-        earnings_payload['today'] = str(today_amt)
-        earnings_payload['this_month'] = str(month_amt)
         # The currency these three are in. A driver operates in one market, so
         # one code is the honest answer here -- but without it the console is
         # rendering three bare numbers and choosing a symbol for them itself.
         # Taken from the driver's trips rather than the deployment default.
-        earnings_payload['currency'] = (
-            single_currency_or_none(completed_qs) or driver_currency(driver))
+        payload_currency = single_currency_or_none(completed_qs) or driver_currency(driver)
+        lifetime = sum_minor(completed_qs, fare)
+        today_amt = sum_minor(completed_qs.filter(completed_at__gte=today_start), fare)
+        month_amt = sum_minor(completed_qs.filter(completed_at__gte=month_start), fare)
+        earnings_payload['lifetime'] = to_major_string(lifetime, payload_currency)
+        earnings_payload['today'] = to_major_string(today_amt, payload_currency)
+        earnings_payload['this_month'] = to_major_string(month_amt, payload_currency)
+        earnings_payload['currency'] = payload_currency
     except Exception:
         pass
 
@@ -839,7 +839,7 @@ def reject_withdrawal_admin(request, withdrawal_id):
                 wallet.balance += amount
 
                 wallet.save(
-                    update_fields=['balance']
+                    update_fields=['balance_minor']
                 )
 
                 # Create one permanent refund transaction.
@@ -1112,7 +1112,7 @@ def bulk_action_withdrawal_admin(request):
                         wallet.balance += amount
 
                         wallet.save(
-                            update_fields=['balance']
+                            update_fields=['balance_minor']
                         )
 
                         # Record the refund transaction.

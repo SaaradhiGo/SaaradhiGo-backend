@@ -256,7 +256,9 @@ def wallet_payment(user, amount, purpose='Trip payment', reference_id=None, idem
     from servers.rider.models import WalletTransaction, Wallet
     
     try:
-        amount_val = float(amount)
+        # Exact from the request onwards; no float touches the ledger.
+        from base.money import parse_input
+        amount_val = parse_input(amount)
         if amount_val <= 0:
             return {'success': False, 'error': 'Amount must be positive'}
     except (ValueError, TypeError):
@@ -283,15 +285,18 @@ def wallet_payment(user, amount, purpose='Trip payment', reference_id=None, idem
                 user_id=user, scope=Wallet.SCOPE_RIDER,
             )
             
-            if float(wallet.balance) < amount_val:
+            from base.money import to_minor
+            amount_minor = to_minor(amount_val, wallet.currency)
+            if wallet.balance_minor < amount_minor:
                 return {'success': False, 'error': 'Insufficient wallet balance'}
             
-            wallet.balance = float(wallet.balance) - amount_val
+            wallet.balance_minor = wallet.balance_minor - amount_minor
             wallet.save()
             
             txn = WalletTransaction.objects.create(
                 user_id=user,
-                amount=amount_val,
+                currency=wallet.currency,
+                amount_minor=amount_minor,
                 txn_type='debit',
                 status='completed',
                 purpose=purpose,
@@ -305,7 +310,7 @@ def wallet_payment(user, amount, purpose='Trip payment', reference_id=None, idem
             return {
                 'success': True,
                 'transaction_id': txn.id,
-                'amount': str(amount_val),
+                'amount': str(float(amount_val)),  # legacy response text, e.g. '100.0'
                 'new_balance': str(wallet.balance),
                 'purpose': purpose,
                 'reference_id': reference_id,

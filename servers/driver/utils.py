@@ -53,13 +53,19 @@ def credit_driver_wallet(trip):
     from servers.rider.models import Wallet, WalletTransaction, get_wallet
     from django.utils import timezone
     from servers.pricing.services import commission_percent_for_trip
-    from decimal import Decimal, ROUND_HALF_UP
+    from decimal import Decimal
     from django.db import transaction, IntegrityError
+    from base.money import currency_for_trip, from_minor, to_minor
 
     if not trip.driver_id:
         return
 
-    amount = trip.final_fare or trip.estimated_fare or Decimal('0.00')
+    # The ledger is integers in the trip's currency. The one rounding is the
+    # commission, done by the money helper; the driver's net is then an exact
+    # subtraction, so gross = commission + net holds to the paisa by
+    # construction rather than by luck.
+    currency = currency_for_trip(trip)
+    gross_minor = trip.final_fare_minor or trip.estimated_fare_minor or 0
 
     # Commission comes from the RateCard in force for the trip's zone, not
     # from a global env var. PLATFORM_COMMISSION_PERCENT defaulted to "0",
@@ -67,10 +73,9 @@ def credit_driver_wallet(trip):
     # and the per-city commission on each RateCard was never applied.
     commission_rate = commission_percent_for_trip(trip)
 
-    commission = (amount * commission_rate / Decimal('100')).quantize(
-        Decimal('0.01'), rounding=ROUND_HALF_UP,
-    )
-    net_amount = amount - commission
+    commission_minor = to_minor(
+        from_minor(gross_minor, currency) * commission_rate / Decimal('100'), currency)
+    net_minor = gross_minor - commission_minor
 
     with transaction.atomic():
         # Driver settlement balance — a DIFFERENT row from the rider credit
@@ -78,21 +83,19 @@ def credit_driver_wallet(trip):
         # through the rider payment path.
         wallet = get_wallet(trip.driver_id.user_id, Wallet.SCOPE_DRIVER, lock=True)
 
-        current_balance = Decimal(str(wallet.balance))
-        
         # Handle cash vs non-cash trips
         if trip.payment_method == 'cash':
             # Driver collected full fare in cash, so they owe the platform the commission
-            txn_amount = commission
+            txn_minor = commission_minor
             txn_type = 'debit'
             purpose = 'trip_commission'
-            new_balance = current_balance - commission
+            new_balance_minor = wallet.balance_minor - commission_minor
         else:
             # Online/Wallet payment, platform owes driver the net amount
-            txn_amount = net_amount
+            txn_minor = net_minor
             txn_type = 'credit'
             purpose = 'trip_earnings'
-            new_balance = current_balance + net_amount
+            new_balance_minor = wallet.balance_minor + net_minor
 
         # Idempotency block
         wallet_txn = None
@@ -100,7 +103,8 @@ def credit_driver_wallet(trip):
             with transaction.atomic():
                 wallet_txn = WalletTransaction.objects.create(
                     user_id=trip.driver_id.user_id,
-                    amount=txn_amount,
+                    currency=currency,
+                    amount_minor=txn_minor,
                     txn_type=txn_type,
                     status='completed',
                     purpose=purpose,
@@ -123,15 +127,16 @@ def credit_driver_wallet(trip):
             })
             return
 
-        wallet.balance = new_balance
-        wallet.save(update_fields=['balance'])
+        wallet.balance_minor = new_balance_minor
+        wallet.save(update_fields=['balance_minor'])
 
         # Create transaction history
         TransactionHistory.objects.create(
             trip_id=trip,
             user_id=trip.user_id,
             driver_id=trip.driver_id,
-            amount=txn_amount,
+            currency=currency,
+            amount_minor=txn_minor,
             method=trip.payment_method or 'online',
             status='completed',
             txn_type=txn_type,
@@ -156,10 +161,11 @@ def credit_driver_wallet(trip):
             trip=trip,
             driver=trip.driver_id,
             wallet_transaction=wallet_txn,
-            gross_fare=amount,
+            currency=currency,
+            gross_fare_minor=gross_minor,
             commission_percent=commission_rate,
-            commission_amount=commission,
-            driver_net=net_amount,
+            commission_amount_minor=commission_minor,
+            driver_net_minor=net_minor,
             payment_method=trip.payment_method or 'online',
             settled_at=timezone.now(),
             source=TripSettlement.SOURCE_NATIVE,

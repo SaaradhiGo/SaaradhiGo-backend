@@ -383,9 +383,9 @@ def test_a_narrow_save_is_not_widened_when_the_stamp_does_not_change(
 
     from unittest import mock
     with mock.patch.object(type(trip).__mro__[1], 'save', spy):
-        trip.save(update_fields=['estimated_fare'])
+        trip.save(update_fields=['estimated_fare_minor'])
 
-    assert captured['update_fields'] == ['estimated_fare'], (
+    assert captured['update_fields'] == ['estimated_fare_minor'], (
         f'a narrow save was widened to {captured["update_fields"]}'
     )
 
@@ -611,7 +611,7 @@ def test_a_cross_market_total_comes_back_as_two_numbers(
     _trip(india_zone, _rider(), _driver(vehicle_type), '190.00')
     _trip(us_zone, _rider('US'), _driver(vehicle_type, 'US'), '30.83')
 
-    totals = sum_by_currency(Trip.objects.all(), 'estimated_fare')
+    totals = sum_by_currency(Trip.objects.all(), 'estimated_fare_minor')
 
     assert set(totals) == {'INR', 'USD'}
     assert totals['INR'] == Decimal('190.00')
@@ -623,7 +623,7 @@ def test_a_single_market_total_is_still_one_number(india_zone, vehicle_type):
     _trip(india_zone, _rider(), _driver(vehicle_type), '100.00')
     _trip(india_zone, _rider(), _driver(vehicle_type), '150.00')
 
-    totals = sum_by_currency(Trip.objects.all(), 'estimated_fare')
+    totals = sum_by_currency(Trip.objects.all(), 'estimated_fare_minor')
 
     assert totals == {'INR': Decimal('250.00')}
     assert single_currency_or_none(Trip.objects.all()) == 'INR'

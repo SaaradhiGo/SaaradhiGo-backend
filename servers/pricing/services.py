@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Optional, Tuple
 
 from django.conf import settings
@@ -29,6 +29,7 @@ from django.utils import timezone
 from shapely.geometry import Point, Polygon, shape as shapely_shape
 
 from base.market_time import zone_timezone
+from base.money import quantize
 from servers.pricing.models import PlatformSettings, RateCard, ServiceZone
 
 logger = logging.getLogger(__name__)
@@ -535,7 +536,24 @@ def quote_fare(
         subtotal = min_fare
         min_fare_applied = True
 
-    total_fare = round(subtotal, 2)
+    # The market, decided before anything is rounded: every amount below is
+    # rounded by the money helper, to THIS currency's minor unit.
+    from base.countries import get_country
+    _country = get_country(getattr(zone, 'country', None))
+    tax_label = _country.tax_label
+    currency = (getattr(zone, 'currency', None) or _country.currency)
+    distance_unit = (getattr(zone, 'distance_unit', None)
+                     or _country.distance_unit)
+
+    # The amount charged: the unrounded subtotal, rounded once, half-up.
+    #
+    # This was `round(subtotal, 2)`, which on a Decimal is banker's rounding
+    # (ROUND_HALF_EVEN) -- while the commission, the promo discount and the
+    # inclusive-tax extraction all rounded half-up. One rule now, in one place.
+    # It moves a fare only when the subtotal lands exactly on a half paisa with
+    # an even paisa before it (60.125 was 60.12, is 60.13); see
+    # tests/test_money_minor_units_parity.py.
+    total_fare = quantize(subtotal, currency)
 
     # --- Make the displayed decomposition add up exactly ---------------------
     #
@@ -554,10 +572,12 @@ def quote_fare(
     # their own lines, and only what remains after them is called rounding -- which
     # is then at most one paisa.
     #
-    # Every value is Decimal throughout. No float touches money.
-    _base_r = round(base_fare, 2)
-    _dist_r = round(distance_fare, 2)
-    _time_r = round(time_fare, 2)
+    # Every value is Decimal throughout. No float touches money. Each line is
+    # its own stored amount (FarePricing), so each is rounded once, by the
+    # helper.
+    _base_r = quantize(base_fare, currency)
+    _dist_r = quantize(distance_fare, currency)
+    _time_r = quantize(time_fare, currency)
     _pre_surge = base_fare + distance_fare + time_fare
 
     adjustments = []
@@ -565,7 +585,7 @@ def quote_fare(
         adjustments.append({
             'code': 'surge',
             'label': 'Busy-time surcharge',
-            'amount': round(_pre_surge * surge_multiplier - _pre_surge, 2),
+            'amount': quantize(_pre_surge * surge_multiplier - _pre_surge, currency),
         })
     if min_fare_applied:
         # The uplift from whatever the metered lines came to, up to the minimum.
@@ -573,12 +593,13 @@ def quote_fare(
         adjustments.append({
             'code': 'minimum_fare',
             'label': 'Minimum fare adjustment',
-            'amount': round(min_fare - _after_surge, 2),
+            'amount': quantize(min_fare - _after_surge, currency),
         })
 
     _explained = _base_r + _dist_r + _time_r + sum(
         (a['amount'] for a in adjustments), Decimal('0.00'))
-    _residual = round(total_fare - _explained, 2)
+    # Already exact: both sides are sums of rounded amounts.
+    _residual = total_fare - _explained
     if _residual != Decimal('0.00'):
         adjustments.append({
             'code': 'rounding',
@@ -604,22 +625,16 @@ def quote_fare(
     tax_percent = (card.gst_percent if card is not None
                    else _DEFAULTS.get('gst_percent', Decimal('5.00')))
     tax_percent = Decimal(str(tax_percent or '0'))
-    per_trip_fee = Decimal(str(getattr(zone, 'per_trip_fee', None) or '0'))
+    per_trip_fee = quantize(
+        Decimal(str(getattr(zone, 'per_trip_fee', None) or '0')), currency)
     fee_label = getattr(zone, 'per_trip_fee_label', '') or 'Regulatory fee'
-
-    from base.countries import get_country
-    _country = get_country(getattr(zone, 'country', None))
-    tax_label = _country.tax_label
-    currency = (getattr(zone, 'currency', None) or _country.currency)
-    distance_unit = (getattr(zone, 'distance_unit', None)
-                     or _country.distance_unit)
 
     tax_amount = Decimal('0.00')
     if tax_mode == 'additive':
         # Tax applies to the fare, not to the flat regulatory fee: a
         # government charge is not itself a taxable service. Jurisdictions
         # differ on this and it is the conservative reading.
-        tax_amount = round(total_fare * tax_percent / Decimal('100'), 2)
+        tax_amount = quantize(total_fare * tax_percent / Decimal('100'), currency)
         if tax_amount != Decimal('0.00'):
             adjustments.append({
                 'code': 'tax',
@@ -630,9 +645,10 @@ def quote_fare(
             adjustments.append({
                 'code': 'per_trip_fee',
                 'label': fee_label,
-                'amount': round(per_trip_fee, 2),
+                'amount': per_trip_fee,
             })
-        total_fare = round(total_fare + tax_amount + per_trip_fee, 2)
+        # A sum of rounded amounts: exact, nothing to round.
+        total_fare = total_fare + tax_amount + per_trip_fee
     else:
         # Inclusive: the tax is already inside `total_fare`, so reporting it
         # does not move the total -- but reporting 0.00 would be a lie. A rider
@@ -640,9 +656,9 @@ def quote_fare(
         # carries no tax. Extracted exactly the way the receipt extracts it, so
         # the quote and the document the rider keeps state the same number.
         if tax_percent:
-            tax_amount = (total_fare * tax_percent /
-                          (Decimal('100.00') + tax_percent)).quantize(
-                              Decimal('0.01'), rounding=ROUND_HALF_UP)
+            tax_amount = quantize(
+                total_fare * tax_percent / (Decimal('100.00') + tax_percent),
+                currency)
 
     return {
         'total_fare': total_fare,
@@ -656,7 +672,7 @@ def quote_fare(
         'tax_percent': round(tax_percent, 3),
         'tax_label': tax_label,
         'tax_amount': tax_amount,
-        'per_trip_fee': round(per_trip_fee, 2),
+        'per_trip_fee': per_trip_fee,
         'distance_unit': distance_unit,
         'base_fare': _base_r,
         'distance_fare': _dist_r,

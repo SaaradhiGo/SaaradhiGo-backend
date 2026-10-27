@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from base.serializer_fields import MoneyField
 from .models import FavoritePlace, Rider, Notification, WalletTransaction
 
 
@@ -20,6 +21,8 @@ class NotificationSerializer(serializers.ModelSerializer):
         model = Notification
         fields = ['id', 'title', 'message', 'is_read', 'created_at']
 class WalletTransactionSerializer(serializers.ModelSerializer):
+    amount = MoneyField(max_digits=12)
+
     class Meta:
         model = WalletTransaction
         fields = ['id', 'user_id', 'amount', 'txn_type', 'status', 'gateway_order_id', 'gateway_payment_id', 'gateway_signature', 'payment_gateway', 'created_at']

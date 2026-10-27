@@ -95,7 +95,7 @@ def test_summing_final_fare_alone_reproduces_the_bug():
     _trip(rider, driver)
 
     broken = sum_by_currency(
-        Trip.objects.filter(status_id__status_code='completed'), 'final_fare',
+        Trip.objects.filter(status_id__status_code='completed'), 'final_fare_minor',
     )
     assert broken.get('INR', Decimal('0.00')) == Decimal('0.00')
 

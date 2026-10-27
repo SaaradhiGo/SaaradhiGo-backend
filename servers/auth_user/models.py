@@ -67,6 +67,31 @@ class customUser(AbstractUser):
         ],
         help_text='Operator authority. Ignored unless the account is an operator.',
     )
+
+    # A SHARED EMERGENCY ACCOUNT, NOT A PERSON.
+    #
+    # Super Admins must be named individuals, so an account that several
+    # people can reach cannot be one. This flag marks the one account that
+    # is kept for the case where no named Super Admin can sign in -- its
+    # credentials live offline, and it is expected to be unused.
+    #
+    # Because nobody owns it, its use is made loud rather than prevented:
+    # signing in requires a typed reason, every Super Admin is notified,
+    # and the reason is written to the audit log. See
+    # `servers.admin_access.breakglass`.
+    #
+    # It grants NO authority by itself. Authority still comes from an
+    # assignment, which is why the flag can be set on an account before
+    # anybody decides what it may do.
+    is_break_glass = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            'Shared emergency account. Sign-in demands a reason, alerts '
+            'every Super Admin and is audited. Never a named individual.'
+        ),
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_updated = models.BooleanField(default=False)

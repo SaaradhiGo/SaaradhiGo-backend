@@ -238,6 +238,29 @@ def _migrate(target):
     executor.migrate([('auth_user', target)])
 
 
+def _latest_auth_user_migration():
+    """The newest auth_user migration, resolved rather than hardcoded.
+
+    These tests rewind the schema and must put it back. They used to put it
+    back to a literal '0006_email_identity', which was the newest migration
+    when they were written. The moment a later one existed -- 0007 added
+    `is_break_glass` -- every test here left the database one migration
+    short of the live model, and the next query through the ORM failed with
+    `column "is_break_glass" does not exist`. The tests still "passed"
+    their own assertions; what broke was everything after them.
+
+    Resolving the target means the next field added to CustomUser does not
+    reintroduce this.
+    """
+    from django.db.migrations.loader import MigrationLoader
+
+    loader = MigrationLoader(connection)
+    names = sorted(
+        name for app, name in loader.graph.nodes if app == 'auth_user'
+    )
+    return names[-1]
+
+
 def _email_column_width():
     with connection.cursor() as cursor:
         cursor.execute(
@@ -271,7 +294,8 @@ class TestOnPostgres:
     """Forwards, backwards, and forwards again, against a real varchar.
 
     Run with: pytest -m postgres (DB_HOST etc. pointing at a throwaway
-    PostgreSQL). Each test leaves the database back at 0006.
+    PostgreSQL). Each test leaves the database back at the NEWEST auth_user
+    migration -- resolved, not hardcoded; see `_latest_auth_user_migration`.
     """
 
     def test_the_column_narrows_forward_and_widens_back(self):
@@ -287,7 +311,7 @@ class TestOnPostgres:
             )
             assert not _unique_index_exists()
         finally:
-            _migrate('0006_email_identity')
+            _migrate(_latest_auth_user_migration())
 
         assert _email_column_width() == EMAIL_MAX_LENGTH
         assert _unique_index_exists()
@@ -298,7 +322,7 @@ class TestOnPostgres:
         try:
             _migrate('0005_operator_authority')
         finally:
-            _migrate('0006_email_identity')
+            _migrate(_latest_auth_user_migration())
 
     def test_an_address_that_is_legal_at_0005_is_caught_going_forward(self):
         # The real-world case: 255 and 256 characters fit the current column
@@ -312,20 +336,20 @@ class TestOnPostgres:
             _set_email_raw(user.pk, _address(256))
 
             with pytest.raises(RuntimeError) as excinfo:
-                _migrate('0006_email_identity')
+                _migrate(_latest_auth_user_migration())
 
             assert 'longer than 254 characters' in str(excinfo.value)
             assert _email_column_width() == 256, 'the failure rolled back'
 
             # Fix the data the way the error message says to, then proceed.
             _set_email_raw(user.pk, 'short@example.com')
-            _migrate('0006_email_identity')
+            _migrate(_latest_auth_user_migration())
 
             assert _email_column_width() == EMAIL_MAX_LENGTH
             user.refresh_from_db()
             assert user.email == 'short@example.com'
         finally:
-            _migrate('0006_email_identity')
+            _migrate(_latest_auth_user_migration())
 
     def test_the_unique_index_is_case_insensitive_and_partial(self):
         # What the migration exists to create, asserted against the database

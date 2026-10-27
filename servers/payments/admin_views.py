@@ -3,12 +3,14 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from base.utils import success_response, error_response
 from base.permissions import IsAdmin
+from servers.admin_access.bridge import ScopedPermission
+from servers.admin_access.scoping import scoped
 from servers.payments.models import Payment, TransactionHistory
 from servers.payments.serializers import PaymentSerializer, TransactionHistorySerializer
 from rest_framework.pagination import PageNumberPagination
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.read')])
 def admin_list_payments(request):
     """
     Admin view to list all payments.
@@ -17,7 +19,7 @@ def admin_list_payments(request):
     - method
     """
     try:
-        payments = Payment.objects.all().order_by('-created_at')
+        payments = scoped(request.user, Payment.objects.all()).order_by('-created_at')
 
         status_filter = request.query_params.get('status')
         if status_filter:
@@ -40,7 +42,7 @@ def admin_list_payments(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.read')])
 def admin_list_transactions(request):
     """
     Admin view to list all transaction history logs.
@@ -48,7 +50,9 @@ def admin_list_transactions(request):
     - status
     """
     try:
-        transactions = TransactionHistory.objects.all().order_by('-created_at')
+        transactions = scoped(
+            request.user, TransactionHistory.objects.all()
+        ).order_by('-created_at')
         
         status_filter = request.query_params.get('status')
         if status_filter:

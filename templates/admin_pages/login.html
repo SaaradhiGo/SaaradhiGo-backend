@@ -93,7 +93,7 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                         <input id="id_username" name="username"
                             class="w-full h-full bg-surface-container-highest border-b border-outline-variant/30 focus:border-primary pl-10 pr-4 text-on-surface transition-all placeholder:text-outline/50 outline-none"
                             placeholder="you@saaradhigo.com or 9876543210" type="text" required autocomplete="username"
-                            autofocus />
+                            value="{{ phone_number|default:'' }}" autofocus />
                         <div
                             class="absolute bottom-0 left-0 h-[1px] w-0 bg-primary transition-all duration-300 group-focus-within:w-full">
                         </div>
@@ -114,6 +114,22 @@ background: linear-gradient(135deg, #f2ca50 0%, #d4af37 100%);
                         </div>
                     </div>
                 </div>
+
+                {% if break_glass %}
+                {# Emergency account. The credential was already correct; this
+                   asks why, and the answer is notified to every Super Admin
+                   and written to the audit log. #}
+                <div class="space-y-2">
+                    <label for="id_reason"
+                        class="text-xs font-label uppercase tracking-widest text-error ml-1">Reason for emergency access</label>
+                    <textarea id="id_reason" name="reason" rows="3" required
+                        class="w-full bg-surface-container-highest border border-error/40 focus:border-error rounded-lg px-4 py-3 text-on-surface transition-all placeholder:text-outline/50 outline-none"
+                        placeholder="Why is the emergency account being used?"></textarea>
+                    <p class="text-xs text-on-surface-variant ml-1">
+                        Every Super Admin is notified, and this is recorded in the audit log.
+                    </p>
+                </div>
+                {% endif %}
 
                 <button type="submit"
                     class="w-full h-14 metallic-gradient text-on-primary font-bold rounded-lg shadow-lg hover:brightness-110 active:scale-[0.98] transition-all flex items-center justify-center gap-2 group">

@@ -206,6 +206,35 @@ class ServiceZone(models.Model):
                   "'Congestion surcharge'. Required if per_trip_fee > 0.",
     )
 
+    # ------------------------------------------------------------------
+    # THE ADMIN SCOPE SPINE
+    # ------------------------------------------------------------------
+    # A zone says what a MARKET is: geometry, currency, tax, units, rate
+    # cards. It does not say who may operate it, and it cannot: an admin
+    # scope has to exist for a country that has launched nothing yet, while
+    # `polygon_geojson` is required here. The four-level `parent` chain above
+    # was never populated either -- every seeded zone is a flat city with
+    # `parent=None` -- so there has never been a country or state row to
+    # assign anybody to.
+    #
+    # `admin_access.GeoNode` is that tree. This FK is the ONE join between
+    # them, so there is one answer to "which country is this trip in" rather
+    # than a zone's `country` column and a scope tree that can disagree.
+    # Both use the same code convention ('IN-TG-HYD'), and the backfill in
+    # pricing/0010 matches on it.
+    #
+    # Nullable because a zone may be drawn before its node exists. A zone
+    # with no node is invisible to every scoped admin, which is the safe
+    # direction and is reported by `check_geo_links`.
+    geo_node = models.ForeignKey(
+        'admin_access.GeoNode',
+        null=True, blank=True,
+        on_delete=models.PROTECT,
+        related_name='service_zones',
+        help_text='Admin scope this zone belongs to. Normally the node whose '
+                  'code equals this zone code.',
+    )
+
     is_active = models.BooleanField(default=True, db_index=True)
 
     # Free-form attrs (launch_date, operator notes, license refs).

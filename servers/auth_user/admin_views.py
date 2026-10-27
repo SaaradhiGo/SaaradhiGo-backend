@@ -5,6 +5,8 @@ from rest_framework.permissions import IsAuthenticated
 from base.utils import success_response, error_response
 from base.countries import normalize_phone
 from base.permissions import IsAdmin, is_operator
+from servers.admin_access import breakglass
+from servers.admin_access.bridge import ScopedPermission
 from servers.admin_dashboard import login_guard
 from base import ops_mfa
 from servers.admin_audit.services import record_admin_action
@@ -19,13 +21,25 @@ logger = logging.getLogger(__name__)
 user_model = get_user_model()
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('pii.view')])
 def admin_list_users(request):
     """
     Admin view to list all users with pagination and filtering.
     Filters:
     - role: rider | driver | admin
     - is_active: true | false
+
+    GLOBAL BY DESIGN, SO GATED ON pii.view INSTEAD OF SCOPE
+    ------------------------------------------------------
+    A rider belongs to no city — they travel — so there is nothing to scope
+    this list by; see `admin_access.scoping.RIDERS_ARE_GLOBAL`. What it
+    returns is names, phone numbers and email addresses for every account
+    in both countries, so the gate is `pii.view`, which the Analyst role
+    deliberately does not hold.
+
+    Interim. Phase 1(e) masks these fields by default and logs each reveal,
+    at which point this drops to `rider.read` and the masking carries the
+    PII decision per field rather than per endpoint.
     """
     try:
         users = user_model.objects.all().order_by('-date_joined')
@@ -218,11 +232,34 @@ def admin_login(request):
                 login_guard.record_failure(request, identifier)
                 return _refuse()
 
+        # BREAK-GLASS: a reason, before the token.
+        #
+        # Checked here rather than earlier so it cannot be used to probe
+        # which accounts are the emergency one -- it is only reachable
+        # after a correct password, an operator check and MFA.
+        if breakglass.is_break_glass(user):
+            try:
+                reason = breakglass.validate_reason(request.data.get('reason'))
+            except breakglass.ReasonRequired as exc:
+                # Non-terminal and distinct, like AUTH_MFA_REQUIRED: the
+                # caller has proved everything else and needs to say why.
+                return error_response(
+                    code='AUTH_BREAK_GLASS_REASON_REQUIRED',
+                    message=str(exc),
+                    field='reason',
+                    issue='A reason is required to use the emergency account',
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+            breakglass.announce_use(user, reason, request=request, channel='api')
+
         login_guard.clear(request, identifier)
         record_admin_action(
             request, action='ops_api_login', target_type='operator',
             target_id=user.pk,
-            after={'mfa': bool(ops_mfa.mfa_required_for(user))},
+            after={
+                'mfa': bool(ops_mfa.mfa_required_for(user)),
+                'break_glass': breakglass.is_break_glass(user),
+            },
         )
         access_token = AccessToken.for_user(user)
         refresh_token = RefreshToken.for_user(user)

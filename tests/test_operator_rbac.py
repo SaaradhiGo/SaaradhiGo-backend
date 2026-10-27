@@ -30,6 +30,7 @@ and it is asserted by calling the endpoint directly -- an ops console that hides
 button has arranged its layout, not its authority.
 """
 
+from conftest import grant_legacy_equivalent
 import pytest
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
@@ -55,11 +56,17 @@ _n = iter(range(1, 999))
 
 def _operator(ops_role):
     i = next(_n)
-    return User.objects.create_user(
+    user = User.objects.create_user(
         phone_number=f'+9197300{i:05d}', username=f'+9197300{i:05d}',
         role='admin', is_staff=True, ops_role=ops_role,
         password='operator-not-a-real-secret',
     )
+    # Also give them the equivalent assignment, so these tests assert the
+    # same thing under both access models. Without it they would all pass
+    # today and all fail the day production goes strict -- which is the
+    # one day you need them to be telling the truth.
+    grant_legacy_equivalent(user, ops_role)
+    return user
 
 
 def _client(user):

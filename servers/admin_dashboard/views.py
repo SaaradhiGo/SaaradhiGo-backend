@@ -23,6 +23,7 @@ from servers.ride.models import (
 )
 from servers.pricing.services import commission_percent_for_trip
 from servers.pricing.models import ServiceZone, RateCard
+from servers.admin_access import breakglass
 from decimal import Decimal, InvalidOperation
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST,require_http_methods
@@ -160,8 +161,36 @@ def login(request: HttpRequest) -> HttpResponse:
                         'ops_login_refused_no_mfa_device user_id=%s', user.id)
                     error = login_guard.GENERIC_REFUSAL
                 else:
+                    # BREAK-GLASS: a reason, before the session.
+                    #
+                    # Enforced on BOTH doors. Requiring it only on the API
+                    # would leave this form as the quiet way in, which
+                    # defeats the entire mechanism.
+                    bg_reason = None
+                    if breakglass.is_break_glass(user):
+                        try:
+                            bg_reason = breakglass.validate_reason(
+                                request.POST.get('reason')
+                            )
+                        except breakglass.ReasonRequired as exc:
+                            # Not a guard failure: the credential was
+                            # correct. The form re-renders asking why, and
+                            # `break_glass` tells the template to show the
+                            # field.
+                            return render(
+                                request, 'admin_pages/login.html',
+                                {'error': str(exc), 'break_glass': True,
+                                 'phone_number': phone_number},
+                            )
+
                     login_guard.clear(request, phone_number)
                     auth_login(request, user)
+                    if bg_reason is not None:
+                        # After auth_login, so the audit row is attributed
+                        # to the account that signed in.
+                        breakglass.announce_use(
+                            user, bg_reason, request=request, channel='console',
+                        )
                     if ops_mfa.mfa_required_for(user):
                         # The password was correct; the session is NOT yet
                         # verified. auth_login started it, OTPMiddleware will

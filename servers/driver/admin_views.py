@@ -9,6 +9,11 @@ from base.utils import success_response, error_response
 from base.permissions import (
     CAP_DRIVER_KYC, CAP_FINANCE_PAYOUT, IsAdmin, RequiresCapability,
 )
+from servers.admin_access.bridge import ScopedPermission, in_scope
+from servers.admin_access.masking import mask_for
+from servers.admin_access.scoping import (
+    ScopeNotHeld, scoped, scoped_or_none, scoped_to_request,
+)
 from servers.driver.models import Driver,Vehicle
 from servers.driver.serializers import DriverAdminListSerializer, DriverAdminDetailSerializer, KYCApprovalSerializer, VehicleSerializer
 from rest_framework.pagination import PageNumberPagination
@@ -16,12 +21,25 @@ from rest_framework.pagination import PageNumberPagination
 logger = logging.getLogger(__name__)
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def list_drivers_admin(request):
     """
-    List all drivers. Can be filtered by 'approved' and 'status'.
+    List drivers IN THE CALLER'S SCOPE. Can be filtered by 'approved' and 'status'.
+
+    `scoped()` is what restricts this to the caller's cities; without it the
+    permission check above would pass and the endpoint would still return
+    every driver in both countries.
     """
-    drivers = Driver.objects.all().select_related('user_id').order_by('-id')
+    try:
+        drivers = scoped_to_request(
+            request, Driver.objects.select_related('user_id', 'home_city')
+        ).order_by('-id')
+    except ScopeNotHeld as exc:
+        return error_response(
+            code='SCOPE_NOT_HELD', message=str(exc), field='scope',
+            issue='Requested scope is outside your assignments',
+            status=status.HTTP_403_FORBIDDEN,
+        )
     
     # Filter configuration
     approved = request.query_params.get('approved')
@@ -41,20 +59,35 @@ def list_drivers_admin(request):
     page = paginator.paginate_queryset(drivers, request)
     
     serializer = DriverAdminListSerializer(page, many=True)
-    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
+    # Masked on the way OUT, not in the console: an operator without
+    # `pii.view` is never SENT the number, so there is nothing in the
+    # payload, the network tab or a captured response body to reveal.
+    body = mask_for(
+        request.user,
+        paginator.get_paginated_response(serializer.data).data,
+    )
+    return success_response(body, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def retrieve_driver_admin(request, driver_id):
     """
-    Retrieve details of a single driver by its ID (along with user profile and vehicles).
+    Retrieve one driver by ID, IF they are in the caller's scope.
+
+    Fetched through `scoped_or_404` rather than by bare id: this used to be
+    `Driver.objects.get(id=driver_id)`, so any operator could read any
+    driver in any country by incrementing the id.
     """
-    try:
-        driver = Driver.objects.prefetch_related('user_id', 'vehicle_set').get(id=driver_id)
-        serializer = DriverAdminDetailSerializer(driver)
-        return success_response(serializer.data, status.HTTP_200_OK)
-    except Driver.DoesNotExist:
+    driver = scoped_or_none(
+        request.user,
+        Driver.objects.prefetch_related('user_id', 'vehicle_set'),
+        id=driver_id,
+    )
+    if driver is None:
+        # Same answer whether the driver does not exist or is another
+        # city's: a distinguishable 403 would let an out-of-scope operator
+        # enumerate ids. See `scoped_or_none`.
         return error_response(
             code="NOT_FOUND",
             message="Driver not found",
@@ -62,6 +95,11 @@ def retrieve_driver_admin(request, driver_id):
             issue=f"No driver matches id {driver_id}",
             status=status.HTTP_404_NOT_FOUND
         )
+    serializer = DriverAdminDetailSerializer(driver)
+    return success_response(
+        mask_for(request.user, serializer.data, driver.home_city),
+        status.HTTP_200_OK,
+    )
 
 
 def _compliance_payload(driver):
@@ -126,7 +164,7 @@ def _document_url(field):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def driver_full_detail_admin(request, driver_id):
     """Driver aggregate for the ops console driver-detail page.
 
@@ -157,11 +195,17 @@ def driver_full_detail_admin(request, driver_id):
     from django.db.models import Sum
     from django.utils import timezone
 
-    try:
-        driver = Driver.objects.select_related(
+    # Scoped: this endpoint returns the driver's licence images, every
+    # vehicle credential and their earnings. Out of scope answers NOT_FOUND,
+    # the same as a driver who does not exist.
+    driver = scoped_or_none(
+        request.user,
+        Driver.objects.select_related(
             'user_id', 'active_vehicle', 'active_vehicle__vehicle_type_id',
-        ).get(id=driver_id)
-    except Driver.DoesNotExist:
+        ),
+        id=driver_id,
+    )
+    if driver is None:
         return error_response(
             code='NOT_FOUND', message='Driver not found.',
             field='driver_id', issue=f'No driver {driver_id}',
@@ -376,10 +420,15 @@ def driver_full_detail_admin(request, driver_id):
         'doc_status': driver.doc_status,
         'doc_rejection_reason': driver.doc_rejection_reason or '',
     }
-    return success_response(payload, status.HTTP_200_OK)
+    # This payload carries the person at several depths -- the driver, the
+    # user, emergency contacts -- which is why `mask_people` recurses
+    # rather than masking only the top level.
+    return success_response(
+        mask_for(request.user, payload, driver.home_city), status.HTTP_200_OK,
+    )
 
 @api_view(['PATCH'])
-@permission_classes([IsAuthenticated, RequiresCapability(CAP_DRIVER_KYC)])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.kyc')])
 def update_kyc_status_admin(request, driver_id):
     """
     Approve or reject KYC for a driver (updates 'approved' and/or 'status').
@@ -387,7 +436,9 @@ def update_kyc_status_admin(request, driver_id):
     from servers.admin_audit.services import record_admin_action
 
     try:
-        driver = Driver.objects.get(id=driver_id)
+        driver = scoped_or_none(request.user, Driver.objects.all(), id=driver_id)
+        if driver is None:
+            raise Driver.DoesNotExist
         before = {
             'approved': driver.approved,
             'status': driver.status,
@@ -450,7 +501,7 @@ def update_kyc_status_admin(request, driver_id):
         )
 
 @api_view(['DELETE'])
-@permission_classes([IsAuthenticated, RequiresCapability(CAP_DRIVER_KYC)])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.deactivate')])
 def delete_driver_admin(request, driver_id):
     """
     Delete a driver profile and their associated objects.
@@ -458,7 +509,9 @@ def delete_driver_admin(request, driver_id):
     from servers.admin_audit.services import record_admin_action
 
     try:
-        driver = Driver.objects.get(id=driver_id)
+        driver = scoped_or_none(request.user, Driver.objects.all(), id=driver_id)
+        if driver is None:
+            raise Driver.DoesNotExist
         snapshot = {
             'approved': driver.approved,
             'status': driver.status,
@@ -485,12 +538,16 @@ def delete_driver_admin(request, driver_id):
             status=status.HTTP_404_NOT_FOUND
         )
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def get_vehicle_details(request, driver_id):
     """
     Get details of a vehicle by its ID.
     """
     try:
+        # Scoped through the driver: a vehicle's documents are the
+        # driver's documents.
+        if scoped_or_none(request.user, Driver.objects.all(), id=driver_id) is None:
+            raise Vehicle.DoesNotExist
         vehicle_objects = Vehicle.objects.filter(driver_id=driver_id)
         serializer = VehicleSerializer(vehicle_objects, many=True)
         return success_response(serializer.data, status.HTTP_200_OK)
@@ -507,7 +564,7 @@ def get_vehicle_details(request, driver_id):
 # ── Admin Withdrawal Management ──────────────────────────
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.read')])
 def list_withdrawals_admin(request):
     """
     GET /api/admin/withdrawals/
@@ -520,7 +577,19 @@ def list_withdrawals_admin(request):
     from django.utils import timezone
     from datetime import timedelta
 
-    withdrawals = WithdrawalRequest.objects.all().select_related('driver', 'driver__user_id').order_by('-requested_at')
+    try:
+        withdrawals = scoped_to_request(
+            request,
+            WithdrawalRequest.objects.select_related(
+                'driver', 'driver__user_id', 'driver__home_city',
+            ),
+        ).order_by('-requested_at')
+    except ScopeNotHeld as exc:
+        return error_response(
+            code='SCOPE_NOT_HELD', message=str(exc), field='scope',
+            issue='Requested scope is outside your assignments',
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     # Filter by status
     status_filter = request.query_params.get('status')
@@ -554,11 +623,17 @@ def list_withdrawals_admin(request):
     paginator.max_page_size = 50
     page = paginator.paginate_queryset(withdrawals, request)
     serializer = WithdrawalRequestSerializer(page, many=True)
-    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
+    # A payout queue names the person being paid. Finance holds `pii.view`;
+    # a role that does not must still be able to see the QUEUE.
+    body = mask_for(
+        request.user,
+        paginator.get_paginated_response(serializer.data).data,
+    )
+    return success_response(body, status.HTTP_200_OK)
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, RequiresCapability(CAP_FINANCE_PAYOUT)])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.payout')])
 def approve_withdrawal_admin(request, withdrawal_id):
     """
     POST /api/admin/withdrawals/{id}/approve/
@@ -582,6 +657,11 @@ def approve_withdrawal_admin(request, withdrawal_id):
                     .select_related('driver', 'driver__user_id')
                     .get(id=withdrawal_id)
                 )
+                # Scope checked AFTER the lock, not in the query: see
+                # `in_scope`. Answers NOT_FOUND, identical to a missing
+                # row, so another city's withdrawal ids cannot be probed.
+                if not in_scope(request.user, withdrawal, 'finance.payout'):
+                    raise WithdrawalRequest.DoesNotExist
             except WithdrawalRequest.DoesNotExist:
                 return error_response(
                     code="NOT_FOUND",
@@ -643,7 +723,7 @@ def approve_withdrawal_admin(request, withdrawal_id):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, RequiresCapability(CAP_FINANCE_PAYOUT)])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.payout')])
 def reject_withdrawal_admin(request, withdrawal_id):
     """
     POST /api/admin/withdrawals/{id}/reject/
@@ -671,6 +751,11 @@ def reject_withdrawal_admin(request, withdrawal_id):
                     .select_related('driver')
                     .get(id=withdrawal_id)
                 )
+                # Scope checked AFTER the lock, not in the query: see
+                # `in_scope`. Answers NOT_FOUND, identical to a missing
+                # row, so another city's withdrawal ids cannot be probed.
+                if not in_scope(request.user, withdrawal, 'finance.payout'):
+                    raise WithdrawalRequest.DoesNotExist
             except WithdrawalRequest.DoesNotExist:
                 return error_response(
                     code="NOT_FOUND",
@@ -848,7 +933,7 @@ def reject_withdrawal_admin(request, withdrawal_id):
     )
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, RequiresCapability(CAP_FINANCE_PAYOUT)])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.payout')])
 def bulk_action_withdrawal_admin(request):
     """
     POST /api/admin/withdrawals/bulk-action/
@@ -916,6 +1001,9 @@ def bulk_action_withdrawal_admin(request):
                         .select_related('driver')
                         .get(id=wid)
                     )
+                    if not in_scope(request.user, w, 'finance.payout'):
+                        # Indistinguishable from "no such withdrawal".
+                        raise WithdrawalRequest.DoesNotExist
                 except WithdrawalRequest.DoesNotExist:
                     skipped_ids.append(wid)
                     continue

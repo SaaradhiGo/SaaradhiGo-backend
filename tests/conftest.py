@@ -107,3 +107,135 @@ def auth_client_admin(db):
     client = APIClient()
     client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
     return client, user
+
+
+# ===========================================================================
+# Operators that work under BOTH access models
+# ===========================================================================
+#
+# The suite was written when an operator was `role='admin'` plus `is_staff`
+# and nothing else. Under `ADMIN_ACCESS_STRICT` an account with no
+# assignment can do nothing, so every one of those fixtures would fail --
+# not because strict mode is wrong, but because the fixtures encode the
+# model it replaces.
+#
+# `grant_legacy_equivalent` gives such an account the assignment that
+# matches its old `ops_role`, at Global. Tests that call it pass under
+# both models, which is the point: the suite has to go on being true after
+# production is switched over.
+#
+# It is a TEST helper deliberately. Real accounts are migrated by
+# `migrate_operators` from a named plan, because who holds what is a
+# decision with a person's name against it.
+
+def grant_legacy_equivalent(user, ops_role=None):
+    """Assign `user` the new role equivalent to their legacy `ops_role`.
+
+    Idempotent, and a no-op for a non-operator. Seeds the geo tree and the
+    role templates if they are not there yet, so a test does not have to
+    know that it needs them.
+    """
+    from django.core.management import call_command
+
+    from servers.admin_access.bridge import LEGACY_ROLE_EQUIVALENT
+    from servers.admin_access.models import GLOBAL, AdminAssignment, AdminRole, GeoNode
+
+    if not GeoNode.objects.exists() or not AdminRole.objects.exists():
+        call_command('seed_admin_access')
+
+    code = LEGACY_ROLE_EQUIVALENT.get(
+        ops_role or getattr(user, 'ops_role', None) or 'admin'
+    )
+    if code is None:
+        return None
+
+    role = AdminRole.objects.get(code=code)
+    scope = GeoNode.objects.get(kind=GLOBAL)
+    assignment, _ = AdminAssignment.objects.get_or_create(
+        admin=user, role=role, scope=scope,
+        defaults={'reason': 'Test fixture: legacy ops_role equivalent.'},
+    )
+    return assignment
+
+
+@pytest.fixture
+def legacy_equivalent():
+    """The helper above, as a fixture, for tests that build their own user."""
+    return grant_legacy_equivalent
+
+
+# ===========================================================================
+# The audit log's TRUNCATE guard vs. pytest-django's flush
+# ===========================================================================
+#
+# `admin_audit_adminauditlog` carries a statement-level BEFORE TRUNCATE
+# trigger so the whole log cannot be erased in one statement by the
+# credentials the application already holds. That guard is correct and it
+# must stay on in production.
+#
+# pytest-django tears a `transaction=True` test down by TRUNCATEing every
+# table in one statement. The guard refuses it, so the TEST BODY PASSES AND
+# THE TEARDOWN ERRORS -- which is how this arrived: `ac1081f` added the
+# trigger, and from then on every transactional PostgreSQL test reported
+# "passed" plus an error, including CI's required postgres job.
+#
+# So the trigger is stood down IN THE TEST DATABASE ONLY, once, after
+# migrations. `TestTruncateIsAlsoRefused` re-enables it around itself, which
+# is the test that actually exercises it.
+#
+# WHY THIS IS NOT A WEAKENING
+# ---------------------------
+# It changes nothing about any other database. It is also an honest
+# demonstration of the guard's known limit, already recorded as a
+# production blocker in docs/admin/AUDIT.md §14: the application connects as
+# the database OWNER, and an owner can disable a trigger in one statement.
+# That is exactly why the hash chain exists -- tamper EVIDENCE rather than
+# tamper prevention -- and why a separate non-owner application role is on
+# the go-live blocker list.
+
+AUDIT_TRUNCATE_TRIGGER = 'saaradhigo_audit_no_truncate'
+AUDIT_TABLE = 'admin_audit_adminauditlog'
+
+
+@pytest.fixture(scope='session', autouse=True)
+def _allow_test_teardown_to_truncate_the_audit_log(django_db_setup, django_db_blocker):
+    """Stand the TRUNCATE guard down, in the test database only.
+
+    Refuses to touch a database whose name does not look like one pytest
+    created. A fixture that silently disabled an audit guard on a real
+    database would be a far worse bug than the one it fixes.
+    """
+    from django.db import connection
+
+    if connection.vendor != 'postgresql':
+        # SQLite has no such trigger; the guard is enforced in Python there.
+        yield
+        return
+
+    with django_db_blocker.unblock():
+        name = connection.settings_dict.get('NAME') or ''
+        if not str(name).startswith('test_'):
+            raise RuntimeError(
+                f'Refusing to disable the audit TRUNCATE guard on database '
+                f'{name!r}: it does not look like a pytest-created test '
+                f'database. This fixture must never run against a real one.'
+            )
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f'ALTER TABLE {AUDIT_TABLE} '
+                f'DISABLE TRIGGER {AUDIT_TRUNCATE_TRIGGER}'
+            )
+
+    yield
+
+    # Put it back, so anything that inspects the database afterwards -- or
+    # a `--reuse-db` run -- finds the schema as the migrations left it.
+    with django_db_blocker.unblock():
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f'ALTER TABLE {AUDIT_TABLE} '
+                    f'ENABLE TRIGGER {AUDIT_TRUNCATE_TRIGGER}'
+                )
+        except Exception:  # noqa: BLE001 - the database may already be gone
+            pass

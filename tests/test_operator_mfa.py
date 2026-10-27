@@ -24,6 +24,7 @@ what a wrong code does, and whether anything can be skipped. Re-testing RFC 6238
 would be testing the library.
 """
 
+from conftest import grant_legacy_equivalent
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -66,10 +67,12 @@ def enforced(settings):
 
 @pytest.fixture
 def operator():
-    return User.objects.create_user(
+    user = User.objects.create_user(
         phone_number=OP_PHONE, username=OP_PHONE, role='admin', is_staff=True,
         ops_role='admin', password=OP_PASSWORD,
     )
+    grant_legacy_equivalent(user)
+    return user
 
 
 @pytest.fixture

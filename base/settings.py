@@ -56,6 +56,10 @@ INSTALLED_APPS = [
     'servers.ride',
     'servers.payments',
     'servers.admin_audit',
+    # Geo hierarchy, editable roles and scoped assignments. Admin authority
+    # is never global by default: SaaradhiGo operates in more than one
+    # country and US rules are state-level.
+    'servers.admin_access',
     'servers.sos',
     'servers.pricing',
     'servers.support',
@@ -614,6 +618,24 @@ logger.info(f"Loaded {len(TEST_PHONE_NUMBERS)} test phone numbers for OTP bypass
 # by setting a flag is not a guard.
 ENVIRONMENT = os.environ.get('ENVIRONMENT', 'production' if not DEBUG else 'development')
 IS_PRODUCTION = ENVIRONMENT.strip().lower() == 'production'
+
+# ---------------------------------------------------------------------------
+# Admin access: closing the legacy path
+# ---------------------------------------------------------------------------
+# False while `ops_role` holders are still being migrated to AdminAssignment
+# rows. In that state an unmigrated operator keeps today's unscoped access and
+# every such grant is logged by `servers.admin_access.bridge`.
+#
+# Set to True once `list_admin_access` shows an assignment against every
+# operator and the 'via LEGACY ops_role' warnings have stopped. After that an
+# account with no assignment can do nothing, which is the intended end state —
+# so flipping this before the migration finishes locks people out.
+#
+# Default False DELIBERATELY, including in production: the alternative is a
+# deploy that silently removes every operator's access.
+ADMIN_ACCESS_STRICT = os.environ.get(
+    'ADMIN_ACCESS_STRICT', 'false'
+).strip().lower() in {'1', 'true', 'yes'}
 
 if IS_PRODUCTION:
     from django.core.exceptions import ImproperlyConfigured as _Improper

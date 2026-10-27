@@ -64,6 +64,34 @@ class Driver(models.Model):
             'approval, and ignored outside a QA environment.'
         ),
     )
+
+    # ------------------------------------------------------------------
+    # ADMIN SCOPE ANCHOR
+    # ------------------------------------------------------------------
+    # Which city's operations team owns this driver. It exists so a
+    # Hyderabad City Ops Manager's driver list is Hyderabad's drivers, and
+    # so a US-scoped admin cannot open an Indian driver's identity
+    # documents. It is NOT dispatch, pricing or eligibility: nothing in the
+    # rider or driver app reads it, and a driver is not restricted to
+    # driving here.
+    #
+    # Nullable, and null means UNASSIGNED rather than "everywhere": an
+    # unassigned driver is visible only at Global scope. That is the safe
+    # direction, but it is also a hole -- a driver nobody can see is a
+    # driver whose KYC nobody reviews -- so `check_geo_links` counts them
+    # and the KYC queue reports the count rather than silently filtering
+    # them away.
+    home_city=models.ForeignKey(
+        'admin_access.GeoNode',
+        null=True, blank=True,
+        on_delete=models.PROTECT,
+        related_name='drivers',
+        help_text=(
+            'City whose operations team owns this driver, for admin scoping '
+            'only. Does not limit where the driver may drive.'
+        ),
+    )
+
     def __str__(self) -> str:
         return self.user_id.full_name if self.user_id.full_name else self.user_id.phone_number
 class VehicleType(models.Model):

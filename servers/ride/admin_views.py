@@ -3,6 +3,10 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from base.utils import success_response, error_response
 from base.permissions import IsAdmin
+from servers.admin_access.bridge import ScopedPermission
+from servers.admin_access.scoping import (
+    ScopeNotHeld, scoped, scoped_or_none, scoped_to_request,
+)
 from servers.ride.models import Trip, Receipt, ChatMessage, PromoRedemption, FarePricing, Rating
 from servers.ride.serializers import TripListSerializer
 from rest_framework.pagination import PageNumberPagination
@@ -10,7 +14,7 @@ from servers.redis_client import get_all_active_drivers, get_all_active_riders
 from base.money import format_totals, sum_by_currency
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('trip.read')])
 def admin_list_trips(request):
     """
     Admin view to list all trips with pagination and filtering.
@@ -20,9 +24,12 @@ def admin_list_trips(request):
     - user_id: (int) (rider)
     """
     try:
-        trips = Trip.objects.select_related(
+        # Scoped to the caller's cities by the pickup zone stamped on the
+        # trip. Without `scoped()` this returned every trip in both
+        # countries to any operator.
+        trips = scoped_to_request(request, Trip.objects.select_related(
             'status_id', 'driver_id', 'vehicle_id', 'user_id', 'requested_vehicle_type'
-        ).all().order_by('-requested_at')
+        )).order_by('-requested_at')
 
         status_filter = request.query_params.get('status')
         if status_filter:
@@ -45,6 +52,17 @@ def admin_list_trips(request):
         serializer = TripListSerializer(result_page, many=True)
         return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
 
+    except ScopeNotHeld as exc:
+        # Ahead of the broad handler below: a refused scope is an
+        # authorization answer, and reporting it as INTERNAL_ERROR would
+        # hide a denial behind a server fault.
+        return error_response(
+            code='SCOPE_NOT_HELD',
+            message=str(exc),
+            field='scope',
+            issue='Requested scope is outside your assignments',
+            status=status.HTTP_403_FORBIDDEN,
+        )
     except Exception as e:
         return error_response(
             code='INTERNAL_ERROR',
@@ -55,7 +73,7 @@ def admin_list_trips(request):
         )
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('trip.read')])
 def admin_live_locations(request):
     """
     Admin view to get all active riders and drivers from Redis.
@@ -79,7 +97,7 @@ def admin_live_locations(request):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('trip.read')])
 def admin_trip_detail(request, trip_id):
     """Single endpoint returning everything ops needs to investigate
     one trip.
@@ -97,11 +115,16 @@ def admin_trip_detail(request, trip_id):
     chat_offset = max(0, int(request.query_params.get('chat_offset', 0)))
 
     try:
-        trip = Trip.objects.select_related(
+        # A trip is the gateway to its rider's and driver's details, so it
+        # is fetched through scope: out of scope reports NOT_FOUND, the
+        # same answer as a trip that does not exist.
+        trip = scoped_or_none(request.user, Trip.objects.select_related(
             'status_id', 'driver_id', 'driver_id__user_id',
             'vehicle_id', 'vehicle_id__vehicle_type_id', 'user_id',
             'requested_vehicle_type',
-        ).get(id=trip_id)
+        ), id=trip_id)
+        if trip is None:
+            raise Trip.DoesNotExist
     except Trip.DoesNotExist:
         return error_response(
             code='NOT_FOUND', message='Trip not found.',
@@ -486,7 +509,7 @@ def build_admin_dashboard_kpis(day_date=None):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('trip.read')])
 def admin_dashboard(request):
     """Daily ops dashboard KPIs.
 
@@ -516,6 +539,20 @@ def admin_dashboard(request):
       cancellations.driver_24h (counter for the rolling penalty rule)
       withdrawals.pending / completed_today_by_currency
       receipts.issued_today / send_failures_today
+
+    WHO SEES WHAT
+    -------------
+    Gated on `trip.read`, which every operational role holds, because this
+    is the shift's shared picture -- a Support Agent who cannot see how
+    many trips are running is working blind. It is NOT gated on
+    `report.read`: that would refuse Support, KYC and Safety, which is what
+    the strict-mode rehearsal caught.
+
+    The MONEY tiles are a different question. GMV and payout totals are
+    withheld unless the caller holds `finance.read`, so the shared picture
+    does not quietly hand every operator the day's revenue. The keys are
+    removed from the payload rather than zeroed: a zero is a number
+    somebody will act on.
     """
     from datetime import datetime
     from django.utils import timezone
@@ -533,7 +570,18 @@ def admin_dashboard(request):
     else:
         day_date = timezone.localtime(timezone.now()).date()
 
+    payload = build_admin_dashboard_kpis(day_date)
+
+    # Money is finance's, even on a shared dashboard.
+    from servers.admin_access.bridge import granted
+
+    may_see_money, _how = granted(request.user, 'finance.read')
+    if not may_see_money:
+        for key in ('gmv', 'gmv_by_currency', 'gmv_display',
+                    'withdrawals', 'receipts'):
+            payload.pop(key, None)
+
     return success_response(
-        build_admin_dashboard_kpis(day_date),
+        payload,
         status.HTTP_200_OK,
     )

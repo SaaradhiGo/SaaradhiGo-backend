@@ -227,17 +227,25 @@ def test_an_administrator_may_change_pricing():
     )
 
 
-@pytest.mark.parametrize('ops_role', [OPS_SUPPORT, OPS_DRIVER_OPS, OPS_FINANCE])
-def test_every_operator_may_still_READ_pricing(ops_role):
-    """An operator answering a fare dispute needs the card that produced the quote.
-
-    Refusing the read would push them to guess, which is worse than letting them
-    look.
-    """
+@pytest.mark.parametrize('ops_role, expected', [
+    # Reading the pricing configuration is now a named capability,
+    # `zone.read`, held by City Ops, Finance, Analyst and Super Admin.
+    # `_operator` assigns the new-model equivalent of each legacy role:
+    # support -> support_agent and driver_ops -> kyc_verifier do not hold
+    # it; finance does. (Owner's ruling of 2026-10-28, access matrix for
+    # SOS / support / zones.)
+    (OPS_SUPPORT, 403),
+    (OPS_DRIVER_OPS, 403),
+    (OPS_FINANCE, 200),
+])
+def test_pricing_reads_follow_the_access_matrix(ops_role, expected):
+    """A fare-dispute answer comes from the trip's fare snapshot, not from
+    the live rate card; the card itself is configuration, read by the roles
+    that work with it."""
     resp = _client(_operator(ops_role)).get('/api/v1/pricing/admin/rate-cards/')
 
-    assert resp.status_code == 200, (
-        f'{ops_role} could not read pricing: HTTP {resp.status_code}'
+    assert resp.status_code == expected, (
+        f'{ops_role} reading pricing: HTTP {resp.status_code}, expected {expected}'
     )
 
 

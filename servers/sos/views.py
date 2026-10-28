@@ -10,6 +10,23 @@ The rider or driver POSTs to /sos/ when something is wrong. We:
 
 Acknowledge / resolve endpoints are admin-only and write an immutable
 SOSEventUpdate row inside the same transaction as the parent state flip.
+
+WHO MAY SEE THE QUEUE, AND WHAT THEY SEE
+----------------------------------------
+Every admin view here is gated on `ScopedPermission('safety.respond')`,
+which Safety Officer and Super Admin hold and nobody else does. The queue
+is filtered to the operator's scope: an event is anchored by its trip's
+zone if it has a trip, else by the raiser's home city if the raiser is a
+driver (`scoping.SCOPE_PATHS['sos.SOSEvent']`). An event outside the
+caller's scope answers NOT FOUND, never FORBIDDEN -- a 403 would confirm
+the id exists.
+
+Contact details -- the raiser's name and phone, the driver's label -- are
+MASKED in every response, for every role including Super Admin. The one
+way to the real values is `reveal_sos_contact`: `safety.respond`, the
+event still open or acknowledged, and an `sos_contact_revealed` audit row
+written with the operator's name on it. A closed incident has nobody to
+reach, so its contact stays masked for good.
 """
 
 import logging
@@ -23,7 +40,12 @@ from django.utils import timezone
 from django.db.models import Q
 
 from base.utils import success_response, error_response
-from base.permissions import IsAdmin
+from servers.admin_access.bridge import ScopedPermission
+from servers.admin_access.masking import mask_contact, mask_phone
+from servers.admin_access.scoping import (
+    ScopeNotHeld, scoped_or_none, scoped_to_request,
+)
+from servers.admin_audit.services import record_admin_action
 
 from .models import SOSEvent, SOSEventUpdate
 
@@ -201,22 +223,90 @@ def raise_sos(request):
     )
 
 
+#: Statuses in which somebody still needs reaching.
+ACTIVE_STATUSES = ('open', 'acknowledged')
+
+#: The audit action written by every contact reveal. Grep for it.
+CONTACT_REVEALED_ACTION = 'sos_contact_revealed'
+
+SOS_ADMIN_QUERYSET = SOSEvent.objects.select_related(
+    'user', 'trip', 'trip__driver_id', 'trip__zone', 'trip__zone__geo_node',
+)
+
+
+def _not_found(sos_id):
+    """The one answer for "does not exist" AND "not in your scope".
+
+    Two different messages would let an out-of-scope operator tell which
+    ids are real. See `scoping.scoped_or_none`.
+    """
+    return error_response(
+        code='NOT_FOUND',
+        message='SOS event not found',
+        field='sos_id',
+        issue=f'No SOS event with id {sos_id}',
+        status=status.HTTP_404_NOT_FOUND,
+    )
+
+
+def _scoped_event_or_none(request, sos_id):
+    """The event, if it exists AND sits inside the caller's scope."""
+    return scoped_or_none(request.user, SOS_ADMIN_QUERYSET, id=sos_id)
+
+
+def _serialize_event(ev):
+    """One queue row. Contact details masked -- for everybody.
+
+    `user_phone` was the raiser's real number, sent to any operator who
+    could open the queue. Now it keeps its country code and last four, the
+    same shape as every other masked number in the console, and the only
+    way to the real value is `reveal_sos_contact`, which is logged.
+    """
+    trip = ev.trip
+    return {
+        'id': ev.id,
+        'status': ev.status,
+        'event_type': ev.event_type,
+        'initiated_by': ev.initiated_by,
+        'user_label': mask_contact(ev.user_label),
+        'user_phone': mask_phone(getattr(ev.user, 'phone_number', None)),
+        'contact_masked': True,
+        'trip_id': trip.id if trip else None,
+        'driver_label': (
+            mask_contact(str(trip.driver_id)) if trip and trip.driver_id else None
+        ),
+        'latitude': str(ev.latitude) if ev.latitude is not None else None,
+        'longitude': str(ev.longitude) if ev.longitude is not None else None,
+        'note': ev.note,
+        'created_at': ev.created_at.isoformat(),
+        'updates': [
+            {
+                'actor': u.actor_label,
+                'new_status': u.new_status,
+                'note': u.note,
+                'created_at': u.created_at.isoformat(),
+            }
+            for u in ev.updates.all()
+        ],
+    }
+
+
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('safety.respond')])
 def acknowledge_sos(request, sos_id):
     """Mark an SOS event acknowledged by ops."""
     return _admin_transition(request, sos_id, target='acknowledged')
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('safety.respond')])
 def resolve_sos(request, sos_id):
     """Mark an SOS event resolved. Accepts a resolution note."""
     return _admin_transition(request, sos_id, target='resolved')
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('safety.respond')])
 def false_alarm_sos(request, sos_id):
     """Mark an SOS event as false alarm. Accepts a note explaining why."""
     return _admin_transition(request, sos_id, target='false_alarm')
@@ -224,18 +314,21 @@ def false_alarm_sos(request, sos_id):
 
 def _admin_transition(request, sos_id, target):
     note = (request.data.get('note') or '')[:10000] if hasattr(request, 'data') else ''
+
+    # Scope is answered BEFORE the row lock, through the scoped queryset,
+    # so the lock itself stays a plain `get(id=...)`: a scope filter joins
+    # through nullable columns, and Postgres refuses FOR UPDATE on the
+    # nullable side of an outer join (see `bridge.in_scope`). The window
+    # between the two reads can only end in a refusal, never in an action.
+    if _scoped_event_or_none(request, sos_id) is None:
+        return _not_found(sos_id)
+
     try:
         with transaction.atomic():
             try:
                 event = SOSEvent.objects.select_for_update().get(id=sos_id)
             except SOSEvent.DoesNotExist:
-                return error_response(
-                    code='NOT_FOUND',
-                    message='SOS event not found',
-                    field='sos_id',
-                    issue=f'No SOS event with id {sos_id}',
-                    status=status.HTTP_404_NOT_FOUND,
-                )
+                return _not_found(sos_id)
 
             if event.status == target:
                 return success_response(
@@ -268,7 +361,7 @@ def _admin_transition(request, sos_id, target):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('safety.respond')])
 def admin_list_sos(request):
     """Ops SOS queue.
 
@@ -289,7 +382,17 @@ def admin_list_sos(request):
     """
     from django.db.models import Case, IntegerField, Value, When
 
-    qs = SOSEvent.objects.select_related('user', 'trip', 'trip__driver_id').all()
+    # Scoped to the caller's cities by the trip's zone, else the raiser's
+    # home city. Without `scoped()` the permission check above would pass
+    # and the queue would still hold every event in both countries.
+    try:
+        qs = scoped_to_request(request, SOS_ADMIN_QUERYSET)
+    except ScopeNotHeld as exc:
+        return error_response(
+            code='SCOPE_NOT_HELD', message=str(exc), field='scope',
+            issue='Requested scope is outside your assignments',
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     status_filter = (request.query_params.get('status') or '').strip()
     if status_filter:
@@ -320,36 +423,14 @@ def admin_list_sos(request):
     ).order_by('triage_rank', '-created_at')
 
     total = qs.count()
-    open_count = SOSEvent.objects.filter(status='open').count()
+    # The open count is of the SCOPED queue, with the status filter
+    # removed: the badge must count what this operator can act on, not the
+    # other country's open alarms.
+    open_count = scoped_to_request(request, SOSEvent.objects.all()).filter(
+        status='open',
+    ).count()
 
-    results = []
-    for ev in qs[offset:offset + limit]:
-        trip = ev.trip
-        results.append({
-            'id': ev.id,
-            'status': ev.status,
-            'event_type': ev.event_type,
-            'initiated_by': ev.initiated_by,
-            'user_label': ev.user_label,
-            'user_phone': getattr(ev.user, 'phone_number', None),
-            'trip_id': trip.id if trip else None,
-            'driver_label': (
-                str(trip.driver_id) if trip and trip.driver_id else None
-            ),
-            'latitude': str(ev.latitude) if ev.latitude is not None else None,
-            'longitude': str(ev.longitude) if ev.longitude is not None else None,
-            'note': ev.note,
-            'created_at': ev.created_at.isoformat(),
-            'updates': [
-                {
-                    'actor': u.actor_label,
-                    'new_status': u.new_status,
-                    'note': u.note,
-                    'created_at': u.created_at.isoformat(),
-                }
-                for u in ev.updates.all()
-            ],
-        })
+    results = [_serialize_event(ev) for ev in qs[offset:offset + limit]]
 
     return success_response(
         {
@@ -358,6 +439,91 @@ def admin_list_sos(request):
             'limit': limit,
             'offset': offset,
             'results': results,
+        },
+        status.HTTP_200_OK,
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, ScopedPermission('safety.respond')])
+def admin_sos_detail(request, sos_id):
+    """One event, masked, if it is in the caller's scope. Else NOT FOUND."""
+    event = _scoped_event_or_none(request, sos_id)
+    if event is None:
+        return _not_found(sos_id)
+    return success_response(_serialize_event(event), status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('safety.respond')])
+def reveal_sos_contact(request, sos_id):
+    """The unmasked contact of the person who raised an ACTIVE incident.
+
+    Body:
+        reason: string   optional -- lands on the audit row
+
+    This is the reveal-and-log half of the masking design (see
+    `admin_access.masking`): `safety.respond` in the event's scope, the
+    event still `open` or `acknowledged`, and an `sos_contact_revealed`
+    audit row naming the operator, the event and the fields handed over.
+    If the audit write fails the reveal still returns -- a person in danger
+    outranks a log row -- but it is logged at ERROR so the gap is visible.
+
+    A resolved or false-alarm event answers 409: there is nobody left to
+    reach, and "I needed the number after the fact" is exactly the access
+    this endpoint exists to refuse. Super Admin goes through the same door
+    and is logged the same way.
+    """
+    event = _scoped_event_or_none(request, sos_id)
+    if event is None:
+        return _not_found(sos_id)
+
+    if event.status not in ACTIVE_STATUSES:
+        return error_response(
+            code='SOS_NOT_ACTIVE',
+            message='Contact details can only be revealed while the incident is open or acknowledged.',
+            field='status',
+            issue=f'SOS event {event.id} is {event.status}',
+            status=status.HTTP_409_CONFLICT,
+        )
+
+    raiser = event.user
+    contact = {
+        'user_label': event.user_label,
+        'full_name': getattr(raiser, 'full_name', None) if raiser else None,
+        'phone_number': getattr(raiser, 'phone_number', None) if raiser else None,
+        'emergency_contact': getattr(raiser, 'emergency_contact', None) if raiser else None,
+    }
+    reason = (request.data.get('reason') or '')[:10000] if hasattr(request, 'data') else ''
+
+    # The row names WHICH fields were handed over, never their values: the
+    # audit log is read by more people than may see a phone number.
+    row = record_admin_action(
+        request,
+        action=CONTACT_REVEALED_ACTION,
+        target_type='sos_event',
+        target_id=event.id,
+        before={'contact_masked': True},
+        after={
+            'contact_masked': False,
+            'fields': sorted(k for k, v in contact.items() if v),
+            'event_status': event.status,
+            'raiser_user_id': getattr(raiser, 'id', None),
+        },
+        reason=reason,
+    )
+    if row is None:
+        logger.error(
+            'sos_contact_reveal_unaudited sos_id=%s actor_id=%s',
+            event.id, getattr(request.user, 'id', None),
+        )
+
+    return success_response(
+        {
+            'sos_id': event.id,
+            'status': event.status,
+            'contact': contact,
+            'audit_id': getattr(row, 'id', None),
         },
         status.HTTP_200_OK,
     )

@@ -36,7 +36,9 @@ list is a global endpoint restricted to `pii.view` holders. See
 `RIDERS_ARE_GLOBAL`.
 """
 
-#: `model label -> ORM lookup reaching GeoNode.path`
+from django.db.models import Q
+
+#: `model label -> ORM lookup reaching GeoNode.path` (or a tuple of them)
 SCOPE_PATHS = {
     # Stamped at booking time, so it is stable even if zones are redrawn.
     'ride.Trip': 'zone__geo_node__path',
@@ -58,6 +60,29 @@ SCOPE_PATHS = {
     # Zones and nodes are the spine itself.
     'pricing.ServiceZone': 'geo_node__path',
     'admin_access.GeoNode': 'path',
+
+    # A rate card belongs to its zone.
+    'pricing.RateCard': 'zone__geo_node__path',
+
+    # TWO ANCHORS, EITHER ONE COUNTS
+    # ------------------------------
+    # An SOS event is anchored where the trip happened if it has a trip;
+    # a driver's SOS raised outside any trip is anchored where the driver's
+    # operations team is. A tuple means "covered if ANY of these is".
+    # A rider's SOS outside any trip has no anchor (riders have no city,
+    # see above) and is visible only at Global -- the same rule as a
+    # driver with no home city, and reported rather than hidden: the list
+    # endpoint counts them.
+    'sos.SOSEvent': (
+        'trip__zone__geo_node__path',
+        'user__driver__home_city__path',
+    ),
+    # A ticket is anchored by the trip it is about, else by the requester's
+    # home city if the requester is a driver. Same caveat for riders.
+    'support.SupportTicket': (
+        'trip_id__zone__geo_node__path',
+        'user_id__driver__home_city__path',
+    ),
 }
 
 #: Endpoints whose rows genuinely have no place, with the reason. Listing
@@ -201,4 +226,9 @@ def scoped_to_request(request, queryset):
     if node is None:
         return base
     path_field = scope_path_for(queryset.model)
-    return base.filter(**{f'{path_field}__startswith': node.path})
+    if isinstance(path_field, str):
+        path_field = (path_field,)
+    narrowed = Q()
+    for field in path_field:
+        narrowed |= Q(**{f'{field}__startswith': node.path})
+    return base.filter(narrowed)

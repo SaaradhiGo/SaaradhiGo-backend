@@ -108,6 +108,27 @@ def mask_identifier(value):
     return text
 
 
+def mask_contact(value):
+    """Mask a free-form contact label, whatever it holds.
+
+    SOS rows freeze the raiser as a LABEL (`user_label`), which is their
+    full name if they have one and their phone number if they do not; the
+    driver on the trip is labelled the same way. So one field may carry
+    either kind of personal data, and it is masked by what it looks like:
+    a number keeps its country code and last four, a name keeps its first
+    name. The frozen label is personal data even after the account is gone.
+    """
+    if not value:
+        return value
+    text = str(value).strip()
+    if '@' in text:
+        return mask_email(text)
+    digits = text.replace('-', '').replace(' ', '').lstrip('+')
+    if digits.isdigit():
+        return mask_phone(text)
+    return mask_name(text)
+
+
 #: Field name -> how to mask it. Driven by name so one table covers every
 #: serializer rather than each one deciding for itself, which is how a
 #: field ends up masked on one screen and plain on another.

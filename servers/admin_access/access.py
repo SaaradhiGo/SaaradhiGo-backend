@@ -79,10 +79,25 @@ def scopes_of(user):
 
 
 def scope_paths(user):
-    """The path prefixes covering everything this admin may see."""
+    """The path prefixes covering everything this admin may see.
+
+    `None` means unrestricted. A superuser is unrestricted; so is an admin
+    holding any assignment AT GLOBAL, because the Global node is the root
+    of the tree and "everything under the root" is everything -- including
+    rows that have no node at all. Before this, a Global assignment was
+    expressed as `path__startswith='GLOBAL/'`, which a NULL anchor never
+    matches, so a Super Admin assigned at Global (as opposed to a Django
+    superuser) could not see a driver with no home city, a zone drawn
+    before its node existed, or an SOS raised by a rider outside any trip.
+    The docstrings on those columns promised they were "visible at Global
+    scope"; this is what makes that true.
+    """
     if getattr(user, 'is_superuser', False):
         return None  # None means "unrestricted"; callers must check for it
-    return sorted({a.scope.path for a in active_assignments(user)})
+    assignments = list(active_assignments(user))
+    if any(a.scope.kind == GLOBAL for a in assignments):
+        return None
+    return sorted({a.scope.path for a in assignments})
 
 
 def scope_queryset(user, queryset, path_field):
@@ -90,6 +105,10 @@ def scope_queryset(user, queryset, path_field):
 
     `path_field` is the lookup reaching a `GeoNode.path` from the model
     being filtered, e.g. `'city__path'` or `'driver__home_city__path'`.
+    It may also be a tuple of such lookups for a model with more than one
+    possible anchor (an SOS event is anchored by its trip's zone if it has
+    a trip, else by the raiser's home city): a row is in scope if ANY of
+    its anchors is covered.
 
     An admin with no assignments gets nothing. That is the correct default
     and the one that fails safe: a new operator sees an empty list until
@@ -102,9 +121,11 @@ def scope_queryset(user, queryset, path_field):
     if not paths:
         return queryset.none()
 
+    path_fields = (path_field,) if isinstance(path_field, str) else tuple(path_field)
     covered = Q()
     for path in paths:
-        covered |= Q(**{f'{path_field}__startswith': path})
+        for field in path_fields:
+            covered |= Q(**{f'{field}__startswith': path})
     return queryset.filter(covered)
 
 

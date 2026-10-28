@@ -34,6 +34,7 @@ ADMIN_VIEW_MODULES = [
     'servers.ride.admin_views',
     'servers.payments.admin_views',
     'servers.auth_user.admin_views',
+    'servers.search.views',
 ]
 
 #: Endpoint -> why it is not scope-gated. Every entry is a decision.
@@ -48,6 +49,7 @@ UNSCOPED_BY_DESIGN = {
 #: and "unauthenticated" never get confused for each other.
 GLOBAL_BUT_GATED = {
     'admin_list_users': 'Riders belong to no city; gated on pii.view.',
+    'admin_search_riders': 'Riders belong to no city; gated on rider.read, phones masked.',
 }
 
 
@@ -119,7 +121,7 @@ def test_every_admin_endpoint_is_scope_gated(name):
 #: source rather than guessed from the name, below.
 LIST_CALL = re.compile(r'\b(scoped|scoped_or_none|scoped_to_request|in_scope)\s*\(')
 UNFILTERED = re.compile(
-    r'\b(Driver|Trip|Payment|TransactionHistory|WithdrawalRequest)'
+    r'\b(Driver|Trip|Vehicle|Payment|TransactionHistory|WithdrawalRequest)'
     r'\.objects\s*\.\s*(all|filter|select_related|prefetch_related)\s*\('
 )
 
@@ -144,6 +146,9 @@ MUST_SCOPE = {
     'admin_trip_detail',
     'admin_list_payments',
     'admin_list_transactions',
+    'admin_search_trips',
+    'admin_search_drivers',
+    'admin_search_vehicles',
 }
 
 

@@ -71,6 +71,18 @@ def _static_models():
     return StaticDevice, StaticToken
 
 
+def mfa_enabled() -> bool:
+    """Is operator MFA switched on at all in this deployment?
+
+    `ADMIN_MFA_REQUIRED` defaults to True and is the only way to turn the
+    second factor off. Production refuses to boot with it false
+    (`base/settings.py`), so "off" can only ever describe QA or a developer
+    machine. When off, nothing here asks for a code: not an enforced
+    environment, not an enrolled account, not a pending authenticator.
+    """
+    return bool(getattr(settings, 'ADMIN_MFA_REQUIRED', True))
+
+
 def mfa_enforced() -> bool:
     """Is a second factor mandatory for operators in this environment?
 
@@ -127,6 +139,8 @@ def mfa_required_for(user) -> bool:
     """
     from base.permissions import is_operator
 
+    if not mfa_enabled():
+        return False
     if not is_operator(user):
         return False
     return True if mfa_enforced() else has_device(user)

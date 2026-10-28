@@ -16,7 +16,10 @@ def test_driver_full_detail_returns_aggregate(auth_client_admin, auth_client_dri
     assert resp.status_code == 200, resp.content
     data = resp.json()['data']
     assert data['id'] == driver.id
-    assert data['user']['phone_number'] == driver_user.phone_number
+    # Masked by default for every operator, the superuser included; the
+    # reveal endpoint is the way to the number (admin_access.reveal).
+    assert data['user']['phone_number'].endswith(driver_user.phone_number[-4:])
+    assert driver_user.phone_number not in resp.content.decode()
     # Expected sections present
     for k in ('vehicles', 'fatigue', 'sessions', 'cancellations',
               'withdrawals', 'recent_trips', 'earnings'):

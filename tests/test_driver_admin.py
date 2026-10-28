@@ -87,7 +87,12 @@ def test_retrieve_driver_admin(auth_client_admin, auth_client_driver):
     driver_data = data["data"]
     assert driver_data["id"] == driver.id
     assert "user_details" in driver_data
-    assert driver_data["user_details"]["phone_number"] == driver_user.phone_number
+    # Masked by default for every operator, the superuser included: the
+    # number keeps its last four and nothing else (admin_access.masking).
+    masked = driver_data["user_details"]["phone_number"]
+    assert masked != driver_user.phone_number
+    assert masked.endswith(driver_user.phone_number[-4:])
+    assert driver_user.phone_number not in response.content.decode()
 
 @pytest.mark.django_db
 def test_retrieve_driver_admin_not_found(auth_client_admin):

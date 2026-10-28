@@ -50,11 +50,12 @@ from django.db.models import Q
 
 from base.utils import success_response, error_response
 from servers.admin_access.bridge import ScopedPermission
-from servers.admin_access.masking import mask_contact, mask_phone
+from servers.admin_access.masking import (
+    mark_revealed, mask_contact, mask_phone, record_reveal,
+)
 from servers.admin_access.scoping import (
     ScopeNotHeld, scoped_or_none, scoped_to_request,
 )
-from servers.admin_audit.services import record_admin_action
 
 from .models import SOSEvent, SOSEventUpdate
 
@@ -517,20 +518,22 @@ def reveal_sos_contact(request, sos_id):
     reason = (request.data.get('reason') or '')[:10000] if hasattr(request, 'data') else ''
 
     # The row names WHICH fields were handed over, never their values: the
-    # audit log is read by more people than may see a phone number.
-    row = record_admin_action(
+    # audit log is read by more people than may see a phone number. Same
+    # shape as the generic reveal (`admin_access.reveal`), under this
+    # endpoint's own action name so incident reveals stay greppable.
+    row = record_reveal(
         request,
         action=CONTACT_REVEALED_ACTION,
         target_type='sos_event',
         target_id=event.id,
-        before={'contact_masked': True},
-        after={
+        fields=[k for k, v in contact.items() if v],
+        reason=reason,
+        node=event.anchor_node,
+        extra={
             'contact_masked': False,
-            'fields': sorted(k for k, v in contact.items() if v),
             'event_status': event.status,
             'raiser_user_id': getattr(raiser, 'id', None),
         },
-        reason=reason,
     )
     if row is None:
         logger.error(
@@ -538,6 +541,9 @@ def reveal_sos_contact(request, sos_id):
             event.id, getattr(request.user, 'id', None),
         )
 
+    # The renderer masks every operator response by field name; this one
+    # is the reveal, and the audit row is already written.
+    mark_revealed(request, 'sos_reveal')
     return success_response(
         {
             'sos_id': event.id,

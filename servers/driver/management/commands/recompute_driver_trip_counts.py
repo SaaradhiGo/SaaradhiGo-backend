@@ -16,11 +16,24 @@ running it twice gives the same answer as running it once. It never adds to
 the existing value.
 
     python manage.py recompute_driver_trip_counts            # report only
-    python manage.py recompute_driver_trip_counts --apply    # write
+    python manage.py recompute_driver_trip_counts --apply \\
+        --actor-email you@saaradhigo.com                     # write
+
+`--apply` changes a stored driver figure, so it requires `--actor-email`:
+the operator running it, validated by `admin_audit.actor_option`. The
+report needs no name because it writes nothing.
 """
 
 from django.core.management.base import BaseCommand
 from django.db.models import Count, Q
+
+from servers.admin_audit.actor_option import (
+    add_actor_argument,
+    attributed,
+    require_actor,
+)
+
+COMMAND = 'recompute_driver_trip_counts'
 
 
 class Command(BaseCommand):
@@ -34,6 +47,7 @@ class Command(BaseCommand):
             '--apply', action='store_true',
             help='Write the recomputed values. Without it, only report.',
         )
+        add_actor_argument(parser)
 
     def handle(self, *args, **options):
         from servers.driver.models import Driver
@@ -71,7 +85,11 @@ class Command(BaseCommand):
             ))
             return
 
-        for driver_id, _stored, actual in drifted:
-            Driver.objects.filter(id=driver_id).update(total_trips=actual)
+        # Before the first write.
+        actor = require_actor(options, COMMAND)
+        with attributed(actor, COMMAND,
+                        reason='Driver trip counts recomputed from the Trip table.'):
+            for driver_id, _stored, actual in drifted:
+                Driver.objects.filter(id=driver_id).update(total_trips=actual)
 
         self.stdout.write(self.style.SUCCESS(f'updated {len(drifted)} driver(s)'))

@@ -15,13 +15,20 @@ Super Admin — is a decision with a name attached, not a line in a script.
 A city's `status` is never overwritten either: launching or pausing a city
 is an operational decision, and a redeploy must not quietly undo it.
 
-WHAT IT LEAVES IN THE AUDIT LOG
--------------------------------
+WHAT IT LEAVES IN THE AUDIT LOG, AND WHO IT NAMES
+-------------------------------------------------
 Roles and geo nodes are access rows, so each one this creates or changes
-appends an `AdminAuditLog` row (see `admin_audit.access_audit`), labelled
-as written by this command. A redeploy that changes nothing writes nothing:
-the receivers compare the row before and after, so the idempotence above
-holds for the log as well as the tables.
+appends an `AdminAuditLog` row (see `admin_audit.access_audit`). A redeploy
+that changes nothing writes nothing: the receivers compare the row before
+and after, so the idempotence above holds for the log as well as the
+tables.
+
+Every row names the operator who ran this: `--actor-email` is required,
+and must be an active operator (`admin_audit.actor_option`). A deploy that
+runs this unattended names them through `QA_BOOTSTRAP_ACTOR_EMAIL` instead
+-- outside production only. In production a person runs it and passes the
+flag, because a production deploy that writes access rows with nobody at
+the keyboard is the thing the flag exists to prevent.
 """
 
 import os
@@ -31,9 +38,13 @@ from django.core.management.base import BaseCommand, CommandError
 from base.seeding import require_seedable_environment
 from django.db import transaction
 
-from servers.admin_audit.context import audit_context
+from servers.admin_audit.actor_option import (
+    add_actor_argument,
+    attributed,
+    require_actor,
+)
 
-ACTOR_LABEL = 'seed_admin_access (management command)'
+COMMAND = 'seed_admin_access'
 
 from servers.admin_access.models import (
     ACTIVE,
@@ -95,6 +106,12 @@ class Command(BaseCommand):
             action='store_true',
             help='Also create one labelled test admin per role. Non-production only.',
         )
+        add_actor_argument(
+            parser,
+            help='Email of the operator running this; every row the seed '
+                 'writes names them. A deploy running this unattended sets '
+                 'QA_BOOTSTRAP_ACTOR_EMAIL instead (not in production).',
+        )
 
     def handle(self, *args, **options):
         problems = validate_templates()
@@ -104,19 +121,25 @@ class Command(BaseCommand):
                 + '\n  '.join(problems)
             )
 
-        with audit_context(actor_label=ACTOR_LABEL,
-                           reason='Seed: geo hierarchy and role templates.'):
+        if options['test_admins']:
+            # Geo nodes and roles are configuration and run everywhere; test
+            # admins are test data and go through the shared gate. Checked
+            # BEFORE anything is written, so a production run with the flag
+            # refuses whole rather than seeding half.
+            require_seedable_environment('the QA test admins')
+            self._refuse_in_production()
+
+        # Before the first write.
+        actor = require_actor(options, COMMAND, unattended=True)
+
+        with attributed(actor, COMMAND,
+                        reason='Seed: geo hierarchy and role templates.'):
             with transaction.atomic():
                 nodes = self._seed_geo()
                 self._seed_roles()
                 self._link_existing_rows()
 
             if options['test_admins']:
-                # Geo nodes and roles above are configuration and run
-                # everywhere; test admins are test data and go through the
-                # shared gate.
-                require_seedable_environment('the QA test admins')
-                self._refuse_in_production()
                 self._seed_test_admins(nodes)
 
         self.stdout.write(self.style.SUCCESS(

@@ -46,6 +46,14 @@ The email address is marked verified. Whoever runs this has shell access to
 the deployment, which is a stronger proof of control than a link clicked in
 an inbox -- and the reset email that link would come from cannot be sent
 from this deployment yet.
+
+WHO CREATED THEM
+----------------
+`--actor-email` names the operator running this and goes on the audit row;
+it must be an active operator and not the break-glass account
+(`admin_audit.actor_option`). The one exception is the first operator in an
+empty database, who has nobody to be created by: then, and only then, the
+flag may be omitted and the row says so.
 """
 
 import secrets
@@ -57,10 +65,16 @@ from django.utils import timezone
 
 from base import ops_mfa
 from base.countries import normalize_phone
-from servers.admin_audit.context import audit_context
+from servers.admin_audit.actor_option import (
+    add_actor_argument,
+    attributed,
+    require_actor,
+)
 from servers.auth_user.identity import InvalidEmail, normalize_email
 
 User = get_user_model()
+
+COMMAND = 'create_operator'
 
 #: 18 random bytes, URL-safe: 24 characters, ~143 bits. Comfortably past
 #: every validator and not something a person is expected to keep.
@@ -82,6 +96,11 @@ class Command(BaseCommand):
             '--enrol-mfa', action='store_true',
             help='Also create a TOTP device and print its provisioning URI. '
                  'The device is confirmed by the first valid code at sign-in.')
+        add_actor_argument(
+            parser,
+            help='Email of the operator creating this account; goes on the '
+                 'audit row. May be omitted only for the first operator in '
+                 'an empty database.')
 
     def handle(self, *args, **options):
         try:
@@ -112,6 +131,16 @@ class Command(BaseCommand):
                 'creates accounts; it does not change them.'
             )
 
+        # Before the first write. None only when no operator exists yet.
+        actor = require_actor(options, COMMAND, allow_genesis=True)
+        if actor is None:
+            self.stdout.write(self.style.WARNING(
+                'No operator exists in this database, so this account is '
+                'being created with no actor to attribute it to. The audit '
+                'row says so. Every operator after this one is created by '
+                'a named operator with --actor-email.'
+            ))
+
         temporary = secrets.token_urlsafe(TEMP_PASSWORD_BYTES)
 
         with transaction.atomic():
@@ -135,14 +164,15 @@ class Command(BaseCommand):
             # No credential, no secret, no phone number goes in it: the id
             # finds the account, and audit rows are retained and
             # searchable.
-            with audit_context(
-                actor_label='create_operator (management command)',
+            with attributed(
+                actor, COMMAND,
                 action='operator_created',
                 reason='Named operator account created from a shell.',
                 extra_after={
                     'must_change_password': True,
                     'email_verified': True,
                     'mfa_enrolment_started': bool(options['enrol_mfa']),
+                    'genesis': actor is None,
                 },
             ):
                 user.save()

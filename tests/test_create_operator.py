@@ -53,11 +53,25 @@ def _quiet_login_guard(settings):
     cache.clear()
 
 
+ACTOR_EMAIL = 'ops.lead@saaradhigo.test'
+ACTOR_PHONE = '+919741000001'
+
+
+@pytest.fixture(autouse=True)
+def actor(db):
+    """The operator who runs the command. Every write names them."""
+    return User.objects.create_user(
+        phone_number=ACTOR_PHONE, username=ACTOR_PHONE, email=ACTOR_EMAIL,
+        full_name='Ops Lead', role='admin', is_staff=True,
+    )
+
+
 def _run(**kwargs):
     out = StringIO()
     kwargs.setdefault('email', EMAIL)
     kwargs.setdefault('phone', PHONE)
     kwargs.setdefault('name', NAME)
+    kwargs.setdefault('actor_email', ACTOR_EMAIL)
     call_command('create_operator', stdout=out, **kwargs)
     return out.getvalue()
 
@@ -145,15 +159,16 @@ class TestItNeverTouchesAnExistingAccount:
         assert User.objects.filter(phone_number=PHONE).count() == 1
 
     def test_a_bad_phone_is_refused_before_anything_is_written(self):
+        rows_before = AdminAuditLog.objects.count()
         with pytest.raises(CommandError, match='E.164'):
             _run(phone='12345')
-        assert not User.objects.exists()
-        assert not AdminAuditLog.objects.exists()
+        assert not User.objects.exclude(email=ACTOR_EMAIL).exists()
+        assert AdminAuditLog.objects.count() == rows_before
 
     def test_a_bad_address_is_refused(self):
         with pytest.raises(CommandError, match='email'):
             _run(email='not-an-address')
-        assert not User.objects.exists()
+        assert not User.objects.exclude(email=ACTOR_EMAIL).exists()
 
 
 class TestTheAuditRow:

@@ -2,7 +2,8 @@
 
 Run by a human with shell access to the deployment, once per operator:
 
-    python manage.py enroll_operator_mfa --phone +91XXXXXXXXXX
+    python manage.py enroll_operator_mfa --phone +91XXXXXXXXXX \\
+        --actor-email you@saaradhigo.com
 
 It prints a provisioning URI for the operator to add to an authenticator app, waits
 for a code to prove the app is in sync, then prints single-use recovery codes.
@@ -25,6 +26,13 @@ The provisioning URI contains the TOTP shared secret. It is printed to the termi
 once, deliberately: that is how the operator receives it. It is never logged, never
 written to the audit row, and never returned by any HTTP response. Whoever runs this
 command is responsible for the terminal they run it in.
+
+WHO ENROLLED THEM
+-----------------
+A second factor is part of who may operate, so every run that writes -- creating the
+device, confirming it, replacing an old one -- requires `--actor-email`, the address
+of the operator at the keyboard, validated by `admin_audit.actor_option`. The audit
+row names them.
 """
 
 from django.contrib.auth import get_user_model
@@ -32,9 +40,16 @@ from django.core.management.base import BaseCommand, CommandError
 
 from base import ops_mfa
 from base.permissions import is_operator
-from servers.admin_audit.models import AdminAuditLog
+from servers.admin_audit.actor_option import (
+    add_actor_argument,
+    attributed,
+    require_actor,
+)
+from servers.admin_audit.services import record_admin_action
 
 User = get_user_model()
+
+COMMAND = 'enroll_operator_mfa'
 
 
 class Command(BaseCommand):
@@ -53,6 +68,7 @@ class Command(BaseCommand):
             help='Discard any existing factor on this account first. Required to '
                  're-enrol, so a second run cannot silently orphan a device the '
                  'operator is still using.')
+        add_actor_argument(parser)
 
     def handle(self, *args, **options):
         phone = options['phone'].strip()
@@ -61,7 +77,7 @@ class Command(BaseCommand):
         except User.DoesNotExist:
             raise CommandError(
                 'No account with that phone number. Create the operator first '
-                'with bootstrap_qa_operator.'
+                'with create_operator.'
             )
 
         if not is_operator(user):
@@ -79,6 +95,14 @@ class Command(BaseCommand):
                 f'that invalidates the operator\'s current authenticator entry '
                 f'and all their recovery codes.'
             )
+
+        # Every path from here writes: before the first write.
+        actor = require_actor(options, COMMAND)
+        with attributed(actor, COMMAND,
+                        reason='Operator second factor enrolled via management command.'):
+            self._enrol(user, existing, options)
+
+    def _enrol(self, user, existing, options):
         if existing and options['replace']:
             removed = ops_mfa.remove_devices(user)
             self.stdout.write(self.style.WARNING(
@@ -103,9 +127,7 @@ class Command(BaseCommand):
             return
 
         # Confirming: find the unconfirmed device created by the previous run.
-        from django_otp.plugins.otp_totp.models import TOTPDevice
-        device = TOTPDevice.objects.filter(
-            user=user, confirmed=False).order_by('-id').first()
+        device = ops_mfa.pending_totp_device(user)
         if device is None:
             raise CommandError(
                 'No unconfirmed device to confirm. Run this command without '
@@ -121,14 +143,14 @@ class Command(BaseCommand):
 
         codes = ops_mfa.issue_recovery_codes(user)
 
-        AdminAuditLog.objects.create(
-            actor=None,
-            actor_label='enroll_operator_mfa (management command)',
+        # No phone number, no secret, no recovery code. The user id is enough
+        # to find the account, and audit rows are retained and searchable.
+        # The actor comes from the context opened in handle().
+        record_admin_action(
+            None,
             action='ops_mfa_enrolled',
             target_type='operator',
-            target_id=str(user.pk),
-            # No phone number, no secret, no recovery code. The user id is enough
-            # to find the account, and audit rows are retained and searchable.
+            target_id=user.pk,
             after={'method': 'totp', 'recovery_codes_issued': len(codes)},
             reason='Operator second factor enrolled via management command.',
         )

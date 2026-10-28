@@ -34,9 +34,9 @@ DRIVER_NAME = 'Ravi Kumar'
 
 @pytest.fixture
 def geo(db):
-    from django.core.management import call_command
+    from conftest import seed_admin_access
 
-    call_command('seed_admin_access')
+    seed_admin_access()
     return {n.code: n for n in GeoNode.objects.all()}
 
 

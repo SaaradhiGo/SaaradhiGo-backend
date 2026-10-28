@@ -45,6 +45,17 @@ It never grants `is_superuser` to the rider or the driver, and it never
 escalates an account that already exists with a different role: that is
 reported and skipped, because a silent role change is the escalation every
 other guard in this codebase exists to prevent.
+
+WHO RAN IT
+----------
+The operator account it creates is an access row, so the run names an
+operator: `--actor-email` when a person runs this, or `QA_BOOTSTRAP_ACTOR_EMAIL`
+when the QA start command does (Railway runs this on every boot with nobody
+at the keyboard). Either way the address must be an active operator and
+never the break-glass account (`admin_audit.actor_option`). On an EMPTY
+database there is no operator to name and this is one of the three commands
+that can create the first; then, and only then, it runs without one and the
+row says so.
 """
 
 import os
@@ -56,10 +67,15 @@ from base.seeding import require_seedable_environment
 from django.db import transaction
 from django.utils import timezone
 
-from servers.admin_audit.context import audit_context
+from servers.admin_audit.actor_option import (
+    add_actor_argument,
+    attributed,
+    require_actor,
+)
 
 User = get_user_model()
 
+COMMAND = 'bootstrap_qa_accounts'
 MIN_PASSWORD_LENGTH = 12
 
 #: (role, env prefix, human label, is_staff)
@@ -88,11 +104,19 @@ class Command(BaseCommand):
             choices=[r[0] for r in ROLES],
             help='Only this role. Default: all three.',
         )
+        add_actor_argument(
+            parser,
+            help='Email of the operator running this; goes on the audit row. '
+                 'The QA start command sets QA_BOOTSTRAP_ACTOR_EMAIL instead. '
+                 'May be omitted only when no operator exists yet.')
 
     def handle(self, *args, **options):
         # One gate for every test-account seed; see base/seeding.py.
         require_seedable_environment('the QA bootstrap accounts')
         self._refuse_in_production()
+
+        # Before the first write. None only on an empty database.
+        actor = require_actor(options, COMMAND, unattended=True, allow_genesis=True)
 
         wanted = options.get('role')
         reset = options.get('reset_password', False)
@@ -117,9 +141,10 @@ class Command(BaseCommand):
             # itself (`admin_audit.access_audit`). The context puts this
             # command's name on it. Rider and driver accounts are not
             # operator-shaped and write nothing.
-            with audit_context(
-                actor_label='bootstrap_qa_accounts (management command)',
+            with attributed(
+                actor, COMMAND,
                 reason=f'QA bootstrap: the {label} test account.',
+                extra_after={'genesis': actor is None},
             ):
                 outcome = self._apply(role, phone, email, password, is_staff, reset)
             (created if outcome == 'created' else converged).append(label)

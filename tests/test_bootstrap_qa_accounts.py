@@ -33,8 +33,18 @@ ENV = {
 }
 
 
+ACTOR_EMAIL = 'ops.lead@saaradhigo.test'
+ACTOR_PHONE = '+919850000099'
+
+
 @pytest.fixture
-def qa_env(monkeypatch, settings):
+def qa_env(monkeypatch, settings, db):
+    # The operator the run is attributed to; see test_actor_email_mandatory
+    # for the empty-database (genesis) path.
+    User.objects.create_user(
+        phone_number=ACTOR_PHONE, username=ACTOR_PHONE, email=ACTOR_EMAIL,
+        full_name='Ops Lead', role='admin', is_staff=True,
+    )
     # The seed gate (base/seeding.py) refuses to load test accounts where OTP
     # gating is off, because the seeded numbers are a real-looking range. QA
     # sets TEST_PHONE_NUMBERS; so must the fixture that stands in for QA.
@@ -49,6 +59,7 @@ def qa_env(monkeypatch, settings):
 
 def _run(**kwargs):
     out = io.StringIO()
+    kwargs.setdefault('actor_email', ACTOR_EMAIL)
     call_command('bootstrap_qa_accounts', stdout=out, stderr=out, **kwargs)
     return out.getvalue()
 

@@ -128,6 +128,37 @@ def auth_client_admin(db):
 # `migrate_operators` from a named plan, because who holds what is a
 # decision with a person's name against it.
 
+#: The operator every test seed is attributed to. `seed_admin_access` --
+#: like every command that writes access rows -- refuses to run without an
+#: `--actor-email` that resolves to an active operator, so tests that need
+#: the geo tree and the role templates name this account.
+SEED_ACTOR_EMAIL = 'seed.actor@saaradhigo.test'
+SEED_ACTOR_PHONE = '+919100000777'
+
+
+def seed_actor():
+    """An active operator to attribute test seeding to. Get-or-create."""
+    user = User.objects.filter(email__iexact=SEED_ACTOR_EMAIL).first()
+    if user is None:
+        user = User.objects.create_user(
+            phone_number=SEED_ACTOR_PHONE, username=SEED_ACTOR_PHONE,
+            email=SEED_ACTOR_EMAIL, full_name='Seed Actor (test)',
+            role='admin', is_staff=True,
+        )
+    return user
+
+
+def seed_admin_access(*args, **kwargs):
+    """`call_command('seed_admin_access')` with the test actor attached."""
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    kwargs.setdefault('actor_email', seed_actor().email)
+    kwargs.setdefault('stdout', StringIO())
+    return call_command('seed_admin_access', *args, **kwargs)
+
+
 def grant_legacy_equivalent(user, ops_role=None):
     """Assign `user` the new role equivalent to their legacy `ops_role`.
 
@@ -141,7 +172,7 @@ def grant_legacy_equivalent(user, ops_role=None):
     from servers.admin_access.models import GLOBAL, AdminAssignment, AdminRole, GeoNode
 
     if not GeoNode.objects.exists() or not AdminRole.objects.exists():
-        call_command('seed_admin_access')
+        seed_admin_access()
 
     code = LEGACY_ROLE_EQUIVALENT.get(
         ops_role or getattr(user, 'ops_role', None) or 'admin'

@@ -28,17 +28,31 @@ REFUSES UNLESS ALL FOUR HOLD
 
 There is no --force and no override. Even if the flag were somehow set in
 production, `qa_eligibility.may_operate` would ignore it there.
+
+WHO FLIPPED IT
+--------------
+It changes a driver's dispatch status, so it requires `--actor-email`: the
+operator at the keyboard, validated by `admin_audit.actor_option` and named
+on the audit row.
 """
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
+from servers.admin_audit.actor_option import (
+    add_actor_argument,
+    attributed,
+    require_actor,
+)
+from servers.admin_audit.services import record_admin_action
+
 # Ranges used by bootstrap_qa_accounts and the QA fixtures. A real subscriber
 # number is never inside them.
 QA_TEST_DRIVER_PHONE_PREFIXES = ('+9177700010', '+9199990000')
 
 AUDIT_ACTION = 'qa_simulated_driver_eligibility'
+COMMAND = 'qa_simulate_driver_eligibility'
 
 
 class Command(BaseCommand):
@@ -54,6 +68,7 @@ class Command(BaseCommand):
             '--revert', action='store_true',
             help='Remove simulated eligibility again.',
         )
+        add_actor_argument(parser)
 
     def _refuse_outside_qa(self):
         from servers.driver.qa_eligibility import qa_simulation_allowed
@@ -71,7 +86,6 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         self._refuse_outside_qa()
 
-        from servers.admin_audit.models import AdminAuditLog
         from servers.driver.models import Driver
 
         driver_id = options['driver_id']
@@ -104,10 +118,6 @@ class Command(BaseCommand):
             'doc_status': driver.doc_status,
         }
 
-        driver.qa_simulated_eligibility = not revert
-        # Deliberately NOT touching approved, doc_status or status.
-        driver.save(update_fields=['qa_simulated_eligibility'])
-
         note = (
             'QA test driver given SIMULATED dispatch eligibility. This is NOT '
             'a KYC approval: no document was verified, the documents on this '
@@ -117,20 +127,26 @@ class Command(BaseCommand):
             'Simulated eligibility removed from QA test driver.'
         )
 
-        AdminAuditLog.objects.create(
-            actor=None,
-            actor_label='qa_simulate_driver_eligibility (management command)',
-            action=AUDIT_ACTION,
-            target_type='driver',
-            target_id=str(driver.id),
-            before=before,
-            after={
-                'qa_simulated_eligibility': driver.qa_simulated_eligibility,
-                'approved': driver.approved,
-                'doc_status': driver.doc_status,
-            },
-            reason=note,
-        )
+        # Before the first write.
+        actor = require_actor(options, COMMAND)
+        with attributed(actor, COMMAND, reason=note):
+            driver.qa_simulated_eligibility = not revert
+            # Deliberately NOT touching approved, doc_status or status.
+            driver.save(update_fields=['qa_simulated_eligibility'])
+
+            record_admin_action(
+                None,
+                action=AUDIT_ACTION,
+                target_type='driver',
+                target_id=driver.id,
+                before=before,
+                after={
+                    'qa_simulated_eligibility': driver.qa_simulated_eligibility,
+                    'approved': driver.approved,
+                    'doc_status': driver.doc_status,
+                },
+                reason=note,
+            )
 
         driver.doc_status_updated_at = driver.doc_status_updated_at or timezone.now()
 

@@ -29,6 +29,16 @@ pytestmark = pytest.mark.django_db
 QA = dict(ENVIRONMENT='qa', IS_PRODUCTION=False)
 PROD = dict(ENVIRONMENT='production', IS_PRODUCTION=True)
 
+ACTOR_EMAIL = 'ops.lead@saaradhigo.test'
+
+
+def _simulate(*args):
+    """Run the command as a named operator, which every write requires."""
+    if not User.objects.filter(email=ACTOR_EMAIL).exists():
+        User.objects.create_user(phone_number='+917770009999', email=ACTOR_EMAIL,
+                                 role='admin', is_staff=True)
+    call_command('qa_simulate_driver_eligibility', *args, '--actor-email', ACTOR_EMAIL)
+
 
 def _driver(phone='+917770001003', with_vehicle=True, **kw):
     user = User.objects.create_user(phone_number=phone, role='driver')
@@ -114,7 +124,7 @@ def test_may_operate_handles_none():
 @override_settings(**QA)
 def test_simulated_eligibility_does_not_touch_approval_fields():
     driver = _driver()
-    call_command('qa_simulate_driver_eligibility', '--driver-id', str(driver.id))
+    _simulate('--driver-id', str(driver.id))
     driver.refresh_from_db()
 
     assert driver.qa_simulated_eligibility is True
@@ -148,7 +158,7 @@ def test_test_driver_is_identifiable_even_where_simulation_is_ignored():
 def test_command_refuses_in_production():
     driver = _driver()
     with pytest.raises(CommandError, match='refusing to run'):
-        call_command('qa_simulate_driver_eligibility', '--driver-id', str(driver.id))
+        _simulate('--driver-id', str(driver.id))
     driver.refresh_from_db()
     assert driver.qa_simulated_eligibility is False
 
@@ -158,7 +168,7 @@ def test_command_refuses_outside_qa(environment):
     with override_settings(ENVIRONMENT=environment, IS_PRODUCTION=False):
         driver = _driver()
         with pytest.raises(CommandError, match='refusing to run'):
-            call_command('qa_simulate_driver_eligibility', '--driver-id', str(driver.id))
+            _simulate('--driver-id', str(driver.id))
 
 
 @override_settings(**QA)
@@ -166,7 +176,7 @@ def test_command_refuses_a_number_outside_the_test_range():
     """Even in QA it cannot touch something that might be a real driver."""
     driver = _driver(phone='+919876543210')
     with pytest.raises(CommandError, match='not a QA test account'):
-        call_command('qa_simulate_driver_eligibility', '--driver-id', str(driver.id))
+        _simulate('--driver-id', str(driver.id))
     driver.refresh_from_db()
     assert driver.qa_simulated_eligibility is False
 
@@ -175,14 +185,14 @@ def test_command_refuses_a_number_outside_the_test_range():
 def test_command_refuses_a_driver_with_no_active_vehicle():
     driver = _driver(with_vehicle=False)
     with pytest.raises(CommandError, match='no active vehicle'):
-        call_command('qa_simulate_driver_eligibility', '--driver-id', str(driver.id))
+        _simulate('--driver-id', str(driver.id))
 
 
 @override_settings(**QA)
 def test_command_is_reversible():
     driver = _driver()
-    call_command('qa_simulate_driver_eligibility', '--driver-id', str(driver.id))
-    call_command('qa_simulate_driver_eligibility', '--driver-id', str(driver.id), '--revert')
+    _simulate('--driver-id', str(driver.id))
+    _simulate('--driver-id', str(driver.id), '--revert')
     driver.refresh_from_db()
     assert driver.qa_simulated_eligibility is False
 
@@ -192,7 +202,7 @@ def test_command_writes_an_audit_row_saying_it_is_not_an_approval():
     from servers.admin_audit.models import AdminAuditLog
 
     driver = _driver()
-    call_command('qa_simulate_driver_eligibility', '--driver-id', str(driver.id))
+    _simulate('--driver-id', str(driver.id))
 
     row = AdminAuditLog.objects.get(action='qa_simulated_driver_eligibility')
     assert row.target_id == str(driver.id)
@@ -206,7 +216,7 @@ def test_command_writes_an_audit_row_saying_it_is_not_an_approval():
 @override_settings(**QA)
 def test_command_refuses_an_unknown_driver():
     with pytest.raises(CommandError, match='no driver with id'):
-        call_command('qa_simulate_driver_eligibility', '--driver-id', '999999')
+        _simulate('--driver-id', '999999')
 
 
 # --------------------------------------------------------------------------

@@ -39,10 +39,19 @@ changes no authority -- a repeat, or a password reset -- this command
 writes the run record itself, because the receivers only record real
 changes and a run is still worth a line.
 
+WHO RAN IT
+----------
+The row names an operator: `--actor-email` when a person runs this, or the
+`QA_BOOTSTRAP_ACTOR_EMAIL` variable when a deploy does, either way an active
+operator and never the break-glass account (`admin_audit.actor_option`). On
+an EMPTY database there is no operator to name and this is one of the three
+commands that can create the first; then, and only then, it runs without one
+and the row says so.
+
 USAGE
 -----
     railway run --service backend --environment QA \\
-        python manage.py bootstrap_qa_operator
+        python manage.py bootstrap_qa_operator --actor-email you@saaradhigo.com
 
 Requires QA_ADMIN_BOOTSTRAP_PHONE and QA_ADMIN_BOOTSTRAP_PASSWORD to be set in
 that environment. QA_ADMIN_BOOTSTRAP_CODE is accepted and ignored; it is retained
@@ -58,11 +67,16 @@ from django.core.management.base import BaseCommand, CommandError
 from base.seeding import require_seedable_environment
 from django.db import transaction
 
-from servers.admin_audit.context import audit_context
+from servers.admin_audit.actor_option import (
+    add_actor_argument,
+    attributed,
+    require_actor,
+)
+from servers.admin_audit.services import record_admin_action
 
 User = get_user_model()
 
-ACTOR_LABEL = 'bootstrap_qa_operator (management command)'
+COMMAND = 'bootstrap_qa_operator'
 ACTION = 'qa_operator_bootstrapped'
 
 
@@ -77,6 +91,11 @@ class Command(BaseCommand):
                  'this, an existing account keeps the password it has, so a '
                  'redeploy cannot silently rotate a credential in use.',
         )
+        add_actor_argument(
+            parser,
+            help='Email of the operator running this; goes on the audit row. '
+                 'A deploy sets QA_BOOTSTRAP_ACTOR_EMAIL instead. May be '
+                 'omitted only when no operator exists yet.')
 
     def handle(self, *args, **options):
         require_seedable_environment('the QA operator account')
@@ -119,6 +138,9 @@ class Command(BaseCommand):
                 'account can approve KYC and inspect money; pick something longer.'
             )
 
+        # Before the first write. None only on an empty database.
+        actor = require_actor(options, COMMAND, unattended=True, allow_genesis=True)
+
         # Known before the write so the audit row can say so.
         created = not User.objects.filter(phone_number=phone).exists()
         changed = []
@@ -128,11 +150,20 @@ class Command(BaseCommand):
             'created': created,
             'fields_set': changed,
             'environment': environment or 'unlabelled',
+            'genesis': actor is None,
         }
 
-        with audit_context(actor_label=ACTOR_LABEL, action=ACTION,
-                           reason='QA operator bootstrap',
-                           extra_after=run_facts) as audit, transaction.atomic():
+        with attributed(actor, COMMAND, action=ACTION,
+                        reason='QA operator bootstrap',
+                        extra_after=run_facts) as audit:
+            self._converge(phone=phone, password=password, created=created,
+                           changed=changed, options=options, audit=audit,
+                           environment=environment)
+
+    def _converge(self, *, phone, password, created, changed, options,
+                  audit, environment):
+        """Create or repair the account, then make sure the run left a row."""
+        with transaction.atomic():
             user, _ = User.objects.get_or_create(
                 phone_number=phone,
                 defaults={
@@ -191,27 +222,26 @@ class Command(BaseCommand):
             # through the context above. A second one would say the same.
             return
 
-        try:
-            from servers.admin_audit.models import AdminAuditLog
-            AdminAuditLog.objects.create(
-                actor=None,
-                actor_label=ACTOR_LABEL,
-                action=ACTION,
-                target_type='User',
-                target_id=str(user.id),
-                before={},
-                # No credential, and no phone number: the user id is enough to
-                # find the account, and an audit log is retained and searchable.
-                after={
-                    'created': created,
-                    'fields_set': sorted(set(changed)),
-                    'environment': environment or 'unlabelled',
-                },
-                reason='QA operator bootstrap',
-            )
-        except Exception as exc:  # noqa: BLE001
-            # An audit failure must not leave the operator without an account, but
-            # it must be visible.
+        # No credential, and no phone number: the user id is enough to find
+        # the account, and an audit log is retained and searchable. The actor
+        # comes from the context; `record_admin_action` never raises, so an
+        # audit failure cannot leave the operator without an account -- but
+        # it must be visible.
+        row = record_admin_action(
+            None,
+            action=ACTION,
+            target_type='User',
+            target_id=user.id,
+            before={},
+            after={
+                'created': created,
+                'fields_set': sorted(set(changed)),
+                'environment': environment or 'unlabelled',
+                'genesis': audit.actor is None,
+            },
+            reason='QA operator bootstrap',
+        )
+        if row is None:
             self.stderr.write(
-                self.style.WARNING(f'  audit row could not be written: {exc}')
+                self.style.WARNING('  audit row could not be written; see the log')
             )

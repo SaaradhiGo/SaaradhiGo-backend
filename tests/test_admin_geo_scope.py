@@ -58,9 +58,9 @@ User = get_user_model()
 @pytest.fixture
 def geo(db):
     """A two-country tree, which is the whole point."""
-    from django.core.management import call_command
+    from conftest import seed_admin_access
 
-    call_command('seed_admin_access')
+    seed_admin_access()
     return {node.code: node for node in GeoNode.objects.all()}
 
 
@@ -395,10 +395,10 @@ class TestTheSeed:
         assert AdminAssignment.objects.count() == 0
 
     def test_it_is_idempotent(self, geo):
-        from django.core.management import call_command
+        from conftest import seed_admin_access
 
         before = GeoNode.objects.count()
-        call_command('seed_admin_access')
+        seed_admin_access()
 
         assert GeoNode.objects.count() == before
 
@@ -410,7 +410,8 @@ class TestTheSeed:
         hyderabad.status = 'paused'
         hyderabad.save()
 
-        call_command('seed_admin_access')
+        from conftest import seed_admin_access
+        seed_admin_access()
 
         assert GeoNode.objects.get(code='IN-TG-HYD').status == 'paused'
 
@@ -420,8 +421,10 @@ class TestTheSeed:
 
         settings.IS_PRODUCTION = True
 
+        from conftest import seed_admin_access
+
         with pytest.raises(CommandError, match='production'):
-            call_command('seed_admin_access', '--test-admins')
+            seed_admin_access('--test-admins')
 
     def test_test_admins_cover_every_role_except_super_admin(self, geo):
         """One test login per role, and deliberately NO test Super Admin.
@@ -432,9 +435,9 @@ class TestTheSeed:
         through the real named account, which is also the only one that
         will hold it in production.
         """
-        from django.core.management import call_command
+        from conftest import seed_admin_access
 
-        call_command('seed_admin_access', '--test-admins')
+        seed_admin_access('--test-admins')
 
         roles = set(
             AdminAssignment.objects.values_list('role__code', flat=True)
@@ -447,9 +450,9 @@ class TestTheSeed:
 
     def test_the_seed_cannot_satisfy_the_super_admin_floor(self, geo):
         """The property that matters, stated directly."""
-        from django.core.management import call_command
+        from conftest import seed_admin_access
 
-        call_command('seed_admin_access', '--test-admins')
+        seed_admin_access('--test-admins')
 
         assert super_admin_shortfall() == MIN_SUPER_ADMINS
 

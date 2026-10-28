@@ -52,6 +52,15 @@ def _rider(phone='+917770001002'):
     return User.objects.create_user(phone_number=phone, role='rider')
 
 
+def _actor_email():
+    """The operator the recompute is attributed to; `--apply` requires one."""
+    email = 'ops.lead@saaradhigo.test'
+    if not User.objects.filter(email=email).exists():
+        User.objects.create_user(phone_number='+917770009999', email=email,
+                                 role='admin', is_staff=True)
+    return email
+
+
 def _trip(rider, driver, *, status='completed', estimated=TRIP_81_FARE,
           final=None, currency='INR', completed=True):
     now = timezone.now()
@@ -190,7 +199,7 @@ def test_recompute_counts_a_completed_trip_once():
     _trip(rider, driver)
     assert driver.total_trips == 0
 
-    call_command('recompute_driver_trip_counts', '--apply')
+    call_command('recompute_driver_trip_counts', '--apply', '--actor-email', _actor_email())
     driver.refresh_from_db()
     assert driver.total_trips == 1
 
@@ -202,8 +211,8 @@ def test_recompute_is_idempotent():
     driver, rider = _driver(), _rider()
     _trip(rider, driver)
 
-    call_command('recompute_driver_trip_counts', '--apply')
-    call_command('recompute_driver_trip_counts', '--apply')
+    call_command('recompute_driver_trip_counts', '--apply', '--actor-email', _actor_email())
+    call_command('recompute_driver_trip_counts', '--apply', '--actor-email', _actor_email())
     driver.refresh_from_db()
     assert driver.total_trips == 1
 
@@ -215,7 +224,7 @@ def test_recompute_ignores_cancelled_trips():
     _trip(rider, driver)
     _trip(rider, driver, status='cancelled', completed=False)
 
-    call_command('recompute_driver_trip_counts', '--apply')
+    call_command('recompute_driver_trip_counts', '--apply', '--actor-email', _actor_email())
     driver.refresh_from_db()
     assert driver.total_trips == 1, 'a cancelled trip is not a trip the driver did'
 
@@ -239,6 +248,6 @@ def test_recompute_corrects_an_inflated_counter_downwards():
     _trip(rider, driver)
     Driver.objects.filter(id=driver.id).update(total_trips=99)
 
-    call_command('recompute_driver_trip_counts', '--apply')
+    call_command('recompute_driver_trip_counts', '--apply', '--actor-email', _actor_email())
     driver.refresh_from_db()
     assert driver.total_trips == 1

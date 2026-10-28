@@ -351,6 +351,21 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
     ),
 }
 
+# Migration gate for the Celery worker.
+#
+# On Railway the backend service runs `manage.py migrate --noinput` as its
+# pre-deploy command and the celery service does not; its start command is just
+# `celery -A base worker -B`. Nothing orders the two, so a worker built from
+# new code can start consuming against a schema that is still one migration
+# behind. base/migration_gate.py holds the worker at `worker_init` until
+# `migrate --check` would pass, retrying with backoff up to this many seconds
+# and then exiting loudly with the pending migrations named.
+#
+# 0 disables the gate. That is for a migration left unapplied ON PURPOSE (a
+# backfill scheduled for off-hours, a rollback that keeps its migration); the
+# module docstring says why it is an environment variable and not a code change.
+MIGRATION_WAIT_TIMEOUT = int(os.environ.get('MIGRATION_WAIT_TIMEOUT', '300'))
+
 # Celery Beat — periodic tasks.
 # The compose `celery` service runs with `-B` so beat is embedded in the
 # worker. That's fine while we run a single celery instance; when we

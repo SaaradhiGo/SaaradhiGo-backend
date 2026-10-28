@@ -169,7 +169,10 @@ def grant_legacy_equivalent(user, ops_role=None):
     from django.core.management import call_command
 
     from servers.admin_access.bridge import LEGACY_ROLE_EQUIVALENT
-    from servers.admin_access.models import GLOBAL, AdminAssignment, AdminRole, GeoNode
+    from servers.admin_access.models import (
+        COUNTRY, GLOBAL, AdminAssignment, AdminRole, GeoNode,
+    )
+    from servers.admin_access.roles import SUPER_ADMIN
 
     if not GeoNode.objects.exists() or not AdminRole.objects.exists():
         seed_admin_access()
@@ -181,12 +184,22 @@ def grant_legacy_equivalent(user, ops_role=None):
         return None
 
     role = AdminRole.objects.get(code=code)
-    scope = GeoNode.objects.get(kind=GLOBAL)
-    assignment, _ = AdminAssignment.objects.get_or_create(
-        admin=user, role=role, scope=scope,
-        defaults={'reason': 'Test fixture: legacy ops_role equivalent.'},
-    )
-    return assignment
+    # Only Super Admin may be held at Global (`models.check_role_at_scope`,
+    # owner's ruling 2026-10-28). The legacy roles were unscoped, so the
+    # closest honest equivalent is every COUNTRY: the same reach over every
+    # anchored row, without the unrestricted Global grant.
+    if code == SUPER_ADMIN:
+        scopes = [GeoNode.objects.get(kind=GLOBAL)]
+    else:
+        scopes = list(GeoNode.objects.filter(kind=COUNTRY).order_by('code'))
+    assignments = []
+    for scope in scopes:
+        assignment, _ = AdminAssignment.objects.get_or_create(
+            admin=user, role=role, scope=scope,
+            defaults={'reason': 'Test fixture: legacy ops_role equivalent.'},
+        )
+        assignments.append(assignment)
+    return assignments
 
 
 @pytest.fixture

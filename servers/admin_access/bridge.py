@@ -253,6 +253,13 @@ def node_of(obj):
     if isinstance(obj, GeoNode):
         return obj
 
+    # sos.SOSEvent: anchored at SOS time (trip zone, GPS -> city, or the
+    # driver's home city). None here means UNANCHORED, and `granted` with
+    # no node asks "does the caller hold it anywhere?" -- which is exactly
+    # the rule for an SOS nobody can place: every Safety Officer may act.
+    if hasattr(obj, 'anchor_source'):
+        return getattr(obj, 'anchor_node', None)
+
     # driver.Driver
     node = getattr(obj, 'home_city', None)
     if node is not None:

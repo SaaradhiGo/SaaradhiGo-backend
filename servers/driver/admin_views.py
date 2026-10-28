@@ -20,6 +20,42 @@ from rest_framework.pagination import PageNumberPagination
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# "KYC sees only KYC queues" (owner, QA survey 2026-10-28)
+# ---------------------------------------------------------------------------
+#
+# A driver is IN KYC until a document review has approved them: `approved`
+# is False, or their documents are pending or rejected. An approved driver
+# with approved documents is an operations matter, not a KYC one.
+from django.db.models import Q
+
+IN_KYC = Q(approved=False) | ~Q(doc_status='approved')
+
+
+def kyc_only(user):
+    """Is this operator's driver authority KYC and nothing else?
+
+    True when the caller holds `driver.kyc` but neither `driver.write` nor
+    `trip.read` -- the KYC Verifier template, and nobody else's. Such an
+    operator's driver list is the KYC queue, and an already-approved
+    driver answers NOT FOUND to them, the same as a driver outside their
+    city. Decided through `granted`, so an unmigrated legacy `driver_ops`
+    account (which still holds `trip.read` through the bridge) is
+    unaffected until it is migrated.
+    """
+    from servers.admin_access.bridge import granted
+
+    if not granted(user, 'driver.kyc')[0]:
+        return False
+    return not (granted(user, 'driver.write')[0] or granted(user, 'trip.read')[0])
+
+
+def for_kyc_view(user, drivers):
+    """`drivers`, narrowed to the KYC queue when the caller is KYC-only."""
+    return drivers.filter(IN_KYC) if kyc_only(user) else drivers
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def list_drivers_admin(request):
@@ -31,9 +67,9 @@ def list_drivers_admin(request):
     every driver in both countries.
     """
     try:
-        drivers = scoped_to_request(
+        drivers = for_kyc_view(request.user, scoped_to_request(
             request, Driver.objects.select_related('user_id', 'home_city')
-        ).order_by('-id')
+        )).order_by('-id')
     except ScopeNotHeld as exc:
         return error_response(
             code='SCOPE_NOT_HELD', message=str(exc), field='scope',
@@ -81,7 +117,7 @@ def retrieve_driver_admin(request, driver_id):
     """
     driver = scoped_or_none(
         request.user,
-        Driver.objects.prefetch_related('user_id', 'vehicle_set'),
+        for_kyc_view(request.user, Driver.objects.prefetch_related('user_id', 'vehicle_set')),
         id=driver_id,
     )
     if driver is None:
@@ -200,9 +236,9 @@ def driver_full_detail_admin(request, driver_id):
     # the same as a driver who does not exist.
     driver = scoped_or_none(
         request.user,
-        Driver.objects.select_related(
+        for_kyc_view(request.user, Driver.objects.select_related(
             'user_id', 'active_vehicle', 'active_vehicle__vehicle_type_id',
-        ),
+        )),
         id=driver_id,
     )
     if driver is None:
@@ -546,7 +582,8 @@ def get_vehicle_details(request, driver_id):
     try:
         # Scoped through the driver: a vehicle's documents are the
         # driver's documents.
-        if scoped_or_none(request.user, Driver.objects.all(), id=driver_id) is None:
+        if scoped_or_none(request.user, for_kyc_view(request.user, Driver.objects.all()),
+                          id=driver_id) is None:
             raise Vehicle.DoesNotExist
         vehicle_objects = Vehicle.objects.filter(driver_id=driver_id)
         serializer = VehicleSerializer(vehicle_objects, many=True)

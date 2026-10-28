@@ -10,6 +10,7 @@ from servers.sos import urls as sos_urls
 from servers.pricing import urls as pricing_urls
 from servers.support import urls as support_urls
 from servers.admin_access import urls as admin_access_urls
+from servers.command_centre import urls as command_centre_urls
 
 urlpatterns = [
     path('uploads/presign/', presign_upload),
@@ -22,4 +23,5 @@ urlpatterns = [
     path('pricing/', include(pricing_urls)),
     path('support/', include(support_urls)),
     path('admin-access/', include(admin_access_urls.urlpatterns)),
+    path('command-centre/', include(command_centre_urls.urlpatterns)),
 ]

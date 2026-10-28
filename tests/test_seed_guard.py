@@ -16,6 +16,8 @@ SEEDS = [
     ('bootstrap_qa_operator', []),
     ('seed_load_fixtures', []),
     ('seed_admin_access', ['--test-admins']),
+    ('seed_us_test_city', []),
+    ('seed_us_test_city', ['--remove']),
 ]
 
 

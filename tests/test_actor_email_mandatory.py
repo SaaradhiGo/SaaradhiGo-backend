@@ -49,7 +49,7 @@ from django_otp.plugins.otp_static.models import StaticDevice
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from base import ops_mfa
-from conftest import seed_admin_access
+from conftest import SEED_ACTOR_EMAIL, seed_admin_access
 from servers.admin_access.management.commands.migrate_operators import QA_PLAN
 from servers.admin_access.models import AdminAssignment, AdminRole, GeoNode
 from servers.admin_audit import actor_option
@@ -74,6 +74,7 @@ WRITING_COMMANDS = [
     'recompute_driver_trip_counts',
     'reset_operator_mfa',
     'seed_admin_access',
+    'seed_us_test_city',
     'set_operator_password',
 ]
 
@@ -295,6 +296,28 @@ def _fp_eligibility():
     return tuple(sorted(Driver.objects.values_list('pk', 'qa_simulated_eligibility')))
 
 
+def _prepare_us_seed(settings, monkeypatch):
+    settings.IS_PRODUCTION = False
+    seed_admin_access()
+    return [], {}
+
+
+def _prepare_us_seed_remove(settings, monkeypatch):
+    settings.IS_PRODUCTION = False
+    seed_admin_access()
+    call_command('seed_us_test_city', '--actor-email', SEED_ACTOR_EMAIL,
+                 stdout=StringIO())
+    return ['--remove'], {}
+
+
+def _fp_us_seed():
+    from servers.pricing.models import ServiceZone
+    from servers.ride.models import Trip
+
+    return (tuple(sorted(ServiceZone.objects.values_list('code', flat=True))),
+            User.objects.count(), Driver.objects.count(), Trip.objects.count())
+
+
 QA_OPERATOR_PHONE = '+919555000001'
 
 
@@ -346,6 +369,10 @@ CASES = [
          _prepare_recompute, _fp_trip_counts, dry_run=([], {})),
     Case('qa_simulate_driver_eligibility', 'qa_simulate_driver_eligibility',
          _prepare_simulate, _fp_eligibility),
+    Case('seed_us_test_city', 'seed_us_test_city',
+         _prepare_us_seed, _fp_us_seed, needs_operator_to_prepare=True),
+    Case('seed_us_test_city --remove', 'seed_us_test_city',
+         _prepare_us_seed_remove, _fp_us_seed, needs_operator_to_prepare=True),
     Case('bootstrap_qa_operator', 'bootstrap_qa_operator',
          _prepare_bootstrap_operator, _fp_users, unattended=True, genesis=True),
     Case('bootstrap_qa_accounts', 'bootstrap_qa_accounts',

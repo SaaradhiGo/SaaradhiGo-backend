@@ -140,6 +140,12 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # name like its siblings -- found by this very check, which is the point.
         'base.utils.send_otp_via_sns',
         'auth_user.send_push_notification_task',
+        # Command Centre threshold sweep (module 1). acks_late is safe:
+        # raise_alert is keyed on (city, metric) while open, escalation is an
+        # update of that row and a clear is a conditional UPDATE, so a
+        # redelivered run converges on the same alerts. Writes alerts and
+        # audit rows only; no trip, money or driver status.
+        'command_centre.evaluate_alert_thresholds',
         'driver.block_expired_driver_licenses',
         'driver.sweep_stale_driver_presence',
         'payments.reconcile_stuck_payments',

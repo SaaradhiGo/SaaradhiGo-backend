@@ -228,7 +228,7 @@ class TestTheReset:
         assert reset.target_id == str(user.pk)
         assert reset.before == {'devices': 2}
         assert reset.after == {
-            'devices': 0, 'factors_removed': 2,
+            'devices': 0, 'factors_removed': 2, 'recovery_codes_removed': 2,
             'pending_totp_device_created': True, 'sessions_revoked': True,
         }
         assert reset.reason == REASON

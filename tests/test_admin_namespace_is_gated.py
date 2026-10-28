@@ -104,6 +104,18 @@ ALLOWLIST = {
     # (the console shows "not yet migrated"), so no capability can gate it;
     # it refuses non-operators inside and returns nothing about anyone else.
     'api/v1/admin-access/me/': 'Self-description for the console; is_operator checked inside.',
+    # Self-service MFA. Each acts on the CALLER's own second factor, found
+    # from the bearer token: there is no target object for a capability to
+    # be scoped to, and an operator with no role assignment yet must still
+    # be able to see their enrolment and replace lost recovery codes.
+    # is_operator is checked inside and non-operators get 403; regenerating
+    # additionally demands a live authenticator code (a recovery code is
+    # refused), so a stolen token alone cannot mint a way back in.
+    'api/v1/auth/admin/mfa/status/':
+        'Self-service MFA status; operator identity from the token, no target object.',
+    'api/v1/auth/admin/mfa/recovery-codes/regenerate/':
+        'Self-service recovery-code regeneration against a live TOTP code; '
+        'operator identity from the token, no target object.',
     # `api/v1/auth/admin/invite/` is NOT here any more (owner's ruling,
     # 2026-10-28: no allowlist). Operator invites carry `admin.manage`;
     # rider/driver test-account creation moved to `admin/invite/test-rider/`
@@ -290,7 +302,7 @@ def test_the_allowlist_is_exactly_what_it_says():
             for permissions in gates.values()
         ), f'{route} is gated now; remove it from ALLOWLIST'
 
-    assert len(ALLOWLIST) <= 2, sorted(ALLOWLIST)
+    assert len(ALLOWLIST) <= 4, sorted(ALLOWLIST)
 
 
 def test_viewset_gates_are_read_per_method():

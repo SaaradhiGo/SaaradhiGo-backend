@@ -13,6 +13,7 @@ from .admin_views import admin_list_users, admin_login
 from .dpdp_views import me_export, me_delete
 from .email_auth_views import email_login
 from .invite_views import invite_operator, invite_test_driver, invite_test_rider
+from .mfa_views import mfa_status, regenerate_recovery_codes
 from .password_views import (
     change_password,
     confirm_email_verification,
@@ -50,6 +51,14 @@ urlpatterns = [
     # Operator invites: `admin.manage` plus a fresh second factor. No
     # password is ever generated or returned -- see invite_views.
     path('admin/invite/', invite_operator),
+
+    # The signed-in operator's OWN second factor: status, and a fresh set
+    # of recovery codes against a live authenticator code. Self-service,
+    # so gated like `admin-access/me/` (token + is_operator inside) rather
+    # than on a capability -- see mfa_views and the allowlist in
+    # tests/test_admin_namespace_is_gated.py.
+    path('admin/mfa/status/', mfa_status),
+    path('admin/mfa/recovery-codes/regenerate/', regenerate_recovery_codes),
 ]
 
 

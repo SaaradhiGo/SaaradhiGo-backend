@@ -56,6 +56,8 @@ from base.seeding import require_seedable_environment
 from django.db import transaction
 from django.utils import timezone
 
+from servers.admin_audit.context import audit_context
+
 User = get_user_model()
 
 MIN_PASSWORD_LENGTH = 12
@@ -110,7 +112,16 @@ class Command(BaseCommand):
                 skipped.append(f'{label}: {problem}')
                 continue
 
-            outcome = self._apply(role, phone, email, password, is_staff, reset)
+            # The operator account is an access row: creating it, or
+            # giving an existing one `is_staff`, appends an audit row by
+            # itself (`admin_audit.access_audit`). The context puts this
+            # command's name on it. Rider and driver accounts are not
+            # operator-shaped and write nothing.
+            with audit_context(
+                actor_label='bootstrap_qa_accounts (management command)',
+                reason=f'QA bootstrap: the {label} test account.',
+            ):
+                outcome = self._apply(role, phone, email, password, is_staff, reset)
             (created if outcome == 'created' else converged).append(label)
 
         self._report(created, converged, skipped, reset)

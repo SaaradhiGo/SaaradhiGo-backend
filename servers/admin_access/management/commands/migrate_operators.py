@@ -31,6 +31,18 @@ It does not revoke anything. Removing authority is `revoke_assignment`,
 which enforces the Super Admin floor and wants a reason. A migration that
 could silently remove access would be a worse instrument than the problem
 it solves.
+
+EVERY LINE IT APPLIES IS AUDITED, WITH A NAME IF YOU GIVE ONE
+-------------------------------------------------------------
+On 2026-10-27 this command applied the QA plan and the audit log recorded
+nothing, because audit rows were something views wrote and this is not a
+view. The access models now audit themselves (`admin_audit.access_audit`),
+so each assignment and each break-glass flag this writes appends a row
+whatever happens here. What this command adds is the WHO: pass
+`--actor-email` with the address of the person running it and every row
+names them. Without it the rows say `migrate_operators (management
+command)`, which is honest but is the kind of row an access review has to
+chase.
 """
 
 import json
@@ -42,6 +54,9 @@ from django.db import transaction
 from servers.admin_access.models import AdminAssignment, AdminRole, GeoNode
 from servers.admin_access.roles import SUPER_ADMIN
 from servers.admin_access.services import super_admin_shortfall
+from servers.admin_audit.context import audit_context
+
+ACTOR_LABEL = 'migrate_operators (management command)'
 
 #: The QA mapping, from the owner's decisions of 2026-10-26.
 #:
@@ -71,6 +86,39 @@ QA_PLAN = [
 ]
 
 
+def load_plan(source):
+    """`QA_PLAN` for "qa", otherwise the JSON file at `source`.
+
+    Shared with `record_retroactive_access_audit`, which must describe the
+    same lines this command applied.
+    """
+    if source == 'qa':
+        return QA_PLAN
+    try:
+        with open(source, encoding='utf-8') as handle:
+            return json.load(handle)
+    except OSError as exc:
+        raise CommandError(f'Cannot read plan {source!r}: {exc}') from exc
+
+
+def resolve_actor(email):
+    """The operator account behind `--actor-email`, or None when not given.
+
+    An address that matches nobody is an error, not a label: a row naming
+    a person who does not exist is worse than one naming the command.
+    """
+    if not email:
+        return None
+    actor = get_user_model().objects.filter(email__iexact=email.strip()).first()
+    if actor is None:
+        raise CommandError(
+            f'--actor-email {email!r} matches no account. The actor on an '
+            f'audit row must be a real operator; create them first or omit '
+            f'the flag to attribute the rows to the command.'
+        )
+    return actor
+
+
 class Command(BaseCommand):
     help = 'Assign named operators to roles and scopes. Dry run by default.'
 
@@ -89,14 +137,36 @@ class Command(BaseCommand):
             help='Required to apply the BUILT-IN qa plan outside QA. A '
                  'production migration should use an explicit plan file.',
         )
+        parser.add_argument(
+            '--actor-email', default='',
+            help='Email of the person running this. Every audit row the '
+                 'apply writes names them. Strongly recommended with --apply.',
+        )
 
     def handle(self, *args, **options):
-        plan = self._load_plan(options['plan'])
+        plan = load_plan(options['plan'])
         apply_changes = options['apply']
 
         if apply_changes:
             self._guard_environment(options)
 
+        actor = resolve_actor(options.get('actor_email'))
+        with audit_context(actor=actor, actor_label='' if actor else ACTOR_LABEL,
+                           reason=f'Operator migration, plan {options["plan"]!r}.'):
+            rows, problems = self._apply_plan(plan, apply_changes)
+
+        self._report(rows, problems, apply_changes)
+
+        if problems and apply_changes:
+            raise CommandError(
+                f'{len(problems)} account(s) in the plan could not be '
+                f'migrated. Nothing about them was changed; the rest were '
+                f'applied. Fix the plan or create the accounts, then re-run.'
+            )
+
+    # -- internals -----------------------------------------------------
+
+    def _apply_plan(self, plan, apply_changes):
         user_model = get_user_model()
         rows, problems = [], []
 
@@ -131,25 +201,7 @@ class Command(BaseCommand):
 
             rows.append((email, user.pk, '; '.join(actions) or 'nothing to do'))
 
-        self._report(rows, problems, apply_changes)
-
-        if problems and apply_changes:
-            raise CommandError(
-                f'{len(problems)} account(s) in the plan could not be '
-                f'migrated. Nothing about them was changed; the rest were '
-                f'applied. Fix the plan or create the accounts, then re-run.'
-            )
-
-    # -- internals -----------------------------------------------------
-
-    def _load_plan(self, source):
-        if source == 'qa':
-            return QA_PLAN
-        try:
-            with open(source, encoding='utf-8') as handle:
-                return json.load(handle)
-        except OSError as exc:
-            raise CommandError(f'Cannot read plan {source!r}: {exc}') from exc
+        return rows, problems
 
     def _guard_environment(self, options):
         """Refuse to apply the built-in QA plan to production by accident."""

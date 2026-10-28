@@ -84,6 +84,10 @@ MIDDLEWARE = [
     # `request.user.is_verified()`, which is how the console knows whether this
     # SESSION has cleared MFA (as opposed to whether the account has a device).
     'django_otp.middleware.OTPMiddleware',
+    # Attributes any access write made during the request (an assignment,
+    # a role, a scope, an authority flag) to request.user in the audit
+    # log. Reads the user lazily, so API bearer-token writes are covered.
+    'servers.admin_audit.middleware.AuditActorMiddleware',
     'base.middleware.ExceptionHandlingMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',

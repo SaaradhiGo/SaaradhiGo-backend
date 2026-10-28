@@ -31,7 +31,13 @@ requires --reset-password, so a redeploy cannot silently change a credential an
 operator is already using.
 
 Every run writes an AdminAuditLog row, so the existence of the account is
-traceable to the moment it was created.
+traceable to the moment it was created. When the run grants or repairs
+authority (`is_staff`, `is_superuser`, `role`, `ops_role`) that row is the
+one the access models write for themselves (`admin_audit.access_audit`),
+named `qa_operator_bootstrapped` through the audit context; when the run
+changes no authority -- a repeat, or a password reset -- this command
+writes the run record itself, because the receivers only record real
+changes and a run is still worth a line.
 
 USAGE
 -----
@@ -52,7 +58,12 @@ from django.core.management.base import BaseCommand, CommandError
 from base.seeding import require_seedable_environment
 from django.db import transaction
 
+from servers.admin_audit.context import audit_context
+
 User = get_user_model()
+
+ACTOR_LABEL = 'bootstrap_qa_operator (management command)'
+ACTION = 'qa_operator_bootstrapped'
 
 
 class Command(BaseCommand):
@@ -108,8 +119,21 @@ class Command(BaseCommand):
                 'account can approve KYC and inspect money; pick something longer.'
             )
 
-        with transaction.atomic():
-            user, created = User.objects.get_or_create(
+        # Known before the write so the audit row can say so.
+        created = not User.objects.filter(phone_number=phone).exists()
+        changed = []
+        # `fields_set` is filled in below, but the dict is shared with the
+        # context now so the structural row carries it when it is written.
+        run_facts = {
+            'created': created,
+            'fields_set': changed,
+            'environment': environment or 'unlabelled',
+        }
+
+        with audit_context(actor_label=ACTOR_LABEL, action=ACTION,
+                           reason='QA operator bootstrap',
+                           extra_after=run_facts) as audit, transaction.atomic():
+            user, _ = User.objects.get_or_create(
                 phone_number=phone,
                 defaults={
                     'role': 'admin',
@@ -124,7 +148,6 @@ class Command(BaseCommand):
                 },
             )
 
-            changed = []
             if not created:
                 # Converge, do not duplicate. An account that drifted out of the
                 # operator role is repaired; its password is left alone unless
@@ -163,12 +186,17 @@ class Command(BaseCommand):
             '  sign in at the operations console /login with this phone number.'
         )
 
+        if audit.rows:
+            # The authority change wrote its own row, named and annotated
+            # through the context above. A second one would say the same.
+            return
+
         try:
             from servers.admin_audit.models import AdminAuditLog
             AdminAuditLog.objects.create(
                 actor=None,
-                actor_label='bootstrap_qa_operator (management command)',
-                action='qa_operator_bootstrapped',
+                actor_label=ACTOR_LABEL,
+                action=ACTION,
                 target_type='User',
                 target_id=str(user.id),
                 before={},

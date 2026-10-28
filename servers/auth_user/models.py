@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, transaction
 from django.db.models.functions import Lower
 
 from .usermanager import customUserManager
@@ -137,3 +137,12 @@ class customUser(AbstractUser):
     
     def __str__(self) -> str:
         return self.full_name if self.full_name else self.phone_number
+
+    def save(self, *args, **kwargs):
+        # A change to this account's authority (see `is_break_glass` above
+        # and `servers.admin_audit.access_audit`) appends an audit row from
+        # a post_save receiver. Inside one transaction, so the flag cannot
+        # end up flipped with the row missing -- a savepoint when the
+        # caller is already in one, and a few microseconds otherwise.
+        with transaction.atomic():
+            super().save(*args, **kwargs)

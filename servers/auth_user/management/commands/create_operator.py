@@ -57,7 +57,7 @@ from django.utils import timezone
 
 from base import ops_mfa
 from base.countries import normalize_phone
-from servers.admin_audit.models import AdminAuditLog
+from servers.admin_audit.context import audit_context
 from servers.auth_user.identity import InvalidEmail, normalize_email
 
 User = get_user_model()
@@ -127,29 +127,29 @@ class Command(BaseCommand):
                 must_change_password=True,
             )
             user.set_password(temporary)
-            user.save()
+            # Creating an operator-shaped account appends an audit row by
+            # itself (`admin_audit.access_audit`). The context names that
+            # row `operator_created` and adds the facts the model cannot
+            # see, so there is ONE row for this creation rather than a
+            # structural one and a hand-written one saying the same thing.
+            # No credential, no secret, no phone number goes in it: the id
+            # finds the account, and audit rows are retained and
+            # searchable.
+            with audit_context(
+                actor_label='create_operator (management command)',
+                action='operator_created',
+                reason='Named operator account created from a shell.',
+                extra_after={
+                    'must_change_password': True,
+                    'email_verified': True,
+                    'mfa_enrolment_started': bool(options['enrol_mfa']),
+                },
+            ):
+                user.save()
 
             uri = None
             if options['enrol_mfa']:
                 _device, uri = ops_mfa.enroll_totp(user)
-
-            AdminAuditLog.objects.create(
-                actor=None,
-                actor_label='create_operator (management command)',
-                action='operator_created',
-                target_type='User',
-                target_id=str(user.pk),
-                before={},
-                # No credential, no secret, no phone number: the id finds
-                # the account, and audit rows are retained and searchable.
-                after={
-                    'is_superuser': False,
-                    'must_change_password': True,
-                    'email_verified': True,
-                    'mfa_enrolment_started': bool(uri),
-                },
-                reason='Named operator account created from a shell.',
-            )
 
         self.stdout.write(self.style.SUCCESS(
             f'Created operator account (user id {user.pk}) for {email}. '

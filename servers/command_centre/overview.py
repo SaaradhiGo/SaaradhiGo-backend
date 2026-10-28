@@ -542,9 +542,7 @@ def build_overview(cities, window, *, now=None, include_money=True, scope_code=N
     now = now or timezone.now()
     contexts = city_contexts(cities)
     rows = measure(contexts, window, now)
-    cities_out = []
-    for cid, row in rows.items():
-        cities_out.append(row if include_money else strip_money(row))
+    cities_out = [row if include_money else strip_money(row) for row in rows.values()]
     return {
         'window': window,
         'generated_at': now.isoformat(),

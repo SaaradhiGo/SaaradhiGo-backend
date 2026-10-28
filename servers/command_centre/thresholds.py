@@ -362,7 +362,7 @@ def evaluate_all(now=None):
     for threshold in active_thresholds():
         by_city.setdefault(threshold.city_id, (threshold.city, []))[1].append(threshold)
     summary = {}
-    for city_id, (city, rows) in by_city.items():
+    for city, rows in by_city.values():
         try:
             summary[city.code] = evaluate_city(city, rows, now)
         except Exception:  # noqa: BLE001 - one city failing must not silence the rest

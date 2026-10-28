@@ -143,7 +143,7 @@ def world(geo):
     aus_driver = _driver('+15125570002', 'Austin Driver', geo['US-TX-AUS'])
 
     recent = now - 2 * HOUR
-    for eta, fare in zip((5, 5, 10, 10, 15, 15), (10_000, 20_000, 30_000, 40_000, 50_000, 60_000)):
+    for eta, fare in zip((5, 5, 10, 10, 15, 15), (10_000, 20_000, 30_000, 40_000, 50_000, 60_000), strict=True):
         _completed(rider, hyd_zone, recent, hyd_driver, eta, fare)
     _unfulfilled(rider, hyd_zone, recent)
     _unfulfilled(rider2, hyd_zone, recent)

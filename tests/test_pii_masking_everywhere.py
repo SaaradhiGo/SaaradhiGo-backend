@@ -285,7 +285,7 @@ def world(geo):
     )
     from django.utils import timezone as _tz
     approval = ApprovalRequest(
-        action_key='payout.approve', country='IN', scope_node=geo['IN-TG-HYD'],
+        action_key='finance.payout', country='IN', scope_node=geo['IN-TG-HYD'],
         amount=50000, currency='INR', target_type='withdrawal_request',
         target_id=str(withdrawal.id),
         payload={'driver_id': driver.id, 'driver_name': DRIVER_NAME,
@@ -340,6 +340,21 @@ def support(geo):
 
 def body_of(response):
     return json.dumps(response.json(), ensure_ascii=False)
+
+
+def _without_staff(payload):
+    """The body minus staff attribution blocks (`maker`, `checker`,
+    `created_by`), which carry an operator's email by design."""
+    if isinstance(payload, dict):
+        return {k: _without_staff(v) for k, v in payload.items()
+                if not (k in OPERATOR_IDENTITY_KEYS and isinstance(v, dict))}
+    if isinstance(payload, list):
+        return [_without_staff(v) for v in payload]
+    return payload
+
+
+def customer_body_of(response):
+    return json.dumps(_without_staff(response.json()), ensure_ascii=False)
 
 
 def raw_pii_in(text):
@@ -528,7 +543,7 @@ class TestEveryEndpointAsEveryRole:
         # world's driver is approved; out of their view answers NOT FOUND.
         # 400: `rate-cards/effective/` wants its query params.
         assert response.status_code in (200, 400, 403, 404), (route, role, response.content[:300])
-        body = body_of(response)
+        body = customer_body_of(response)
         assert raw_pii_in(body) == {}, (route, role, raw_pii_in(body))
         for secret in NEVER_IN_A_LIST:
             assert secret not in body, (route, role, secret)

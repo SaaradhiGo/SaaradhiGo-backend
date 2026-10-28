@@ -141,7 +141,7 @@ def test_it_creates_an_operator_not_a_rider(qa_env):
     assert user.is_superuser is True
 
 
-def test_the_created_operator_can_actually_sign_in(qa_env, client):
+def test_the_created_operator_can_actually_sign_in(qa_env, client, frozen_console_open):
     """The point of the whole exercise.
 
     An account that exists but cannot reach the console would leave every
@@ -156,7 +156,10 @@ def test_the_created_operator_can_actually_sign_in(qa_env, client):
     assert resp.status_code in (301, 302), (
         f'operator login returned {resp.status_code} rather than a redirect'
     )
-    # And the session reaches an operator-only page.
+    # And the session reaches an operator-only page. The bootstrap account is
+    # a superuser, which the frozen console counts as Super Admin; the route
+    # is opened by `frozen_console_open` because the shipped allowlist is
+    # the admin index alone.
     assert client.get('/stale-rides/').status_code == 200
 
 

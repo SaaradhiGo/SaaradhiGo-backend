@@ -74,6 +74,7 @@ WRITING_COMMANDS = [
     'recompute_driver_trip_counts',
     'reset_operator_mfa',
     'seed_admin_access',
+    'seed_approval_policies',
     'seed_us_test_city',
     'set_operator_password',
 ]
@@ -318,6 +319,17 @@ def _fp_us_seed():
             User.objects.count(), Driver.objects.count(), Trip.objects.count())
 
 
+def _prepare_seed_policies(settings, monkeypatch):
+    return [], {}
+
+
+def _fp_policies():
+    from servers.approvals.models import ApprovalPolicy
+
+    return tuple(sorted(ApprovalPolicy.objects.values_list(
+        'country', 'action_key', 'version', 'maker_limit', 'is_active')))
+
+
 QA_OPERATOR_PHONE = '+919555000001'
 
 
@@ -369,6 +381,8 @@ CASES = [
          _prepare_recompute, _fp_trip_counts, dry_run=([], {})),
     Case('qa_simulate_driver_eligibility', 'qa_simulate_driver_eligibility',
          _prepare_simulate, _fp_eligibility),
+    Case('seed_approval_policies', 'seed_approval_policies',
+         _prepare_seed_policies, _fp_policies),
     Case('seed_us_test_city', 'seed_us_test_city',
          _prepare_us_seed, _fp_us_seed, needs_operator_to_prepare=True),
     Case('seed_us_test_city --remove', 'seed_us_test_city',

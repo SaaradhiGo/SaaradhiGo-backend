@@ -73,7 +73,13 @@ def rider():
 
 
 @pytest.fixture
-def console(operator):
+def console(operator, frozen_console_open):
+    """A superuser session with the frozen console's routes allowlisted.
+
+    The bell's feed is part of the frozen console and answers 404 to anyone
+    short of a Super Admin on an allowlisted route; the JSON contract below
+    is what it serves to the one caller it still has.
+    """
     client = Client()
     client.force_login(operator)
     return client
@@ -132,18 +138,33 @@ def test_refusal_is_json_not_an_html_redirect(rider):
     client.force_login(rider)
     response = client.get(FEED_PATH)
 
+    # The frozen console's gate answers before the view does: to a rider the
+    # feed does not exist (404), rather than existing and being forbidden.
+    # The view's own JSON 403 remains for the one state the gate lets
+    # through to it, and is exercised directly below.
+    assert response.status_code == 404
+    assert b'"status": "forbidden"' not in response.content
+
+
+def test_anonymous_caller_is_refused(client):
+    response = client.get(FEED_PATH)
+    assert response.status_code == 404
+
+
+def test_the_views_own_refusal_is_json(rider, rf):
+    """Called directly, bypassing the gate: the view still answers JSON, so
+    a template that polls it never parses an HTML page again."""
+    from servers.admin_dashboard.notification_api import notifications_feed
+
+    request = rf.get(FEED_PATH)
+    request.user = rider
+    response = notifications_feed(request)
+
     assert response.status_code == 403
     assert response['Content-Type'].startswith('application/json')
     body = json.loads(response.content)
     assert body['status'] == 'forbidden'
     assert body['notifications'] == []
-
-
-def test_anonymous_caller_is_refused_in_json(client):
-    response = client.get(FEED_PATH)
-    assert response.status_code == 403
-    assert response['Content-Type'].startswith('application/json')
-    assert json.loads(response.content)['notifications'] == []
 
 
 def test_missing_notification_is_json_404(console):
@@ -294,15 +315,17 @@ def test_mark_read_rejects_get(console, operator):
     (lambda: _read_path(1), 'get'),
 ])
 def test_authorisation_is_decided_before_method(client, path_factory, method):
-    """An unauthenticated caller gets 403, not 405.
+    """An unauthenticated caller gets a refusal, not 405.
 
     `@require_GET` / `@require_POST` run ahead of the view body, so decorating
     these views made an anonymous caller using the wrong verb receive 405 --
     which both leaks that the route exists and broke
     `test_admin_dashboard_authz`, whose contract is that every admin route
     refuses anonymous callers with a refusing status. Authorisation is checked
-    first for exactly that reason.
+    first for exactly that reason. Today the frozen console's gate answers
+    even earlier, with the 404 it gives every non-Super-Admin; the property
+    kept here is that the verb is never what the caller learns about.
     """
     response = getattr(client, method)(path_factory())
-    assert response.status_code == 403
-    assert response['Content-Type'].startswith('application/json')
+    assert response.status_code == 404
+    assert response.status_code != 405

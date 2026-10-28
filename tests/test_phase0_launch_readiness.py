@@ -395,7 +395,7 @@ def test_create_notification_respects_marketing_optout(auth_client_rider):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.django_db
-def test_executive_revenue_view_uses_completed_trip_data(client):
+def test_executive_revenue_view_uses_completed_trip_data(client, frozen_console_open):
     from decimal import Decimal
     from django.contrib.auth import get_user_model
     from servers.driver.models import VehicleType

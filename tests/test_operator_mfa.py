@@ -54,8 +54,14 @@ REFUSED = (401, 403)
 
 
 @pytest.fixture(autouse=True)
-def enforced(settings):
-    """MFA on, and the login guard out of the way unless a test wants it."""
+def enforced(settings, frozen_console_open):
+    """MFA on, and the login guard out of the way unless a test wants it.
+
+    The fleet monitor is opened through `frozen_console_open` because the
+    session tests below walk `/`; the operator is a Super Admin at Global
+    (`grant_legacy_equivalent` of `ops_role='admin'`), which the frozen
+    console's gate requires before it will even redirect to the challenge.
+    """
     settings.OPS_MFA_ENFORCED = True
     settings.OPS_LOGIN_MAX_ATTEMPTS = 50
     settings.OPS_LOGIN_MAX_ATTEMPTS_PER_IP = 500

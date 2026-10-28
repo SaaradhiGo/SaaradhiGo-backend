@@ -79,7 +79,7 @@ def _boot(code=BOOT_SNIPPET, **overrides):
         if not k.startswith(('DJANGO_', 'DB_', 'AWS_', 'CASHFREE_', 'QA_',
                              'TEST_PHONE', 'ALLOWED_', 'REDIS_', 'DEBUG',
                              'ENVIRONMENT', 'BACKEND_URL', 'FRONTEND_URL',
-                             'EMAIL_', 'DEFAULT_FROM_EMAIL'))
+                             'EMAIL_', 'DEFAULT_FROM_EMAIL', 'FROZEN_CONSOLE_'))
     }
     env.update(_SAFE_PRODUCTION_ENV)
     for key, value in overrides.items():
@@ -288,6 +288,65 @@ def test_every_spelling_of_off_is_refused_in_production(value):
 def test_mfa_explicitly_on_boots_in_production():
     """Negative control for the guard above."""
     rc, out = _boot(ADMIN_MFA_REQUIRED='true')
+
+    assert rc == 0, out[-2000:]
+    assert 'BOOT_OK' in out
+
+
+# ---------------------------------------------------------------------------
+# The frozen console's allowlist must be spelled from the inventory
+# ---------------------------------------------------------------------------
+#
+# `FROZEN_CONSOLE_ALLOWED_ROUTES` names the routes a Super Admin may still
+# reach on the frozen Django console (servers/admin_dashboard/lockdown.py).
+# A name the inventory does not know is a typo, and a typo in an allowlist
+# fails silently: the route is simply never served, which somebody finds out
+# in the middle of the incident the console was kept for. So production
+# refuses to boot on one, with the bad names in the message.
+
+def test_an_unknown_frozen_console_route_is_refused_in_production():
+    rc, out = _boot(FROZEN_CONSOLE_ALLOWED_ROUTES='admin:index,fleet_monitr')
+
+    assert rc != 0, 'production booted with a misspelled frozen console route'
+    assert 'FROZEN_CONSOLE_ALLOWED_ROUTES' in out
+    assert 'fleet_monitr' in out, 'the fault must name the entry that is wrong'
+
+
+def test_a_route_the_console_never_serves_is_refused_in_production():
+    """`admin:login` is a password-only door with no throttle and no second
+    factor. The gate refuses it under any configuration; configuring it is a
+    decision being reversed through an environment variable, so the boot
+    says so rather than quietly ignoring the entry."""
+    rc, out = _boot(FROZEN_CONSOLE_ALLOWED_ROUTES='admin:index,admin:login')
+
+    assert rc != 0, 'production booted with admin:login allowlisted'
+    assert 'admin:login' in out
+    assert 'refuses to serve' in out
+
+
+def test_a_known_frozen_console_allowlist_boots_in_production():
+    """Negative control, with entries from both halves of the surface: a
+    console screen and a ModelAdmin changelist."""
+    rc, out = _boot(
+        FROZEN_CONSOLE_ALLOWED_ROUTES='admin:index,stale_rides,admin:driver_driver_changelist',
+    )
+
+    assert rc == 0, out[-2000:]
+    assert 'BOOT_OK' in out
+
+
+def test_the_default_frozen_console_allowlist_boots_in_production():
+    """The shipped default (no variable set) must itself pass the guard."""
+    rc, out = _boot(FROZEN_CONSOLE_ALLOWED_ROUTES=None)
+
+    assert rc == 0, out[-2000:]
+    assert 'BOOT_OK' in out
+
+
+def test_qa_may_misspell_the_frozen_console_allowlist_without_crashing():
+    """Loud, not fatal, outside production: a QA deployment should not
+    crash-loop over a console nobody uses while the typo is fixed."""
+    rc, out = _boot(ENVIRONMENT='qa', FROZEN_CONSOLE_ALLOWED_ROUTES='fleet_monitr')
 
     assert rc == 0, out[-2000:]
     assert 'BOOT_OK' in out

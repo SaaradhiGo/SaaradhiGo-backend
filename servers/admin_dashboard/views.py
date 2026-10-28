@@ -30,6 +30,9 @@ from django.views.decorators.http import require_POST,require_http_methods
 from django.contrib.admin.views.decorators import staff_member_required
 
 from servers.admin_dashboard import login_guard
+# Where a verified Super Admin lands after sign-in. Under the lockdown the
+# fleet monitor is a 404 unless allowlisted, so the sign-in asks the gate.
+from servers.admin_dashboard import lockdown
 from servers.payments.models import Payment,TransactionHistory
 from servers.rider.models import (
     Rider, FavoritePlace, Wallet, WalletTransaction, Notification,
@@ -114,7 +117,7 @@ def login(request: HttpRequest) -> HttpResponse:
         # also cleared MFA; otherwise to the challenge, because a valid session
         # cookie is one factor, not two.
         if ops_mfa.console_access_allowed(request):
-            return redirect("fleet_monitor")
+            return redirect(lockdown.landing_url())
         return redirect("ops_mfa_challenge")
     error = None
     if request.method == "POST":
@@ -200,7 +203,7 @@ def login(request: HttpRequest) -> HttpResponse:
                         # page therefore bounces to the challenge until a code is
                         # presented.
                         return redirect("ops_mfa_challenge")
-                    return redirect("fleet_monitor")
+                    return redirect(lockdown.landing_url())
     return render(request, 'admin_pages/login.html', {"error": error})
 def ops_mfa_challenge(request: HttpRequest) -> HttpResponse:
     """Present a second factor for a session whose password already succeeded.
@@ -219,7 +222,7 @@ def ops_mfa_challenge(request: HttpRequest) -> HttpResponse:
     if not is_operator(user):
         return redirect("login")
     if ops_mfa.console_access_allowed(request):
-        return redirect("fleet_monitor")
+        return redirect(lockdown.landing_url())
 
     error = None
     if request.method == "POST":
@@ -234,7 +237,7 @@ def ops_mfa_challenge(request: HttpRequest) -> HttpResponse:
                 request, action='ops_mfa_verified', target_type='operator',
                 target_id=user.pk, after={'method': 'console'},
             )
-            return redirect("fleet_monitor")
+            return redirect(lockdown.landing_url())
         else:
             login_guard.record_failure(request, guard_key)
             # One message for a wrong code, a reused code and a lockout.

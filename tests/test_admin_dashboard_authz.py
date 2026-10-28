@@ -37,8 +37,11 @@ PUBLIC_ROUTE_NAMES = frozenset({'login', 'logout'})
 # Status codes that count as "refused". 302 is what `admin_required` does
 # (redirect to the login page); `staff_member_required` also redirects.
 # 401/403 are accepted so a future move to a DRF-style permission or a
-# hard deny does not require editing this test.
-REFUSING_STATUS = frozenset({301, 302, 303, 307, 308, 401, 403})
+# hard deny does not require editing this test. 404 is what the frozen
+# console's gate answers to anyone who is not a Super Admin on an
+# allowlisted route (servers/admin_dashboard/lockdown.py): a retired screen
+# must not advertise itself, so it looks like a URL that was never mounted.
+REFUSING_STATUS = frozenset({301, 302, 303, 307, 308, 401, 403, 404})
 
 
 def _route_names():

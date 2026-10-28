@@ -219,7 +219,7 @@ def admin_login(request):
         # the device -- the same proof `confirm_totp` always required, made
         # at the one moment the operator is certainly holding the app.
         # From then on the account is enrolled and MFA applies as usual.
-        pending = (None if ops_mfa.has_device(user)
+        pending = (None if not ops_mfa.mfa_enabled() or ops_mfa.has_device(user)
                    else ops_mfa.pending_totp_device(user))
         if ops_mfa.mfa_required_for(user) or pending is not None:
             # str() first: JSON allows a numeric literal, and a client that

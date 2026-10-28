@@ -255,3 +255,33 @@ def test_production_refuses_to_boot_without_a_mail_backend():
 
     assert rc != 0, 'production booted with no way to send a verification link'
     assert 'Email delivery is not configured' in err, err[-600:]
+
+
+# ---------------------------------------------------------------------------
+# The MFA master switch cannot be off in production
+# ---------------------------------------------------------------------------
+
+def test_mfa_switched_off_is_refused_in_production():
+    """ADMIN_MFA_REQUIRED=false exists so QA can sign in with a password alone
+    while nobody holds an authenticator. In production that is a stolen
+    operator password approving payouts, so the boot refuses it."""
+    rc, out = _boot(ADMIN_MFA_REQUIRED='false')
+
+    assert rc != 0, 'production booted with ADMIN_MFA_REQUIRED=false'
+    assert 'ADMIN_MFA_REQUIRED is false' in out
+
+
+@pytest.mark.parametrize('value', ['0', 'no', 'off', 'False', ' FALSE '])
+def test_every_spelling_of_off_is_refused_in_production(value):
+    rc, out = _boot(ADMIN_MFA_REQUIRED=value)
+
+    assert rc != 0, f'production booted with ADMIN_MFA_REQUIRED={value!r}'
+    assert 'ADMIN_MFA_REQUIRED is false' in out
+
+
+def test_mfa_explicitly_on_boots_in_production():
+    """Negative control for the guard above."""
+    rc, out = _boot(ADMIN_MFA_REQUIRED='true')
+
+    assert rc == 0, out[-2000:]
+    assert 'BOOT_OK' in out

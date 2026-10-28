@@ -203,7 +203,10 @@ class Command(BaseCommand):
             link_zones_to_nodes,
         )
 
-        linked, unmatched = link_zones_to_nodes(ServiceZone, GeoNode)
+        # Each link and each backfilled driver leaves an audit row naming
+        # this command and the operator behind the context (see
+        # `admin_access.linking`).
+        linked, unmatched = link_zones_to_nodes(ServiceZone, GeoNode, caller=COMMAND)
         self.stdout.write(f'  zones linked: {linked}')
         if unmatched:
             self.stdout.write(self.style.WARNING(
@@ -211,7 +214,7 @@ class Command(BaseCommand):
                 f'-- trips in them are invisible to scoped admins'
             ))
 
-        assigned, skipped = backfill_driver_home_city(Driver, GeoNode)
+        assigned, skipped = backfill_driver_home_city(Driver, GeoNode, caller=COMMAND)
         if assigned:
             self.stdout.write(f'  drivers given a home city: {assigned}')
         if skipped:

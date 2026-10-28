@@ -7,6 +7,13 @@ ever live when this runs it assigns nobody and logs, because a
 misattributed driver looks correct while an unassigned one is reported.
 
 Reversible: clearing the column restores the prior state exactly.
+
+NOT AUDITED, DELIBERATELY. Same reasoning as `pricing/0010`: historical
+models, an audit table whose shape is not guaranteed at this point in the
+migration graph, and a hash chain that a historical write would break.
+`backfill_driver_home_city` detects the historical models, assigns without
+audit rows and logs a warning; the seed path is audited, one row per
+driver. See `admin_access.linking`.
 """
 
 from django.db import migrations

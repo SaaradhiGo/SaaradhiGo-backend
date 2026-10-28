@@ -27,16 +27,31 @@ once, deliberately: that is how the operator receives it. It is never logged, ne
 written to the audit row, and never returned by any HTTP response. Whoever runs this
 command is responsible for the terminal they run it in.
 
-WHO ENROLLED THEM
------------------
-A second factor is part of who may operate, so every run that writes -- creating the
-device, confirming it, replacing an old one -- requires `--actor-email`, the address
-of the operator at the keyboard, validated by `admin_audit.actor_option`. The audit
-row names them.
+--replace: THE NEW FACTOR IS PROVED BEFORE THE OLD ONE GOES
+-----------------------------------------------------------
+Re-enrolling an operator who already has a factor used to work by deleting their
+devices first and creating the new one second. Between those two steps -- and for
+ever, if the operator never managed to scan the new secret -- the account had no
+factor at all, which in an enforced environment is a locked-out operator and in an
+unenforced one is an operator account with MFA silently off.
+
+Now the order is the other way round. `--replace` without `--code` creates the new
+device ALONGSIDE the old ones and prints its URI; the old factors keep working.
+`--replace --code` confirms the new device with the code FIRST, and only then
+removes the old devices and reissues recovery codes. If the code does not verify,
+nothing is removed. The account therefore never has zero confirmed factors at any
+point, and the command checks that invariant before it commits: a path that would
+leave an operator who must present a factor with none to present is refused and
+rolled back.
+
+Both halves are audited: `ops_mfa_enrolled` for the new factor and
+`ops_mfa_factors_replaced` for the removal, each naming the operator who ran this
+(`--actor-email`, see `admin_audit.actor_option`).
 """
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
 
 from base import ops_mfa
 from base.permissions import is_operator
@@ -50,6 +65,12 @@ from servers.admin_audit.services import record_admin_action
 User = get_user_model()
 
 COMMAND = 'enroll_operator_mfa'
+ENROLLED_ACTION = 'ops_mfa_enrolled'
+REPLACED_ACTION = 'ops_mfa_factors_replaced'
+
+
+class ZeroFactorsRefused(CommandError):
+    """The run would have left an operator who must present a factor with none."""
 
 
 class Command(BaseCommand):
@@ -65,9 +86,11 @@ class Command(BaseCommand):
                  'run to be shown the provisioning URI, then re-run with it.')
         parser.add_argument(
             '--replace', action='store_true',
-            help='Discard any existing factor on this account first. Required to '
-                 're-enrol, so a second run cannot silently orphan a device the '
-                 'operator is still using.')
+            help='Re-enrol an account that already has a factor. The existing '
+                 'factors keep working until the new device is confirmed with '
+                 '--code; only then are they removed. Required on BOTH runs, so '
+                 'a second run cannot silently orphan a device the operator is '
+                 'still using.')
         add_actor_argument(parser)
 
     def handle(self, *args, **options):
@@ -91,42 +114,44 @@ class Command(BaseCommand):
         if existing and not options['replace']:
             raise CommandError(
                 f'This account already has {len(existing)} confirmed factor(s). '
-                f'Re-run with --replace to discard them and enrol again. Doing '
-                f'that invalidates the operator\'s current authenticator entry '
-                f'and all their recovery codes.'
+                f'Re-run with --replace to enrol a new one; the current factors '
+                f'keep working until the new device is confirmed, and are '
+                f'removed then.'
             )
 
         # Every path from here writes: before the first write.
         actor = require_actor(options, COMMAND)
         with attributed(actor, COMMAND,
                         reason='Operator second factor enrolled via management command.'):
-            self._enrol(user, existing, options)
+            if not options['code']:
+                self._start(user, existing)
+            else:
+                self._confirm(user, existing, options['code'], options['replace'])
 
-    def _enrol(self, user, existing, options):
-        if existing and options['replace']:
-            removed = ops_mfa.remove_devices(user)
-            self.stdout.write(self.style.WARNING(
-                f'Removed {removed} existing factor(s).'))
+    # -- the two runs ------------------------------------------------------
 
-        code = options['code']
-        if not code:
-            device, uri = ops_mfa.enroll_totp(user)
-            self.stdout.write('')
-            self.stdout.write(self.style.WARNING(
-                'The line below contains a SECRET. Give it to the operator '
-                'directly and do not paste it anywhere else.'))
-            self.stdout.write('')
-            self.stdout.write(uri)
-            self.stdout.write('')
-            self.stdout.write(
-                'Add it to an authenticator app, then run this command again with '
-                '--code <the 6 digits it shows> to confirm.')
+    def _start(self, user, existing):
+        device, uri = ops_mfa.enroll_totp(user)
+        self.stdout.write('')
+        self.stdout.write(self.style.WARNING(
+            'The line below contains a SECRET. Give it to the operator '
+            'directly and do not paste it anywhere else.'))
+        self.stdout.write('')
+        self.stdout.write(uri)
+        self.stdout.write('')
+        self.stdout.write(
+            'Add it to an authenticator app, then run this command again with '
+            '--code <the 6 digits it shows> to confirm.')
+        self.stdout.write(self.style.NOTICE(
+            'Until you do, the device is UNCONFIRMED and will not satisfy a '
+            'sign-in.'))
+        if existing:
             self.stdout.write(self.style.NOTICE(
-                'Until you do, the device is UNCONFIRMED and will not satisfy a '
-                'sign-in.'))
-            return
+                f'The {len(existing)} existing factor(s) still work. They are '
+                f'removed only when the new device is confirmed with '
+                f'--replace --code.'))
 
-        # Confirming: find the unconfirmed device created by the previous run.
+    def _confirm(self, user, existing, code, replace):
         device = ops_mfa.pending_totp_device(user)
         if device is None:
             raise CommandError(
@@ -134,31 +159,70 @@ class Command(BaseCommand):
                 '--code first to create one.'
             )
 
+        # Decided BEFORE anything changes: once the old factors are gone,
+        # has_device() would answer differently in an unenforced environment.
+        must_keep_a_factor = ops_mfa.mfa_required_for(user)
+
         if not ops_mfa.confirm_totp(device, code):
             raise CommandError(
                 'That code did not verify. The app may be out of sync, or the '
-                'code may have expired -- try again with a fresh one. Nothing has '
-                'been changed.'
+                'code may have expired -- try again with a fresh one. Nothing '
+                'has been changed'
+                + (', and the existing factors are untouched.' if existing else '.')
             )
 
-        codes = ops_mfa.issue_recovery_codes(user)
+        with transaction.atomic():
+            removed = 0
+            if replace and existing:
+                removed = ops_mfa.remove_other_devices(user, keep=device)
+            codes = ops_mfa.issue_recovery_codes(user)
 
-        # No phone number, no secret, no recovery code. The user id is enough
-        # to find the account, and audit rows are retained and searchable.
-        # The actor comes from the context opened in handle().
-        record_admin_action(
-            None,
-            action='ops_mfa_enrolled',
-            target_type='operator',
-            target_id=user.pk,
-            after={'method': 'totp', 'recovery_codes_issued': len(codes)},
-            reason='Operator second factor enrolled via management command.',
-        )
+            remaining = ops_mfa.devices_for(user)
+            if must_keep_a_factor and not any(
+                    isinstance(d, type(device)) and d.pk == device.pk for d in remaining):
+                # Cannot happen by construction -- the new device was confirmed
+                # before anything was removed -- but the invariant is the point,
+                # so it is checked rather than assumed, and the removal is
+                # rolled back if it ever fails.
+                raise ZeroFactorsRefused(
+                    'Refusing: this would leave an operator who must present a '
+                    'second factor with no confirmed factor. Nothing was removed.'
+                )
+
+            # No phone number, no secret, no recovery code. The user id is
+            # enough to find the account, and audit rows are retained and
+            # searchable. The actor comes from the context opened in handle().
+            record_admin_action(
+                None,
+                action=ENROLLED_ACTION,
+                target_type='operator',
+                target_id=user.pk,
+                after={'method': 'totp', 'recovery_codes_issued': len(codes),
+                       'replaced_existing': bool(replace and existing)},
+                reason='Operator second factor enrolled via management command.',
+            )
+            if replace and existing:
+                record_admin_action(
+                    None,
+                    action=REPLACED_ACTION,
+                    target_type='operator',
+                    target_id=user.pk,
+                    before={'confirmed_factors': len(existing)},
+                    after={'devices_removed': removed,
+                           'confirmed_factors': len(remaining)},
+                    reason=('Previous factors removed after the replacement '
+                            'device was confirmed. The account held at least '
+                            'one confirmed factor throughout.'),
+                )
 
         self.stdout.write('')
         self.stdout.write(self.style.SUCCESS(
             f'Enrolled. Operator (user id {user.pk}) now requires a code to sign '
             f'in.'))
+        if removed:
+            self.stdout.write(self.style.WARNING(
+                f'Removed {removed} previous factor(s); the old authenticator '
+                f'entry and the old recovery codes no longer work.'))
         self.stdout.write('')
         self.stdout.write(self.style.WARNING(
             'RECOVERY CODES -- shown once, single-use. Give these to the operator '

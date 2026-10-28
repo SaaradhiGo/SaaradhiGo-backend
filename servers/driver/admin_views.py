@@ -674,24 +674,35 @@ def list_withdrawals_admin(request):
 def approve_withdrawal_admin(request, withdrawal_id):
     """
     POST /api/admin/withdrawals/{id}/approve/
-    Approve request (status: PENDING → APPROVED).
+
+    Ask to release a payout. This is the MAKER half of maker-checker: the
+    caller must hold `finance.payout` in the withdrawal's scope, and the
+    policy for the driver's country decides what happens next. "Payout
+    runs always a checker" is the seeded India rule, so in practice this
+    creates an `ApprovalRequest` (202) and a DIFFERENT finance admin
+    holding `approval.check` approves it at
+    `/api/v1/approvals/admin/requests/<id>/approve/`; only then does the
+    withdrawal flip to approved and the payout dispatch happen -- in
+    `servers.approvals.executors.execute_payout`, which is this view's old
+    body moved, lock and all. A country with no policy is refused with
+    THRESHOLD_NOT_CONFIGURED (409), by ruling.
+
+    The lock-then-scope lookup is kept exactly as it was: a 404 that is
+    indistinguishable from a missing row, decided before any policy is
+    read, so an out-of-scope id leaks nothing about which country it is in.
     """
     from .models import WithdrawalRequest
     from django.db import transaction
-    from django.utils import timezone
-    from servers.admin_audit.services import record_admin_action
+    from servers.approvals import service as approvals
+    from servers.approvals.actions import FINANCE_PAYOUT
+    from servers.approvals.executors import payout_country, withdrawal_key
 
-    # The whole state-flip-and-payout-dispatch runs inside one atomic
-    # block with select_for_update on the WithdrawalRequest row so two
-    # admins clicking Approve at the same time cannot both pass the
-    # status=='pending' check and both fire trigger_payout_creation
-    # (which would double-deduct the driver's wallet).
     try:
         with transaction.atomic():
             try:
                 withdrawal = (
                     WithdrawalRequest.objects.select_for_update()
-                    .select_related('driver', 'driver__user_id')
+                    .select_related('driver', 'driver__user_id', 'driver__home_city')
                     .get(id=withdrawal_id)
                 )
                 # Scope checked AFTER the lock, not in the query: see
@@ -716,23 +727,8 @@ def approve_withdrawal_admin(request, withdrawal_id):
                     issue=f"Current status is {withdrawal.status}",
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-
-            before = {'status': withdrawal.status, 'amount': str(withdrawal.amount)}
-            withdrawal.status = 'approved'
-            withdrawal.processed_at = timezone.now()
-            withdrawal.save(update_fields=['status', 'processed_at'])
-
-            record_admin_action(
-                request,
-                action='withdrawal_approved',
-                target_type='withdrawal_request',
-                target_id=withdrawal.id,
-                before=before,
-                after={'status': 'approved', 'amount': str(withdrawal.amount)},
-                reason=request.data.get('reason', '') if hasattr(request, 'data') else '',
-            )
     except Exception as e:
-        logger.error(f"approve_withdrawal_admin atomic block failed: {e}")
+        logger.error(f"approve_withdrawal_admin lookup failed: {e}")
         return error_response(
             code="INTERNAL_ERROR",
             message="Failed to approve withdrawal",
@@ -741,22 +737,51 @@ def approve_withdrawal_admin(request, withdrawal_id):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-    # Gateway dispatch happens OUTSIDE the atomic block so we don't hold
-    # the row lock for the duration of the Cashfree round-trip. The
-    # approve-side state flip is already durable; if the payout fails,
-    # the gateway hook flips the row to 'failed' and ops can retry.
-    try:
-        from .services import trigger_payout_creation
-        trigger_payout_creation(withdrawal)
-    except Exception as e:
-        logger.error(
-            f"approve_withdrawal_admin: trigger_payout_creation failed for "
-            f"withdrawal {withdrawal.id}: {e}"
+    country = payout_country(withdrawal)
+    if country is None:
+        return error_response(
+            code="COUNTRY_UNKNOWN",
+            message="This withdrawal cannot be placed in a country",
+            field="withdrawal_id",
+            issue="The driver has no home city and the currency names no market",
+            status=status.HTTP_409_CONFLICT,
         )
 
+    # Outside the lock: within-limit execution (never, for payouts, under
+    # the seeded policy -- but the framework decides, not this view) would
+    # otherwise make the gateway call while holding the row.
+    try:
+        outcome = approvals.require_approval_or_execute(
+            FINANCE_PAYOUT,
+            actor=request.user,
+            country=country,
+            amount=withdrawal.amount_minor,
+            currency=withdrawal.currency,
+            scope_node=withdrawal.driver.home_city,
+            target=withdrawal,
+            target_type='withdrawal_request',
+            payload={'withdrawal_id': withdrawal.id},
+            idempotency_key=withdrawal_key(withdrawal.id),
+            reason=str(request.data.get('reason', '') or '') if hasattr(request, 'data') else '',
+            http_request=request,
+        )
+    except approvals.ApprovalError as exc:
+        return exc.response()
+
     from .serializers import WithdrawalRequestSerializer
+    withdrawal.refresh_from_db()
     serializer = WithdrawalRequestSerializer(withdrawal)
-    return success_response(serializer.data, status.HTTP_200_OK)
+    if outcome.executed:
+        # Within the maker's limit: the old single-step answer.
+        return success_response(serializer.data, status.HTTP_200_OK)
+    return success_response(
+        {
+            'withdrawal': serializer.data,
+            'approval_request': outcome.request.as_dict(),
+            'duplicate': outcome.duplicate,
+        },
+        status.HTTP_202_ACCEPTED,
+    )
 
 
 @api_view(['POST'])
@@ -1061,30 +1086,15 @@ def bulk_action_withdrawal_admin(request):
 
                 if action == 'approve':
 
-                    w.status = 'approved'
-                    w.processed_at = timezone.now()
-
-                    w.save(
-                        update_fields=[
-                            'status',
-                            'processed_at',
-                        ]
-                    )
-
-                    record_admin_action(
-                        request,
-                        action='withdrawal_approved',
-                        target_type='withdrawal_request',
-                        target_id=w.id,
-                        before=before,
-                        after={
-                            'status': 'approved',
-                            'amount': str(w.amount),
-                        },
-                        reason='bulk action',
-                    )
-
+                    # Nothing is flipped here any more. A bulk approve is a
+                    # payout RUN, and payout runs always need a checker
+                    # (the seeded policy); the eligible rows are collected
+                    # and raised as ONE approval request below. The flip,
+                    # the audit row and the dispatch happen in
+                    # `servers.approvals.executors.execute_payout` when a
+                    # second finance admin approves.
                     approved_for_payout.append(w)
+                    continue
 
                 # =====================================================
                 # REJECT + REFUND
@@ -1232,29 +1242,67 @@ def bulk_action_withdrawal_admin(request):
             skipped_ids.append(wid)
 
     # =============================================================
-    # DISPATCH APPROVED PAYOUTS
+    # APPROVE: ONE MAKER-CHECKER REQUEST FOR THE WHOLE BATCH
     # =============================================================
     #
-    # Gateway calls happen outside the database transaction so we
-    # don't hold database locks during the external API request.
+    # Raised outside every row lock. The batch must be one currency and
+    # one country: a threshold is per country in local currency, and a
+    # sum across currencies is not a number (base/money.py).
     # =============================================================
 
-    if approved_for_payout:
+    if action == 'approve' and approved_for_payout:
+        from servers.approvals import service as approvals
+        from servers.approvals.actions import FINANCE_PAYOUT
+        from servers.approvals.executors import batch_key, payout_country
 
-        from .services import trigger_payout_creation
+        currencies = {w.currency for w in approved_for_payout}
+        countries = {payout_country(w) for w in approved_for_payout}
+        if len(currencies) != 1 or len(countries) != 1 or None in countries:
+            return error_response(
+                code="MIXED_MARKETS",
+                message="A bulk payout must be in one currency and one country",
+                field="withdrawal_ids",
+                issue=f"currencies={sorted(currencies)} countries={sorted(c or '?' for c in countries)}",
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        cities = {w.driver.home_city_id for w in approved_for_payout}
+        scope_node = approved_for_payout[0].driver.home_city if len(cities) == 1 else None
+        ids = sorted(w.id for w in approved_for_payout)
+        try:
+            outcome = approvals.require_approval_or_execute(
+                FINANCE_PAYOUT,
+                actor=request.user,
+                country=countries.pop(),
+                amount=sum(w.amount_minor for w in approved_for_payout),
+                currency=currencies.pop(),
+                scope_node=scope_node,
+                target_type='withdrawal_batch',
+                target_id=batch_key(ids).split(':', 1)[1],
+                payload={'withdrawal_ids': ids},
+                idempotency_key=batch_key(ids),
+                reason=admin_notes or 'bulk action',
+                http_request=request,
+            )
+        except approvals.ApprovalError as exc:
+            return exc.response()
 
-        for w in approved_for_payout:
-
-            try:
-                trigger_payout_creation(w)
-
-            except Exception as e:
-                logger.error(
-                    "Bulk payout dispatch failed for withdrawal %s: %s",
-                    w.id,
-                    e,
-                    exc_info=True,
-                )
+        if outcome.executed:
+            result = outcome.request.result or {}
+            updated_ids = list(result.get('approved_ids', []))
+            skipped_ids = skipped_ids + list(result.get('skipped_ids', []))
+        else:
+            return success_response(
+                {
+                    'action': action,
+                    'approval_request': outcome.request.as_dict(),
+                    'duplicate': outcome.duplicate,
+                    'requested_ids': ids,
+                    'skipped_ids': skipped_ids,
+                    'requested_count': len(ids),
+                    'skipped_count': len(skipped_ids),
+                },
+                status.HTTP_202_ACCEPTED,
+            )
 
     return success_response(
         {

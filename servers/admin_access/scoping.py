@@ -49,6 +49,9 @@ SCOPE_PATHS = {
     # Through the driver, because a payout is owed to a person.
     'driver.WithdrawalRequest': 'driver__home_city__path',
 
+    # A vehicle's documents are its driver's documents.
+    'driver.Vehicle': 'driver_id__home_city__path',
+
     # Through the trip the money was for.
     'payments.Payment': 'trip_id__zone__geo_node__path',
 

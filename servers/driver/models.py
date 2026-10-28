@@ -4,6 +4,8 @@ from base.media import PrefixedUUIDPath, validate_document_file, validate_file_s
 from base.storage_backends import private_document_storage, public_media_storage
 from base.currency_stamp import CurrencyStampedModel
 from base.money import MinorUnitsAmount
+from base.db_indexes import PatternPrefixIndex
+from servers.driver.plates import normalised_plate_expression
 # Create your models here.
 User=get_user_model()
 class Driver(models.Model):
@@ -248,6 +250,17 @@ class Vehicle(models.Model):
         blank=True,
         null=True
     )
+
+    class Meta:
+        indexes = [
+            # Console search finds a plate however it was typed
+            # (`TS09AB1234`, `ts-09-ab-1234`): the stored value is left as
+            # the driver entered it and this indexes its normalised form,
+            # the same expression `servers.search` filters on. On
+            # PostgreSQL it carries `text_pattern_ops` so the prefix match
+            # uses it too; see `base.db_indexes`.
+            PatternPrefixIndex(normalised_plate_expression(), name='vehicle_plate_norm_idx'),
+        ]
 
     def __str__(self) -> str:
         return f'{self.vehicle_number} - {self.driver_id}'

@@ -51,8 +51,9 @@ class AuditContext:
 
     #: The user making the change, or None.
     actor: object = None
-    #: A label that survives the actor's deletion; derived from the actor
-    #: when empty.
+    #: A label for the row when there is no user to snapshot (a command,
+    #: a seed); derived from the actor when empty. The actor's id, email
+    #: and role are snapshotted by the model itself.
     actor_label: str = ''
     #: Why. Copied into every structural row written inside the block.
     reason: str = ''

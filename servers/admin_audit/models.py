@@ -18,9 +18,29 @@ The model is intentionally narrow and free of FKs that could CASCADE
 on deletion of the affected resource. We store IDs by value so the
 audit row survives even if the target (driver, withdrawal) is later
 removed.
+
+THE ACTOR IS A SNAPSHOT, NOT A FOREIGN KEY
+------------------------------------------
+`actor` used to be a nullable FK with `on_delete=SET_NULL`. That promised
+that deleting a staff account would quietly blank the actor on every row
+they ever wrote, which is wrong twice over: an audit row whose author can be
+erased by deleting the author is not an audit row, and on PostgreSQL the
+SET_NULL cascade is an UPDATE on this table, which the append-only trigger
+refuses -- so the delete raised from inside the cascade instead.
+
+Now the row records who acted at the moment it was written: `actor_id`
+(a plain integer, no constraint), `actor_label`, `actor_email` and
+`actor_role`. Nothing that happens to the account afterwards -- rename,
+deactivation, anonymisation -- reaches the row, and all four are covered by
+the hash chain (`hashchain.py`, "COLUMNS ADDED AFTER THE CHAIN STARTED").
+Writers still pass `actor=<user>`; the `actor` property fills the snapshot.
+
+The other half of the ruling lives in `servers.auth_user.erasure`: an
+account that appears as an actor is never deleted, staff accounts are
+deactivated rather than deleted, and a rider or driver who asks to be
+erased is anonymised in place.
 """
 
-from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -60,21 +80,99 @@ class _AppendOnlyQuerySet(models.QuerySet):
         )
 
 
-class AdminAuditLog(models.Model):
-    # Who acted. Nullable to survive deletion of the staff user account.
-    actor = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='admin_actions',
+def actor_role_of(user):
+    """The authority a user held, as one short string for the audit row.
+
+    `role` says what kind of account it is (rider, driver, admin). For an
+    operator-shaped account -- staff, superuser, or role admin -- `ops_role`
+    says which operator authority it carried, so that is appended:
+    `admin/finance`. A rider is just `rider`. The combination is what an
+    access review wants to know about the person who acted, and it is
+    recorded here because by the time of the review it may have changed.
+    """
+    if user is None:
+        return ''
+    role = getattr(user, 'role', '') or ''
+    operator_shaped = bool(
+        getattr(user, 'is_staff', False)
+        or getattr(user, 'is_superuser', False)
+        or role == 'admin'
     )
+    ops_role = getattr(user, 'ops_role', '') or ''
+    if operator_shaped and ops_role:
+        return f'{role}/{ops_role}'[:64]
+    return role[:64]
+
+
+def actor_snapshot(user):
+    """The four actor columns for `user`, as written at this moment.
+
+    A `None` or unauthenticated user gives an empty snapshot: the row is still
+    written, with `actor_id` NULL, and the label says where it came from.
+    """
+    if user is None or not getattr(user, 'is_authenticated', True):
+        return {'actor_id': None, 'actor_label': '', 'actor_email': '',
+                'actor_role': ''}
+    from .services import _actor_label
+
+    return {
+        'actor_id': getattr(user, 'pk', None),
+        'actor_label': _actor_label(user),
+        'actor_email': (getattr(user, 'email', '') or '')[:254],
+        'actor_role': actor_role_of(user),
+    }
+
+
+class AdminAuditLog(models.Model):
+    # Who acted, as they were at the time. A plain integer, NOT a foreign
+    # key: see "THE ACTOR IS A SNAPSHOT" in the module docstring. BigInteger
+    # because the user table's primary key is a BigAutoField, so the column
+    # keeps the width it had as a FK and the migration rewrites nothing.
+    actor_id = models.BigIntegerField(null=True, blank=True, db_index=True)
     actor_label = models.CharField(
         max_length=255,
         blank=True,
         help_text='Human-readable snapshot of the actor at action time '
-                  '(survives later deletion/rename of the user).',
+                  '(survives later deactivation/rename of the user).',
     )
+    actor_email = models.CharField(
+        max_length=254, blank=True, default='',
+        help_text="The actor's email at action time.",
+    )
+    actor_role = models.CharField(
+        max_length=64, blank=True, default='',
+        help_text="The actor's role, and ops_role for an operator "
+                  "(`admin/finance`), at action time.",
+    )
+
+    @property
+    def actor(self):
+        """The transient user object this row was written with, if any.
+
+        Deliberately NOT a database lookup: a listing of a thousand rows
+        must not become a thousand queries, and the snapshot columns are
+        the record. Code that needs the account loads it by `actor_id`.
+        """
+        return getattr(self, '_actor', None)
+
+    @actor.setter
+    def actor(self, user):
+        """Fill the snapshot from `user`.
+
+        Accepting `actor=<user>` on the constructor keeps every existing
+        writer -- `record_admin_action`, the access receivers, the
+        management commands -- working as it did when this was a FK.
+        Django applies keyword arguments for fields before properties, so an
+        `actor_label` given explicitly alongside `actor` wins over the
+        derived one; the other three always come from the user.
+        """
+        self._actor = user
+        snapshot = actor_snapshot(user)
+        self.actor_id = snapshot['actor_id']
+        self.actor_email = snapshot['actor_email']
+        self.actor_role = snapshot['actor_role']
+        if not self.actor_label:
+            self.actor_label = snapshot['actor_label']
 
     # What action and on what target.
     action = models.CharField(max_length=100, db_index=True)
@@ -170,7 +268,7 @@ class AdminAuditLog(models.Model):
             # without name=, Django auto-generates a hashed name and
             # `makemigrations --check` produces phantom rename migrations.
             models.Index(fields=['target_type', 'target_id'], name='admin_audit_target_idx'),
-            models.Index(fields=['actor', '-created_at'], name='admin_audit_actor_idx'),
+            models.Index(fields=['actor_id', '-created_at'], name='admin_audit_actor_idx'),
         ]
 
     def __str__(self):

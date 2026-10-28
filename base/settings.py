@@ -63,6 +63,9 @@ INSTALLED_APPS = [
     'servers.sos',
     'servers.pricing',
     'servers.support',
+    # Command Centre: operator alerts that must reach a person (seed of the
+    # module). First producer: an SOS that could not be anchored to a city.
+    'servers.command_centre',
     # Operator MFA. django-otp is the established Django implementation: TOTP
     # (RFC 6238) and single-use static recovery codes, with the cryptography done
     # by the library. Nothing here implements an algorithm.

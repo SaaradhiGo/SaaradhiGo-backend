@@ -798,7 +798,8 @@ def _sweep_role():
 def _sweep_assignment():
     node = GeoNode(kind=GLOBAL, code='GLOBAL', name='Global')
     node.save()
-    made_role = AdminRole.objects.create(code='r', name='R', permissions=[])
+    # Only `super_admin` may be held at Global (`models.check_role_at_scope`).
+    made_role = AdminRole.objects.create(code='super_admin', name='SA', permissions=[])
     made = AdminAssignment.objects.create(admin=_operator(), role=made_role, scope=node)
 
     def mutate():

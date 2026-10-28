@@ -112,6 +112,34 @@ def load_plan(source):
         raise CommandError(f'Cannot read plan {source!r}: {exc}') from exc
 
 
+def plan_violations(plan):
+    """Lines the access model would refuse, found BEFORE anything is written.
+
+    Only `super_admin` may be assigned at Global (`models.check_role_at_scope`);
+    a Global assignment is unrestricted, so any other role there would be a
+    quiet world-wide grant. The model refuses the row too, but by then the
+    lines before it have been applied; checking the whole plan first keeps
+    an apply all-or-nothing in the way that matters.
+    """
+    problems = []
+    for number, entry in enumerate(plan, start=1):
+        role, scope = entry.get('role'), entry.get('scope')
+        if not role:
+            continue
+        if scope == 'GLOBAL' and role != SUPER_ADMIN:
+            problems.append(
+                f'line {number} ({entry.get("email")}): {role} at GLOBAL -- '
+                f'only {SUPER_ADMIN} may be assigned at Global; hold '
+                f'{role} at a country, state or city instead.'
+            )
+        elif role == SUPER_ADMIN and scope != 'GLOBAL':
+            problems.append(
+                f'line {number} ({entry.get("email")}): {SUPER_ADMIN} at '
+                f'{scope} -- Super Admin is held at GLOBAL only.'
+            )
+    return problems
+
+
 def resolve_actor(email):
     """The operator account behind `--actor-email`, or None when not given.
 
@@ -153,6 +181,14 @@ class Command(BaseCommand):
         plan = load_plan(options['plan'])
         apply_changes = options['apply']
         reason = f'Operator migration, plan {options["plan"]!r}.'
+
+        violations = plan_violations(plan)
+        if violations:
+            # Refused in BOTH modes: a dry run of a plan that cannot be
+            # applied would print a table that looks like a plan.
+            raise CommandError(
+                'Plan refused; nothing was written:\n  ' + '\n  '.join(violations)
+            )
 
         if not apply_changes:
             with audit_context(actor_label=ACTOR_LABEL, reason=reason):

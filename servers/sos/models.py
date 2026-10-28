@@ -13,6 +13,17 @@ SOSEvent rows are never deleted; SOSEventUpdate rows are insert-only.
 from django.conf import settings
 from django.db import models
 
+#: `anchor_source` values. See `anchoring.resolve_anchor` for the order.
+ANCHOR_TRIP, ANCHOR_GPS, ANCHOR_HOME_CITY, ANCHOR_UNANCHORED = (
+    'trip', 'gps', 'home_city', 'unanchored',
+)
+ANCHOR_SOURCE_CHOICES = [
+    (ANCHOR_TRIP, "The trip's zone"),
+    (ANCHOR_GPS, "The raiser's GPS position, resolved to a zone"),
+    (ANCHOR_HOME_CITY, "The driver's home city"),
+    (ANCHOR_UNANCHORED, 'No anchor: routed to every safety responder'),
+]
+
 
 class SOSEvent(models.Model):
     EVENT_TYPE_CHOICES = [
@@ -70,6 +81,29 @@ class SOSEvent(models.Model):
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.CharField(max_length=512, blank=True)
 
+    # WHERE THE EVENT IS, FOR THE PEOPLE WHO ANSWER IT
+    # ------------------------------------------------
+    # Resolved once, when the row is created (`anchoring.resolve_anchor`):
+    # the trip's zone if there is a trip, else the GPS position above
+    # resolved to a city through the active ServiceZone polygons, else a
+    # driver's home city. `anchor_source` says which. An event that could
+    # not be placed is `unanchored`: it is visible to EVERY operator
+    # holding `safety.respond` and at Global (`scoping.UNSCOPED_UNION`),
+    # and raises a Command Centre alert on creation. An SOS must never be
+    # invisible to the people who respond to it (owner, 2026-10-28).
+    anchor_node = models.ForeignKey(
+        'admin_access.GeoNode',
+        null=True, blank=True,
+        on_delete=models.PROTECT,
+        related_name='sos_events',
+        help_text='The admin-scope node this event is routed to. NULL means unanchored.',
+    )
+    anchor_source = models.CharField(
+        max_length=12, choices=ANCHOR_SOURCE_CHOICES, blank=True, default='',
+        db_index=True,
+        help_text='How anchor_node was chosen. Set on creation; blank is resolved on save.',
+    )
+
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
@@ -83,6 +117,27 @@ class SOSEvent(models.Model):
 
     def __str__(self):
         return f'SOS#{self.id} [{self.status}] {self.event_type} by {self.user_label or "?"}'
+
+    def save(self, *args, **kwargs):
+        """Anchor on creation, whichever path created the row.
+
+        Done here rather than only in `views.raise_sos` because the
+        session console creates events too, and so do tests and scripts:
+        an SOS that reaches the table must reach a responder, and the
+        anchor is what decides which one. The alert for an unanchored
+        event is written in the same transaction as the row, so there is
+        no window in which the event exists and the alert does not.
+        """
+        creating = self._state.adding
+        if creating and not self.anchor_source:
+            from .anchoring import resolve_anchor
+
+            self.anchor_node, self.anchor_source = resolve_anchor(self)
+        super().save(*args, **kwargs)
+        if creating and self.anchor_source == ANCHOR_UNANCHORED:
+            from .anchoring import alert_unanchored
+
+            alert_unanchored(self)
 
 
 class SOSEventUpdate(models.Model):

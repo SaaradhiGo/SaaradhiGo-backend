@@ -40,6 +40,8 @@ CHANGE = '/api/v1/auth/password/change/'
 VERIFY_REQUEST = '/api/v1/auth/email/verify/request/'
 VERIFY_CONFIRM = '/api/v1/auth/email/verify/confirm/'
 INVITE = '/api/v1/auth/admin/invite/'
+TEST_RIDER = '/api/v1/auth/admin/invite/test-rider/'
+TEST_DRIVER = '/api/v1/auth/admin/invite/test-driver/'
 
 GOOD_PASSWORD = 'Cadence-Harbour-74'
 OTHER_PASSWORD = 'Lantern-Meadow-91'
@@ -635,6 +637,18 @@ class TestEmailVerification:
 # ===========================================================================
 
 class TestInvite:
+    """Three routes, three capabilities (owner's ruling, 2026-10-28).
+
+    `/auth/admin/invite/` invites OPERATORS and needs `admin.manage`;
+    `/auth/admin/invite/test-rider/` and `/test-driver/` create QA test
+    accounts, need `rider.write` / `driver.write`, and are routed outside
+    production only. `rider.write` is held by Super Admin alone, so the
+    Support Agents who created rider test accounts on QA no longer can
+    unless the owner grants it to `support_agent`.
+    """
+
+    _seq = iter(range(1, 9999))
+
     @pytest.fixture(autouse=True)
     def _mail_to_locmem(self, settings):
         """Compose mail into `mail.outbox` instead of sending it.
@@ -648,27 +662,79 @@ class TestInvite:
         settings.EMAIL_HOST = 'smtp.test'
         mail.outbox = []
 
-
     def _admin(self, ops_role='admin'):
+        """An UNMIGRATED legacy operator: the bridge answers for it."""
         return _user(email=f'admin-{ops_role}@example.test',
                      phone=f'+91982100{abs(hash(ops_role)) % 10000:04d}',
                      role='admin', is_staff=True, ops_role=ops_role)
 
-    def test_an_operator_can_invite_a_rider_without_any_password(
-            self, client, auth):
+    def _super_admin(self):
+        """A migrated Super Admin at Global: holds rider.write and driver.write."""
+        from conftest import grant_legacy_equivalent
         admin = self._admin()
-        response = auth(admin).post(INVITE, {
+        grant_legacy_equivalent(admin)          # admin -> super_admin @ GLOBAL
+        return admin
+
+    def _scoped(self, role_code, scope_code):
+        """A migrated operator holding `role_code` at `scope_code`."""
+        from conftest import seed_admin_access
+        from servers.admin_access.models import AdminAssignment, AdminRole, GeoNode
+
+        seed_admin_access()
+        i = next(self._seq)
+        user = _user(email=f'{role_code}-{i}@example.test',
+                     phone=f'+91982200{i:04d}', role='admin', is_staff=True)
+        AdminAssignment.objects.create(
+            admin=user, role=AdminRole.objects.get(code=role_code),
+            scope=GeoNode.objects.get(code=scope_code),
+        )
+        return user
+
+    # --- the routes themselves ------------------------------------------
+
+    def test_the_test_account_routes_exist_outside_production_only(self):
+        from servers.auth_user.urls import qa_only_urlpatterns
+
+        with override_settings(IS_PRODUCTION=True):
+            assert qa_only_urlpatterns() == []
+        with override_settings(IS_PRODUCTION=False):
+            assert {str(p.pattern) for p in qa_only_urlpatterns()} == {
+                'admin/invite/test-rider/', 'admin/invite/test-driver/',
+            }
+
+    def test_the_test_account_views_refuse_in_production_even_if_routed(
+            self, client, auth):
+        """Second lock: the URLconf drops the route; the view refuses too."""
+        admin = self._super_admin()
+        with override_settings(IS_PRODUCTION=True):
+            rider = auth(admin).post(TEST_RIDER, {'email': 'p1@example.test'}, format='json')
+            driver = auth(admin).post(TEST_DRIVER, {'email': 'p2@example.test'}, format='json')
+
+        assert rider.status_code == 404 and driver.status_code == 404
+        assert not User.objects.filter(email__in=['p1@example.test', 'p2@example.test']).exists()
+
+    def test_the_operator_route_refuses_test_account_roles(self, client, auth):
+        response = auth(self._super_admin()).post(INVITE, {
             'email': 'qa-rider@example.test', 'role': 'rider',
-            'full_name': 'QA Rider',
+        }, format='json')
+
+        assert response.status_code == 400
+        assert response.json()['error']['code'] == 'AUTH_INVALID_ROLE'
+        assert 'test-rider' in response.json()['error']['message']
+        assert not User.objects.filter(email='qa-rider@example.test').exists()
+
+    # --- test accounts --------------------------------------------------
+
+    def test_a_super_admin_can_create_a_rider_test_account_without_any_password(
+            self, client, auth):
+        response = auth(self._super_admin()).post(TEST_RIDER, {
+            'email': 'qa-rider@example.test', 'full_name': 'QA Rider',
         }, format='json')
 
         assert response.status_code == 201, response.content
         data = response.json()['data']
 
         # No password VALUE and no password-bearing field in the response.
-        # (The `next_step` prose mentions the word, which is fine — the
-        # earlier version of this assertion matched that string and failed,
-        # testing the wording rather than the secret.)
         assert not [k for k in data if 'password' in k.lower()]
         assert GOOD_PASSWORD not in str(data)
         assert OTHER_PASSWORD not in str(data)
@@ -682,10 +748,10 @@ class TestInvite:
         assert Rider.objects.filter(user_id=invited).exists()
 
     def test_the_invited_account_sets_its_own_password(self, client, auth):
-        admin = self._admin()
-        response = auth(admin).post(INVITE, {
-            'email': 'qa-driver@example.test', 'role': 'driver',
+        response = auth(self._super_admin()).post(TEST_DRIVER, {
+            'email': 'qa-driver@example.test',
         }, format='json')
+        assert response.status_code == 201, response.content
         invited = User.objects.get(pk=response.json()['data']['user_id'])
 
         client.credentials()
@@ -701,33 +767,78 @@ class TestInvite:
         assert login.status_code == 200
         assert login.json()['data']['user']['role'] == 'driver'
 
+    def test_a_support_agent_can_no_longer_create_test_riders(self, client, auth):
+        """`support_agent` does not hold `rider.write`. Stated in the PR: on
+        QA this now needs Super Admin, unless the owner grants `rider.write`
+        to `support_agent`."""
+        support = self._scoped('support_agent', 'IN')
+        response = auth(support).post(TEST_RIDER, {'email': 'qa2@example.test'}, format='json')
+
+        assert response.status_code == 403
+        assert not User.objects.filter(email='qa2@example.test').exists()
+
+    def test_a_city_ops_manager_creates_test_drivers_in_their_own_city_only(
+            self, client, auth):
+        """Scoped: `driver.write` at Hyderabad creates Hyderabad test drivers."""
+        from servers.driver.models import Driver
+        city_ops = self._scoped('city_ops_manager', 'IN-TG-HYD')
+
+        own = auth(city_ops).post(TEST_DRIVER, {
+            'email': 'hyd-driver@example.test', 'home_city': 'IN-TG-HYD',
+        }, format='json')
+        assert own.status_code == 201, own.content
+        assert own.json()['data']['home_city'] == 'IN-TG-HYD'
+        assert Driver.objects.get(user_id=own.json()['data']['user_id']).home_city.code == 'IN-TG-HYD'
+
+        elsewhere = auth(city_ops).post(TEST_DRIVER, {
+            'email': 'aus-driver@example.test', 'home_city': 'US-TX-AUS',
+        }, format='json')
+        assert elsewhere.status_code == 403
+        assert elsewhere.json()['error']['code'] == 'SCOPE_NOT_HELD'
+
+        nowhere = auth(city_ops).post(TEST_DRIVER, {'email': 'no-city@example.test'}, format='json')
+        assert nowhere.status_code == 400
+        assert nowhere.json()['error']['code'] == 'HOME_CITY_REQUIRED'
+
+        unknown = auth(city_ops).post(TEST_DRIVER, {
+            'email': 'x-city@example.test', 'home_city': 'XX-NOPE',
+        }, format='json')
+        assert unknown.status_code == 400
+        assert unknown.json()['error']['code'] == 'HOME_CITY_UNKNOWN'
+
+        # No `rider.write` on the template: a test rider is refused.
+        rider = auth(city_ops).post(TEST_RIDER, {'email': 'cityops-rider@example.test'}, format='json')
+        assert rider.status_code == 403
+
+        assert not User.objects.filter(email__in=[
+            'aus-driver@example.test', 'no-city@example.test',
+            'x-city@example.test', 'cityops-rider@example.test',
+        ]).exists()
+
     def test_a_rider_cannot_invite_anyone(self, client, auth):
         rider = _user(email='justarider@example.test', phone='+919821000001')
-        response = auth(rider).post(INVITE, {
-            'email': 'x@example.test', 'role': 'admin',
-        }, format='json')
-        assert response.status_code in (401, 403)
-        assert not User.objects.filter(email='x@example.test').exists()
+        for url, body in ((INVITE, {'email': 'x@example.test', 'role': 'admin'}),
+                          (TEST_RIDER, {'email': 'y@example.test'}),
+                          (TEST_DRIVER, {'email': 'z@example.test'})):
+            response = auth(rider).post(url, body, format='json')
+            assert response.status_code in (401, 403), url
+        assert not User.objects.filter(email__in=[
+            'x@example.test', 'y@example.test', 'z@example.test']).exists()
+
+    # --- operators ------------------------------------------------------
 
     def test_a_support_operator_cannot_create_an_operator(self, client, auth):
         # The escalation that matters: a compromised support account must not
-        # be able to mint an admin.
-        support = self._admin(ops_role='support')
-        response = auth(support).post(INVITE, {
-            'email': 'newops@example.test', 'role': 'admin',
-        }, format='json')
+        # be able to mint an admin. Refused by the gate for the legacy
+        # account (no `ops.admin`) and for the migrated one (no `admin.manage`).
+        for support in (self._admin(ops_role='support'),
+                        self._scoped('support_agent', 'IN')):
+            response = auth(support).post(INVITE, {
+                'email': 'newops@example.test', 'role': 'admin',
+            }, format='json')
 
-        assert response.status_code == 403
-        assert response.json()['error']['code'] == 'AUTH_FORBIDDEN'
+            assert response.status_code == 403
         assert not User.objects.filter(email='newops@example.test').exists()
-
-    def test_a_support_operator_can_still_create_test_riders(self, client,
-                                                             auth):
-        support = self._admin(ops_role='support')
-        response = auth(support).post(INVITE, {
-            'email': 'qa2@example.test', 'role': 'rider',
-        }, format='json')
-        assert response.status_code == 201
 
     def test_an_existing_address_is_never_re_pointed(self, client, auth):
         # "Update the existing account's role" is the escalation path this
@@ -747,11 +858,9 @@ class TestInvite:
 
     def test_an_existing_phone_is_refused(self, client, auth):
         _user(email='phoneowner@example.test', phone='+919821000003')
-        admin = self._admin()
 
-        response = auth(admin).post(INVITE, {
-            'email': 'other@example.test', 'role': 'rider',
-            'phone_number': '+919821000003',
+        response = auth(self._super_admin()).post(TEST_RIDER, {
+            'email': 'other@example.test', 'phone_number': '+919821000003',
         }, format='json')
 
         assert response.status_code == 409
@@ -769,12 +878,12 @@ class TestInvite:
         # The field is simply not read. A superuser is made with manage.py on
         # a machine someone already has access to.
         assert not invited.is_superuser
+        assert invited.is_staff and invited.ops_role == 'support'
 
     def test_an_invite_without_a_phone_gets_a_non_dialable_placeholder(
             self, client, auth):
-        admin = self._admin()
-        response = auth(admin).post(INVITE, {
-            'email': 'nophone@example.test', 'role': 'rider',
+        response = auth(self._super_admin()).post(TEST_RIDER, {
+            'email': 'nophone@example.test',
         }, format='json')
 
         invited = User.objects.get(pk=response.json()['data']['user_id'])
@@ -784,9 +893,8 @@ class TestInvite:
 
     def test_every_invite_is_audited(self, client, auth):
         from servers.admin_audit.models import AdminAuditLog
-        admin = self._admin()
-        auth(admin).post(INVITE, {'email': 'audited@example.test',
-                                  'role': 'rider'}, format='json')
+        admin = self._super_admin()
+        auth(admin).post(TEST_RIDER, {'email': 'audited@example.test'}, format='json')
 
         row = AdminAuditLog.objects.filter(action='account_invited').first()
         assert row is not None
@@ -795,14 +903,23 @@ class TestInvite:
         # The audit row must not carry a credential.
         assert 'password' not in str(row.after).lower()
 
-    def test_a_refused_operator_invite_is_also_audited(self, client, auth):
+    def test_an_operator_invite_is_audited_with_its_ops_role(self, client, auth):
         from servers.admin_audit.models import AdminAuditLog
-        support = self._admin(ops_role='support')
-        auth(support).post(INVITE, {'email': 'nope@example.test',
-                                    'role': 'admin'}, format='json')
+        admin = self._admin()
+        auth(admin).post(INVITE, {'email': 'ops-audited@example.test',
+                                  'ops_role': 'finance'}, format='json')
 
-        assert AdminAuditLog.objects.filter(
-            action='operator_invite_refused').exists()
+        row = AdminAuditLog.objects.filter(action='account_invited').first()
+        assert row is not None
+        assert row.after['role'] == 'admin' and row.after['ops_role'] == 'finance'
+
+    def test_a_refused_operator_invite_creates_nothing(self, client, auth):
+        support = self._admin(ops_role='support')
+        response = auth(support).post(INVITE, {'email': 'nope@example.test',
+                                               'role': 'admin'}, format='json')
+
+        assert response.status_code == 403
+        assert not User.objects.filter(email='nope@example.test').exists()
 
 
 # ===========================================================================

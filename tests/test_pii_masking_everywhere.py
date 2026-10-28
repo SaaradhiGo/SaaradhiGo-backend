@@ -405,6 +405,14 @@ INVENTORY = {
     'api/v1/approvals/admin/requests/': True,
     'api/v1/approvals/admin/requests/<int:request_id>/': True,
     'api/v1/approvals/admin/policies/': False,
+    # The caller's own second-factor state: counts and booleans (#77).
+    'api/v1/auth/admin/mfa/status/': False,
+    # Console search (#78). Called with a real term (SEARCH_TERMS) so the
+    # sweep sees result rows, not a 400.
+    'api/v1/search/admin/trips/': False,
+    'api/v1/search/admin/drivers/': True,
+    'api/v1/search/admin/riders/': True,
+    'api/v1/search/admin/vehicles/': False,
     'api/v1/pricing/admin/zones/': False,
     'api/v1/pricing/admin/zones/(?P<pk>[^/.]+)/': False,
     'api/v1/pricing/admin/rate-cards/': False,
@@ -422,10 +430,20 @@ NOT_SWEPT = {
 FORMAT_SUFFIX = re.compile(r'\(\?P<format>')
 
 
+#: Query strings for routes that need one to return rows.
+SEARCH_TERMS = {
+    'api/v1/search/admin/trips/': lambda ids: f'?q={ids["trip_id"]}',
+    'api/v1/search/admin/drivers/': lambda ids: '?q=Suresh',
+    'api/v1/search/admin/riders/': lambda ids: '?q=Ravi',
+    'api/v1/search/admin/vehicles/': lambda ids: '?q=TS09AB1234',
+}
+
+
 def _fill(route, ids):
+    query = SEARCH_TERMS[route](ids) if route in SEARCH_TERMS else ''
     route = re.sub(r'\(\?P<(\w+)>[^)]*\)', lambda m: str(ids[m.group(1)]), route)
     route = re.sub(r'<(?:[^:>]+:)?([^>]+)>', lambda m: str(ids[m.group(1)]), route)
-    return '/' + route
+    return '/' + route + query
 
 
 def _all_routes(urlconf=None):

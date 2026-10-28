@@ -453,6 +453,20 @@ OPS_LOGIN_LOCKOUT_SECONDS = int(os.environ.get('OPS_LOGIN_LOCKOUT_SECONDS', '900
 # operator who HAS enrolled is still required to present their factor.
 OPS_MFA_ENFORCED = os.environ.get('OPS_MFA_ENFORCED', 'False') == 'True'
 
+# The MASTER switch for operator MFA, and the one guard on it.
+#
+# QA needs a way to sign in with email + password only while nobody has an
+# authenticator in hand, and that is the exact shortcut that must never reach
+# real money and real driver data. So: default ON everywhere; off ONLY by
+# setting ADMIN_MFA_REQUIRED=false; and in production that value refuses to
+# boot (see the guard block below). When off, admin login never asks for a
+# code, a pending authenticator is left alone, and the console never shows
+# the TOTP step. Break-glass still requires a reason: that is a different
+# control.
+ADMIN_MFA_REQUIRED = os.environ.get(
+    'ADMIN_MFA_REQUIRED', 'true'
+).strip().lower() not in {'0', 'false', 'no', 'off'}
+
 # --- Active-ride liveness -----------------------------------------------------
 # Operational thresholds for the stale-ride detector. Generous on purpose: these
 # decide when a human LOOKS, never when the system acts. The driver presence
@@ -661,6 +675,13 @@ if IS_PRODUCTION:
             f'TEST_PHONE_NUMBERS is set ({len(TEST_PHONE_NUMBERS)} entries). '
             'Each entry is a phone number that logs in with a fixed OTP and '
             'skips SMS delivery and throttling -- an authentication bypass.'
+        )
+
+    if not ADMIN_MFA_REQUIRED:
+        _production_faults.append(
+            'ADMIN_MFA_REQUIRED is false. It exists so QA can sign in with a '
+            'password alone while nobody holds an authenticator; in production '
+            'it would let a stolen operator password approve payouts and KYC.'
         )
 
     for _qa_only in ('QA_ADMIN_BOOTSTRAP_PHONE', 'QA_ADMIN_BOOTSTRAP_CODE',

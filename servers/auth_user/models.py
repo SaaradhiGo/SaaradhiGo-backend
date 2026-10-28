@@ -5,6 +5,7 @@ from .usermanager import customUserManager
 from django.contrib.auth.models import AbstractUser
 from base.media import PrefixedUUIDPath, validate_file_size, validate_image_file
 from base.storage_backends import public_media_storage
+from base.db_indexes import PatternPrefixIndex, phone_tail
 
 
 class customUser(AbstractUser):
@@ -134,7 +135,15 @@ class customUser(AbstractUser):
                 name='uniq_user_email_ci',
             ),
         ]
-    
+        indexes = [
+            # Console search by the last ten digits of a number -- what a
+            # person reads off a call screen -- without a sequential scan
+            # over every account. The unique index on `phone_number` serves
+            # the full E.164; this serves the national part and a typed
+            # prefix of it. See `base.db_indexes`.
+            PatternPrefixIndex(phone_tail('phone_number'), name='user_phone_tail_idx'),
+        ]
+
     def __str__(self) -> str:
         return self.full_name if self.full_name else self.phone_number
 

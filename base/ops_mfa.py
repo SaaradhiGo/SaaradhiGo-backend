@@ -44,7 +44,11 @@ With one or two operators, a lost phone is an outage of the whole operations
 function. Two mitigations, both deliberate:
 
   * enrolment issues single-use static recovery codes, which are presented once and
-    are the operator's responsibility thereafter;
+    are the operator's responsibility thereafter. They are issued with the first
+    token after the authenticator is confirmed at sign-in (`admin_login`) or by
+    `enroll_operator_mfa --code` from a shell; one signs the operator in as
+    `recovery_code` when the authenticator is lost; the console regenerates them
+    against a live authenticator code (`auth_user.mfa_views`);
   * `manage.py reset_operator_mfa` removes an account's devices, starts a fresh
     enrolment (confirmed by the first valid code at sign-in) and revokes the
     account's sessions; it requires shell access to the deployment, a named
@@ -61,6 +65,18 @@ logger = logging.getLogger(__name__)
 # Recovery codes issued at enrolment. Ten is the common default; enough that an
 # operator can lose a few without being locked out, few enough to write down.
 RECOVERY_CODE_COUNT = 10
+
+# At or below this many unused codes the sign-in response says so
+# (`recovery_codes_low`), so the console can prompt a regeneration before
+# the last one is spent rather than after.
+RECOVERY_CODES_LOW_AT = 2
+
+#: What the operator is told next to a freshly issued set. One sentence,
+#: the same on every path that shows codes (first sign-in, regeneration).
+RECOVERY_CODES_NOTICE = (
+    'Save these recovery codes somewhere safe now. Each one signs you in once '
+    'if you lose your authenticator, and they will not be shown again.'
+)
 
 
 def _totp_model():
@@ -148,35 +164,111 @@ def mfa_required_for(user) -> bool:
     return True if mfa_enforced() else has_device(user)
 
 
-def verify_code(user, code) -> bool:
-    """Check a submitted code against this account's factors.
+def normalize_code(code) -> str:
+    """A submitted code as the library expects it.
 
-    Tries each device in turn and returns on the first that accepts. A TOTP device
-    refuses a token it has already accepted (django-otp tracks the last used
-    counter), so a code captured in transit cannot be replayed. A static token is
-    consumed when used.
-
-    Never raises: an infrastructure failure here must read as "not verified", not
-    as an exception that a caller might mistake for a pass.
+    Six digits are typed; a recovery code is pasted from wherever the
+    operator kept it -- with the spaces or hyphens a text file or a password
+    manager may have put in it, and in whatever case. The stored static
+    token is eight lower-case base32 characters, so the comparison would
+    otherwise fail on presentation rather than on the secret.
     """
+    if code is None:
+        return ''
+    return str(code).strip().replace(' ', '').replace('-', '').lower()
+
+
+def verify_factor(user, code, *, kinds=('totp', 'static')):
+    """The device that accepted `code`, or None.
+
+    `kinds` restricts which factors may answer: the sign-in's `recovery_code`
+    field is checked against recovery codes only, and the regenerate
+    endpoint demands a live authenticator code and refuses a recovery code
+    -- a recovery code must not be able to mint more recovery codes. The
+    caller learns WHICH kind accepted, so a recovery code used at sign-in
+    can be audited and counted without this module guessing from the shape
+    of the string.
+
+    A TOTP device refuses a token it has already accepted (django-otp tracks
+    the last used counter), so a code captured in transit cannot be
+    replayed. A static token is consumed when used.
+
+    Never raises: an infrastructure failure here must read as "not verified",
+    not as an exception that a caller might mistake for a pass.
+    """
+    code = normalize_code(code)
     if not code:
-        return False
-    code = str(code).strip().replace(' ', '')
+        return None
+    TOTPDevice = _totp_model()
+    StaticDevice, _ = _static_models()
+    allowed = tuple(
+        m for k, m in (('totp', TOTPDevice), ('static', StaticDevice)) if k in kinds
+    )
     for device in devices_for(user):
+        if not isinstance(device, allowed):
+            continue
         try:
             if device.verify_token(code):
                 logger.info(
                     'ops_mfa_verified user_id=%s device=%s',
                     getattr(user, 'id', None), type(device).__name__,
                 )
-                return True
+                return device
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 'ops_mfa_device_error user_id=%s device=%s detail=%s',
                 getattr(user, 'id', None), type(device).__name__, exc,
             )
     logger.warning('ops_mfa_rejected user_id=%s', getattr(user, 'id', None))
-    return False
+    return None
+
+
+def verify_code(user, code) -> bool:
+    """Check a submitted code against this account's factors.
+
+    Tries each device in turn -- the authenticator first, then the recovery
+    codes -- and returns on the first that accepts. Kept for callers that
+    only need yes or no; `verify_factor` says which device answered.
+    """
+    return verify_factor(user, code) is not None
+
+
+def is_recovery_device(device) -> bool:
+    StaticDevice, _ = _static_models()
+    return isinstance(device, StaticDevice)
+
+
+def totp_enrolled(user) -> bool:
+    """Has this account a CONFIRMED authenticator?"""
+    if user is None or not getattr(user, 'pk', None):
+        return False
+    return _totp_model().objects.filter(user=user, confirmed=True).exists()
+
+
+def has_recovery_device(user) -> bool:
+    """Has a recovery-code set ever been issued and not since removed?
+
+    Distinct from "has unused codes": a set with every code spent still
+    exists, and an operator in that state regenerates from the console
+    rather than being handed a new set on the next sign-in.
+    """
+    if user is None or not getattr(user, 'pk', None):
+        return False
+    StaticDevice, _ = _static_models()
+    return StaticDevice.objects.filter(user=user, confirmed=True).exists()
+
+
+def recovery_codes_remaining(user) -> int:
+    """How many unused recovery codes this account still holds."""
+    if user is None or not getattr(user, 'pk', None):
+        return 0
+    _, StaticToken = _static_models()
+    return StaticToken.objects.filter(device__user=user,
+                                      device__confirmed=True).count()
+
+
+def recovery_codes_low(remaining) -> bool:
+    return int(remaining) <= RECOVERY_CODES_LOW_AT
 
 
 def session_is_verified(request) -> bool:

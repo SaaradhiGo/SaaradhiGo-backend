@@ -74,6 +74,48 @@ def admin_list_users(request):
         )
 
 
+def _issue_recovery_codes_if_first(request, user):
+    """The recovery codes, ONCE, on the first token an enrolled account gets.
+
+    ISSUED WITH THE TOKEN, NOT AT THE MOMENT OF CONFIRMATION. The pending
+    authenticator is confirmed by its first valid code, but two gates can
+    still answer that same request with a 401: the break-glass reason and
+    the forced password change. A set issued at confirmation and returned
+    on a 401 would be a set the operator never saw -- and it would not be
+    issued again, because the device is confirmed now. So the set is issued
+    here, where the response is the one that carries the token, and the
+    rule is "a confirmed authenticator with no recovery set yet" rather
+    than "confirmed a moment ago". That rule also reaches the operators who
+    confirmed at sign-in BEFORE this existed and hold no codes at all:
+    their next sign-in hands them a set, once.
+
+    A set whose codes have all been spent still exists, so it does not
+    trigger this: that operator regenerates from the console, proving a
+    live authenticator code, rather than being handed a new set by the
+    act of signing in.
+
+    Returns the fields to merge into the response: empty on every sign-in
+    but that one. The audit row carries the count, never a code.
+    """
+    if not ops_mfa.mfa_enabled():
+        return {}
+    if not ops_mfa.totp_enrolled(user) or ops_mfa.has_recovery_device(user):
+        return {}
+    codes = ops_mfa.issue_recovery_codes(user)
+    record_admin_action(
+        request, action='ops_recovery_codes_issued', target_type='operator',
+        target_id=user.pk,
+        after={'recovery_codes_issued': len(codes), 'shown': 'once_at_sign_in'},
+        reason='First token after the authenticator was confirmed.',
+    )
+    return {
+        'recovery_codes': codes,
+        'recovery_codes_notice': ops_mfa.RECOVERY_CODES_NOTICE,
+        'recovery_codes_remaining': len(codes),
+        'recovery_codes_low': False,
+    }
+
+
 @api_view(['POST'])
 def admin_login(request):
     """Password sign-in for an operator, issuing a JWT pair.
@@ -221,10 +263,21 @@ def admin_login(request):
         # From then on the account is enrolled and MFA applies as usual.
         pending = (None if not ops_mfa.mfa_enabled() or ops_mfa.has_device(user)
                    else ops_mfa.pending_totp_device(user))
+        # Set when a RECOVERY code signed this request in: the response then
+        # says how many are left, and the audit row says one was spent.
+        recovery_used = False
         if ops_mfa.mfa_required_for(user) or pending is not None:
             # str() first: JSON allows a numeric literal, and a client that
             # sends `"mfa_code": 123456` would otherwise 500 on .strip().
             code = str(request.data.get('mfa_code') or '').strip()
+            # A LOST AUTHENTICATOR IS NOT A LOCKOUT. `recovery_code` is one
+            # of the single-use codes issued when the authenticator was
+            # confirmed (below) or regenerated from the console
+            # (`mfa_views`). It is checked against the recovery set ONLY,
+            # so the field says what it carries. A recovery code sent as
+            # `mfa_code` still works -- the console did that before this
+            # field existed -- and is counted the same way.
+            recovery_code = str(request.data.get('recovery_code') or '').strip()
             if not ops_mfa.has_device(user) and pending is None:
                 # Enforced environment, operator with nothing enrolled. Refused
                 # rather than waved through, with the same generic message so this
@@ -233,11 +286,13 @@ def admin_login(request):
                 logger.warning('ops_api_login_refused_no_mfa_device user_id=%s',
                                user.id)
                 return _refuse()
-            if not code:
+            if not code and not (recovery_code and pending is None):
                 # A distinct, non-terminal answer: the caller has proved the first
                 # factor and needs to be told to send the second. It deliberately
                 # carries no hint about whether the account exists -- it is only
-                # reachable AFTER a correct password for a real operator.
+                # reachable AFTER a correct password for a real operator. A
+                # pending authenticator can only be confirmed by its own
+                # code, so a recovery code alone is answered the same way.
                 return error_response(
                     code='AUTH_MFA_REQUIRED',
                     message='An authentication code is required',
@@ -249,21 +304,31 @@ def admin_login(request):
                 if not ops_mfa.confirm_totp(pending, code):
                     login_guard.record_failure(request, identifier)
                     return _refuse()
-                # No recovery codes are issued on this path: there is no
-                # screen to show them. `enroll_operator_mfa --code` issues
-                # them from a shell, and `reset_operator_mfa` is the way back
-                # in if the device is lost.
+                # The recovery codes are issued when the TOKEN is minted,
+                # not here: the break-glass reason and the forced password
+                # change still stand between this point and a response the
+                # operator sees, and a set returned on a 401 would be a set
+                # nobody saw. See `_issue_recovery_codes_if_first` below.
                 record_admin_action(
                     request, action='ops_mfa_enrolled', target_type='operator',
                     target_id=user.pk,
                     after={'method': 'totp', 'confirmed_at': 'first_sign_in',
-                           'recovery_codes_issued': 0},
+                           'recovery_codes': 'issued_with_first_token'},
                     reason='Pending authenticator confirmed by its first '
                            'valid code at sign-in.',
                 )
-            elif not ops_mfa.verify_code(user, code):
-                login_guard.record_failure(request, identifier)
-                return _refuse()
+            elif recovery_code:
+                if ops_mfa.verify_factor(user, recovery_code,
+                                         kinds=('static',)) is None:
+                    login_guard.record_failure(request, identifier)
+                    return _refuse()
+                recovery_used = True
+            else:
+                device = ops_mfa.verify_factor(user, code)
+                if device is None:
+                    login_guard.record_failure(request, identifier)
+                    return _refuse()
+                recovery_used = ops_mfa.is_recovery_device(device)
 
         # BREAK-GLASS: a reason, before the token.
         #
@@ -337,20 +402,35 @@ def admin_login(request):
             after={
                 'mfa': bool(ops_mfa.mfa_required_for(user)),
                 'break_glass': breakglass.is_break_glass(user),
+                'recovery_code_used': recovery_used,
             },
         )
         access_token = AccessToken.for_user(user)
         refresh_token = RefreshToken.for_user(user)
         user_serializer = UserModelSerializer(user)
 
-        return success_response(
-            data={
-                'token': str(access_token),
-                'refresh_token': str(refresh_token),
-                'user': user_serializer.data
-            },
-            status_code=status.HTTP_200_OK
-        )
+        data = {
+            'token': str(access_token),
+            'refresh_token': str(refresh_token),
+            'user': user_serializer.data,
+        }
+        if recovery_used:
+            # Counted AFTER the code was consumed, so "remaining" is what is
+            # left, and audited as a count: the audit trail never holds a
+            # code, used or unused.
+            remaining = ops_mfa.recovery_codes_remaining(user)
+            data['recovery_codes_remaining'] = remaining
+            data['recovery_codes_low'] = ops_mfa.recovery_codes_low(remaining)
+            record_admin_action(
+                request, action='ops_recovery_code_used', target_type='operator',
+                target_id=user.pk,
+                after={'recovery_codes_remaining': remaining},
+                reason='Signed in with a single-use recovery code.',
+            )
+        else:
+            data.update(_issue_recovery_codes_if_first(request, user))
+
+        return success_response(data=data, status_code=status.HTTP_200_OK)
 
     except Exception as e:
         return error_response(

@@ -76,6 +76,8 @@ INSTALLED_APPS = [
     # Command Centre: operator alerts that must reach a person (seed of the
     # module). First producer: an SOS that could not be anchored to a city.
     'servers.command_centre',
+    # Console search: trip id, phone, plate, name -- indexed and scoped.
+    'servers.search',
     # Operator MFA. django-otp is the established Django implementation: TOTP
     # (RFC 6238) and single-use static recovery codes, with the cryptography done
     # by the library. Nothing here implements an algorithm.
@@ -165,6 +167,10 @@ REST_FRAMEWORK = {
         # These two SEND MAIL, so the cap also protects a third party's inbox
         # from being used as a spam target.
         'password_reset': '5/hour',
+        # Console search, per operator and per result type. A person typing
+        # into a 250 ms-debounced box never approaches it; a script walking
+        # phone prefixes does. See servers/search/throttles.py.
+        'admin_search': '60/min',
         # Place lookups from a SIGNED-OUT visitor on the public homepage.
         # Each one costs a Places call, so this is a spend cap, not a
         # security control. Generous enough to type two addresses with

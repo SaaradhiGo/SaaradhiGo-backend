@@ -5,6 +5,7 @@ from servers.support.views import (
     admin_assign,
     admin_list_tickets,
     admin_reply,
+    admin_ticket_detail,
     close_my_ticket,
     create_ticket,
     list_my_tickets,
@@ -21,6 +22,7 @@ urlpatterns = [
     path('tickets/<int:ticket_id>/close/', close_my_ticket),
     # Admin / support-staff
     path('admin/tickets/', admin_list_tickets),
+    path('admin/tickets/<int:ticket_id>/', admin_ticket_detail),
     path('admin/tickets/<int:ticket_id>/reply/', admin_reply),
     path('admin/tickets/<int:ticket_id>/assign/', admin_assign),
 ]

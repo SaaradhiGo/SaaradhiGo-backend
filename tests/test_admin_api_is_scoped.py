@@ -203,16 +203,19 @@ def test_every_scope_path_resolves():
     from servers.admin_access.scoping import SCOPE_PATHS
 
     broken = []
-    for label, path in SCOPE_PATHS.items():
+    for label, paths in SCOPE_PATHS.items():
         model = apps.get_model(label)
-        try:
-            # Compiling the SQL is the check: an ORM path that does not
-            # resolve raises here rather than silently filtering nothing.
-            sql = str(model.objects.filter(
-                **{f'{path}__startswith': 'GLOBAL/'}
-            ).query)
-            assert path.split('__')[0] in sql or 'WHERE' in sql
-        except Exception as exc:  # noqa: BLE001 - reporting every break
-            broken.append(f'{label}: {path} -> {exc}')
+        # A model with more than one possible anchor (an SOS event, a
+        # ticket) lists a tuple; every member must resolve.
+        for path in ((paths,) if isinstance(paths, str) else paths):
+            try:
+                # Compiling the SQL is the check: an ORM path that does not
+                # resolve raises here rather than silently filtering nothing.
+                sql = str(model.objects.filter(
+                    **{f'{path}__startswith': 'GLOBAL/'}
+                ).query)
+                assert path.split('__')[0] in sql or 'WHERE' in sql
+            except Exception as exc:  # noqa: BLE001 - reporting every break
+                broken.append(f'{label}: {path} -> {exc}')
 
     assert not broken, broken

@@ -12,6 +12,14 @@ operations have no business changing a fare.
 
 Reads stay operator-wide: an operator investigating a fare dispute needs to see the
 card that produced the quote, and refusing that would push them to guess.
+
+NO LONGER USED BY THE VIEWSETS
+------------------------------
+`ServiceZoneViewSet` and `RateCardViewSet` now gate on `ScopedPermission('zone.read')`
+for reads and `ScopedPermission('pricing.write')` for writes, which adds geo scope and
+moves the read authority onto a named capability (`zone.read`) instead of "any
+operator". This class is kept for one release so nothing that imported it breaks; it
+grants nothing the viewsets consult.
 """
 
 from rest_framework.permissions import SAFE_METHODS, BasePermission

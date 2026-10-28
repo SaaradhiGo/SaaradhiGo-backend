@@ -2,20 +2,33 @@
 
 Read-only public surface lives in /api/v1/pricing/zones/ (list of
 active cities for the rider/driver app to render a "we serve these
-areas" page). Everything mutating is locked behind IsPlatformAdmin.
+areas" page).
+
+The admin surface is capability-checked AND scoped:
+
+  * reads (`GET` list / retrieve / `effective`) need `zone.read`, which
+    City Ops Manager, Finance, Analyst and Super Admin hold, and return
+    only the zones (and the cards of the zones) under the caller's scope;
+  * writes need `pricing.write`, which no role template grants, so until
+    the maker-checker draft -> approval flow exists a pricing change is
+    Super Admin only. Every write is audited by `_AuditedPricingMixin`.
+
+A zone outside the caller's scope answers 404 from `get_object()`, the
+same as one that does not exist.
 """
 
 import logging
 
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import SAFE_METHODS, AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from base.utils import error_response, success_response
+from servers.admin_access.bridge import ScopedPermission
+from servers.admin_access.scoping import scoped, scoped_or_none
 from servers.admin_audit.services import record_admin_action
 from servers.pricing.models import RateCard, ServiceZone
-from servers.pricing.permissions import IsPlatformAdmin
 from servers.pricing.serializers import RateCardSerializer, ServiceZoneSerializer
 from servers.pricing.services import (
     find_zone_for_point,
@@ -101,19 +114,44 @@ class _AuditedPricingMixin:
                     instance, before=before)
 
 
-class ServiceZoneViewSet(_AuditedPricingMixin, viewsets.ModelViewSet):
+#: The two gates on pricing configuration. Reads and writes are different
+#: authorities held by different people, so they are different strings.
+PRICING_READ = ScopedPermission('zone.read')
+PRICING_WRITE = ScopedPermission('pricing.write')
+
+
+class _ScopedPricingMixin:
+    """`zone.read` to look, `pricing.write` to change, and only in scope.
+
+    `permission_classes` names the read gate so a static reader (and the
+    structural guard) sees a `ScopedPermission` on the class; `get_permissions`
+    swaps in the write gate for anything that is not a safe method. Scope is
+    enforced twice, as everywhere: `get_queryset` filters the list (and so the
+    detail lookup, which 404s out of scope), and `ScopedPermission.
+    has_object_permission` re-checks the capability at the object's node.
+    """
+
+    permission_classes = [IsAuthenticated, PRICING_READ]
+
+    def get_permissions(self):
+        gate = PRICING_READ if self.request.method in SAFE_METHODS else PRICING_WRITE
+        return [IsAuthenticated(), gate]
+
+    def get_queryset(self):
+        return scoped(self.request.user, super().get_queryset())
+
+
+class ServiceZoneViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.ModelViewSet):
     audit_target_type = 'service_zone'
     queryset = ServiceZone.objects.all().order_by('-priority', 'code')
     serializer_class = ServiceZoneSerializer
-    permission_classes = [IsPlatformAdmin]
     lookup_field = 'pk'
 
 
-class RateCardViewSet(_AuditedPricingMixin, viewsets.ModelViewSet):
+class RateCardViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.ModelViewSet):
     audit_target_type = 'rate_card'
-    queryset = RateCard.objects.select_related('zone', 'vehicle_type').all()
+    queryset = RateCard.objects.select_related('zone', 'vehicle_type', 'zone__geo_node').all()
     serializer_class = RateCardSerializer
-    permission_classes = [IsPlatformAdmin]
 
     def update(self, request, *args, **kwargs):
         """Refuse an in-place pricing edit; direct the caller to versioning.
@@ -166,9 +204,10 @@ class RateCardViewSet(_AuditedPricingMixin, viewsets.ModelViewSet):
                 {'error': 'zone and vehicle_type query params required.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        try:
-            zone = ServiceZone.objects.get(pk=zone_id)
-        except ServiceZone.DoesNotExist:
+        # Through scope: a zone outside the caller's assignments is "not
+        # found", the same as one that does not exist.
+        zone = scoped_or_none(request.user, ServiceZone.objects.all(), pk=zone_id)
+        if zone is None:
             return Response({'error': 'zone not found.'}, status=status.HTTP_404_NOT_FOUND)
         from servers.driver.models import VehicleType
         try:

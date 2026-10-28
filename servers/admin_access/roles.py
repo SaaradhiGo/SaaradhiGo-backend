@@ -32,6 +32,11 @@ PERMISSIONS = {
     'finance.read': 'View ledgers, payouts and settlements',
     'report.read': 'View dashboards and reports',
     'audit.read': 'View the admin audit log',
+    # Reading the pricing configuration -- service zones and rate cards --
+    # is separate from changing it (`pricing.write`) and from drawing
+    # geofences (`zone.write`). A City Ops Manager, Finance and an Analyst
+    # need the card that produced a quote; Support and KYC do not.
+    'zone.read': 'View service zones and rate cards',
 
     # Personal data. Held separately from every read above, so a role can
     # see the work without seeing the person.
@@ -90,8 +95,8 @@ ROLE_TEMPLATES = [
                        'zones, incentives. Proposes pricing; cannot publish it.',
         'permissions': [
             'trip.read', 'trip.write', 'rider.read', 'driver.read',
-            'driver.write', 'support.read', 'report.read', 'zone.write',
-            'promo.write', 'pii.view',
+            'driver.write', 'support.read', 'report.read', 'zone.read',
+            'zone.write', 'promo.write', 'pii.view',
         ],
     },
     {
@@ -133,7 +138,7 @@ ROLE_TEMPLATES = [
         'permissions': [
             'trip.read', 'driver.read', 'rider.read', 'support.read',
             'finance.read', 'finance.payout', 'finance.adjust',
-            'support.refund', 'report.read', 'pii.view',
+            'support.refund', 'report.read', 'zone.read', 'pii.view',
         ],
     },
     {
@@ -152,6 +157,8 @@ ROLE_TEMPLATES = [
                        '— `pii.view` is absent and must stay absent.',
         'permissions': [
             'trip.read', 'driver.read', 'rider.read', 'report.read',
+            # Reports need rate context; a rate card names no person.
+            'zone.read',
         ],
     },
 ]

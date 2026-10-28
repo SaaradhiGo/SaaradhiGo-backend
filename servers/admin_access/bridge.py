@@ -82,6 +82,17 @@ LEGACY_OPEN_TO_ANY_OPERATOR = frozenset({
     # email to any operator. Narrowing it to `pii.view` is the intended end
     # state and is enforced for migrated accounts today.
     'pii.view',
+    # `/api/v1/sos/admin/` and the acknowledge / resolve / false-alarm
+    # transitions were gated on `IsAdmin` alone: every operator could read
+    # and close the SOS queue. Migrated accounts now need `safety.respond`
+    # (Safety Officer and Super Admin only); an unmigrated account keeps
+    # the queue it has today, so the console's SOS page does not go dark
+    # for an on-call person before their account has been assigned a role.
+    'safety.respond',
+    # `/api/v1/pricing/admin/zones/` and `.../rate-cards/` were readable by
+    # any operator (`IsPlatformAdmin` let every operator read). Migrated
+    # accounts need `zone.read`; unmigrated ones keep today's read.
+    'zone.read',
 })
 
 # A typo here would silently grant or deny. Checked at import.
@@ -256,6 +267,27 @@ def node_of(obj):
     driver = getattr(obj, 'driver', None)
     if driver is not None:
         return getattr(driver, 'home_city', None)
+
+    # sos.SOSEvent -> Trip -> zone -> GeoNode, else the raiser's Driver
+    # profile -> home_city. support.SupportTicket is the same shape under
+    # different names (`trip_id`, `user_id`). A rider has no anchor by
+    # design (see `scoping.RIDERS_ARE_GLOBAL`), so an event or ticket a
+    # rider raised outside any trip has no node and is visible only at
+    # Global -- the same rule as a driver with no home city.
+    for trip_attr in ('trip', 'trip_id'):
+        trip = getattr(obj, trip_attr, None)
+        if trip is not None and not isinstance(trip, int):
+            zone = getattr(trip, 'zone', None)
+            if zone is not None:
+                return getattr(zone, 'geo_node', None)
+            break
+    for user_attr in ('user', 'user_id'):
+        raiser = getattr(obj, user_attr, None)
+        if raiser is not None and not isinstance(raiser, int):
+            profile = getattr(raiser, 'driver', None)
+            if profile is not None:
+                return getattr(profile, 'home_city', None)
+            return None
 
     # pricing.ServiceZone
     return getattr(obj, 'geo_node', None)

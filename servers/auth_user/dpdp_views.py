@@ -12,23 +12,13 @@ We anonymise rather than hard-delete because:
     PII unreadable from then on; aggregate / pseudonymised data may
     legitimately be retained.
 
-What we anonymise on /me/delete/:
-  - phone_number → "deleted-{user_id}"  (no country code: a deleted
-    account belongs to no market)
-  - email → ""
-  - full_name → "Deleted user"
-  - dob, address fields, emergency_contact, avatar, fcm_token → cleared
-  - is_active=False so the user can no longer log in
-  - all refresh tokens blacklisted so existing sessions die
-
-What we keep:
-  - User row with the placeholder phone (FKs from Trip/Payment continue
-    to work)
-  - Trip rows
-  - Payment / TransactionHistory rows
-  - Rating rows
-
-The deletion event is recorded in AdminAuditLog (actor=self).
+The anonymisation itself is `servers.auth_user.erasure.anonymise_user`, the
+same service the `anonymise_user` management command runs for a request
+that arrives by email or ticket. There is ONE definition of what erasure
+wipes and what it keeps, and it lives there; this view only decides that a
+signed-in rider may ask for it about themselves. The event is recorded in
+AdminAuditLog as `account_anonymised`, with the person as the actor, their
+identifiers snapshotted as they were before the wipe.
 """
 
 import logging
@@ -39,6 +29,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 
 from base.utils import success_response, error_response
+
+from .erasure import AnonymisationRefused, anonymise_user
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +87,26 @@ def me_delete(request):
 
     try:
         with transaction.atomic():
-            _anonymise_user(user)
-            _blacklist_user_refresh_tokens(user)
-            _record_audit(user, reason, request)
+            anonymise_user(
+                user,
+                reason=reason or 'self-service DPDP delete',
+                # The request IS the reference for a self-service erasure:
+                # there is no ticket, and the row's target and timestamp
+                # identify it.
+                reference=f'self-service user {user.pk}',
+                actor=user,
+                request=request,
+            )
+    except AnonymisationRefused as e:
+        # An operator signed in to the rider app and asked to be erased.
+        # Staff are deactivated through the access tooling, never wiped.
+        return error_response(
+            code='NOT_ALLOWED',
+            message='This account cannot be deleted through self-service. Contact operations.',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_403_FORBIDDEN,
+        )
     except Exception as e:
         logger.exception(f"me_delete failed for user {user.id}: {e}")
         return error_response(
@@ -237,63 +246,3 @@ def _serialize_notifications(user):
         return [{k: str(v) if v is not None else None for k, v in row.items()} for row in qs]
     except Exception:
         return []
-
-
-def _anonymise_user(user):
-    """Replace PII fields with placeholders. Keep the User row so FKs
-    from Trip / Payment / TransactionHistory keep working."""
-    # No country code: a deleted account belongs to no market, and
-    # hardcoding +91 made every anonymised US user look Indian in
-    # the operator console.
-    placeholder_phone = f"deleted-{user.id}"
-    fields_cleared = []
-    user.phone_number = placeholder_phone
-    fields_cleared.append('phone_number')
-    for name in (
-        'email', 'full_name', 'gender', 'dob', 'house_no', 'street',
-        'city', 'zip_code', 'emergency_contact', 'avatar', 'fcm_token',
-    ):
-        if hasattr(user, name):
-            try:
-                setattr(user, name, None if name in ('dob', 'avatar') else '')
-                fields_cleared.append(name)
-            except Exception:
-                pass
-    user.is_active = False
-    user.save()
-    logger.info(f"DPDP anonymise: user {user.id} fields cleared: {fields_cleared}")
-
-
-def _blacklist_user_refresh_tokens(user):
-    """Best-effort revocation of every active refresh token for this
-    user. Requires rest_framework_simplejwt.token_blacklist (already
-    installed in this project)."""
-    try:
-        from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
-        for ot in OutstandingToken.objects.filter(user=user):
-            try:
-                from rest_framework_simplejwt.tokens import RefreshToken
-                RefreshToken(ot.token).blacklist()
-            except Exception:
-                # ignore tokens already blacklisted or malformed
-                continue
-    except Exception as e:
-        logger.warning(f"refresh-token blacklist on delete failed: {e}")
-
-
-def _record_audit(user, reason, request):
-    try:
-        from servers.admin_audit.services import record_admin_action
-        record_admin_action(
-            request,
-            action='dpdp_delete',
-            target_type='user',
-            target_id=user.id,
-            before={'is_active': True},
-            after={'is_active': False, 'anonymised': True},
-            reason=reason or 'self-service DPDP delete',
-        )
-    except Exception:
-        # Auditing is best-effort; user has already been anonymised by
-        # the time we reach this. Don't fail their delete.
-        pass

@@ -146,3 +146,15 @@ class customUser(AbstractUser):
         # caller is already in one, and a few microseconds otherwise.
         with transaction.atomic():
             super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        # Staff are deactivated, never deleted, and nobody who appears as an
+        # audit actor is deleted either (owner ruling, 2026-10-27). Checked
+        # here, before the collector opens a transaction, so a refusal is a
+        # clean exception and not a poisoned transaction. The queryset path
+        # is `customUserQuerySet.delete`; cascades are caught by the
+        # `pre_delete` receiver in `servers.auth_user.erasure`.
+        from . import erasure
+
+        erasure.refuse_if_undeletable(self)
+        return super().delete(*args, **kwargs)

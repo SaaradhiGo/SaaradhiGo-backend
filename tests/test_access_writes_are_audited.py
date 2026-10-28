@@ -240,16 +240,21 @@ class TestAssignmentWrites:
         assert [r.target_id for r in rows] == [str(first.pk)]
         assert rows[0].action == 'access_assignment_updated'
 
-    def test_deleting_the_user_cascades_into_an_audited_assignment_delete(
+    def test_deleting_the_user_is_refused_before_anything_cascades(
         self, assignment, operator,
     ):
+        """Staff are deactivated, never deleted (owner ruling, 2026-10-27;
+        `servers.auth_user.erasure`). The refusal aborts the collector, so
+        the assignment is not deleted either and no row is written."""
+        from servers.auth_user.erasure import AccountDeletionRefused
+
         before = _count()
 
-        operator.delete()
+        with pytest.raises(AccountDeletionRefused):
+            operator.delete()
 
-        actions = [r.action for r in _rows_since(before)]
-        assert 'access_assignment_deleted' in actions
-        assert 'operator_account_deleted' in actions
+        assert AdminAssignment.objects.filter(pk=assignment.pk).exists()
+        assert _count() == before
 
 
 # ---------------------------------------------------------------------------
@@ -451,15 +456,25 @@ class TestUserAuthorityWrites:
 
         assert _count() == before
 
-    def test_deleting_an_operator_writes_one_row(self, operator):
-        pk = operator.pk
+    def test_deleting_an_operator_is_refused_and_writes_nothing(self, operator):
+        """`operator_account_deleted` stays in the spec for the raw-SQL path
+        the hash chain exists for; through the ORM it can no longer happen,
+        because staff are deactivated and never deleted."""
+        from servers.auth_user.erasure import AccountDeletionRefused
+
         before = _count()
 
-        operator.delete()
+        with pytest.raises(AccountDeletionRefused, match='deactivated, never deleted'):
+            operator.delete()
 
-        assert _count() == before + 1
-        row = _latest()
-        assert (row.action, row.target_id) == ('operator_account_deleted', str(pk))
+        assert User.objects.filter(pk=operator.pk).exists()
+        assert _count() == before
+
+    def test_deactivating_an_operator_is_the_supported_path(self, operator):
+        operator.is_active = False
+        operator.save()
+
+        assert not User.objects.get(pk=operator.pk).is_active
 
     def test_deleting_a_rider_writes_nothing(self):
         rider = _rider()
@@ -814,8 +829,19 @@ def test_create_update_and_delete_each_write_exactly_one_row(label):
     assert [r.action for r in _rows_since(count)] == [spec.updated_action]
     count = _count()
 
-    instance.delete()
-    deleted = [r for r in _rows_since(count) if r.target_type == spec.target_type]
-    assert [r.action for r in deleted] == [spec.deleted_action]
+    if label == 'auth_user.customUser':
+        # Staff are deactivated, never deleted (owner ruling, 2026-10-27):
+        # the delete is refused before anything happens, so there is no
+        # `deleted_action` row to find. `operator_account_deleted` stays
+        # in the spec for the raw-SQL path the hash chain exists for.
+        from servers.auth_user.erasure import AccountDeletionRefused
+
+        with pytest.raises(AccountDeletionRefused):
+            instance.delete()
+        assert _rows_since(count) == []
+    else:
+        instance.delete()
+        deleted = [r for r in _rows_since(count) if r.target_type == spec.target_type]
+        assert [r.action for r in deleted] == [spec.deleted_action]
 
     assert verify_chain(AdminAuditLog.objects.all())[1] == []

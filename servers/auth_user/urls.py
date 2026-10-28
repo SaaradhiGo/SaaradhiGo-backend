@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.urls import path
 from .views import (
     request_otp,
@@ -11,7 +12,7 @@ from .views import (
 from .admin_views import admin_list_users, admin_login
 from .dpdp_views import me_export, me_delete
 from .email_auth_views import email_login
-from .invite_views import invite_account
+from .invite_views import invite_operator, invite_test_driver, invite_test_rider
 from .password_views import (
     change_password,
     confirm_email_verification,
@@ -46,7 +47,30 @@ urlpatterns = [
     path('password/forgot/', forgot_password),
     path('password/reset/', reset_password),
 
-    # Operator-created accounts, including QA test accounts. No password is
-    # ever generated or returned -- see invite_views.
-    path('admin/invite/', invite_account),
+    # Operator invites: `admin.manage` plus a fresh second factor. No
+    # password is ever generated or returned -- see invite_views.
+    path('admin/invite/', invite_operator),
 ]
+
+
+def qa_only_urlpatterns():
+    """Routes that exist OUTSIDE production only.
+
+    Rider and driver TEST-account creation (owner's ruling, 2026-10-28):
+    the endpoint does not exist in production builds, and on QA needs
+    `rider.write` / `driver.write`. Decided at URLconf build time from
+    `settings.IS_PRODUCTION`, so in production the URL does not resolve at
+    all -- there is nothing to misconfigure or to gate. The views refuse
+    with 404 as well, as a second lock. `tests/test_production_boot_guards`
+    resolves these paths in a production-shaped boot and expects
+    Resolver404.
+    """
+    if getattr(settings, 'IS_PRODUCTION', False):
+        return []
+    return [
+        path('admin/invite/test-rider/', invite_test_rider),
+        path('admin/invite/test-driver/', invite_test_driver),
+    ]
+
+
+urlpatterns += qa_only_urlpatterns()

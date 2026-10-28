@@ -44,7 +44,9 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 
-from servers.admin_audit.access_audit import AccessAuditedManager
+from servers.admin_audit.access_audit import AccessAuditedManager, AccessAuditedQuerySet
+
+from .roles import SUPER_ADMIN
 
 # EVERY WRITE HERE IS AUDITED, AND NOT BY THE CALLER
 # --------------------------------------------------
@@ -190,8 +192,90 @@ class AdminRole(models.Model):
             super().save(*args, **kwargs)
 
 
+#: The `code` on the ValidationError raised for a non-Super-Admin role at
+#: Global, so a caller can tell this refusal from any other.
+GLOBAL_IS_SUPER_ADMIN_ONLY = 'GLOBAL_IS_SUPER_ADMIN_ONLY'
+
+
+def check_role_at_scope(role, scope):
+    """Refuse a (role, scope) pair the access model does not allow.
+
+    GLOBAL IS UNRESTRICTED, SO ONLY SUPER ADMIN MAY HOLD IT
+    -------------------------------------------------------
+    `access.scope_paths` treats ANY assignment at the Global node as
+    "unrestricted": the root of the tree covers everything, including rows
+    that sit under no node at all. That is the right reading of the tree,
+    and it means a Support Agent assigned at Global would quietly become a
+    Support Agent for every country, every city and every unanchored row.
+    The owner's ruling (2026-10-28): accepted, but only the `super_admin`
+    role may ever be assigned at Global. Every other role is held somewhere
+    -- a country, a state, a city -- which is what stops an India hire
+    quietly acquiring the USA.
+
+    Enforced here, in code, rather than as a database CheckConstraint: the
+    rule joins two tables (the role's code and the node's kind), which a
+    check constraint cannot express. `AdminAssignment.save()`,
+    `AdminAssignmentQuerySet.update()` and `.bulk_create()` all pass
+    through this, so there is no ORM path that writes such a row.
+    `migrate_operators` refuses a plan line before `--apply` as well.
+    """
+    if scope.kind == GLOBAL and role.code != SUPER_ADMIN:
+        raise ValidationError(
+            f'Only {SUPER_ADMIN} may be assigned at Global; {role.code} '
+            f'must be held at a country, state or city.',
+            code=GLOBAL_IS_SUPER_ADMIN_ONLY,
+        )
+    if role.is_global_only and scope.kind != GLOBAL:
+        raise ValidationError(
+            f'{role.name} may only be held globally, not at {scope.code}.',
+            code='GLOBAL_ONLY_ROLE',
+        )
+
+
+class AdminAssignmentQuerySet(AccessAuditedQuerySet):
+    """The audited queryset, plus the Global rule on the paths `save()` misses.
+
+    `update()` and `bulk_create()` bypass `full_clean()`. An assignment
+    moved to Global with `.filter(...).update(scope=global_node)` would be
+    the one way to mint an unrestricted non-Super-Admin, so both are
+    checked row by row before anything is written.
+    """
+
+    def _resolve(self, kwargs, name, model):
+        if name in kwargs:
+            value = kwargs[name]
+            return value if isinstance(value, model) else model.objects.get(pk=value)
+        if f'{name}_id' in kwargs:
+            return model.objects.get(pk=kwargs[f'{name}_id'])
+        return None
+
+    def update(self, **kwargs):
+        if any(key in kwargs for key in ('role', 'role_id', 'scope', 'scope_id')):
+            new_role = self._resolve(kwargs, 'role', AdminRole)
+            new_scope = self._resolve(kwargs, 'scope', GeoNode)
+            for row in self._chain().select_related('role', 'scope'):
+                check_role_at_scope(new_role or row.role, new_scope or row.scope)
+        return super().update(**kwargs)
+
+    update.alters_data = True
+
+    def bulk_create(self, objs, *args, **kwargs):
+        for obj in objs:
+            check_role_at_scope(obj.role, obj.scope)
+        return super().bulk_create(objs, *args, **kwargs)
+
+    bulk_create.alters_data = True
+
+
+class AdminAssignmentManager(AccessAuditedManager.from_queryset(AdminAssignmentQuerySet)):
+    """`use_in_migrations` stays False, as on the parent: behaviour, not schema."""
+
+
 class AdminAssignment(models.Model):
-    """`admin` holds `role` over `scope` and everything beneath it."""
+    """`admin` holds `role` over `scope` and everything beneath it.
+
+    Only `super_admin` may be held at Global -- see `check_role_at_scope`.
+    """
 
     admin = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
@@ -211,7 +295,7 @@ class AdminAssignment(models.Model):
     reason = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
-    objects = AccessAuditedManager()
+    objects = AdminAssignmentManager()
 
     class Meta:
         ordering = ['admin_id', 'scope__path']
@@ -227,11 +311,7 @@ class AdminAssignment(models.Model):
 
     def clean(self):
         if self.role_id and self.scope_id:
-            if self.role.is_global_only and self.scope.kind != GLOBAL:
-                raise ValidationError(
-                    f'{self.role.name} may only be held globally, '
-                    f'not at {self.scope.code}.'
-                )
+            check_role_at_scope(self.role, self.scope)
 
     def save(self, *args, **kwargs):
         self.full_clean(exclude=['granted_by', 'reason'])

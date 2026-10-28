@@ -96,10 +96,20 @@ def _zone_payload(code, name='Audit Test Zone'):
 
 @pytest.fixture
 def a_driver():
+    """A Hyderabad driver still in KYC. In a city, because the legacy
+    equivalents are now assigned per COUNTRY rather than at Global (only
+    Super Admin may hold Global), so a driver with no home city would be
+    out of every scoped operator's reach and the controls below would
+    pass as 404 for the wrong reason."""
+    from conftest import seed_admin_access
+    from servers.admin_access.models import GeoNode
+
+    seed_admin_access()
     i = next(_n)
     u = User.objects.create_user(phone_number=f'+9196400{i:05d}',
                                  username=f'+9196400{i:05d}', role='driver')
-    return Driver.objects.create(user_id=u, approved=False)
+    return Driver.objects.create(user_id=u, approved=False,
+                                 home_city=GeoNode.objects.get(code='IN-TG-HYD'))
 
 
 # ===========================================================================
@@ -383,20 +393,32 @@ def test_a_support_account_can_reply_to_a_support_ticket():
 # Every operator keeps the shared read surface
 # ===========================================================================
 
-@pytest.mark.parametrize('ops_role', [
-    OPS_SUPPORT, OPS_DRIVER_OPS, OPS_FINANCE, OPS_ADMIN])
-@pytest.mark.parametrize('url', [
+_SHARED_READ_URLS = [
     '/api/v1/ride/admin/trips/',
     '/api/v1/driver/admin/',
     '/api/v1/ride/admin/dashboard/',
+]
+
+
+@pytest.mark.parametrize('ops_role, url, expected', [
+    *[(role, url, 200) for role in (OPS_SUPPORT, OPS_FINANCE, OPS_ADMIN) for url in _SHARED_READ_URLS],
+    # KYC sees only KYC queues (owner, QA survey 2026-10-28): the
+    # `kyc_verifier` template, which `driver_ops` migrates to, no longer
+    # holds `trip.read`, so the trip list and the trip-gated dashboard are
+    # refused. The driver list stays, narrowed to drivers still in KYC
+    # (`tests/test_kyc_only_view.py`).
+    (OPS_DRIVER_OPS, '/api/v1/ride/admin/trips/', 403),
+    (OPS_DRIVER_OPS, '/api/v1/driver/admin/', 200),
+    (OPS_DRIVER_OPS, '/api/v1/ride/admin/dashboard/', 403),
 ])
-def test_every_operator_can_still_do_their_job(ops_role, url):
-    """The read surface stays operator-wide. Splitting authority must not stop
-    support from seeing the ride a rider is asking about."""
+def test_every_operator_can_still_do_their_job(ops_role, url, expected):
+    """The read surface stays operator-wide for the roles whose job is the
+    ride a rider is asking about. KYC's job is documents, and its surface
+    is now exactly that."""
     resp = _client(_operator(ops_role)).get(url)
 
-    assert resp.status_code == 200, (
-        f'{ops_role} was refused {url}: HTTP {resp.status_code}'
+    assert resp.status_code == expected, (
+        f'{ops_role} on {url}: HTTP {resp.status_code}, expected {expected}'
     )
 
 

@@ -21,6 +21,15 @@ driver (`scoping.SCOPE_PATHS['sos.SOSEvent']`). An event outside the
 caller's scope answers NOT FOUND, never FORBIDDEN -- a 403 would confirm
 the id exists.
 
+WHERE AN EVENT IS ROUTED
+------------------------
+Anchored on creation (`anchoring.resolve_anchor`, owner's ruling of
+2026-10-28): the trip's zone, else the raiser's GPS fix resolved to a city,
+else a driver's home city. An event with none of those is UNANCHORED: it
+is in every Safety Officer's queue whatever their scope, at Global, and a
+Command Centre alert is raised for it. The scope filter is
+`scoping.SCOPE_PATHS['sos.SOSEvent']` plus `scoping.UNSCOPED_UNION`.
+
 Contact details -- the raiser's name and phone, the driver's label -- are
 MASKED in every response, for every role including Super Admin. The one
 way to the real values is `reveal_sos_contact`: `safety.respond`, the
@@ -199,6 +208,9 @@ def raise_sos(request):
         'trip_id': trip.id if trip else None,
         'event_type': event.event_type,
         'has_location': event.latitude is not None and event.longitude is not None,
+        # Routing, not position: the node code is a city, never a coordinate.
+        'anchor_source': event.anchor_source,
+        'anchor_node': event.anchor_node.code if event.anchor_node_id else None,
     })
 
     # Dispatch the fan-out (ops push, SMS to emergency contact, ops live
@@ -231,6 +243,7 @@ CONTACT_REVEALED_ACTION = 'sos_contact_revealed'
 
 SOS_ADMIN_QUERYSET = SOSEvent.objects.select_related(
     'user', 'trip', 'trip__driver_id', 'trip__zone', 'trip__zone__geo_node',
+    'anchor_node',
 )
 
 
@@ -277,6 +290,13 @@ def _serialize_event(ev):
         ),
         'latitude': str(ev.latitude) if ev.latitude is not None else None,
         'longitude': str(ev.longitude) if ev.longitude is not None else None,
+        # Where the event was routed, and how. `unanchored` is the one the
+        # console must shout about: nobody's city, everybody's queue.
+        'anchor': {
+            'source': ev.anchor_source,
+            'node': ev.anchor_node.code if ev.anchor_node_id else None,
+            'node_name': ev.anchor_node.name if ev.anchor_node_id else None,
+        },
         'note': ev.note,
         'created_at': ev.created_at.isoformat(),
         'updates': [

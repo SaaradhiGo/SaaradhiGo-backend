@@ -125,9 +125,14 @@ ROLE_TEMPLATES = [
         'code': 'kyc_verifier',
         'name': 'KYC Verifier',
         'description': 'Reviews driver and vehicle documents. Sees identity '
-                       'documents, which is the job.',
+                       'documents, which is the job, and nothing else: no '
+                       'trips, and only drivers still in KYC.',
+        # NO `trip.read` (owner, QA survey 2026-10-28: "KYC sees only KYC
+        # queues"). Holding `driver.kyc` without `driver.write` or
+        # `trip.read` is what `driver.admin_views.kyc_only` keys on to
+        # narrow the driver list to drivers still in KYC.
         'permissions': [
-            'driver.read', 'driver.kyc', 'trip.read', 'pii.view',
+            'driver.read', 'driver.kyc', 'pii.view',
         ],
     },
     {

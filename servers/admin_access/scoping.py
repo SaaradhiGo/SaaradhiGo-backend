@@ -64,18 +64,20 @@ SCOPE_PATHS = {
     # A rate card belongs to its zone.
     'pricing.RateCard': 'zone__geo_node__path',
 
-    # TWO ANCHORS, EITHER ONE COUNTS
-    # ------------------------------
-    # An SOS event is anchored where the trip happened if it has a trip;
-    # a driver's SOS raised outside any trip is anchored where the driver's
-    # operations team is. A tuple means "covered if ANY of these is".
-    # A rider's SOS outside any trip has no anchor (riders have no city,
-    # see above) and is visible only at Global -- the same rule as a
-    # driver with no home city, and reported rather than hidden: the list
-    # endpoint counts them.
+    # ANCHORED AT SOS TIME (owner's ruling, 2026-10-28)
+    # ----------------------------------------------
+    # `SOSEvent.anchor_node` is resolved when the row is created: the
+    # trip's zone city if there is a trip, else the raiser's GPS position
+    # -> city via the active ServiceZone polygons, else a driver's home
+    # city. The trip path is kept as a second anchor so an event whose
+    # zone is linked to its node AFTER the event stays reachable. An event
+    # with NO anchor (`anchor_source='unanchored'`, a rider with no trip
+    # and no fix) is in `UNSCOPED_UNION`: visible to EVERY scoped holder
+    # of the endpoint's capability and at Global, and raises a Command
+    # Centre alert. An SOS must never be invisible to its responders.
     'sos.SOSEvent': (
+        'anchor_node__path',
         'trip__zone__geo_node__path',
-        'user__driver__home_city__path',
     ),
     # A ticket is anchored by the trip it is about, else by the requester's
     # home city if the requester is a driver. Same caveat for riders.
@@ -97,6 +99,20 @@ RIDERS_ARE_GLOBAL = (
 GLOBAL_BY_DESIGN = {
     'rider.Rider': RIDERS_ARE_GLOBAL,
     'auth_user.CustomUser': RIDERS_ARE_GLOBAL,
+    'command_centre.OperatorAlert': (
+        'A Command Centre alert is raised precisely because a row could '
+        'not be placed (an SOS with no anchor); it is for every operator '
+        'who holds the listing capability, and is not scoped.'
+    ),
+}
+
+#: `model label -> Q` of rows that are visible to EVERY scoped holder of the
+#: endpoint's capability, on top of their scope. Deliberately tiny: the only
+#: rows that belong here are ones whose absence of a place is itself the
+#: emergency. An SOS that could not be anchored must reach every Safety
+#: Officer rather than only Global, or it reaches nobody on shift.
+UNSCOPED_UNION = {
+    'sos.SOSEvent': Q(anchor_source='unanchored'),
 }
 
 
@@ -147,6 +163,7 @@ def scoped(user, queryset):
     from .bridge import is_migrated, strict_mode
 
     path = scope_path_for(queryset.model)
+    also = UNSCOPED_UNION.get(queryset.model._meta.label)
 
     if not strict_mode() and not is_migrated(user):
         logging.getLogger(__name__).warning(
@@ -155,7 +172,7 @@ def scoped(user, queryset):
         )
         return queryset
 
-    return scope_queryset(user, queryset, path)
+    return scope_queryset(user, queryset, path, also=also)
 
 
 def scoped_or_none(user, queryset, **lookup):
@@ -231,4 +248,10 @@ def scoped_to_request(request, queryset):
     narrowed = Q()
     for field in path_field:
         narrowed |= Q(**{f'{field}__startswith': node.path})
+    # Rows with no place at all stay in a narrowed view too: narrowing to
+    # one city is "show me Austin", and an unanchored SOS is nowhere, not
+    # elsewhere. Hiding it behind the switcher is how it goes unanswered.
+    also = UNSCOPED_UNION.get(queryset.model._meta.label)
+    if also is not None:
+        narrowed |= also
     return base.filter(narrowed)

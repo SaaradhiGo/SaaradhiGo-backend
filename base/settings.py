@@ -670,6 +670,20 @@ ADMIN_ACCESS_STRICT = os.environ.get(
     'ADMIN_ACCESS_STRICT', 'false'
 ).strip().lower() in {'1', 'true', 'yes'}
 
+# Who a deploy's unattended writes are attributed to.
+#
+# Every management command that writes access, money or driver status
+# demands `--actor-email`, which must resolve to an active operator
+# (`servers.admin_audit.actor_option`). Railway's QA start command runs
+# `bootstrap_qa_accounts` on every boot and nobody is there to type an
+# address, so for the commands a deploy may run unattended this names the
+# operator instead. It is validated by the same rule as the flag.
+#
+# Ignored in production, deliberately: a production deploy that seeds
+# access rows with nobody at the keyboard is the thing that must not
+# exist, so there a person passes the flag.
+QA_BOOTSTRAP_ACTOR_EMAIL = (os.environ.get('QA_BOOTSTRAP_ACTOR_EMAIL') or '').strip()
+
 if IS_PRODUCTION:
     from django.core.exceptions import ImproperlyConfigured as _Improper
 

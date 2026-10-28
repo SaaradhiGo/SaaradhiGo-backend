@@ -44,9 +44,12 @@ def test_geo_and_roles_still_seed_in_production(settings):
     templates must load in production; only --test-admins is gated."""
     from servers.admin_access.models import AdminRole, GeoNode
 
+    from conftest import seed_actor
+
+    actor = seed_actor()
     settings.IS_PRODUCTION = True
     settings.TEST_PHONE_NUMBERS = {}
 
-    call_command('seed_admin_access')
+    call_command('seed_admin_access', actor_email=actor.email)
 
     assert GeoNode.objects.exists() and AdminRole.objects.exists()

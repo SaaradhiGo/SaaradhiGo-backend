@@ -32,17 +32,18 @@ which enforces the Super Admin floor and wants a reason. A migration that
 could silently remove access would be a worse instrument than the problem
 it solves.
 
-EVERY LINE IT APPLIES IS AUDITED, WITH A NAME IF YOU GIVE ONE
--------------------------------------------------------------
+EVERY LINE IT APPLIES IS AUDITED, AND NAMES WHO APPLIED IT
+-----------------------------------------------------------
 On 2026-10-27 this command applied the QA plan and the audit log recorded
 nothing, because audit rows were something views wrote and this is not a
 view. The access models now audit themselves (`admin_audit.access_audit`),
 so each assignment and each break-glass flag this writes appends a row
-whatever happens here. What this command adds is the WHO: pass
-`--actor-email` with the address of the person running it and every row
-names them. Without it the rows say `migrate_operators (management
-command)`, which is honest but is the kind of row an access review has to
-chase.
+whatever happens here. What this command adds is the WHO: `--apply`
+requires `--actor-email`, the address of the operator running it, and
+every row names them. An apply with no name, or a name that is not an
+active operator, is refused before anything is written -- see
+`admin_audit.actor_option` for the rule. A dry run needs no name because
+it writes nothing.
 """
 
 import json
@@ -54,9 +55,19 @@ from django.db import transaction
 from servers.admin_access.models import AdminAssignment, AdminRole, GeoNode
 from servers.admin_access.roles import SUPER_ADMIN
 from servers.admin_access.services import super_admin_shortfall
+from servers.admin_audit.actor_option import (
+    add_actor_argument,
+    attributed,
+    require_actor,
+)
+from servers.admin_audit.actor_option import resolve_actor as _resolve_actor
 from servers.admin_audit.context import audit_context
 
-ACTOR_LABEL = 'migrate_operators (management command)'
+COMMAND = 'migrate_operators'
+#: Label on a DRY RUN's context. A dry run writes nothing, so no row ever
+#: carries it; it is here so a stray write in a dry run would at least be
+#: attributed to the command.
+ACTOR_LABEL = 'migrate_operators (management command, dry run)'
 
 #: The QA mapping, from the owner's decisions of 2026-10-26.
 #:
@@ -104,19 +115,13 @@ def load_plan(source):
 def resolve_actor(email):
     """The operator account behind `--actor-email`, or None when not given.
 
-    An address that matches nobody is an error, not a label: a row naming
-    a person who does not exist is worse than one naming the command.
+    Kept for callers that imported it from here; the rule itself lives in
+    `admin_audit.actor_option.resolve_actor` (active, operator, not the
+    break-glass account) so every command refuses the same addresses.
     """
     if not email:
         return None
-    actor = get_user_model().objects.filter(email__iexact=email.strip()).first()
-    if actor is None:
-        raise CommandError(
-            f'--actor-email {email!r} matches no account. The actor on an '
-            f'audit row must be a real operator; create them first or omit '
-            f'the flag to attribute the rows to the command.'
-        )
-    return actor
+    return _resolve_actor(email)
 
 
 class Command(BaseCommand):
@@ -137,22 +142,28 @@ class Command(BaseCommand):
             help='Required to apply the BUILT-IN qa plan outside QA. A '
                  'production migration should use an explicit plan file.',
         )
-        parser.add_argument(
-            '--actor-email', default='',
-            help='Email of the person running this. Every audit row the '
-                 'apply writes names them. Strongly recommended with --apply.',
+        add_actor_argument(
+            parser,
+            help='Email of the operator running this. Required with --apply; '
+                 'every audit row the apply writes names them. A dry run '
+                 'does not need it.',
         )
 
     def handle(self, *args, **options):
         plan = load_plan(options['plan'])
         apply_changes = options['apply']
+        reason = f'Operator migration, plan {options["plan"]!r}.'
 
-        if apply_changes:
-            self._guard_environment(options)
+        if not apply_changes:
+            with audit_context(actor_label=ACTOR_LABEL, reason=reason):
+                rows, problems = self._apply_plan(plan, apply_changes=False)
+            self._report(rows, problems, apply_changes=False)
+            return
 
-        actor = resolve_actor(options.get('actor_email'))
-        with audit_context(actor=actor, actor_label='' if actor else ACTOR_LABEL,
-                           reason=f'Operator migration, plan {options["plan"]!r}.'):
+        self._guard_environment(options)
+        # Before the first write: a nameless apply is refused outright.
+        actor = require_actor(options, COMMAND)
+        with attributed(actor, COMMAND, reason=reason):
             rows, problems = self._apply_plan(plan, apply_changes)
 
         self._report(rows, problems, apply_changes)

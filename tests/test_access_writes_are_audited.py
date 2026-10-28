@@ -60,6 +60,7 @@ from servers.admin_audit.context import audit_context, current_context
 from servers.admin_audit.hashchain import verify_chain
 from servers.admin_audit.middleware import AuditActorMiddleware
 from servers.admin_audit.models import AdminAuditLog
+from conftest import seed_actor
 
 pytestmark = pytest.mark.django_db
 
@@ -609,7 +610,7 @@ def _qa_accounts():
 
 class TestMigrateOperators:
     def test_apply_writes_one_row_per_plan_line(self):
-        call_command('seed_admin_access', stdout=StringIO())
+        call_command('seed_admin_access', actor_email=seed_actor().email, stdout=StringIO())
         people = _qa_accounts()
         srini = people['srini@saaradhigo.com']
         before = _count()
@@ -633,17 +634,19 @@ class TestMigrateOperators:
         assert grants == {('super_admin', 'GLOBAL'), ('city_ops_manager', 'IN-TG-HYD')}
 
     def test_a_second_apply_writes_nothing(self):
-        call_command('seed_admin_access', stdout=StringIO())
+        call_command('seed_admin_access', actor_email=seed_actor().email, stdout=StringIO())
         _qa_accounts()
-        call_command('migrate_operators', plan='qa', apply=True, stdout=StringIO())
+        call_command('migrate_operators', plan='qa', apply=True,
+                     actor_email='srini@saaradhigo.com', stdout=StringIO())
         before = _count()
 
-        call_command('migrate_operators', plan='qa', apply=True, stdout=StringIO())
+        call_command('migrate_operators', plan='qa', apply=True,
+                     actor_email='srini@saaradhigo.com', stdout=StringIO())
 
         assert _count() == before
 
     def test_a_dry_run_writes_nothing(self):
-        call_command('seed_admin_access', stdout=StringIO())
+        call_command('seed_admin_access', actor_email=seed_actor().email, stdout=StringIO())
         _qa_accounts()
         before = _count()
 
@@ -651,21 +654,26 @@ class TestMigrateOperators:
 
         assert _count() == before
 
-    def test_without_an_actor_the_rows_name_the_command(self):
-        call_command('seed_admin_access', stdout=StringIO())
+    def test_without_an_actor_an_apply_is_refused_before_any_write(self):
+        """Owner ruling, 2026-10-28: --actor-email is mandatory for --apply.
+
+        The earlier behaviour -- rows labelled with the command's name --
+        was honest but left exactly the kind of row an access review has
+        to chase. Now there is no such row, because there is no such write.
+        """
+        call_command('seed_admin_access', actor_email=seed_actor().email, stdout=StringIO())
         _qa_accounts()
         before = _count()
 
-        call_command('migrate_operators', plan='qa', apply=True, stdout=StringIO())
+        with pytest.raises(CommandError, match='--actor-email'):
+            call_command('migrate_operators', plan='qa', apply=True, stdout=StringIO())
 
-        rows = _rows_since(before)
-        assert len(rows) == 3
-        assert all(r.actor_id is None for r in rows)
-        assert all(r.actor_label == 'migrate_operators (management command)'
-                   for r in rows)
+        assert _count() == before
+        assert not AdminAssignment.objects.exists()
+        assert not User.objects.filter(is_break_glass=True).exists()
 
     def test_an_unknown_actor_is_refused_before_anything_is_written(self):
-        call_command('seed_admin_access', stdout=StringIO())
+        call_command('seed_admin_access', actor_email=seed_actor().email, stdout=StringIO())
         _qa_accounts()
         before = _count()
 
@@ -679,9 +687,10 @@ class TestMigrateOperators:
 
 class TestSeedAdminAccess:
     def test_the_roles_and_scopes_it_creates_are_audited(self):
+        seed_actor()
         before = _count()
 
-        call_command('seed_admin_access', stdout=StringIO())
+        call_command('seed_admin_access', actor_email=seed_actor().email, stdout=StringIO())
 
         rows = _rows_since(before)
         roles = [r for r in rows if r.action == 'access_role_created']
@@ -689,23 +698,24 @@ class TestSeedAdminAccess:
         assert len(roles) == len(ROLE_TEMPLATES)
         assert len(scopes) == len(GEO)
         assert {r.after['code'] for r in roles} == {t['code'] for t in ROLE_TEMPLATES}
-        assert all(r.actor_label == 'seed_admin_access (management command)'
+        assert all(r.actor_label == f'{seed_actor().email} via seed_admin_access'
                    for r in rows)
+        assert all(r.actor_id == seed_actor().pk for r in rows)
 
     def test_a_repeat_seed_writes_nothing(self):
-        call_command('seed_admin_access', stdout=StringIO())
+        call_command('seed_admin_access', actor_email=seed_actor().email, stdout=StringIO())
         before = _count()
 
-        call_command('seed_admin_access', stdout=StringIO())
+        call_command('seed_admin_access', actor_email=seed_actor().email, stdout=StringIO())
 
         assert _count() == before
 
     def test_a_role_edit_is_recorded_when_the_seed_restores_it(self):
-        call_command('seed_admin_access', stdout=StringIO())
+        call_command('seed_admin_access', actor_email=seed_actor().email, stdout=StringIO())
         AdminRole.objects.filter(code='analyst').update(permissions=['pii.view'])
         before = _count()
 
-        call_command('seed_admin_access', stdout=StringIO())
+        call_command('seed_admin_access', actor_email=seed_actor().email, stdout=StringIO())
 
         rows = _rows_since(before)
         assert [r.action for r in rows] == ['access_role_updated']
@@ -715,7 +725,8 @@ class TestSeedAdminAccess:
 class TestCreateOperatorWritesOneRowNotTwo:
     def test_the_structural_row_is_the_operator_created_row(self):
         call_command('create_operator', email='new@saaradhigo.test',
-                     phone='+919700000555', name='New Person', stdout=StringIO())
+                     phone='+919700000555', name='New Person',
+                     actor_email=seed_actor().email, stdout=StringIO())
 
         user = User.objects.get(email='new@saaradhigo.test')
         rows = AdminAuditLog.objects.filter(target_type='User', target_id=str(user.pk))

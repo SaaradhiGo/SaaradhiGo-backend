@@ -43,7 +43,6 @@ RETRO_ACTIONS = (ASSIGNMENT_ACTION, BREAK_GLASS_ACTION)
 @pytest.fixture
 def tonight():
     """QA as it was left: seeded, three accounts, the plan applied."""
-    call_command('seed_admin_access', stdout=StringIO())
     people = {}
     for index, entry in enumerate(QA_PLAN):
         phone = f'+91970000020{index}'
@@ -51,7 +50,9 @@ def tonight():
             phone_number=phone, username=phone, email=entry['email'],
             full_name=entry['email'].split('@')[0], role='admin', is_staff=True,
         )
-    call_command('migrate_operators', plan='qa', apply=True, stdout=StringIO())
+    call_command('seed_admin_access', actor_email=ACTOR, stdout=StringIO())
+    call_command('migrate_operators', plan='qa', apply=True, actor_email=ACTOR,
+                 stdout=StringIO())
     return people
 
 
@@ -90,7 +91,7 @@ class TestItWritesExactlyThreeRows:
         actor = tonight[ACTOR]
         for row in _retro_rows():
             assert row.actor_id == actor.pk
-            assert row.actor_label == 'srini'
+            assert row.actor_label == f'{ACTOR} via record_retroactive_access_audit'
             assert row.after['recorded_retroactively'] is True
             assert row.after['performed_at'] == '2026-10-27T01:14:00+00:00'
             assert row.after['recorded_by'] == RECORDED_BY
@@ -196,11 +197,11 @@ class TestItRefusesToGuess:
         assert _retro_rows() == []
 
     def test_a_missing_account_refuses_the_whole_run(self):
-        call_command('seed_admin_access', stdout=StringIO())
         # The actor exists; the other two accounts in the plan do not.
         User.objects.create_user(phone_number='+919700000300',
                                  username='+919700000300', email=ACTOR,
                                  role='admin', is_staff=True)
+        call_command('seed_admin_access', actor_email=ACTOR, stdout=StringIO())
 
         with pytest.raises(CommandError, match='no such account'):
             _run()

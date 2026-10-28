@@ -13,7 +13,10 @@ boot refuses it.
 
 Also here: `set_operator_password`, the audited shell path that makes an
 account usable with a password alone (new generated password, pending
-authenticator removed, forced change cleared).
+authenticator removed, forced change cleared). It writes an operator's
+credential, so it takes `--actor-email` like every other writing command
+(`tests/test_actor_email_mandatory.py` holds the refusals); here the rows
+are checked to name the actor.
 """
 
 from io import StringIO
@@ -51,6 +54,19 @@ def operator():
     return User.objects.create_user(
         phone_number=PHONE, username=PHONE, email=EMAIL, role='admin',
         is_staff=True, password=PASSWORD,
+    )
+
+
+ACTOR_EMAIL = 'ops.lead@saaradhigo.test'
+ACTOR_PHONE = '+919741000399'
+
+
+@pytest.fixture(autouse=True)
+def actor(db):
+    """The operator who runs `set_operator_password`. Every row names them."""
+    return User.objects.create_user(
+        phone_number=ACTOR_PHONE, username=ACTOR_PHONE, email=ACTOR_EMAIL,
+        full_name='Ops Lead', role='admin', is_staff=True,
     )
 
 
@@ -172,6 +188,7 @@ class TestSwitchedOnByDefault:
 def _run(**kwargs):
     out = StringIO()
     kwargs.setdefault('email', EMAIL)
+    kwargs.setdefault('actor_email', ACTOR_EMAIL)
     call_command('set_operator_password', stdout=out, **kwargs)
     return out.getvalue()
 
@@ -235,6 +252,27 @@ class TestSetOperatorPassword:
         assert row.after['pending_totp_devices_removed'] == 1
         assert password not in f'{row.before}{row.after}{row.reason}{row.actor_label}'
 
+    def test_both_rows_name_the_actor(self, operator, actor):
+        _run()
+
+        rows = AdminAuditLog.objects.filter(
+            action__in=['ops_password_set', 'operator_credential_changed'])
+        assert rows.count() == 2
+        for row in rows:
+            assert row.actor_id == actor.pk
+            assert row.actor_email == ACTOR_EMAIL
+            assert row.actor_label == f'{ACTOR_EMAIL} via set_operator_password'
+
+    def test_the_old_session_cannot_be_renewed(self, operator):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(operator)
+
+        _run()
+
+        r = APIClient().post('/api/v1/auth/refresh/',
+                             {'refresh_token': str(refresh)}, format='json')
+        assert r.status_code != 200
+
     def test_an_unknown_address_is_refused(self):
         with pytest.raises(CommandError, match='No account'):
             _run(email='nobody@saaradhigo.test')
@@ -244,7 +282,17 @@ class TestSetOperatorPassword:
                                          email='rider2@saaradhigo.test', role='rider',
                                          password=PASSWORD)
 
+        rows = AdminAuditLog.objects.count()
         with pytest.raises(CommandError, match='not an operator'):
             _run(email='rider2@saaradhigo.test')
         assert User.objects.get(pk=rider.pk).check_password(PASSWORD)
-        assert not AdminAuditLog.objects.exists()
+        assert AdminAuditLog.objects.count() == rows
+
+    def test_without_an_actor_it_is_refused_before_any_write(self, operator):
+        rows = AdminAuditLog.objects.count()
+
+        with pytest.raises(CommandError, match='--actor-email'):
+            _run(actor_email='')
+
+        assert User.objects.get(pk=operator.pk).check_password(PASSWORD)
+        assert AdminAuditLog.objects.count() == rows

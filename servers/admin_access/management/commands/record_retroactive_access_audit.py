@@ -45,14 +45,18 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils.dateparse import parse_datetime
 
-from servers.admin_access.management.commands.migrate_operators import (
-    load_plan,
-    resolve_actor,
-)
+from servers.admin_access.management.commands.migrate_operators import load_plan
 from servers.admin_access.models import AdminAssignment
+from servers.admin_audit.actor_option import (
+    add_actor_argument,
+    attributed,
+    require_actor,
+)
 from servers.admin_audit.models import AdminAuditLog
+from servers.admin_audit.services import record_admin_action
 
 RECORDED_BY = 'record_retroactive_access_audit'
+COMMAND = RECORDED_BY
 ASSIGNMENT_ACTION = 'operator_assignment_recorded_retroactively'
 BREAK_GLASS_ACTION = 'break_glass_flag_recorded_retroactively'
 
@@ -88,10 +92,12 @@ class Command(BaseCommand):
             help='"qa" for the built-in QA mapping, or the JSON plan file '
                  'that was applied.',
         )
-        parser.add_argument(
-            '--actor-email', required=True,
+        # Every run of this command writes, so the flag is required at parse
+        # time; the same validator as every other writing command applies.
+        add_actor_argument(
+            parser, required=True,
             help='Email of the operator who ran migrate_operators. Becomes '
-                 'the actor on every row.',
+                 'the actor on every row; must be an active operator.',
         )
         parser.add_argument(
             '--performed-at', required=True,
@@ -101,7 +107,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         plan = load_plan(options['plan'])
-        actor = resolve_actor(options['actor_email'])
+        actor = require_actor(options, COMMAND)
         performed_at = parse_performed_at(options['performed_at'])
 
         pending, problems = self._inspect(plan)
@@ -112,8 +118,17 @@ class Command(BaseCommand):
                 'cannot be seen would be a guess:\n  ' + '\n  '.join(problems)
             )
 
+        reason = (
+            f'Recorded retroactively. migrate_operators --plan '
+            f'{options["plan"]} --apply made this change at '
+            f'{performed_at.isoformat()} and, under the rules then '
+            f'in force, wrote no audit row. created_at is when '
+            f'this row was appended; after.performed_at is when '
+            f'the change happened.'
+        )
+
         written, skipped = [], []
-        with transaction.atomic():
+        with attributed(actor, COMMAND, reason=reason), transaction.atomic():
             for target_type, target_id, action, after, description in pending:
                 exists = AdminAuditLog.objects.filter(
                     action=action, target_type=target_type,
@@ -122,12 +137,11 @@ class Command(BaseCommand):
                 if exists:
                     skipped.append(description)
                     continue
-                AdminAuditLog.objects.create(
-                    actor=actor,
-                    actor_label=self._label(actor),
+                row = record_admin_action(
+                    None,
                     action=action,
                     target_type=target_type,
-                    target_id=str(target_id),
+                    target_id=target_id,
                     # Not captured at the time; saying so is the record.
                     before={},
                     after={
@@ -137,15 +151,17 @@ class Command(BaseCommand):
                         'plan': options['plan'],
                         **after,
                     },
-                    reason=(
-                        f'Recorded retroactively. migrate_operators --plan '
-                        f'{options["plan"]} --apply made this change at '
-                        f'{performed_at.isoformat()} and, under the rules then '
-                        f'in force, wrote no audit row. created_at is when '
-                        f'this row was appended; after.performed_at is when '
-                        f'the change happened.'
-                    ),
+                    reason=reason,
                 )
+                if row is None:
+                    # The row IS the point of this command; a swallowed
+                    # failure would report success for a repair that did
+                    # not happen. Raising inside atomic() rolls back the
+                    # rows written so far, so a re-run starts clean.
+                    raise CommandError(
+                        f'The audit row for {description} could not be '
+                        f'written; see the log. Nothing was kept.'
+                    )
                 written.append(description)
 
         self._report(written, skipped)
@@ -212,12 +228,6 @@ class Command(BaseCommand):
                     ))
 
         return pending, problems
-
-    @staticmethod
-    def _label(actor):
-        return (getattr(actor, 'full_name', None)
-                or getattr(actor, 'email', None)
-                or str(actor))[:255]
 
     def _report(self, written, skipped):
         self.stdout.write(self.style.MIGRATE_HEADING(

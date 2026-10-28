@@ -31,10 +31,19 @@ pytestmark = pytest.mark.django_db
 
 PHONE = '+919555000001'
 GOOD_PASSWORD = 'qa-operator-not-a-real-secret'
+ACTOR_EMAIL = 'ops.lead@saaradhigo.test'
+ACTOR_PHONE = '+919555000099'
 
 
 @pytest.fixture
-def qa_env(monkeypatch):
+def qa_env(monkeypatch, db):
+    # The operator the run is attributed to. Without one in the database
+    # the command would take the genesis path instead, which is tested in
+    # test_actor_email_mandatory.py; here every run has a name.
+    User.objects.create_user(
+        phone_number=ACTOR_PHONE, username=ACTOR_PHONE, email=ACTOR_EMAIL,
+        full_name='Ops Lead', role='admin', is_staff=True,
+    )
     monkeypatch.setenv('ENVIRONMENT', 'qa')
     monkeypatch.setenv('DEBUG_ENV', 'False')
     monkeypatch.setenv('QA_ADMIN_BOOTSTRAP_PHONE', PHONE)
@@ -44,6 +53,7 @@ def qa_env(monkeypatch):
 
 def _run(**kwargs):
     out, err = StringIO(), StringIO()
+    kwargs.setdefault('actor_email', ACTOR_EMAIL)
     call_command('bootstrap_qa_operator', stdout=out, stderr=err, **kwargs)
     return out.getvalue() + err.getvalue()
 

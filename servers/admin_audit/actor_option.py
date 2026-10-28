@@ -53,15 +53,31 @@ address, not a way around the check. The fallback is IGNORED in production:
 a production deploy that seeds access rows unattended is the thing that
 must not exist, so there a person passes the flag.
 
-THE FIRST OPERATOR
-------------------
+THE FIRST OPERATOR (owner, 2026-10-28)
+--------------------------------------
+    Allowed only while zero active operators exist. The account it creates
+    is audited with actor 'system:genesis', and the exemption closes the
+    moment one active operator exists.
+
 An empty database has no operator to name. `create_operator` and the two
 QA bootstraps are the only commands that can create one, and each of them
 would otherwise be impossible to run for the first time. So, for those
 three only: when NO active operator exists at all, the command may run
-without an actor and its rows are labelled as the genesis write. The
-moment one operator exists the exemption is gone -- the second operator is
+without an actor; its rows carry `actor_id` NULL, the label
+`system:genesis` (`GENESIS_LABEL`) and `after.genesis: true`. The moment
+one ACTIVE operator exists the exemption is gone -- the second operator is
 created by the first, with a name attached.
+
+"One active operator exists" is `any_operator_exists`: an account that is
+active and operator-shaped (`role='admin'` with `is_staff`, or a
+superuser). A deactivated operator does not count: nobody can sign in as
+it, so it cannot create the next one. The break-glass account DOES count
+when it is active: it is an operator somebody can sign in as (with a
+reason) and then use to run `create_operator --actor-email` -- the row
+would name the emergency account, which is the loud record wanted, rather
+than nobody. Closing the exemption as soon as any usable operator exists
+is the conservative reading of "zero active operators", and
+`tests/test_actor_email_mandatory.py::TestGenesis` holds both cases.
 """
 
 from contextlib import contextmanager
@@ -80,6 +96,9 @@ DEST = 'actor_email'
 #: The setting (an environment variable on the QA service) that names the
 #: actor for a command a deploy runs without a person at the keyboard.
 UNATTENDED_SETTING = 'QA_BOOTSTRAP_ACTOR_EMAIL'
+#: The actor label on every row a genesis run writes. Exactly this, by the
+#: owner's ruling: a reader of the audit log greps for one string.
+GENESIS_LABEL = 'system:genesis'
 
 
 class ActorRefused(CommandError):
@@ -144,7 +163,12 @@ def resolve_actor(email, *, source=OPTION):
 
 
 def any_operator_exists():
-    """Is there at least one active operator-shaped account?"""
+    """Is there at least one active operator-shaped account?
+
+    Active and operator-shaped, nothing more: an active break-glass
+    account counts (see the module docstring), a deactivated Super Admin
+    does not.
+    """
     return get_user_model().objects.filter(is_active=True).filter(
         Q(is_superuser=True) | Q(role='admin', is_staff=True)
     ).exists()
@@ -197,8 +221,14 @@ def actor_label(actor, command):
     return f'{actor.email} via {command}'[:255]
 
 
-def genesis_label(command):
-    return f'{command} (first operator: no actor existed yet)'[:255]
+def genesis_label(command=None):
+    """The label on a genesis row: `system:genesis`, whichever command.
+
+    `command` is accepted so callers read the same as `actor_label`, and
+    ignored: the ruling fixes the string, and the command's name is already
+    on the row's `reason`.
+    """
+    return GENESIS_LABEL
 
 
 @contextmanager

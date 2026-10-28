@@ -28,7 +28,10 @@ asserted for every case:
 
 Then the two documented exceptions: the unattended fallback for the
 commands a deploy runs, and the genesis write for the three commands that
-can create the first operator in an empty database.
+can create the first operator in an empty database (owner, 2026-10-28:
+"Allowed only while zero active operators exist. The account it creates is
+audited with actor 'system:genesis', and the exemption closes the moment
+one active operator exists.").
 """
 
 import pathlib
@@ -70,6 +73,7 @@ WRITING_COMMANDS = [
     'recompute_driver_trip_counts',
     'reset_operator_mfa',
     'seed_admin_access',
+    'set_operator_password',
 ]
 
 ACTOR_EMAIL = 'ops.lead@saaradhigo.test'
@@ -229,7 +233,17 @@ def _prepare_reset(settings, monkeypatch):
     device, _uri = ops_mfa.enroll_totp(user)
     device.confirmed = True
     device.save(update_fields=['confirmed'])
-    return ['--phone', MFA_PHONE, '--confirm'], {}
+    return ['--phone', MFA_PHONE, '--confirm',
+            '--reason', 'lost handset, identity verified by voice call'], {}
+
+
+def _prepare_set_password(settings, monkeypatch):
+    _operator(MFA_PHONE, 'enrollee@saaradhigo.test')
+    return ['--email', 'enrollee@saaradhigo.test'], {}
+
+
+def _fp_passwords():
+    return tuple(sorted(User.objects.values_list('pk', 'password')))
 
 
 def _prepare_retro(settings, monkeypatch):
@@ -306,6 +320,8 @@ CASES = [
     Case('reset_operator_mfa --confirm', 'reset_operator_mfa',
          _prepare_reset, _fp_mfa, dry_run=(['--phone', MFA_PHONE], {}),
          needs_operator_to_prepare=True),
+    Case('set_operator_password', 'set_operator_password',
+         _prepare_set_password, _fp_passwords, needs_operator_to_prepare=True),
     Case('record_retroactive_access_audit', 'record_retroactive_access_audit',
          _prepare_retro, _fp_audit, needs_operator_to_prepare=True),
     Case('recompute_driver_trip_counts --apply', 'recompute_driver_trip_counts',
@@ -607,7 +623,8 @@ class TestGenesis:
         assert rows, 'the genesis write left no row'
         for row in rows:
             assert row.actor_id is None
-            assert row.actor_label == actor_option.genesis_label(case.command)
+            assert row.actor_email == ''
+            assert row.actor_label == 'system:genesis'
             assert row.after.get('genesis') is True
 
     def test_a_deactivated_operator_does_not_count(self, case, settings, monkeypatch):
@@ -619,7 +636,27 @@ class TestGenesis:
 
         assert actor_option.any_operator_exists()
 
-    def test_once_an_operator_exists_the_exemption_is_gone(self, case, actor, settings, monkeypatch):
+    def test_once_one_active_operator_exists_the_exemption_is_gone(
+            self, case, actor, settings, monkeypatch):
+        """ONE active operator -- the `actor` fixture -- closes it."""
+        assert actor_option.any_operator_exists()
+        args, kwargs = case.prepare(settings, monkeypatch)
+        before = case.fingerprint()
+        rows = AdminAuditLog.objects.count()
+
+        with pytest.raises(CommandError, match='--actor-email'):
+            _run(case, args, kwargs)
+
+        assert case.fingerprint() == before
+        assert AdminAuditLog.objects.count() == rows
+        assert not AdminAuditLog.objects.filter(actor_label='system:genesis').exists()
+
+    def test_an_active_break_glass_operator_also_closes_it(self, case, settings, monkeypatch):
+        """The emergency account cannot be the ACTOR of a routine command,
+        but it is an operator somebody can sign in as, so while it exists
+        the database is not one with zero active operators."""
+        _operator('+919600000004', 'admin@saaradhigo.test', is_break_glass=True)
+        assert actor_option.any_operator_exists()
         args, kwargs = case.prepare(settings, monkeypatch)
         before = case.fingerprint()
 
@@ -627,6 +664,28 @@ class TestGenesis:
             _run(case, args, kwargs)
 
         assert case.fingerprint() == before
+
+    def test_the_same_run_with_an_actor_is_not_a_genesis_write(
+            self, case, actor, settings, monkeypatch):
+        args, kwargs = case.prepare(settings, monkeypatch)
+        count = AdminAuditLog.objects.count()
+
+        _run(case, args, kwargs, actor_email=ACTOR_EMAIL)
+
+        rows = _rows_since(count)
+        assert rows
+        for row in rows:
+            assert row.actor_id == actor.pk
+            assert row.actor_label != 'system:genesis'
+            assert row.after.get('genesis') is False
+
+
+def test_the_genesis_label_is_exactly_system_genesis():
+    """One string, by ruling, whichever command wrote the row."""
+    assert actor_option.GENESIS_LABEL == 'system:genesis'
+    for name in ('create_operator', 'bootstrap_qa_operator', 'bootstrap_qa_accounts'):
+        assert actor_option.genesis_label(name) == 'system:genesis'
+        assert actor_option.actor_label(None, name) == 'system:genesis'
 
 
 @pytest.mark.parametrize('case', NOT_GENESIS, ids=[c.id for c in NOT_GENESIS])

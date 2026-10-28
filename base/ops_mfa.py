@@ -45,9 +45,11 @@ function. Two mitigations, both deliberate:
 
   * enrolment issues single-use static recovery codes, which are presented once and
     are the operator's responsibility thereafter;
-  * `manage.py reset_operator_mfa` removes an account's devices, and it requires
-    shell access to the deployment. That is the correct bar for break-glass: it
-    cannot be reached from the internet, and it is audited.
+  * `manage.py reset_operator_mfa` removes an account's devices, starts a fresh
+    enrolment (confirmed by the first valid code at sign-in) and revokes the
+    account's sessions; it requires shell access to the deployment, a named
+    actor and a reason. That is the correct bar for break-glass: it cannot be
+    reached from the internet, and it is audited.
 """
 
 import logging

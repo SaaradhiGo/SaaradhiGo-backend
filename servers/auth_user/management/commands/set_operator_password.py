@@ -1,6 +1,7 @@
 """Give an existing operator a new generated password, from a shell, audited.
 
     python manage.py set_operator_password --email srini@saaradhigo.com \\
+        --actor-email you@saaradhigo.com \\
         [--remove-pending-mfa] [--clear-forced-change]
 
 WHY THIS EXISTS
@@ -27,7 +28,17 @@ authenticators, and only when asked: a confirmed factor is the operator's
 own proof and `reset_operator_mfa` is the break-glass for that.
 
 Every run leaves one audit row (`ops_password_set`) naming what changed,
-and never the password.
+and never the password; the session revocation leaves its own
+(`operator_credential_changed`), as it does everywhere else.
+
+WHO DID IT
+----------
+A new password on an operator account is the credential an access review
+asks about first, so every run requires `--actor-email`: the operator at
+the keyboard, validated by `admin_audit.actor_option` (active, an
+operator, not the break-glass account), named on both rows. This command
+never creates an account, so it has no genesis path: the first operator is
+`create_operator`'s to make.
 """
 
 import secrets
@@ -38,11 +49,18 @@ from django.db import transaction
 
 from base import ops_mfa
 from base.permissions import is_operator
-from servers.admin_audit.models import AdminAuditLog
+from servers.admin_audit.actor_option import (
+    add_actor_argument,
+    attributed,
+    require_actor,
+)
+from servers.admin_audit.services import record_admin_action
 from servers.auth_user.identity import InvalidEmail, normalize_email
 from servers.auth_user.session_revocation import revoke_after_credential_change
 
 User = get_user_model()
+
+COMMAND = 'set_operator_password'
 
 PASSWORD_BYTES = 18  # 24 characters once URL-safe base64 encoded
 
@@ -62,6 +80,7 @@ class Command(BaseCommand):
             '--clear-forced-change', action='store_true',
             help='Clear must_change_password so the new password signs in '
                  'directly.')
+        add_actor_argument(parser)
 
     def handle(self, *args, **options):
         try:
@@ -77,43 +96,51 @@ class Command(BaseCommand):
             raise CommandError(f'User id {user.pk} is not an operator. Refusing: '
                                f'this command is for operator accounts only.')
 
+        # Before the first write.
+        actor = require_actor(options, COMMAND)
+
         password = secrets.token_urlsafe(PASSWORD_BYTES)
         before = {
             'must_change_password': bool(getattr(user, 'must_change_password', False)),
             'pending_totp_devices': self._pending_count(user),
         }
+        reason = 'Operator password set from a shell.'
 
-        with transaction.atomic():
-            user.set_password(password)
-            update_fields = ['password']
-            if options['clear_forced_change'] and getattr(user, 'must_change_password', False):
-                user.must_change_password = False
-                update_fields.append('must_change_password')
-            user.save(update_fields=update_fields)
+        # Both rows -- this command's and the revocation's -- name the actor
+        # through the context; neither names the password.
+        with attributed(actor, COMMAND, reason=reason):
+            with transaction.atomic():
+                user.set_password(password)
+                update_fields = ['password']
+                if options['clear_forced_change'] and getattr(user, 'must_change_password', False):
+                    user.must_change_password = False
+                    update_fields.append('must_change_password')
+                user.save(update_fields=update_fields)
 
-            removed = 0
-            if options['remove_pending_mfa']:
-                removed = self._remove_pending(user)
+                removed = 0
+                if options['remove_pending_mfa']:
+                    removed = self._remove_pending(user)
 
-            AdminAuditLog.objects.create(
-                actor=None,
-                actor_label='set_operator_password (management command)',
-                action='ops_password_set',
-                target_type='operator',
-                target_id=str(user.pk),
-                before=before,
-                after={
-                    'password': 'generated, shown once in the shell',
-                    'must_change_password': bool(getattr(user, 'must_change_password', False)),
-                    'pending_totp_devices_removed': removed,
-                    'sessions_revoked': True,
-                },
-                reason='Operator password set from a shell.',
-            )
+                record_admin_action(
+                    None,
+                    action='ops_password_set',
+                    target_type='operator',
+                    target_id=user.pk,
+                    before=before,
+                    after={
+                        'password': 'generated, shown once in the shell',
+                        'must_change_password': bool(getattr(user, 'must_change_password', False)),
+                        'pending_totp_devices_removed': removed,
+                        'sessions_revoked': True,
+                    },
+                    reason=reason,
+                )
 
-        # After the commit: the password is saved, so nothing here may raise.
-        revoke_after_credential_change(
-            user, None, reason='Password set from a shell by set_operator_password.')
+            # After the commit: the password is saved, so nothing here may
+            # raise.
+            revoke_after_credential_change(
+                user, None,
+                reason='Password set from a shell by set_operator_password.')
 
         self.stdout.write(self.style.SUCCESS(
             f'Password set for operator id {user.pk} ({email}). '

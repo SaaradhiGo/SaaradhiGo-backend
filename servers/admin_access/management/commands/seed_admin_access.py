@@ -14,6 +14,14 @@ Super Admin — is a decision with a name attached, not a line in a script.
 
 A city's `status` is never overwritten either: launching or pausing a city
 is an operational decision, and a redeploy must not quietly undo it.
+
+WHAT IT LEAVES IN THE AUDIT LOG
+-------------------------------
+Roles and geo nodes are access rows, so each one this creates or changes
+appends an `AdminAuditLog` row (see `admin_audit.access_audit`), labelled
+as written by this command. A redeploy that changes nothing writes nothing:
+the receivers compare the row before and after, so the idempotence above
+holds for the log as well as the tables.
 """
 
 import os
@@ -22,6 +30,10 @@ from django.core.management.base import BaseCommand, CommandError
 
 from base.seeding import require_seedable_environment
 from django.db import transaction
+
+from servers.admin_audit.context import audit_context
+
+ACTOR_LABEL = 'seed_admin_access (management command)'
 
 from servers.admin_access.models import (
     ACTIVE,
@@ -92,17 +104,20 @@ class Command(BaseCommand):
                 + '\n  '.join(problems)
             )
 
-        with transaction.atomic():
-            nodes = self._seed_geo()
-            self._seed_roles()
-            self._link_existing_rows()
+        with audit_context(actor_label=ACTOR_LABEL,
+                           reason='Seed: geo hierarchy and role templates.'):
+            with transaction.atomic():
+                nodes = self._seed_geo()
+                self._seed_roles()
+                self._link_existing_rows()
 
-        if options['test_admins']:
-            # Geo nodes and roles above are configuration and run everywhere;
-            # test admins are test data and go through the shared gate.
-            require_seedable_environment('the QA test admins')
-            self._refuse_in_production()
-            self._seed_test_admins(nodes)
+            if options['test_admins']:
+                # Geo nodes and roles above are configuration and run
+                # everywhere; test admins are test data and go through the
+                # shared gate.
+                require_seedable_environment('the QA test admins')
+                self._refuse_in_production()
+                self._seed_test_admins(nodes)
 
         self.stdout.write(self.style.SUCCESS(
             'Seed complete. Nobody was assigned to any role: that is a '

@@ -42,7 +42,23 @@ person an extra permission.
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
+
+from servers.admin_audit.access_audit import AccessAuditedManager
+
+# EVERY WRITE HERE IS AUDITED, AND NOT BY THE CALLER
+# --------------------------------------------------
+# A row in this module decides who may approve a payout or read a licence.
+# `servers.admin_audit.access_audit` connects signal receivers to all three
+# models so that any create, update or delete -- from a view, a management
+# command, a seed or a shell -- appends an `AdminAuditLog` row describing
+# the change. `AccessAuditedManager` extends that to `update()`,
+# `bulk_update()` and `bulk_create()`, which send no signals. The `save()`
+# methods below run inside `transaction.atomic()` so the write and its
+# audit row commit together or not at all.
+#
+# Found necessary on 2026-10-27, when `migrate_operators --apply` granted
+# Super Admin on QA and left no row. See the docstring of `access_audit`.
 
 #: Node kinds, outermost first. The index is the depth.
 GLOBAL, COUNTRY, STATE, CITY = 'global', 'country', 'state', 'city'
@@ -92,6 +108,8 @@ class GeoNode(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    objects = AccessAuditedManager()
+
     class Meta:
         ordering = ['path']
         indexes = [models.Index(fields=['kind', 'status'], name='geonode_kind_status_idx')]
@@ -114,11 +132,13 @@ class GeoNode(models.Model):
     def save(self, *args, **kwargs):
         self.full_clean(exclude=['path'])
         self.path = self.build_path()
-        super().save(*args, **kwargs)
-        # A rename or re-parent must not leave descendants pointing at the
-        # old prefix; they would silently fall outside every scope check.
-        for child in self.children.all():
-            child.save()
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            # A rename or re-parent must not leave descendants pointing at
+            # the old prefix; they would silently fall outside every scope
+            # check.
+            for child in self.children.all():
+                child.save()
 
     def covers(self, other):
         """Does this node contain `other` (or is it `other`)?"""
@@ -154,6 +174,8 @@ class AdminRole(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    objects = AccessAuditedManager()
+
     class Meta:
         ordering = ['name']
 
@@ -162,6 +184,10 @@ class AdminRole(models.Model):
 
     def grants(self, permission):
         return permission in (self.permissions or [])
+
+    def save(self, *args, **kwargs):
+        with transaction.atomic():
+            super().save(*args, **kwargs)
 
 
 class AdminAssignment(models.Model):
@@ -185,6 +211,8 @@ class AdminAssignment(models.Model):
     reason = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    objects = AccessAuditedManager()
+
     class Meta:
         ordering = ['admin_id', 'scope__path']
         constraints = [
@@ -207,4 +235,5 @@ class AdminAssignment(models.Model):
 
     def save(self, *args, **kwargs):
         self.full_clean(exclude=['granted_by', 'reason'])
-        super().save(*args, **kwargs)
+        with transaction.atomic():
+            super().save(*args, **kwargs)

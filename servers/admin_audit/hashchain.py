@@ -60,6 +60,37 @@ database may be after some hashed rows already exist (QA had rows 21+
 before any anchor could be written). That is fine: the anchor commits to the
 pre-chain run through its digest and to everything between through its
 `previous_hash`, like any other row.
+
+COLUMNS ADDED AFTER THE CHAIN STARTED
+-------------------------------------
+Migration 0006 added `actor_email` and `actor_role`: the actor is now a
+snapshot (id, label, email, role at write time) rather than a foreign key,
+so that a row survives whatever later happens to the account. An
+attribution that can be edited without notice is not an attribution, so
+both columns are hashed.
+
+But hashing them the ordinary way would change the canonical form of every
+row that already exists, and those rows cannot be re-hashed: the table is
+append-only, and a row rewritten to match a new hash is indistinguishable
+from a row rewritten to hide something. So the two columns are OPTIONAL in
+the canonical form: a field in `OPTIONAL_FIELDS` is included only when it
+holds a value. A row written before 0006 has no value there -- the
+migration adds the columns empty and touches no row -- so it still hashes
+exactly as it did the day it was written. A row written after 0006 with an
+email hashes over the email; one whose actor had no email (a management
+command, an unattributed write) hashes as before, which is correct, because
+there is nothing there to protect.
+
+Tampering is still caught in both directions. Putting an email on an old
+row makes the field appear in the canonical form and the hash no longer
+matches; blanking one on a new row makes it disappear, same result. The one
+thing the scheme gives up is distinguishing "written empty" from "written
+before the column existed", and nothing needs that distinction: the row's
+id and the anchor already fix where in history it sits.
+
+`tests/test_audit_actor_snapshot.py` holds hash vectors computed with the
+code as it stood before 0006, so a change that breaks old rows fails there
+before it reaches a database that has any.
 """
 
 import hashlib
@@ -71,8 +102,9 @@ GENESIS = '0' * 64
 #: The fields that are covered by the hash, in a fixed order.
 #:
 #: Adding a field here changes every future hash and invalidates the chain
-#: for rows written before the change, so a new field requires a documented
-#: chain restart rather than a quiet edit of this tuple.
+#: for rows written before the change, so a new field requires either a
+#: documented chain restart or an entry in `OPTIONAL_FIELDS` (see "COLUMNS
+#: ADDED AFTER THE CHAIN STARTED" above), never a quiet edit of this tuple.
 HASHED_FIELDS = (
     'actor_id',
     'actor_label',
@@ -85,7 +117,16 @@ HASHED_FIELDS = (
     'ip_address',
     'user_agent',
     'created_at',
+    'actor_email',
+    'actor_role',
 )
+
+#: Hashed fields that enter the canonical form only when they hold a value.
+#: Columns added after rows already carried a hash go here, so those rows
+#: keep hashing as they did when written. Removing a field from this tuple
+#: breaks every pre-existing row; adding one that is not new breaks every
+#: row that stored an empty value for it. Both are chain restarts.
+OPTIONAL_FIELDS = frozenset({'actor_email', 'actor_role'})
 
 #: The row that starts the chain on a table that already had rows.
 #: See "ROWS THAT PREDATE THE CHAIN" above and migration 0005.
@@ -113,9 +154,19 @@ def _normalise(value):
 
 
 def canonical_content(entry):
-    """The exact bytes covered by this row's hash."""
-    parts = {field: _normalise(getattr(entry, field, None))
-             for field in HASHED_FIELDS}
+    """The exact bytes covered by this row's hash.
+
+    An optional field with no value is left out entirely rather than written
+    as `""`, so a row from before that column existed -- which has no such
+    attribute at all on a historical model, and an empty string on the real
+    one -- produces the same bytes either way.
+    """
+    parts = {}
+    for field in HASHED_FIELDS:
+        value = _normalise(getattr(entry, field, None))
+        if field in OPTIONAL_FIELDS and value == '':
+            continue
+        parts[field] = value
     return json.dumps(parts, sort_keys=True, separators=(',', ':'))
 
 
@@ -182,8 +233,11 @@ def write_anchor(Model, *, label):
 
     tail = (Model.objects.order_by('-id')
             .values_list('content_hash', flat=True).first())
+    # No actor: a migration is nobody. Left unset rather than passed as
+    # `actor=None`, because on a historical model from 0006 onwards `actor`
+    # is not a field, and on one from before it is a foreign key; the
+    # default (NULL) is right for both.
     row = Model(
-        actor=None,
         actor_label=label,
         action=ANCHOR_ACTION,
         target_type=ANCHOR_TARGET_TYPE,

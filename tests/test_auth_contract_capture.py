@@ -41,6 +41,7 @@ from django.test import override_settings
 from rest_framework.test import APIClient
 
 from servers.auth_user.password_views import _uid, reset_tokens
+from tests.contract_normalise import normalise
 
 pytestmark = pytest.mark.django_db
 
@@ -66,7 +67,10 @@ def _capture(name, response, *, note):
     _captured[name] = {
         'note': note,
         'status_code': response.status_code,
-        'body': body,
+        # Timestamps and JWTs are replaced with fixed, valid stand-ins so a
+        # run that changed nothing writes a file identical to the committed
+        # one. See tests/contract_normalise.py.
+        'body': normalise(body),
     }
     return body
 

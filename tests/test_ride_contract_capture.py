@@ -41,6 +41,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
 
+from tests.contract_normalise import normalise
+
 pytestmark = pytest.mark.django_db
 
 CONTRACT_PATH = os.path.join('contracts', 'ride_contracts.json')
@@ -57,7 +59,8 @@ def _record(name, note, response):
     _captured[name] = {
         'note': note,
         'status_code': response.status_code,
-        'body': body,
+        # Fixed stand-ins for timestamps and JWTs: see tests/contract_normalise.py.
+        'body': normalise(body),
     }
     return body
 

@@ -235,7 +235,7 @@ class TestIssuedAtFirstSignIn:
         assert device.confirmed is True
         assert not AdminAuditLog.objects.filter(action='ops_recovery_codes_issued').exists()
 
-        new_password = 'password-the-operator-chose-at-sign-in'
+        new_password = 'ten-tense-tents-sent-east-neat-nest'
         done = _login(mfa_code=_code(device), new_password=new_password)
         assert done.status_code == 200, done.content[:300]
         assert len(_data(done)['recovery_codes']) == ops_mfa.RECOVERY_CODE_COUNT

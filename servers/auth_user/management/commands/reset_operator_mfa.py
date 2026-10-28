@@ -146,6 +146,10 @@ class Command(BaseCommand):
         # it cascades into, and "removed 12 factors" for one authenticator
         # and ten codes would misreport what happened.
         removed = len(devices)
+        # Counted before the removal cascades through them, so the operator
+        # at the keyboard is told that the codes written down somewhere are
+        # dead too -- the whole point of a reset after a lost handset.
+        codes_removed = ops_mfa.recovery_codes_remaining(user)
         with attributed(actor, COMMAND, reason=reason):
             ops_mfa.remove_devices(user)
             _device, uri = ops_mfa.enroll_totp(user)
@@ -162,6 +166,7 @@ class Command(BaseCommand):
                 after={
                     'devices': 0,
                     'factors_removed': removed,
+                    'recovery_codes_removed': codes_removed,
                     'pending_totp_device_created': True,
                     'sessions_revoked': True,
                 },
@@ -178,6 +183,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f'Removed {removed} factor(s) from user id {user.pk} and revoked '
             f'their sessions. A fresh authenticator is pending.'))
+        self.stdout.write(
+            f'Recovery codes removed too: {codes_removed} unused code(s) no '
+            f'longer work. A new set is issued, and shown once, when the new '
+            f'authenticator is confirmed at sign-in.')
         self.stdout.write('')
         self.stdout.write(self.style.WARNING(
             'The line below is a SECRET, shown once. Give it to the operator '

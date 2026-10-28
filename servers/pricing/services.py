@@ -115,6 +115,28 @@ def find_zone_for_point(lat, lon) -> Optional[ServiceZone]:
     if not (-90 <= lat_f <= 90 and -180 <= lon_f <= 180):
         return None
 
+    for zone in zones_containing_point(lat_f, lon_f):
+        return zone
+    return None
+
+
+def zones_containing_point(lat, lon):
+    """Every ACTIVE zone containing (lat, lon), most specific first.
+
+    The generator behind `find_zone_for_point`, exposed because the SOS
+    anchor (`servers.sos.anchoring`) wants "the most specific zone that is
+    LINKED TO A GEO NODE", which may not be the first match: an airport
+    sub-zone drawn before its node existed must not hide the city around
+    it. Same ordering as `find_zone_for_point`: highest priority first.
+    """
+    try:
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except (TypeError, ValueError):
+        return
+    if not (-90 <= lat_f <= 90 and -180 <= lon_f <= 180):
+        return
+
     point = Point(lon_f, lat_f)  # NB: Shapely is (lon, lat)
     candidates = ServiceZone.objects.filter(is_active=True).order_by('-priority')
 
@@ -123,8 +145,7 @@ def find_zone_for_point(lat, lon) -> Optional[ServiceZone]:
         if poly is None:
             continue
         if poly.contains(point):
-            return zone
-    return None
+            yield zone
 
 
 def is_inside_service_area(lat, lon) -> bool:

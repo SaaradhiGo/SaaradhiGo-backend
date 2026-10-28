@@ -16,9 +16,10 @@ each of the eight seeded roles, over real HTTP with a JWT. The matrix:
   G = read/write, global. R/W = within geo scope. - = 403.
   An object outside the operator's scope is 404, never 403.
 
-Scope keys: SOS event -> trip's zone if it has a trip, else the raiser's
-home city if the raiser is a driver; ticket -> the same through `trip_id`
-and `user_id`; zone -> its `geo_node`; rate card -> its zone's `geo_node`.
+Scope keys: SOS event -> its anchor (trip's zone, else GPS -> city, else a
+driver's home city; an UNANCHORED event reaches every Safety Officer);
+ticket -> the trip's zone, else the requester's home city if a driver;
+zone -> its `geo_node`; rate card -> its zone's `geo_node`.
 
 Every operator here is assigned at Hyderabad (`IN-TG-HYD`); Super Admin
 at Global because the role is global-only. "Another city" is Austin.
@@ -160,7 +161,8 @@ def world(geo):
 
     Plus the two edge shapes the scope keys have to handle: a DRIVER's SOS
     and ticket raised outside any trip (anchored by home city) and a
-    RIDER's raised outside any trip (no anchor at all; Global only).
+    RIDER's raised outside any trip (no anchor at all: the ticket is Global
+    only; the SOS is unanchored and reaches every Safety Officer).
     """
     hyd_zone = _zone('IN-TG-HYD', geo['IN-TG-HYD'])
     aus_zone = _zone('US-TX-AUS', geo['US-TX-AUS'], country='US', state_code='TX')
@@ -347,16 +349,22 @@ class TestSOSScope:
         assert world['driver_event'].id in ids
         assert world['aus_event'].id not in ids
 
-    def test_a_riders_off_trip_sos_has_no_anchor_and_is_global_only(
-        self, safety, super_admin, world,
+    def test_a_riders_off_trip_sos_is_unanchored_and_reaches_every_safety_officer(
+        self, safety, super_admin, geo, world,
     ):
-        """Riders have no city (`scoping.RIDERS_ARE_GLOBAL`), so an SOS a rider
-        raises outside any trip sits under no node. It is visible to a Global
-        holder -- a Super Admin assigned at Global, not only a superuser -- and
-        to nobody scoped narrower. Stated in the PR; a follow-up may anchor it
-        on the raiser's last trip or the coordinates."""
-        assert world['rider_offtrip_event'].id not in ids_in(safety.get('/api/v1/sos/admin/'))
-        assert world['rider_offtrip_event'].id in ids_in(super_admin.get('/api/v1/sos/admin/'))
+        """Riders have no city, so an SOS a rider raises outside any trip and
+        without a GPS fix has no anchor. Owner's ruling (2026-10-28): such an
+        event must never be invisible to the people who respond to it -- it
+        is in EVERY Safety Officer's queue, whatever their scope, and at
+        Global, and a Command Centre alert is raised. The full matrix of
+        paths is in `tests/test_sos_anchoring.py`."""
+        event = world['rider_offtrip_event']
+        assert event.anchor_source == 'unanchored' and event.anchor_node is None
+
+        austin_safety, _ = operator('safety_officer', geo, scope_code='US-TX-AUS')
+        assert event.id in ids_in(safety.get('/api/v1/sos/admin/'))
+        assert event.id in ids_in(austin_safety.get('/api/v1/sos/admin/'))
+        assert event.id in ids_in(super_admin.get('/api/v1/sos/admin/'))
 
     def test_super_admin_sees_both_countries(self, super_admin, world):
         ids = ids_in(super_admin.get('/api/v1/sos/admin/'))
@@ -369,12 +377,14 @@ class TestSOSScope:
 
         assert payload['open_count'] == SOSEvent.objects.filter(
             status='open', trip__zone=world['hyd_zone'],
-        ).count() + 1  # + the driver's off-trip event
+        ).count() + 2  # + the driver's off-trip event + the unanchored rider SOS
 
     def test_scope_param_narrows_but_never_widens(self, safety, super_admin, world):
         narrowed = super_admin.get('/api/v1/sos/admin/?scope=US-TX-AUS')
         assert narrowed.status_code == 200
-        assert ids_in(narrowed) == {world['aus_event'].id}
+        # Austin's event, plus the one that is nowhere: an unanchored SOS
+        # stays in a narrowed view too (`scoping.UNSCOPED_UNION`).
+        assert ids_in(narrowed) == {world['aus_event'].id, world['rider_offtrip_event'].id}
 
         refused = safety.get('/api/v1/sos/admin/?scope=US-TX-AUS')
         assert refused.status_code == 403

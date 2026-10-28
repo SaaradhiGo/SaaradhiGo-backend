@@ -12,6 +12,7 @@ from servers.ride.serializers import TripListSerializer
 from rest_framework.pagination import PageNumberPagination
 from servers.redis_client import get_all_active_drivers, get_all_active_riders
 from base.money import format_totals, sum_by_currency
+from servers.command_centre.services import open_alert_count
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, ScopedPermission('trip.read')])
@@ -504,6 +505,12 @@ def build_admin_dashboard_kpis(day_date=None):
         'receipts': {
             'issued_today': receipts_issued,
             'send_failures_today': receipts_failed,
+        },
+        # Command Centre: alerts nobody has acknowledged yet (an SOS with
+        # no anchor, for now). Counted here so the shift's shared picture
+        # shows "something is waiting on a person" without a second poll.
+        'alerts': {
+            'open': open_alert_count(),
         },
     }
 

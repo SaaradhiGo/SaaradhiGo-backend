@@ -57,12 +57,20 @@ _SAFE_PRODUCTION_ENV = {
 }
 
 
-def _boot(**overrides):
+BOOT_SNIPPET = (
+    'import django; django.setup(); from django.conf import settings; '
+    'settings.ALLOWED_HOSTS; print("BOOT_OK")'
+)
+
+
+def _boot(code=BOOT_SNIPPET, **overrides):
     """Import Django settings in a fresh interpreter. Returns (rc, stderr).
 
     A subprocess because settings are imported once per process: a test cannot
     re-import them with different environment variables, and monkeypatching the
-    module under test would prove nothing about a real boot.
+    module under test would prove nothing about a real boot. `code` is what
+    the interpreter runs after the environment is shaped; the default proves
+    the boot itself.
     """
     env = {
         k: v for k, v in os.environ.items()
@@ -81,9 +89,7 @@ def _boot(**overrides):
             env[key] = value
 
     proc = subprocess.run(
-        [sys.executable, '-c',
-         'import django; django.setup(); from django.conf import settings; '
-         'settings.ALLOWED_HOSTS; print("BOOT_OK")'],
+        [sys.executable, '-c', code],
         cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=180,
     )
     return proc.returncode, (proc.stdout or '') + (proc.stderr or '')
@@ -344,3 +350,46 @@ def test_qa_may_misspell_the_frozen_console_allowlist_without_crashing():
 
     assert rc == 0, out[-2000:]
     assert 'BOOT_OK' in out
+
+
+# ---------------------------------------------------------------------------
+# QA-only routes do not exist in a production build
+# ---------------------------------------------------------------------------
+
+# Resolve the three invite routes against the URLconf a production boot builds.
+# The operator invite must resolve; the two test-account routes must not exist
+# at all (Resolver404), because `servers.auth_user.urls.qa_only_urlpatterns`
+# registers them only when IS_PRODUCTION is false (owner's ruling, 2026-10-28).
+ROUTE_PROBE = '\n'.join([
+    'import django; django.setup()',
+    'from django.urls import resolve, Resolver404',
+    # `@api_view` hangs the wrapped view class off the callback as `.cls`,
+    # named after the function; the callback itself is DRF's `view`.
+    'print("OPERATOR_INVITE", resolve("/api/v1/auth/admin/invite/").func.cls.__name__)',
+    'for p in ("/api/v1/auth/admin/invite/test-rider/", "/api/v1/auth/admin/invite/test-driver/"):',
+    '    try:',
+    '        resolve(p)',
+    '    except Resolver404:',
+    '        print("ABSENT", p)',
+    '    else:',
+    '        print("PRESENT", p)',
+])
+
+
+def test_the_test_account_invite_routes_do_not_exist_in_production():
+    rc, out = _boot(code=ROUTE_PROBE)
+
+    assert rc == 0, out[-3000:]
+    assert 'OPERATOR_INVITE invite_operator' in out
+    assert 'ABSENT /api/v1/auth/admin/invite/test-rider/' in out
+    assert 'ABSENT /api/v1/auth/admin/invite/test-driver/' in out
+    assert 'PRESENT' not in out
+
+
+def test_the_test_account_invite_routes_exist_outside_production():
+    """Negative control: the same probe in a QA-shaped boot finds both."""
+    rc, out = _boot(code=ROUTE_PROBE, ENVIRONMENT='qa')
+
+    assert rc == 0, out[-3000:]
+    assert 'PRESENT /api/v1/auth/admin/invite/test-rider/' in out
+    assert 'PRESENT /api/v1/auth/admin/invite/test-driver/' in out

@@ -104,12 +104,12 @@ ALLOWLIST = {
     # (the console shows "not yet migrated"), so no capability can gate it;
     # it refuses non-operators inside and returns nothing about anyone else.
     'api/v1/admin-access/me/': 'Self-description for the console; is_operator checked inside.',
-    # Creates rider, driver and operator accounts. Gated on IsAdmin plus an
-    # internal ops_role check (only a full administrator may create an
-    # operator). No capability in the vocabulary fits "invite a rider test
-    # account" yet, and support agents create those on QA today. Listed for
-    # the owner; the capability design for invites is a separate decision.
-    'api/v1/auth/admin/invite/': 'IsAdmin + internal ops_role gate; capability pending owner decision.',
+    # `api/v1/auth/admin/invite/` is NOT here any more (owner's ruling,
+    # 2026-10-28: no allowlist). Operator invites carry `admin.manage`;
+    # rider/driver test-account creation moved to `admin/invite/test-rider/`
+    # and `test-driver/` (`rider.write` / `driver.write`), which are routed
+    # outside production only -- `test_production_boot_guards` proves the
+    # URL does not resolve in a production boot.
 }
 
 #: Methods a view answers to that count as endpoints. OPTIONS/HEAD/TRACE
@@ -290,7 +290,7 @@ def test_the_allowlist_is_exactly_what_it_says():
             for permissions in gates.values()
         ), f'{route} is gated now; remove it from ALLOWLIST'
 
-    assert len(ALLOWLIST) <= 3, sorted(ALLOWLIST)
+    assert len(ALLOWLIST) <= 2, sorted(ALLOWLIST)
 
 
 def test_viewset_gates_are_read_per_method():

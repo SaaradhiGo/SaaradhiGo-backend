@@ -100,8 +100,13 @@ def scope_paths(user):
     return sorted({a.scope.path for a in assignments})
 
 
-def scope_queryset(user, queryset, path_field):
+def scope_queryset(user, queryset, path_field, also=None):
     """Restrict `queryset` to what this admin's scopes cover.
+
+    `also` is an optional `Q` of rows that are in scope for EVERY scoped
+    admin regardless of their paths (`scoping.UNSCOPED_UNION`: an SOS
+    with no anchor). It is ORed onto the coverage, never used instead of
+    it, and an admin with no assignments still gets nothing.
 
     `path_field` is the lookup reaching a `GeoNode.path` from the model
     being filtered, e.g. `'city__path'` or `'driver__home_city__path'`.
@@ -126,6 +131,8 @@ def scope_queryset(user, queryset, path_field):
     for path in paths:
         for field in path_fields:
             covered |= Q(**{f'{field}__startswith': path})
+    if also is not None:
+        covered |= also
     return queryset.filter(covered)
 
 

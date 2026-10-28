@@ -1,6 +1,8 @@
-"""Operator-created accounts, including the QA test accounts.
+"""Operator-created accounts: operators, and -- outside production -- QA test accounts.
 
-  POST /auth/admin/invite/   create or invite an account with a role
+  POST /auth/admin/invite/               invite an OPERATOR          admin.manage
+  POST /auth/admin/invite/test-rider/    create a rider test account   rider.write   QA ONLY
+  POST /auth/admin/invite/test-driver/   create a driver test account  driver.write  QA ONLY
 
 WHY AN INVITE RATHER THAN "CREATE WITH PASSWORD"
 ------------------------------------------------
@@ -8,39 +10,50 @@ No password is generated, returned, logged or stored by this endpoint. The
 invited person sets their own through the reset flow, and using that link is
 what proves they control the address.
 
-The alternative — an operator types a password and reads it out, or the API
-returns a generated one — means a credential exists in a chat message, a
+The alternative -- an operator types a password and reads it out, or the API
+returns a generated one -- means a credential exists in a chat message, a
 ticket, a terminal history and an audit log. For QA accounts that would be
 convenient and it is still the wrong shape: a QA account with a password
 somebody pasted into Slack is a production-adjacent account with a leaked
 credential.
 
-PRIVILEGE ESCALATION IS THE WHOLE RISK HERE
--------------------------------------------
-This endpoint assigns a `role`, so it is the most sensitive thing in the auth
-surface. The rules:
+THREE ROUTES, THREE CAPABILITIES (owner's ruling, 2026-10-28)
+-------------------------------------------------------------
+One endpoint used to create all three kinds of account behind `IsAdmin` plus
+an internal `ops_role` check, and so sat on the structural guard's allowlist
+as the one admin route with no capability. The ruling: no allowlist.
 
-  * Operator-only, enforced by `IsAdmin` **and** re-checked with
-    `is_operator` — the same belt-and-braces the console uses, because
-    `role == 'admin'` alone was once enough to reach operator screens.
-  * MFA must already be cleared on the calling session for an operator to
-    invite another operator. Inviting a rider or a driver does not require it.
-  * Only an operator whose `ops_role` is `admin` may invite an operator.
-    Support, driver-ops and finance may create rider and driver test accounts
-    and nothing else. So a compromised support account cannot mint an admin.
+  * Creating an OPERATOR is the one action here that can raise the
+    platform's privilege ceiling. It needs `admin.manage` -- held by Super
+    Admin only -- AND a fresh second factor on the calling session.
+  * Rider and driver TEST accounts are a QA convenience, so the routes that
+    create them are registered only when `settings.IS_PRODUCTION` is false
+    (`urls.qa_only_urlpatterns`). In a production build the URL does not
+    resolve; `tests/test_production_boot_guards.py` proves it. On QA they
+    need `rider.write` / `driver.write` respectively, and a driver test
+    account is created IN A CITY the caller holds `driver.write` over.
+
+Who holds what on QA: `rider.write` is held by Super Admin only (no other
+template carries it), so Support Agents -- who created rider test accounts
+through the old endpoint -- can no longer do so unless the owner grants
+`rider.write` to `support_agent`. `driver.write` is held by City Ops Manager
+and Safety Officer in their scope, and by Super Admin.
+
+THE INVARIANTS THAT DID NOT CHANGE
+----------------------------------
   * `is_superuser` is never settable here. A superuser is created by
     `manage.py` on a machine someone has access to, not over HTTP.
   * An existing account is never escalated. If the address or phone already
-    belongs to someone, the request is refused rather than "updated" — a
+    belongs to someone, the request is refused rather than "updated" -- a
     silent role change on an existing account is exactly the escalation this
     guards against.
-
-Every call is written to `AdminAuditLog`, successes and refusals alike.
+  * Every successful creation is written to `AdminAuditLog`.
 """
 
 import logging
 import secrets
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from rest_framework import status
@@ -50,8 +63,11 @@ from rest_framework.permissions import IsAuthenticated
 from base import ops_mfa
 from base.auth_email import send_account_invite
 from base.countries import normalize_phone
-from base.permissions import IsAdmin, is_operator, ops_role_of
+from base.permissions import is_operator
 from base.utils import error_response, success_response
+from servers.admin_access.access import scope_paths
+from servers.admin_access.bridge import ScopedPermission, granted
+from servers.admin_access.models import CITY, GeoNode
 from servers.admin_audit.services import record_admin_action
 
 from .identity import (
@@ -66,16 +82,16 @@ logger = logging.getLogger(__name__)
 
 user_model = get_user_model()
 
-#: Roles this endpoint may assign, and who may assign them.
-#:
-#: 'admin' creates an OPERATOR account, which can approve KYC and release
-#: payouts, so it is restricted to a full administrator.
 _ROLE_LABELS = {
     'rider': 'a rider',
     'driver': 'a driver',
     'admin': 'an operator',
 }
-_OPERATOR_ROLES = ('admin',)
+
+#: Where the QA-only routes live, for the message the operator route gives
+#: when asked to create a test account.
+TEST_RIDER_PATH = '/api/v1/auth/admin/invite/test-rider/'
+TEST_DRIVER_PATH = '/api/v1/auth/admin/invite/test-driver/'
 
 
 def _refuse(code, message, field, issue, http_status):
@@ -83,32 +99,147 @@ def _refuse(code, message, field, issue, http_status):
                           issue=issue, status=http_status)
 
 
+def _not_in_production():
+    """The QA routes are not registered in production; this is the second
+    lock on the same door, should the URLconf ever be built differently."""
+    return _refuse('NOT_FOUND', 'Not found.', 'general',
+                   'Test-account creation does not exist in production.',
+                   status.HTTP_404_NOT_FOUND)
+
+
+# ---------------------------------------------------------------------------
+# Operators
+# ---------------------------------------------------------------------------
+
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
-def invite_account(request):
+@permission_classes([IsAuthenticated, ScopedPermission('admin.manage')])
+def invite_operator(request):
     """
     POST /api/v1/auth/admin/invite/
 
     Request:
         {
-          "email": "qa-rider@example.com",
-          "role": "rider" | "driver" | "admin",
-          "phone_number": "+919XXXXXXXXX",   # optional
-          "full_name": "QA Rider",            # optional
-          "ops_role": "support"               # only with role=admin
+          "email": "ops@example.com",
+          "role": "admin",                    # optional; anything else is refused
+          "ops_role": "support",              # legacy console role, default support
+          "phone_number": "+919XXXXXXXXX",    # optional
+          "full_name": "New Operator"         # optional
         }
 
     Response 201:
-        {"user_id": 42, "email": "...", "role": "rider",
+        {"user_id": 42, "email": "...", "role": "admin", "ops_role": "support",
          "invite_sent": true, "email_delivery_configured": true}
 
-    No password is ever returned.
+    No password is ever returned. The new operator holds NO assignment: who
+    may do what, where, is granted afterwards through `migrate_operators`.
     """
+    role = (request.data.get('role') or 'admin').strip().lower()
+    if role != 'admin':
+        return _refuse(
+            'AUTH_INVALID_ROLE',
+            'This endpoint invites operators only. Rider and driver test '
+            f'accounts are created through {TEST_RIDER_PATH} and '
+            f'{TEST_DRIVER_PATH}, which exist outside production only.',
+            'role', f'Got {role!r}', status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Creating an operator is the one action here that can raise the
+    # platform's privilege ceiling, so the caller's own second factor must
+    # be fresh on this session.
+    if not ops_mfa.console_access_allowed(request):
+        logger.warning('invite_refused reason=mfa_not_cleared actor_id=%s',
+                       request.user.pk)
+        return _refuse('AUTH_MFA_REQUIRED',
+                       'Clear multi-factor authentication before creating '
+                       'an operator account.', 'mfa',
+                       'Session has not cleared MFA',
+                       status.HTTP_401_UNAUTHORIZED)
+
+    ops_role = (request.data.get('ops_role') or 'support').strip()
+    valid = {c[0] for c in user_model._meta.get_field('ops_role').choices}
+    if ops_role not in valid:
+        return _refuse('AUTH_INVALID_OPS_ROLE',
+                       f'ops_role must be one of {sorted(valid)}', 'ops_role',
+                       f'Got {ops_role!r}', status.HTTP_400_BAD_REQUEST)
+
+    return _create_account(request, role='admin', ops_role=ops_role)
+
+
+# ---------------------------------------------------------------------------
+# QA test accounts. NOT ROUTED IN PRODUCTION -- see urls.qa_only_urlpatterns.
+# ---------------------------------------------------------------------------
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('rider.write')])
+def invite_test_rider(request):
+    """
+    POST /api/v1/auth/admin/invite/test-rider/      (QA only)
+
+    Request: {"email": "qa-rider@example.com", "phone_number": "...",
+              "full_name": "QA Rider"}
+
+    A rider has no city (`scoping.RIDERS_ARE_GLOBAL`), so `rider.write`
+    held anywhere is enough.
+    """
+    if settings.IS_PRODUCTION:
+        return _not_in_production()
+    return _create_account(request, role='rider')
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.write')])
+def invite_test_driver(request):
+    """
+    POST /api/v1/auth/admin/invite/test-driver/     (QA only)
+
+    Request: {"email": "qa-driver@example.com", "home_city": "IN-TG-HYD",
+              "phone_number": "...", "full_name": "QA Driver"}
+
+    SCOPED. The test driver is created in `home_city`, and the caller must
+    hold `driver.write` over that city -- a Hyderabad City Ops Manager
+    creates Hyderabad test drivers and nobody else's. Only a caller whose
+    scope is unrestricted (Global) may omit `home_city`, because a driver
+    with no home city is visible at Global only and would otherwise be
+    created by someone who could not then see it.
+    """
+    if settings.IS_PRODUCTION:
+        return _not_in_production()
+
+    code = (request.data.get('home_city') or '').strip()
+    home_city = None
+    if code:
+        home_city = GeoNode.objects.filter(code=code, kind=CITY).first()
+        if home_city is None:
+            return _refuse('HOME_CITY_UNKNOWN',
+                           f'{code!r} is not a known city.', 'home_city',
+                           'No city GeoNode with that code',
+                           status.HTTP_400_BAD_REQUEST)
+        allowed, _how = granted(request.user, 'driver.write', home_city)
+        if not allowed:
+            return _refuse('SCOPE_NOT_HELD',
+                           f'You do not hold driver.write over {code}.',
+                           'home_city', 'Requested city is outside your '
+                           'assignments', status.HTTP_403_FORBIDDEN)
+    elif scope_paths(request.user) is not None:
+        return _refuse('HOME_CITY_REQUIRED',
+                       'Name the city (home_city) this test driver belongs '
+                       'to; it must be one you hold driver.write over.',
+                       'home_city', 'Scoped caller omitted home_city',
+                       status.HTTP_400_BAD_REQUEST)
+
+    return _create_account(request, role='driver', home_city=home_city)
+
+
+# ---------------------------------------------------------------------------
+# The shared body
+# ---------------------------------------------------------------------------
+
+def _create_account(request, *, role, ops_role=None, home_city=None):
     actor = request.user
 
-    # Re-checked beyond IsAdmin: `role == 'admin'` without `is_staff` is not
-    # an operator, and that distinction has been a real privilege boundary
-    # here before.
+    # Re-checked beyond the permission class: `role == 'admin'` without
+    # `is_staff` is not an operator, and that distinction has been a real
+    # privilege boundary here before.
     if not is_operator(actor):
         logger.warning('invite_refused reason=not_operator actor_id=%s',
                        actor.pk)
@@ -116,40 +247,7 @@ def invite_account(request):
                        'account', 'Caller is not an operator',
                        status.HTTP_403_FORBIDDEN)
 
-    role = (request.data.get('role') or '').strip().lower()
-    if role not in _ROLE_LABELS:
-        return _refuse('AUTH_INVALID_ROLE',
-                       f'Role must be one of {sorted(_ROLE_LABELS)}.',
-                       'role', f'Got {role!r}', status.HTTP_400_BAD_REQUEST)
-
-    # --- who may invite whom ---------------------------------------------
-    if role in _OPERATOR_ROLES:
-        if ops_role_of(actor) != 'admin':
-            logger.warning(
-                'invite_refused reason=insufficient_ops_role actor_id=%s '
-                'actor_ops_role=%s', actor.pk, ops_role_of(actor),
-            )
-            record_admin_action(
-                request, action='operator_invite_refused', target_type='user',
-                target_id='', after={'role': role},
-                reason='Caller ops_role may not create operators',
-            )
-            return _refuse('AUTH_FORBIDDEN',
-                           'Only a full administrator can create an operator '
-                           'account.', 'role',
-                           'ops_role is not admin', status.HTTP_403_FORBIDDEN)
-
-        # Creating an operator is the one action here that can raise the
-        # platform's privilege ceiling, so the caller's own second factor must
-        # be fresh on this session.
-        if not ops_mfa.console_access_allowed(request):
-            logger.warning('invite_refused reason=mfa_not_cleared actor_id=%s',
-                           actor.pk)
-            return _refuse('AUTH_MFA_REQUIRED',
-                           'Clear multi-factor authentication before creating '
-                           'an operator account.', 'mfa',
-                           'Session has not cleared MFA',
-                           status.HTTP_401_UNAUTHORIZED)
+    is_operator_account = role == 'admin'
 
     # --- the address ------------------------------------------------------
     try:
@@ -204,20 +302,15 @@ def invite_account(request):
                 email=email,
                 full_name=(request.data.get('full_name') or '').strip() or None,
                 role=role,
-                is_staff=role in _OPERATOR_ROLES,
+                is_staff=is_operator_account,
                 is_active=True,
             )
             # Never a generated password, not even a discarded one. An
             # unusable password means `check_password` always fails until the
             # invitee sets their own.
             user.set_unusable_password()
-
-            if role in _OPERATOR_ROLES:
-                requested_ops = (request.data.get('ops_role') or 'support').strip()
-                valid = {c[0] for c in user_model._meta.get_field('ops_role').choices}
-                if requested_ops not in valid:
-                    raise ValueError(f'ops_role must be one of {sorted(valid)}')
-                user.ops_role = requested_ops
+            if is_operator_account:
+                user.ops_role = ops_role
 
             # `username` is inherited from AbstractUser and is unique. It is
             # not used to sign in -- USERNAME_FIELD is phone_number -- so it
@@ -231,10 +324,7 @@ def invite_account(request):
                 Rider.objects.create(user_id=user)
             elif role == 'driver':
                 from servers.driver.models import Driver
-                Driver.objects.create(user_id=user)
-    except ValueError as exc:
-        return _refuse('AUTH_INVALID_OPS_ROLE', str(exc), 'ops_role',
-                       str(exc), status.HTTP_400_BAD_REQUEST)
+                Driver.objects.create(user_id=user, home_city=home_city)
     except IntegrityError as exc:
         logger.error('invite_failed reason=integrity detail=%s', exc)
         return _refuse('AUTH_INVITE_FAILED',
@@ -260,8 +350,9 @@ def invite_account(request):
         target_id=user.pk,
         after={
             'role': role,
-            'ops_role': user.ops_role if role in _OPERATOR_ROLES else '',
+            'ops_role': user.ops_role if is_operator_account else '',
             'is_staff': user.is_staff,
+            'home_city': home_city.code if home_city else '',
             'email_delivered': delivered,
             'phone_placeholder': not bool(raw_phone),
         },
@@ -277,7 +368,8 @@ def invite_account(request):
             'user_id': user.pk,
             'email': user.email,
             'role': user.role,
-            'ops_role': user.ops_role if role in _OPERATOR_ROLES else None,
+            'ops_role': user.ops_role if is_operator_account else None,
+            'home_city': home_city.code if home_city else None,
             'phone_number': user.phone_number if raw_phone else None,
             'invite_sent': delivered,
             # Told plainly, because an operator who thinks a link went out

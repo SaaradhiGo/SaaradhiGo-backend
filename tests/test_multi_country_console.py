@@ -45,7 +45,13 @@ def operator():
 
 
 @pytest.fixture
-def console(operator):
+def console(operator, frozen_console_open):
+    """A superuser session with every frozen route allowlisted.
+
+    These screens are retired and gated (servers/admin_dashboard/lockdown.py);
+    the per-market rendering they assert still has to hold wherever a
+    deployment allowlists them, so the gate is opened explicitly here.
+    """
     client = Client()
     client.force_login(operator)
     return client

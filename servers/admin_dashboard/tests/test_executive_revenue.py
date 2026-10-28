@@ -43,7 +43,7 @@ pricing behaviour.
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -75,6 +75,10 @@ def _square_around(lat, lon, pad=Decimal('0.1')):
     }
 
 
+# The report is a frozen-console screen: 404 unless the deployment allowlists
+# it and the caller is a Super Admin (the superuser below qualifies). Opened
+# here so the commission invariant is still checked wherever it is served.
+@override_settings(FROZEN_CONSOLE_ALLOWED_ROUTES=['executive_revenue'])
 class ExecutiveRevenueAdminViewTest(TestCase):
     PICKUP_LAT = Decimal('12.0')
     PICKUP_LON = Decimal('77.0')
@@ -131,7 +135,9 @@ class ExecutiveRevenueAdminViewTest(TestCase):
         """
         self.client.logout()
         response = self.client.get(reverse('executive_revenue'))
-        self.assertIn(response.status_code, {301, 302, 401, 403})
+        # 404: the frozen console's gate hides the route from anyone who is
+        # not a Super Admin (servers/admin_dashboard/lockdown.py).
+        self.assertIn(response.status_code, {301, 302, 401, 403, 404})
 
     def test_report_exposes_gbv_and_platform_revenue(self):
         ctx = self._get_report()

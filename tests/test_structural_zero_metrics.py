@@ -25,12 +25,19 @@ User = get_user_model()
 
 
 @pytest.fixture
-def admin_client(db, client):
-    """A session-authenticated staff admin, as the dashboards require."""
+def admin_client(db, client, frozen_console_open):
+    """A session-authenticated Super Admin, as the frozen dashboards require.
+
+    Staff alone no longer reaches these screens: the frozen console answers
+    404 to anything short of Super Admin at Global on an allowlisted route.
+    """
+    from conftest import grant_legacy_equivalent
+
     admin = User.objects.create_user(phone_number='+919700000901', role='admin')
     admin.is_staff = True
     admin.set_password('qa-not-a-real-password')
     admin.save()
+    grant_legacy_equivalent(admin, 'admin')
     assert client.login(username='+919700000901', password='qa-not-a-real-password')
     return client
 

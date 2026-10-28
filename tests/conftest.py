@@ -209,6 +209,37 @@ def legacy_equivalent():
 
 
 # ===========================================================================
+# The frozen console
+# ===========================================================================
+#
+# The Django console is restricted to a Super Admin on an allowlisted route
+# (servers/admin_dashboard/lockdown.py); everything else is 404. The tests
+# that render a retired screen -- the KYC checklist per market, the money
+# dashboards, the stale-ride queue -- are still true statements about those
+# screens for as long as a deployment can allowlist them, so they opt in
+# here rather than being deleted with the lockdown.
+#
+# Deliberately NOT autouse. The lockdown's own tests exercise the shipped
+# default, and a fixture that quietly opened every route for every test
+# would make "the default is one route" something no test ever saw.
+
+@pytest.fixture
+def frozen_console_open(settings):
+    """Allowlist every frozen route this deployment could ever serve.
+
+    `NEVER_ALLOWED` stays out: the gate subtracts it regardless, and a test
+    that needs the admin's password-only login is asserting something the
+    product refuses.
+    """
+    from servers.admin_dashboard import inventory
+
+    settings.FROZEN_CONSOLE_ALLOWED_ROUTES = sorted(
+        inventory.known_routes() - inventory.NEVER_ALLOWED
+    )
+    return settings.FROZEN_CONSOLE_ALLOWED_ROUTES
+
+
+# ===========================================================================
 # The audit log's TRUNCATE guard vs. pytest-django's flush
 # ===========================================================================
 #

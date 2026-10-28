@@ -70,6 +70,7 @@ WRITING_COMMANDS = [
     'migrate_operators',
     'qa_simulate_driver_eligibility',
     'record_retroactive_access_audit',
+    'record_retroactive_linking_audit',
     'recompute_driver_trip_counts',
     'reset_operator_mfa',
     'seed_admin_access',
@@ -168,7 +169,17 @@ class Case:
     #: Preparation that itself needs an operator (seeding, enrolment) and
     #: therefore cannot run in the genesis scenario.
     needs_operator_to_prepare: bool = False
+    #: The label on every row when `email` is the actor. The default is
+    #: `<email> via <command>`; a command that records something done by
+    #: nobody (a migration) labels the row for the thing that did it and
+    #: keeps the operator in the actor snapshot.
+    actor_label: callable = None
     extra: dict = field(default_factory=dict)
+
+    def expected_label(self, email):
+        if self.actor_label is not None:
+            return self.actor_label(email)
+        return f'{email} via {self.command}'
 
 
 def _prepare_migrate(settings, monkeypatch):
@@ -258,6 +269,10 @@ def _fp_audit():
     return AdminAuditLog.objects.count()
 
 
+def _prepare_retro_linking(settings, monkeypatch):
+    return ['--performed-on', '2026-10-27'], {}
+
+
 def _prepare_recompute(settings, monkeypatch):
     user = User.objects.create_user(phone_number='+917770001004', role='driver')
     # Stored 5, actually 0 completed trips: the one line the apply writes.
@@ -324,6 +339,9 @@ CASES = [
          _prepare_set_password, _fp_passwords, needs_operator_to_prepare=True),
     Case('record_retroactive_access_audit', 'record_retroactive_access_audit',
          _prepare_retro, _fp_audit, needs_operator_to_prepare=True),
+    Case('record_retroactive_linking_audit', 'record_retroactive_linking_audit',
+         _prepare_retro_linking, _fp_audit,
+         actor_label=lambda email: 'system:migration'),
     Case('recompute_driver_trip_counts --apply', 'recompute_driver_trip_counts',
          _prepare_recompute, _fp_trip_counts, dry_run=([], {})),
     Case('qa_simulate_driver_eligibility', 'qa_simulate_driver_eligibility',
@@ -446,7 +464,8 @@ class TestEveryWritingCommand:
         assert case.fingerprint() != before, 'the write path did not write'
         for row in _rows_since(count):
             assert row.actor_id == actor.pk, row.action
-            assert row.actor_label == f'{ACTOR_EMAIL} via {case.command}', row.action
+            assert row.actor_email == ACTOR_EMAIL, row.action
+            assert row.actor_label == case.expected_label(ACTOR_EMAIL), row.action
 
     def test_the_address_is_matched_case_insensitively(self, case, actor, settings, monkeypatch):
         args, kwargs = case.prepare(settings, monkeypatch)
@@ -517,7 +536,7 @@ class TestUnattendedRuns:
         rows = _rows_since(count)
         for row in rows:
             assert row.actor_id == actor.pk
-            assert row.actor_label == f'{ACTOR_EMAIL} via {case.command}'
+            assert row.actor_label == case.expected_label(ACTOR_EMAIL)
 
     @pytest.mark.parametrize('kind', sorted(BAD_ACTORS))
     def test_the_setting_is_validated_like_the_flag(

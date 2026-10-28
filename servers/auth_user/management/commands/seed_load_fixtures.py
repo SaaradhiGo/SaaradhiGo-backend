@@ -5,9 +5,20 @@
 REFUSES OUTSIDE A LOAD STACK
 ----------------------------
 It creates approved drivers and hands out access tokens, so it must never run
-anywhere real. It refuses unless `ENVIRONMENT` is exactly `load`, which the load
-compose file sets and no other environment does. That is a stricter test than "not
-production": QA is also somewhere this should never run.
+anywhere real. It refuses unless `settings.ENVIRONMENT` is exactly `load`, which
+the load compose file sets and no other environment does. That is a stricter test
+than "not production": QA is also somewhere this should never run. The shared
+seed gate (`base.seeding`) runs first, as it does for every seed; this check runs
+immediately after it, and both run before any query, so nothing is written in
+`qa`, `production` or `development` -- `tests/test_unaudited_writers.py` proves
+it for each.
+
+NO AUDIT ROWS, NO --actor-email
+-------------------------------
+Owner ruling, 2026-10-28: "load-fixture seeder: no audit, but refuse to run
+unless the environment is the load stack." The load stack is a disposable
+database with no operator in it, so an actor requirement would be unmeetable
+and an audit row would name nobody; the environment gate is the control.
 
 WHY IT MINTS TOKENS INSTEAD OF LETTING THE HARNESS LOG IN
 --------------------------------------------------------
@@ -27,9 +38,9 @@ they are real tokens rather than a hand-rolled approximation of one.
 """
 
 import json
-import os
 from decimal import Decimal
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 
@@ -61,8 +72,11 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         require_seedable_environment('the load-test fixtures')
-        env = (os.environ.get('ENVIRONMENT') or '').strip().lower()
-        if env != 'load':
+        # Stricter than the shared gate, and still before any query: the
+        # load stack is the only place this may run, and the setting is what
+        # the deployment actually booted with.
+        env = (getattr(settings, 'ENVIRONMENT', '') or '').strip().lower()
+        if env != 'load' or getattr(settings, 'IS_PRODUCTION', False):
             raise CommandError(
                 f'refusing to run: ENVIRONMENT is {env!r}, not "load". This '
                 f'command creates approved drivers and issues access tokens, so '

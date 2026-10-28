@@ -290,3 +290,28 @@ def remove_devices(user) -> int:
     removed += TOTPDevice.objects.filter(user=user).delete()[0] or 0
     removed += StaticDevice.objects.filter(user=user).delete()[0] or 0
     return removed
+
+
+def remove_other_devices(user, *, keep) -> int:
+    """Drop every factor on this account EXCEPT `keep`. Returns how many.
+
+    The replacement path of `enroll_operator_mfa`: the new TOTP device has
+    just been confirmed, and the old devices -- the previous authenticator
+    entry, any stale unconfirmed attempts, and the recovery codes that went
+    with the old entry -- are removed around it. Because `keep` is already
+    confirmed, the account never passes through a moment with no factor,
+    which is the difference between this and `remove_devices`.
+
+    Only `user`'s devices are touched, whatever `keep` belongs to.
+    """
+    TOTPDevice = _totp_model()
+    StaticDevice, _ = _static_models()
+    totp = TOTPDevice.objects.filter(user=user).exclude(pk=keep.pk)
+    static = StaticDevice.objects.filter(user=user)
+    # Devices, not rows: a recovery-code device cascades into its tokens,
+    # and "removed 11 factors" for one authenticator and ten codes would
+    # misreport what happened.
+    removed = totp.count() + static.count()
+    totp.delete()
+    static.delete()
+    return removed

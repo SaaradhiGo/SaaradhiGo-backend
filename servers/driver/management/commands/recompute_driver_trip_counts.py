@@ -22,6 +22,17 @@ the existing value.
 `--apply` changes a stored driver figure, so it requires `--actor-email`:
 the operator running it, validated by `admin_audit.actor_option`. The
 report needs no name because it writes nothing.
+
+ONE AUDIT ROW PER RUN
+---------------------
+A driver's trip count is money-adjacent (it feeds earnings screens and the
+driver's own history), so an apply leaves a record -- but one per RUN, not
+one per driver: a thousand rows saying "counter corrected" would drown the
+log the access review reads. The row (`driver_trip_counts_recomputed`)
+says how many drivers were examined, how many changed, and lists the
+changed ids up to 200 with the true total alongside, so a reader can tell
+a trimmed list from a short one. A `--apply` that finds no drift still
+writes its row: "checked, nothing to fix" is evidence too.
 """
 
 from django.core.management.base import BaseCommand
@@ -32,8 +43,13 @@ from servers.admin_audit.actor_option import (
     attributed,
     require_actor,
 )
+from servers.admin_audit.services import record_admin_action
 
 COMMAND = 'recompute_driver_trip_counts'
+AUDIT_ACTION = 'driver_trip_counts_recomputed'
+#: How many changed driver ids the summary row lists. The total is always
+#: recorded alongside, so a capped list is never mistaken for a short one.
+MAX_IDS_IN_ROW = 200
 
 
 class Command(BaseCommand):
@@ -54,6 +70,10 @@ class Command(BaseCommand):
 
         apply_changes = options['apply']
 
+        # Before the first write -- and before the report, so a nameless
+        # apply is refused outright rather than after a scan.
+        actor = require_actor(options, COMMAND) if apply_changes else None
+
         # Count only trips that actually completed. A cancelled trip is not a
         # trip the driver did, and must never be counted.
         drivers = Driver.objects.annotate(
@@ -64,8 +84,10 @@ class Command(BaseCommand):
             ),
         ).only('id', 'total_trips')
 
+        examined = 0
         drifted = []
         for driver in drivers:
+            examined += 1
             if (driver.total_trips or 0) != driver.completed:
                 drifted.append((driver.id, driver.total_trips or 0, driver.completed))
 
@@ -73,23 +95,45 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(
                 'every driver\'s total_trips already matches their completed trips'
             ))
-            return
-
-        self.stdout.write(f'{len(drifted)} driver(s) differ from the trip table:')
-        for driver_id, stored, actual in drifted:
-            self.stdout.write(f'  driver {driver_id}: stored={stored} actual={actual}')
+        else:
+            self.stdout.write(f'{len(drifted)} driver(s) differ from the trip table:')
+            for driver_id, stored, actual in drifted:
+                self.stdout.write(f'  driver {driver_id}: stored={stored} actual={actual}')
 
         if not apply_changes:
-            self.stdout.write(self.style.WARNING(
-                'report only -- pass --apply to write these values'
-            ))
+            if drifted:
+                self.stdout.write(self.style.WARNING(
+                    'report only -- pass --apply to write these values'
+                ))
             return
 
-        # Before the first write.
-        actor = require_actor(options, COMMAND)
         with attributed(actor, COMMAND,
                         reason='Driver trip counts recomputed from the Trip table.'):
             for driver_id, _stored, actual in drifted:
                 Driver.objects.filter(id=driver_id).update(total_trips=actual)
+            self._record_run(examined, drifted)
 
         self.stdout.write(self.style.SUCCESS(f'updated {len(drifted)} driver(s)'))
+
+    def _record_run(self, examined, drifted):
+        changed_ids = [driver_id for driver_id, _stored, _actual in drifted]
+        row = record_admin_action(
+            None,
+            action=AUDIT_ACTION,
+            target_type='driver_trip_counts',
+            target_id='',
+            before={},
+            after={
+                'drivers_examined': examined,
+                'drivers_changed': len(changed_ids),
+                'changed_driver_ids': changed_ids[:MAX_IDS_IN_ROW],
+                'changed_driver_ids_listed': min(len(changed_ids), MAX_IDS_IN_ROW),
+                'changed_driver_ids_truncated': len(changed_ids) > MAX_IDS_IN_ROW,
+            },
+            reason=('Driver.total_trips recomputed from completed trips. One '
+                    'row per run; the ids listed are capped at '
+                    f'{MAX_IDS_IN_ROW}, drivers_changed is the true total.'),
+        )
+        if row is None:
+            self.stderr.write(self.style.WARNING(
+                'the summary audit row could not be written; see the log'))

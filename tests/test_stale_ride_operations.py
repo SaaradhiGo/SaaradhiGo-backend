@@ -45,7 +45,7 @@ def _status(code):
 
 
 @pytest.fixture
-def operator(client):
+def operator(client, frozen_console_open):
     admin = User.objects.create_user(
         phone_number='+919544000001', role='admin',
         is_staff=True, is_superuser=True, password='not-a-real-password',
@@ -105,10 +105,14 @@ class _FakeRedisState:
 # ---------------------------------------------------------------------------
 
 def test_the_queue_requires_an_operator(client, stranded):
-    """Unauthenticated access must not reach a page that can release drivers."""
+    """Unauthenticated access must not reach a page that can release drivers.
+
+    404 is the frozen console's refusal (servers/admin_dashboard/lockdown.py):
+    to anyone short of a Super Admin the queue does not exist.
+    """
     resp = client.get(STALE_URL)
 
-    assert resp.status_code in (301, 302), (
+    assert resp.status_code in (301, 302, 404), (
         f'got {resp.status_code}; the stale-ride queue must not be public'
     )
 

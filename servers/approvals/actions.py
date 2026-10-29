@@ -45,6 +45,7 @@ PRICING_CHANGE = 'pricing.change'
 DRIVER_DEACTIVATE = 'driver.deactivate'
 BULK_ACTION = 'bulk.action'
 POLICY_CHANGE = 'approvals.policy_change'
+THRESHOLD_CHANGE = 'command_centre.threshold_change'
 
 ACTIONS = {
     action.key: action for action in (
@@ -56,6 +57,10 @@ ACTIONS = {
         Action(DRIVER_DEACTIVATE, 'Permanent deactivation of a driver', 'driver.deactivate'),
         Action(BULK_ACTION, 'Bulk action over many records', 'admin.manage'),
         Action(POLICY_CHANGE, 'Change to a maker-checker threshold', 'platform.settings',
+               always_checker=True),
+        # Command Centre alert lines are config, and config is a maker-checker
+        # action (owner, AUDIT.md section 10). Anchored at the city.
+        Action(THRESHOLD_CHANGE, 'Change to a Command Centre alert threshold', 'platform.settings',
                always_checker=True),
     )
 }

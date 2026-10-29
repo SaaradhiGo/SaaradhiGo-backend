@@ -74,6 +74,7 @@ WRITING_COMMANDS = [
     'recompute_driver_trip_counts',
     'reset_operator_mfa',
     'seed_admin_access',
+    'seed_alert_thresholds',
     'seed_approval_policies',
     'seed_us_test_city',
     'set_operator_password',
@@ -323,6 +324,18 @@ def _prepare_seed_policies(settings, monkeypatch):
     return [], {}
 
 
+def _prepare_seed_thresholds(settings, monkeypatch):
+    seed_admin_access()   # the cities the thresholds hang off
+    return [], {}
+
+
+def _fp_thresholds():
+    from servers.command_centre.models import AlertThreshold
+
+    return tuple(sorted(AlertThreshold.objects.values_list(
+        'city__code', 'metric', 'version', 'warn_value', 'critical_value', 'is_active')))
+
+
 def _fp_policies():
     from servers.approvals.models import ApprovalPolicy
 
@@ -383,6 +396,8 @@ CASES = [
          _prepare_simulate, _fp_eligibility),
     Case('seed_approval_policies', 'seed_approval_policies',
          _prepare_seed_policies, _fp_policies),
+    Case('seed_alert_thresholds', 'seed_alert_thresholds',
+         _prepare_seed_thresholds, _fp_thresholds, needs_operator_to_prepare=True),
     Case('seed_us_test_city', 'seed_us_test_city',
          _prepare_us_seed, _fp_us_seed, needs_operator_to_prepare=True),
     Case('seed_us_test_city --remove', 'seed_us_test_city',

@@ -486,7 +486,20 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'driver.sweep_stale_driver_presence',
         'schedule': 60.0,
     },
+    'command-centre-threshold-sweep-every-minute': {
+        # Command Centre: measure every city against its active alert
+        # thresholds and raise / escalate / clear OperatorAlerts. Idempotent
+        # per (city, metric); writes alerts and audit rows only.
+        'task': 'command_centre.evaluate_alert_thresholds',
+        'schedule': 60.0,
+    },
 }
+
+# --- Command Centre --------------------------------------------------------
+# The per-city overview is recomputed at most this often per (caller scope,
+# node, window). 0 disables the cache (the test suite sets it so).
+COMMAND_CENTRE_OVERVIEW_CACHE_SECONDS = int(
+    os.environ.get('COMMAND_CENTRE_OVERVIEW_CACHE_SECONDS', '30'))
 # --- Operations console login guard ------------------------------------------
 # Brute-force bounds for the operator console. Measured on QA before these existed:
 # 12 failed logins in 7.8 seconds, unthrottled, on the console that approves KYC and

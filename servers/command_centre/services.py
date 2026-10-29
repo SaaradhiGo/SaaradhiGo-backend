@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def raise_alert(kind, *, title, severity=WARNING, payload=None,
-                source_type='', source_id=''):
+                source_type='', source_id='', city=None):
     """Write one alert. Idempotent per (source_type, source_id) while open.
 
     A producer that fires twice for the same thing -- a retried task, a
@@ -29,12 +29,13 @@ def raise_alert(kind, *, title, severity=WARNING, payload=None,
     alert = OperatorAlert.objects.create(
         kind=kind, severity=severity, title=title[:200],
         payload=payload or {}, source_type=source_type,
-        source_id=str(source_id) if source_id else '',
+        source_id=str(source_id) if source_id else '', city=city,
     )
     logger.warning('operator_alert_raised', extra={
         'event': 'operator_alert_raised', 'alert_id': alert.id,
         'kind': kind, 'severity': severity,
         'source_type': source_type, 'source_id': str(source_id),
+        'city': getattr(city, 'code', None),
     })
     return alert
 
@@ -54,7 +55,10 @@ def open_alert_count():
 
 
 def acknowledge(alert, *, by, note=''):
-    """Mark `alert` taken by `by`. Returns False if it already was."""
+    """Mark `alert` taken by `by`. Returns False if it already was.
+
+    `by` may be None for a clearance by the threshold sweep (the number
+    went back into range); the note says so in that case."""
     if alert.acknowledged_at is not None:
         return False
     alert.acknowledged_at = timezone.now()

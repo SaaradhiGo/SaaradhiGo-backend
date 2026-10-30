@@ -14,10 +14,17 @@ WHAT IS DETECTED, AND FROM WHAT
 * `eta_overrun`  an in-progress trip running `eta_overrun_percent` AND
   `eta_overrun_minutes` past `Trip.estimated_duration_min`, measured from
   `started_at`.
-* `route_deviation`  STUBBED. No planned route or polyline is stored per
-  trip (only the estimated distance and duration), so there is nothing to
-  measure a deviation against. `evaluate_route_deviation` is a no-op that
-  says so; it becomes real the day a route is stored.
+* `route_deviation`  the driver's distance from the trip's stored planned
+  route (`Trip.planned_route_polyline`, fetched after the accept commits by
+  `ride.store_planned_route`) stays above `route_deviation_meters` for more
+  than `route_deviation_minutes`. The distance is computed LOCALLY against
+  the decoded polyline (`geometry`): no network call, ever. A trip with no
+  stored route is skipped, never flagged; so is a country without both
+  numbers configured. The points are the same sampled trail the long-stop
+  rule reads; the newest are checked first and the walk stops at the first
+  point that is back on the route, so an on-route trip costs one pass over
+  its segments. A driver parked off the route writes no new points, so the
+  latest kept point counts from its own time while the driver is alive.
 
 NOTHING THE RIDER OR DRIVER CAN FEEL
 ------------------------------------
@@ -27,14 +34,16 @@ fare, no dispatch effect.
 
 COST (the sweep runs every minute)
 ----------------------------------
-Two queries however many trips are in progress:
+Three queries however many trips are in progress:
   1. in-progress trips started in the last `HORIZON_HOURS`, via
      `trip_status_recent_idx` (status, -requested_at), each carrying its
      latest kept point through correlated subqueries that use
      `triploc_trip_time_idx` (trip, recorded_at) -- one index probe per trip
      inside the database, no per-trip round trip;
   2. the recent points of only the trips that look stopped, via the same
-     index.
+     index;
+  3. the recent points of only the trips that carry a stored route and whose
+     country has both deviation numbers, via the same index.
 No Redis. Existing signals are read in one more indexed query. Bounded by
 `MAX_TRIPS`.
 """
@@ -50,9 +59,9 @@ from django.utils import timezone
 from servers.command_centre.models import SAFETY_SIGNAL, WARNING
 from servers.command_centre.services import raise_alert
 
-from . import services
+from . import geometry, services
 from .config import active_configs
-from .models import SIG_ETA_OVERRUN, SIG_LONG_STOP, SafetySignal
+from .models import SIG_ETA_OVERRUN, SIG_LONG_STOP, SIG_ROUTE_DEVIATION, SafetySignal
 
 logger = logging.getLogger(__name__)
 
@@ -151,9 +160,51 @@ def measure_long_stop(trip, config, now, recent_points):
             'since': since.isoformat()}
 
 
-def evaluate_route_deviation(trip, config, now):
-    """STUB: no planned route is stored per trip, so nothing can deviate."""
-    return None
+#: Most points of one trip examined per pass (newest first).
+MAX_DEVIATION_POINTS = 200
+
+
+def route_deviation_candidate(trip, config):
+    """Does this trip qualify for the deviation rule at all?"""
+    return bool(trip.planned_route_polyline and config.route_deviation_meters
+                and config.route_deviation_minutes and trip.last_at is not None)
+
+
+def measure_route_deviation(trip, config, now, recent_points):
+    """`measured` dict if the driver has been off the planned route for more
+    than the configured minutes, else None.
+
+    `recent_points` is this trip's kept points from the last 2 x
+    `route_deviation_minutes`, oldest first. The latest kept point
+    (`trip.last_*`) is always considered, so a driver parked off the route
+    (who writes no new points) is still seen.
+    """
+    metres, minutes = config.route_deviation_meters, config.route_deviation_minutes
+    if not route_deviation_candidate(trip, config):
+        return None
+    seen = trip.last_driver_activity_at
+    if seen is None or (now - seen).total_seconds() > alive_seconds():
+        return None  # not alive: lost contact is the stale-ride detector's
+    line = geometry.decode_polyline(trip.planned_route_polyline)
+    if len(line) < 2:
+        return None
+
+    points = list(recent_points)
+    if not points or points[-1][0] < trip.last_at:
+        points.append((trip.last_at, trip.last_lat, trip.last_lng))
+    since, worst = None, 0.0
+    for at, lat, lng in reversed(points[-MAX_DEVIATION_POINTS:]):
+        distance = geometry.distance_to_polyline_m(lat, lng, line)
+        if distance is None or distance <= metres:
+            break
+        since, worst = at, max(worst, distance)
+    if since is None:
+        return None
+    off = (now - since).total_seconds() / 60
+    if off <= minutes:
+        return None
+    return {'off_route_minutes': round(off, 1), 'max_distance_m': round(worst),
+            'threshold_m': metres, 'since': since.isoformat()}
 
 
 def _node_and_country(trip):
@@ -218,6 +269,7 @@ def evaluate(now=None):
             continue
         per_trip[trip.id] = (trip, config)
 
+    # Query 3 (below, after the long-stop points): the same for deviation.
     # Query 2: recent points for the trips that look parked (kept point old
     # enough, driver alive), one statement for all of them.
     parked = [tid for tid, (trip, config) in per_trip.items()
@@ -233,6 +285,18 @@ def evaluate(now=None):
         for trip_id, at, lat, lng in rows:
             points.setdefault(trip_id, []).append((at, lat, lng))
 
+    deviating = [tid for tid, (trip, config) in per_trip.items()
+                 if route_deviation_candidate(trip, config)]
+    deviation_points = {}
+    if deviating:
+        horizon = now - timedelta(minutes=2 * max(
+            per_trip[tid][1].route_deviation_minutes for tid in deviating))
+        rows = (TripLocationPoint.objects.filter(trip_id__in=deviating, recorded_at__gte=horizon)
+                .order_by('trip_id', 'recorded_at')
+                .values_list('trip_id', 'recorded_at', 'latitude', 'longitude'))
+        for trip_id, at, lat, lng in rows:
+            deviation_points.setdefault(trip_id, []).append((at, lat, lng))
+
     existing = {(s.trip_id, s.kind): s
                 for s in SafetySignal.objects.filter(trip_id__in=list(per_trip))}
 
@@ -244,7 +308,9 @@ def evaluate(now=None):
         measured = measure_eta_overrun(trip, config, now)
         if measured:
             found.append((SIG_ETA_OVERRUN, measured))
-        evaluate_route_deviation(trip, config, now)
+        measured = measure_route_deviation(trip, config, now, deviation_points.get(trip_id, []))
+        if measured:
+            found.append((SIG_ROUTE_DEVIATION, measured))
 
         for kind, measured in found:
             signal = existing.get((trip_id, kind))

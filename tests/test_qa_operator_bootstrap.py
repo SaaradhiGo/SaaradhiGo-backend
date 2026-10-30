@@ -187,25 +187,28 @@ def test_a_rerun_does_not_rotate_the_password(qa_env, monkeypatch):
     )
 
 
-def test_reset_password_is_explicit(qa_env, monkeypatch):
-    _run()
-    monkeypatch.setenv('QA_ADMIN_BOOTSTRAP_PASSWORD', 'another-long-enough-one')
+def test_there_is_no_reset_password_flag(qa_env):
+    """A flag that rewrites a credential on an existing account is exactly what
+    the create-only ruling (AUDIT 27.40) removes; `set_operator_password` is the
+    tool for that, with its own actor and reason."""
+    from django.core.management import get_commands, load_command_class
 
-    _run(reset_password=True)
+    command = load_command_class(get_commands()['bootstrap_qa_operator'], 'bootstrap_qa_operator')
+    parser = command.create_parser('manage.py', 'bootstrap_qa_operator')
+    assert '--reset-password' not in parser.format_help()
 
-    user = User.objects.get(phone_number=PHONE)
-    assert user.check_password('another-long-enough-one')
 
-
-def test_a_drifted_account_is_repaired(qa_env):
-    """An account that lost its operator role is converged, not duplicated."""
+def test_a_drifted_account_is_reported_and_left_alone(qa_env):
+    """An account that lost its operator role is NOT repaired by a bootstrap."""
     User.objects.create_user(phone_number=PHONE, role='rider')
 
-    _run()
+    output = _run()
 
     user = User.objects.get(phone_number=PHONE)
-    assert user.role == 'admin'
-    assert user.is_staff and user.is_superuser
+    assert user.role == 'rider'
+    assert not user.is_staff and not user.is_superuser
+    assert not user.has_usable_password()
+    assert 'left alone' in output and 'role' in output
     assert User.objects.filter(phone_number=PHONE).count() == 1
 
 

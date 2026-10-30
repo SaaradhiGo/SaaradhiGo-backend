@@ -156,11 +156,17 @@ class SafetyCountryConfig(models.Model):
     eta_overrun_incident_percent = models.PositiveSmallIntegerField(null=True, blank=True)
     eta_overrun_incident_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
 
-    # route_deviation: STUBBED. No planned route is stored per trip, so there
-    # is nothing to measure against; the numbers are kept so the console can
-    # hold them for the day a route is stored.
+    # route_deviation: the driver stays more than `meters` from the trip's
+    # stored planned route (`Trip.planned_route_polyline`) for more than
+    # `minutes`. A trip with no stored route is never flagged.
     route_deviation_meters = models.PositiveIntegerField(null=True, blank=True)
     route_deviation_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    # Coverage guard: the fewest active Safety Officer assignments a LIVE city
+    # in this country must have. NULL means "not configured", which is NOT
+    # ready (a country nobody has configured cannot go live), never "no
+    # minimum". `servers.admin_access.readiness` and the coverage sweep.
+    min_safety_officers = models.PositiveSmallIntegerField(null=True, blank=True)
 
     #: `[{"label": "unified", "number": "..."}]`. From the country registry at
     #: seed time; edited here, not in code.
@@ -179,6 +185,7 @@ class SafetyCountryConfig(models.Model):
         'eta_overrun_percent', 'eta_overrun_minutes',
         'eta_overrun_incident_percent', 'eta_overrun_incident_minutes',
         'route_deviation_meters', 'route_deviation_minutes',
+        'min_safety_officers',
     )
 
     class Meta:

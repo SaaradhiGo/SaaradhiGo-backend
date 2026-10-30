@@ -77,7 +77,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
-from base.seeding import require_seedable_environment
+from base.seeding import get_or_create_account, require_seedable_environment
 from servers.admin_audit.actor_option import (
     add_actor_argument,
     attributed,
@@ -281,18 +281,17 @@ class Command(BaseCommand):
             note('zone', zone, False)
 
         def user(spec, role):
-            account, was_created = user_model.objects.get_or_create(
-                phone_number=spec['phone'],
+            # Never signed into: a NEW account has no usable password; these
+            # exist to be LOOKED AT by scoped operators, not to be used. An
+            # existing one is never written (`base.seeding`).
+            account, was_created = get_or_create_account(
+                user_model,
+                lookup={'phone_number': spec['phone']},
                 defaults={
                     'username': spec['phone'], 'email': spec['email'],
                     'full_name': spec['name'], 'role': role, 'city': 'Austin',
                 },
             )
-            # Never signed into: these exist to be LOOKED AT by scoped
-            # operators, not to be used.
-            if account.has_usable_password():
-                account.set_unusable_password()
-                account.save(update_fields=['password'])
             return note('users', account, was_created)
 
         vehicle_type, _ = VehicleType.objects.get_or_create(type=VEHICLE_TYPE)

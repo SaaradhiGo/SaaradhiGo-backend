@@ -508,6 +508,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'safety.escalation_sweep',
         'schedule': 60.0,
     },
+    'safety-coverage-sweep-every-5-minutes': {
+        # Safety: a LIVE city with fewer Safety Officers than its country's
+        # minimum raises one critical alert, cleared when fixed. One query
+        # per city; idempotent.
+        'task': 'safety.coverage_sweep',
+        'schedule': 300.0,
+    },
     'safety-signal-sweep-every-minute': {
         # Safety: detect long stops and ETA overruns on in-progress trips.
         # Two queries however many trips are live; detection only.

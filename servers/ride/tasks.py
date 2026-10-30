@@ -415,3 +415,22 @@ def sweep_unaccepted_trips(self, limit=200):
             timeout + grace,
         )
     return summary
+
+
+@shared_task(
+    name='ride.store_planned_route',
+    max_retries=0,
+    acks_late=True,
+    rate_limit='60/m',
+)
+def store_planned_route(trip_id):
+    """Store the pickup-to-drop route of a just-accepted trip. OBSERVE ONLY.
+
+    Enqueued from the accept path after its transaction commits. Idempotent
+    and failure-tolerant by construction (see `servers.ride.planned_route`):
+    a maps failure leaves the trip's route null and is logged, nothing retries
+    into the maps quota, and no fare, status or dispatch state is touched.
+    """
+    from servers.ride.planned_route import store_planned_route_for
+
+    return store_planned_route_for(trip_id)

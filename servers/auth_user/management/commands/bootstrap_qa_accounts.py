@@ -82,7 +82,7 @@ import os
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 
-from base.seeding import require_seedable_environment
+from base.seeding import get_or_create_account, require_seedable_environment
 from django.db import transaction
 from django.utils import timezone
 
@@ -204,23 +204,30 @@ class Command(BaseCommand):
     def _create(self, role, phone, email, password, is_staff):
         """The one write path: a complete account that was not there."""
         with transaction.atomic():
-            user = User(
-                phone_number=phone,
-                username=phone,
-                email=email or None,
-                # Verified, because shell access to the deployment is a
-                # stronger proof of control than an inbox. Without this,
-                # email_login refuses the account and the owner cannot sign
-                # in on the website at all.
-                email_verified_at=timezone.now() if email else None,
-                role=role,
-                is_staff=is_staff,
-                is_superuser=False,
-                full_name=f'QA {role.title()}',
-                **({'ops_role': 'admin'} if role == 'admin' else {}),
+            # `get_or_create_account` is the only write path: the caller has
+            # already found no account with this phone, and a concurrent run
+            # that won the race is returned untouched.
+            user, made = get_or_create_account(
+                User,
+                lookup={'phone_number': phone},
+                password=password,
+                defaults={
+                    'username': phone,
+                    'email': email or None,
+                    # Verified, because shell access to the deployment is a
+                    # stronger proof of control than an inbox. Without this,
+                    # email_login refuses the account and the owner cannot
+                    # sign in on the website at all.
+                    'email_verified_at': timezone.now() if email else None,
+                    'role': role,
+                    'is_staff': is_staff,
+                    'is_superuser': False,
+                    'full_name': f'QA {role.title()}',
+                    **({'ops_role': 'admin'} if role == 'admin' else {}),
+                },
             )
-            user.set_password(password)
-            user.save()
+            if not made:
+                return user
 
             if role == 'rider':
                 from servers.rider.models import Rider

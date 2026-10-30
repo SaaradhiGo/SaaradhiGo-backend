@@ -44,7 +44,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 
-from base.seeding import require_seedable_environment
+from base.seeding import get_or_create_account, require_seedable_environment
 from django.db import transaction
 from rest_framework_simplejwt.tokens import AccessToken
 
@@ -118,8 +118,8 @@ class Command(BaseCommand):
             riders = []
             for i in range(n_riders):
                 phone = f'+9190000{i:05d}'
-                u, created = User.objects.get_or_create(
-                    phone_number=phone,
+                u, created = get_or_create_account(
+                    User, lookup={'phone_number': phone},
                     defaults={'role': 'rider', 'username': phone},
                 )
                 if created or not Rider.objects.filter(user_id=u).exists():
@@ -130,8 +130,8 @@ class Command(BaseCommand):
             drivers = []
             for i in range(n_drivers):
                 phone = f'+9195000{i:05d}'
-                u, created = User.objects.get_or_create(
-                    phone_number=phone,
+                u, created = get_or_create_account(
+                    User, lookup={'phone_number': phone},
                     defaults={'role': 'driver', 'username': phone},
                 )
                 d, _ = Driver.objects.get_or_create(

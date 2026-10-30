@@ -42,6 +42,7 @@ LIMITS = {
     'eta_overrun_incident_minutes': (1, 2880),
     'route_deviation_meters': (10, 50000),
     'route_deviation_minutes': (1, 720),
+    'min_safety_officers': (0, 500),
 }
 
 _NUMBER = re.compile(r'^[0-9+*#() -]{2,20}$')

@@ -31,10 +31,10 @@ from base.permissions import is_operator
 from base.utils import error_response, success_response
 
 from .access import (
-    active_assignments, is_super_admin, permissions_at, scope_paths,
+    active_assignments, is_super_admin, scope_paths,
 )
 from .services import super_admin_shortfall
-from .bridge import is_migrated, strict_mode
+from .bridge import capabilities_of, is_migrated, strict_mode
 from .models import GeoNode
 
 
@@ -68,7 +68,19 @@ def admin_whoami(request):
             # The union across every assignment. The console uses it to
             # decide which nav items to draw; the server decides whether
             # the action is allowed.
-            'permissions': sorted(permissions_at(user)),
+            #
+            # `capabilities_of` is the same answer `bridge.granted` gives
+            # with no place named, legacy grants included, so an
+            # unmigrated operator's console is drawn from what the API
+            # will actually allow, not from an empty list.
+            'permissions': sorted(capabilities_of(user)),
+
+            # True when the account is not narrowed to any place: a Django
+            # superuser, a Global assignment, or an account the migration
+            # has not reached yet. The console uses it for per-city links
+            # (a board row's Safety link): unrestricted accounts get it
+            # wherever they hold the capability.
+            'unrestricted': scope_paths(user) is None or access_is_legacy(user),
 
             'roles': [
                 {
@@ -77,6 +89,10 @@ def admin_whoami(request):
                     'scope': a.scope.code,
                     'scope_name': a.scope.name,
                     'scope_kind': a.scope.kind,
+                    # Capability names and the place they hold, nothing
+                    # else: what lets the console decide a per-city link.
+                    'scope_path': a.scope.path,
+                    'permissions': sorted(a.role.permissions or []),
                 }
                 for a in assignments
             ],
@@ -107,6 +123,11 @@ def admin_whoami(request):
     )
 
 
+def access_is_legacy(user):
+    """An unmigrated account in a deployment that still has the legacy path."""
+    return not strict_mode() and not is_migrated(user)
+
+
 def _selectable_scopes(user):
     """Every node the operator may narrow to, shallowest first."""
     paths = scope_paths(user)
@@ -129,6 +150,7 @@ def _selectable_scopes(user):
             'kind': node.kind,
             'status': node.status,
             'depth': node.path.count('/') - 1,
+            'path': node.path,
         }
         for node in nodes.order_by('path')
     ]

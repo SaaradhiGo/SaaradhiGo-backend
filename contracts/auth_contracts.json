@@ -162,7 +162,7 @@
       "note": "POST /auth/admin/invite/ as a RIDER \u2014 must be refused",
       "status_code": 403,
       "body": {
-        "detail": "You do not have permission to perform this action."
+        "detail": "You do not have permission to do that here."
       }
     },
     "auth_refresh": {

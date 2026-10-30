@@ -1934,6 +1934,13 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 trip.otp = otp
                 trip.save()
 
+                # Store the planned route for route-deviation detection, AFTER
+                # this transaction commits and out of band (a Celery task). It
+                # only registers a hook here: no maps call, no latency, and it
+                # cannot fail the accept. See servers.ride.planned_route.
+                from servers.ride.planned_route import schedule_planned_route
+                schedule_planned_route(trip.id)
+
             # Mark driver as busy in Redis so they don't get new ride requests
             from servers.redis_client import set_driver_active_trip, remove_driver
             set_driver_active_trip(driver.id, trip.id)

@@ -25,10 +25,15 @@ admin password is how a test account becomes a production incident.
 
 It never prints or logs the password, not even masked, not even at DEBUG.
 
-It is idempotent: running it twice converges on the same account rather than
-creating a second one or rotating the password unasked. Re-setting the password
-requires --reset-password, so a redeploy cannot silently change a credential an
-operator is already using.
+CREATE-IF-MISSING ONLY (owner, AUDIT 27.40)
+--------------------------------------------
+It creates the operator when no account has the phone number and NEVER writes
+one that exists: not the password, not `role`, `is_staff`, `is_superuser` or
+`ops_role` (it used to "repair" those, and to reset the password with
+`--reset-password`; both are gone). An existing account is reported with how it
+differs, and changed on purpose with the tool for that change
+(`set_operator_password` for the password). The write goes through
+`base.seeding.get_or_create_account`.
 
 Every run writes an AdminAuditLog row, so the existence of the account is
 traceable to the moment it was created. When the run grants or repairs
@@ -64,7 +69,7 @@ import os
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 
-from base.seeding import require_seedable_environment
+from base.seeding import get_or_create_account, require_seedable_environment
 from django.db import transaction
 
 from servers.admin_audit.actor_option import (
@@ -81,16 +86,10 @@ ACTION = 'qa_operator_bootstrapped'
 
 
 class Command(BaseCommand):
-    help = 'Create or update the QA operator account. Refuses to run in production.'
+    help = ('Create the QA operator account if it is missing; never changes an existing '
+            'one. Refuses to run in production.')
 
     def add_arguments(self, parser):
-        parser.add_argument(
-            '--reset-password',
-            action='store_true',
-            help='Also set the password to QA_ADMIN_BOOTSTRAP_PASSWORD. Without '
-                 'this, an existing account keeps the password it has, so a '
-                 'redeploy cannot silently rotate a credential in use.',
-        )
         add_actor_argument(
             parser,
             help='Email of the operator running this; goes on the audit row. '
@@ -148,7 +147,7 @@ class Command(BaseCommand):
         # context now so the structural row carries it when it is written.
         run_facts = {
             'created': created,
-            'fields_set': changed,
+            'fields_set': [],
             'environment': environment or 'unlabelled',
             'genesis': actor is None,
         }
@@ -160,12 +159,29 @@ class Command(BaseCommand):
                            changed=changed, options=options, audit=audit,
                            environment=environment)
 
+    @staticmethod
+    def _drift(user):
+        """How an existing operator differs from the bootstrap's. Reported only."""
+        drift = []
+        if user.role != 'admin':
+            drift.append('role')
+        if not user.is_staff:
+            drift.append('is_staff')
+        if not user.is_superuser:
+            drift.append('is_superuser')
+        if user.ops_role != 'admin':
+            drift.append('ops_role')
+        return drift
+
     def _converge(self, *, phone, password, created, changed, options,
                   audit, environment):
         """Create or repair the account, then make sure the run left a row."""
         with transaction.atomic():
-            user, _ = User.objects.get_or_create(
-                phone_number=phone,
+            # A new account only. An existing one comes back untouched and
+            # its drift (below) is reported, never corrected.
+            user, made = get_or_create_account(
+                User,
+                lookup={'phone_number': phone},
                 defaults={
                     'role': 'admin',
                     'is_staff': True,
@@ -177,42 +193,30 @@ class Command(BaseCommand):
                     # Django admin by setting ops_role, not from here.
                     'ops_role': 'admin',
                 },
+                password=password,
             )
-
-            if not created:
-                # Converge, do not duplicate. An account that drifted out of the
-                # operator role is repaired; its password is left alone unless
-                # asked for explicitly.
-                if user.role != 'admin':
-                    user.role = 'admin'
-                    changed.append('role')
-                if not user.is_staff:
-                    user.is_staff = True
-                    changed.append('is_staff')
-                if not user.is_superuser:
-                    user.is_superuser = True
-                    changed.append('is_superuser')
-                if user.ops_role != 'admin':
-                    user.ops_role = 'admin'
-                    changed.append('ops_role')
-
-            if created or options['reset_password']:
-                user.set_password(password)
+            created = made
+            if made:
                 changed.append('password')
-
-            user.save()
+            else:
+                changed.extend(self._drift(user))
 
         # The password is never written anywhere but the hasher.
-        self.stdout.write(self.style.SUCCESS(
-            ('Created' if created else 'Updated') + ' QA operator account '
-            f'(user id {user.id}, role={user.role}, staff={user.is_staff}).'
-        ))
-        if changed:
-            self.stdout.write(f'  fields set: {", ".join(sorted(set(changed)))}')
-        if not created and not options['reset_password']:
-            self.stdout.write(
-                '  password left unchanged. Pass --reset-password to set it.'
-            )
+        if created:
+            self.stdout.write(self.style.SUCCESS(
+                f'Created QA operator account (user id {user.id}, role={user.role}, '
+                f'staff={user.is_staff}).'
+            ))
+        else:
+            self.stdout.write(self.style.WARNING(
+                f'QA operator account exists (user id {user.id}); left alone.'
+            ))
+            if changed:
+                self.stdout.write(
+                    f'  differs from the bootstrap in: {", ".join(sorted(set(changed)))}. '
+                    f'This command never changes an existing account; change it on '
+                    f'purpose (set_operator_password for the password).'
+                )
         self.stdout.write(
             '  sign in at the operations console /login with this phone number.'
         )

@@ -27,6 +27,7 @@ with, so a deploy script that runs a seed by mistake fails loudly.
 
 from django.conf import settings
 from django.core.management.base import CommandError
+from django.db import IntegrityError, transaction
 
 
 class NotSeedable(CommandError):
@@ -54,3 +55,68 @@ def require_seedable_environment(what='test data'):
             f'range and would receive real one-time codes. Set '
             f'TEST_PHONE_NUMBERS for this environment first.'
         )
+
+
+# ---------------------------------------------------------------------------
+# Seeds create accounts; they never change one (owner, AUDIT 27.40)
+# ---------------------------------------------------------------------------
+#
+# A seed or bootstrap command runs on a deploy or by hand, often with nobody
+# watching. An account that already exists belongs to whoever is using it: its
+# password, usable-password state, roles, `ops_role`, `is_staff`,
+# `is_superuser`, assignments, second factor, recovery codes and break-glass
+# flag are THEIRS. So the only way a seed may write an account is the helper
+# below, which looks first and returns an existing row UNTOUCHED; it has no
+# path that calls `save()` on a row that was already there.
+#
+# This is enforced structurally, not by discipline:
+#   * `tests/test_seed_never_modifies_accounts.py` parses every `seed_*` and
+#     `bootstrap*` command and fails on `set_password`, `set_unusable_password`,
+#     a `save()` of an account variable, or an `update()` / `update_or_create()`
+#     / `delete()` on the user, assignment or second-factor models;
+#   * the same file runs EACH seed twice over accounts in every role (a
+#     break-glass account with MFA and recovery codes among them) and asserts
+#     every auth-relevant column and related row is unchanged;
+#   * a seed command nobody registered there fails the run.
+#
+# Role TEMPLATES (`AdminRole.permissions`) are not accounts: `seed_admin_access`
+# keeps updating them, and says so in its docstring.
+
+
+def get_or_create_account(model, *, lookup, defaults=None, password=None):
+    """`(account, created)`. NEVER writes a row that already exists.
+
+    `lookup` finds the account (an email, a phone); `defaults` are the fields
+    of a NEW one. A new account gets `password` when one is given, else NO
+    usable password. An existing account is returned exactly as it is: no
+    field, no password, no `save()`.
+    """
+    existing = model.objects.filter(**lookup).first()
+    if existing is not None:
+        return existing, False
+    account = model(**lookup, **(defaults or {}))
+    if password:
+        account.set_password(password)
+    else:
+        account.set_unusable_password()
+    try:
+        with transaction.atomic():
+            account.save()
+    except IntegrityError:
+        # Created by a concurrent run between the look and the write.
+        existing = model.objects.filter(**lookup).first()
+        if existing is None:
+            raise
+        return existing, False
+    return account, True
+
+
+def create_assignment_if_missing(admin, role, scope, reason=''):
+    """`(assignment, created)`. An existing assignment (active or not) is
+    returned untouched: a seed never reactivates, deactivates or edits one."""
+    from servers.admin_access.models import AdminAssignment
+
+    existing = AdminAssignment.objects.filter(admin=admin, role=role, scope=scope).first()
+    if existing is not None:
+        return existing, False
+    return AdminAssignment.objects.create(admin=admin, role=role, scope=scope, reason=reason), True

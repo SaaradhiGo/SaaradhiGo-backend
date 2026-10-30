@@ -1,4 +1,4 @@
-"""Celery entry points for the safety module. Both run every minute.
+"""Celery entry points for the safety module. The first two run every minute, the coverage sweep every five.
 
 Idempotent by construction (see `escalation` and `detection`), so the
 project-default `acks_late` is safe: a redelivered or doubled run converges
@@ -20,3 +20,11 @@ def evaluate_signals():
     from .detection import evaluate
 
     return evaluate()
+
+
+@shared_task(name='safety.coverage_sweep')
+def coverage_sweep():
+    """Raise / clear `safety_coverage_gap` per live city. Idempotent."""
+    from .coverage import sweep
+
+    return sweep()

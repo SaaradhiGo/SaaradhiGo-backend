@@ -298,6 +298,8 @@ def _serialize_event(ev):
             'node': ev.anchor_node.code if ev.anchor_node_id else None,
             'node_name': ev.anchor_node.name if ev.anchor_node_id else None,
         },
+        'incident_id': ev.incident_id,
+        'escalated_at': ev.escalated_at.isoformat() if ev.escalated_at else None,
         'note': ev.note,
         'created_at': ev.created_at.isoformat(),
         'updates': [
@@ -365,6 +367,10 @@ def _admin_transition(request, sos_id, target):
                 new_status=target,
                 note=note,
             )
+            # The case file shows what the responders did to the alarm.
+            from servers.safety.services import note_on_sos_transition
+
+            note_on_sos_transition(event, target, request.user, note)
     except Exception as e:
         logger.exception(f"_admin_transition: failed: {e}")
         return error_response(

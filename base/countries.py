@@ -114,6 +114,13 @@ class Country:
     driver_documents: tuple = field(default_factory=tuple)
     vehicle_documents: tuple = field(default_factory=tuple)
 
+    # --- safety ------------------------------------------------------------
+    # `(label, number)` pairs the console shows next to an incident and that
+    # `seed_safety_config` copies into `SafetyCountryConfig`. Public emergency
+    # numbers are a fact about the country, so they live in the registry and
+    # not in safety code. A country with none here shows "not configured".
+    emergency_numbers: tuple = field(default_factory=tuple)
+
     @property
     def e164_length(self):
         """Total digits in a full E.164 number for this country, without the '+'."""
@@ -144,6 +151,7 @@ INDIA = Country(
     # fitness = Fitness Certificate, permit = commercial passenger permit.
     # All four are Indian statutory documents with no US equivalent.
     vehicle_documents=('rc', 'insurance', 'permit', 'fitness', 'puc'),
+    emergency_numbers=(('unified', '112'),),
 )
 
 UNITED_STATES = Country(
@@ -175,6 +183,7 @@ UNITED_STATES = Country(
     # registration and proof of insurance, plus a safety inspection in the
     # states that require one.
     vehicle_documents=('registration', 'insurance', 'inspection'),
+    emergency_numbers=(('unified', '911'),),
 )
 
 COUNTRIES = {c.code: c for c in (INDIA, UNITED_STATES)}

@@ -345,10 +345,19 @@ def test_a_redelivered_sos_dispatch_creates_no_second_sos_event(rider, driver):
 
     # An ops user with a token, so the fan-out has somewhere to go and the
     # re-notification below is observable rather than vacuously zero.
-    User.objects.create_user(
+    # The fan-out goes to operators holding safety.respond at the event's
+    # anchor (not to every legacy 'admin'), so this one is a Super Admin.
+    from conftest import seed_admin_access
+    from servers.admin_access.models import AdminAssignment, AdminRole, GeoNode
+
+    seed_admin_access()
+    ops = User.objects.create_user(
         phone_number='+919733000001', role='admin', is_staff=True,
         fcm_token='ops-device-token',
     )
+    AdminAssignment.objects.create(
+        admin=ops, role=AdminRole.objects.get(code='super_admin'),
+        scope=GeoNode.objects.get(code='GLOBAL'))
 
     from servers.sos.tasks import dispatch_sos
     with mock.patch('servers.auth_user.services.send_push_notification',

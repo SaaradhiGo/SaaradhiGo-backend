@@ -76,6 +76,7 @@ INSTALLED_APPS = [
     # Command Centre: operator alerts that must reach a person (seed of the
     # module). First producer: an SOS that could not be anchored to a city.
     'servers.command_centre',
+    'servers.safety',
     # Console search: trip id, phone, plate, name -- indexed and scoped.
     'servers.search',
     # Operator MFA. django-otp is the established Django implementation: TOTP
@@ -498,6 +499,19 @@ CELERY_BEAT_SCHEDULE = {
         # thresholds and raise / escalate / clear OperatorAlerts. Idempotent
         # per (city, metric); writes alerts and audit rows only.
         'task': 'command_centre.evaluate_alert_thresholds',
+        'schedule': 60.0,
+    },
+    'safety-escalation-sweep-every-minute': {
+        # Safety: an SOS not acknowledged within its country's timer, and a
+        # critical incident not assigned in time, raise an alert and repeat
+        # the push, once per event. Two bounded index scans when idle.
+        'task': 'safety.escalation_sweep',
+        'schedule': 60.0,
+    },
+    'safety-signal-sweep-every-minute': {
+        # Safety: detect long stops and ETA overruns on in-progress trips.
+        # Two queries however many trips are live; detection only.
+        'task': 'safety.evaluate_signals',
         'schedule': 60.0,
     },
 }

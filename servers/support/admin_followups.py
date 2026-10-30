@@ -54,15 +54,38 @@ DEFAULT_RANGE_DAYS = 7
 
 def _ticket_tz(ticket):
     """The ticket's own day: its trip zone's time zone, else its country's."""
+    from base.market_time import zone_timezone
+
     zone = ticket.trip_id.zone if ticket.trip_id_id else None
-    name = (getattr(zone, 'timezone', '') or '') if zone is not None else ''
-    if not name:
-        country = COUNTRIES.get(ticket.country)
-        name = country.default_timezone if country else timezone.get_current_timezone_name()
+    if zone is not None:
+        return zone_timezone(zone)
+    country = COUNTRIES.get(ticket.country)
+    name = country.default_timezone if country else timezone.get_current_timezone_name()
     try:
         return ZoneInfo(name)
     except Exception:  # noqa: BLE001 - a bad zone name must not break a dashboard
         return timezone.get_current_timezone()
+
+
+def _latest_local_date(now):
+    """The latest calendar date any city is in right now.
+
+    The default range must end on the newest city day, not on the UTC date:
+    between a city's midnight and UTC's, the city's new day would otherwise
+    fall outside the range and its tickets would vanish from the dashboard.
+    """
+    from servers.pricing.models import ServiceZone
+
+    names = {c.default_timezone for c in COUNTRIES.values() if c.default_timezone}
+    names |= set(ServiceZone.objects.exclude(timezone_name='').exclude(timezone_name__isnull=True)
+                 .values_list('timezone_name', flat=True).distinct())
+    dates = {now.date()}
+    for name in names:
+        try:
+            dates.add(now.astimezone(ZoneInfo(name)).date())
+        except Exception:  # noqa: BLE001 - a bad zone name must not break a dashboard
+            continue
+    return max(dates)
 
 
 def _local_date(ticket):
@@ -154,7 +177,7 @@ def admin_sla_dashboard(request):
     except ScopeNotHeld as exc:
         return _scope_refused(exc)
     try:
-        date_to = _date(request.query_params, 'date_to') or now.date()
+        date_to = _date(request.query_params, 'date_to') or _latest_local_date(now)
         date_from = _date(request.query_params, 'date_from') or (
             date_to - timedelta(days=DEFAULT_RANGE_DAYS - 1))
         if date_from > date_to:

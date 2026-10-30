@@ -34,6 +34,7 @@ from servers.approvals.models import EXECUTED, REQUESTED, ApprovalRequest
 from servers.driver.models import (
     Driver, DriverDocumentReview, DriverNote, DriverSuspension, Vehicle, VehicleType,
 )
+from servers.driver.admin_drivers import _today
 from servers.driver.qa_eligibility import may_operate
 from servers.ride.models import Rating, Trip, TripFlag, TripStatus
 from test_sos_support_zones_matrix import (  # noqa: F401 - fixtures
@@ -73,7 +74,7 @@ def audit_rows(driver, action):
 def _documents(driver, plate, vehicle_type, *, india=True):
     driver.license_doc = f'license_docs/{plate.lower()}front.jpg'
     driver.license_doc_back = f'license_docs_back/{plate.lower()}back.jpg'
-    driver.license_expiry = date.today() + timedelta(days=400)
+    driver.license_expiry = _today() + timedelta(days=400)
     docs = {'rc_doc': f'rc_docs/{plate.lower()}.jpg',
             'insurance_doc': f'insurance_docs/{plate.lower()}.jpg'}
     if india:
@@ -135,9 +136,9 @@ def world(geo):
     _documents(expiring, 'TS09EX0005', sedan)
     Driver.objects.filter(pk=expiring.pk).update(
         approved=True, doc_status='approved',
-        license_expiry=date.today() + timedelta(days=10))
+        license_expiry=_today() + timedelta(days=10))
     Vehicle.objects.filter(driver_id=expiring).update(
-        insurance_expiry=date.today() - timedelta(days=1))
+        insurance_expiry=_today() - timedelta(days=1))
 
     aus_driver = _driver(AUS_PHONE, 'Austin Driver', geo['US-TX-AUS'])
     _documents(aus_driver, 'TXAUS0001', sedan, india=False)
@@ -477,7 +478,7 @@ class TestSuspension:
         driver = world['approved']
         client.post(url(driver, 'suspend/'), {'reason_code': 'documents'}, format='json')
         Driver.objects.filter(pk=driver.pk).update(
-            license_expiry=date.today() - timedelta(days=1))
+            license_expiry=_today() - timedelta(days=1))
         data = client.post(url(driver, 'reinstate/'), {'note': 'ok'}, format='json').json()['data']
         assert data['approved'] is False and data['back_to_review'] is True
 

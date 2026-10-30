@@ -603,7 +603,10 @@ class TestDashboard:
 
     def test_the_date_range_is_applied(self, geo, world, fixture):
         lead, _, _ = fixture
-        today = timezone.now().date().isoformat()
+        # The dashboard counts a ticket in its CITY's day, so "today" must be
+        # Hyderabad's, not the UTC date: they differ every evening (UTC).
+        from servers.support.admin_followups import _ticket_tz
+        today = timezone.now().astimezone(_ticket_tz(world['t_hyd'])).date().isoformat()
         data = self.rows(lead, f'?date_from={today}&date_to={today}')
         hyd = {r['priority']: r for r in data['rows'] if r['city']['code'] == 'IN-TG-HYD'}
         # Only t_hyd and t_driver were opened today; A, B, C, D are older. The

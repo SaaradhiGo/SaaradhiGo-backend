@@ -592,6 +592,18 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             data = json.loads(text_data)
             action = data.get('action', 'request')
 
+            # An operator block (Riders module) refuses a new request and a
+            # retry, in the error frame this socket already sends. Checked
+            # per message, not at connect, so a block takes effect on an
+            # open socket and the rider still receives their current trip.
+            if action in ('request', 'retry') and not await self._may_request_rides():
+                from servers.rider.eligibility import BLOCKED_MESSAGE
+                await self.send(text_data=json.dumps({
+                    'type': 'error',
+                    'message': BLOCKED_MESSAGE,
+                }))
+                return
+
             if action == 'retry':
                 await self._handle_retry(data)
                 return
@@ -746,6 +758,11 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             'radius': radius,
             'message': 'Retrying — searching for nearby drivers...'
         }))
+
+    @database_sync_to_async
+    def _may_request_rides(self):
+        from servers.rider.eligibility import may_request_rides
+        return may_request_rides(self.user)
 
     @database_sync_to_async
     def _start_dispatch(self, trip_id, radius=None, reason='initial'):

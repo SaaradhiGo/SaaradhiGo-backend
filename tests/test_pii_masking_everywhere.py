@@ -372,6 +372,7 @@ def raw_pii_in(text):
 def _ids(world):
     return {
         'driver_id': world['driver'].id, 'trip_id': world['trip'].id,
+        'rider_id': world['rider_user'].id,
         'ticket_id': world['ticket'].id, 'sos_id': world['sos'].id,
         'alert_id': world['alert'].id, 'withdrawal_id': world['withdrawal'].id,
         'pk': world['hyd_zone'].id, 'request_id': world['approval'].id,
@@ -390,6 +391,9 @@ INVENTORY = {
     'api/v1/driver/admin/kyc-queue/': False,
     'api/v1/driver/admin/<int:driver_id>/vehicles/': False,
     'api/v1/driver/admin/withdrawals/': True,
+    # Riders module (console module 4): list rows and the detail name the rider.
+    'api/v1/rider/admin/': True,
+    'api/v1/rider/admin/<int:rider_id>/': True,
     'api/v1/ride/admin/trips/': True,
     'api/v1/ride/admin/trips/<int:trip_id>/': True,
     'api/v1/ride/admin/live-locations/': False,

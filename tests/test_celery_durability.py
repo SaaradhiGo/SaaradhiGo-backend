@@ -196,6 +196,20 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # audit rows, and push to operators; no trip, money or driver status.
         'safety.escalation_sweep',
         'safety.evaluate_signals',
+        # Safety coverage sweep (every 5 minutes). Trigger: beat. acks_late is
+        # safe: a gap alert is keyed on (safety_coverage, city) while open, so
+        # a redelivered or doubled run returns the open alert, and a clear is
+        # a conditional UPDATE on acknowledged_at IS NULL. Writes alerts and
+        # audit rows only. No retry needed: the next run is the retry.
+        'safety.coverage_sweep',
+        # Planned route of an accepted trip. Trigger: on_commit of the accept
+        # (never inside it). acks_late is safe: it skips a trip that already
+        # has a route and stores with a conditional UPDATE (planned_route_
+        # polyline IS NULL), so a redelivery stores nothing twice. max_retries
+        # 0: a maps failure leaves the field null and is logged; it never
+        # retries into the maps quota. Rate limited 60/m per worker. Writes
+        # three observation columns on the trip; no fare, status or dispatch.
+        'ride.store_planned_route',
     }
     actual = set(tasks)
     added = actual - expected

@@ -40,7 +40,7 @@ from rest_framework.permissions import BasePermission
 
 from base.permissions import ALL_CAPABILITIES, has_capability, is_operator
 
-from .access import active_assignments, has_permission_at
+from .access import active_assignments, has_permission_at, permissions_at
 from .roles import ALL_PERMISSIONS, SUPER_ADMIN
 
 logger = logging.getLogger(__name__)
@@ -317,4 +317,55 @@ def in_scope(user, obj, permission):
     if not strict_mode() and not is_migrated(user):
         return True
     allowed, _how = granted(user, permission, node_of(obj))
+    return allowed
+
+
+class AnyOfScopedPermission(ScopedPermission):
+    """Admits a caller who holds ANY of the listed capabilities, somewhere.
+
+    Two uses today. The Command Centre acknowledge route serves three teams
+    (`safety.respond`, `trip.write`, `finance.read`) and the alert kind's own
+    capability decides inside. The Safety GETs admit `safety.read` OR
+    `safety.respond`: the door is "may look", and every write view still asks
+    for `safety.respond` alone.
+
+    The structural guard sees a `ScopedPermission` carrying a capability
+    (the first one listed), which is true of each one named here.
+    """
+
+    def __init__(self, *permissions):
+        super().__init__(permissions[0])
+        for permission in permissions:
+            if permission not in ALL_PERMISSIONS:
+                raise ValueError(f'Unknown permission {permission!r}')
+        self.permissions = tuple(permissions)
+
+    def has_permission(self, request, view):
+        return any(granted(request.user, p)[0] for p in self.permissions)
+
+    def has_object_permission(self, request, view, obj):
+        return any(granted(request.user, p, node_of(obj))[0] for p in self.permissions)
+
+    def __repr__(self):
+        return f'AnyOfScopedPermission{self.permissions!r}'
+
+
+def capabilities_of(user):
+    """Every permission `granted(user, p)` would allow with no place given.
+
+    The list the console draws itself from (`/admin-access/me/`). It is the
+    same answer as `granted`, computed once instead of once per permission,
+    and WITHOUT the legacy-grant warning log (this is a description of the
+    account, not a use of the grant). `tests/test_capabilities_match_granted`
+    holds the two together for every role template and an unmigrated account.
+    """
+    if not is_operator(user):
+        return set()
+    allowed = set(permissions_at(user))
+    if strict_mode() or is_migrated(user):
+        return allowed
+    allowed |= set(LEGACY_OPEN_TO_ANY_OPERATOR)
+    for permission, legacy in LEGACY_EQUIVALENT.items():
+        if has_capability(user, legacy):
+            allowed.add(permission)
     return allowed

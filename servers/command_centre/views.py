@@ -42,7 +42,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from base.utils import error_response, success_response
 from servers.admin_access.access import scope_paths
-from servers.admin_access.bridge import ScopedPermission, granted
+from servers.admin_access.bridge import AnyOfScopedPermission, ScopedPermission, granted
 from servers.admin_access.models import ACTIVE, CITY, GeoNode
 from servers.admin_access.scoping import ScopeNotHeld, requested_node, scoped_to_request
 from servers.admin_audit.services import record_admin_action
@@ -57,34 +57,6 @@ from .thresholds import active_thresholds, propose_threshold_change
 logger = logging.getLogger(__name__)
 
 STATUSES = ('open', 'acknowledged', 'all')
-
-
-class AnyOfScopedPermission(ScopedPermission):
-    """Admits a caller who holds ANY of the listed capabilities, somewhere.
-
-    The acknowledge route serves three teams: Safety (`safety.respond`),
-    City Ops (`trip.write`) and Finance (`finance.read`). One of them is the
-    door; the alert kind's OWN capability, at the alert's city, is asked
-    inside the view and is what decides. The structural guard sees a
-    `ScopedPermission` carrying a capability, which is exactly true of each
-    one listed here; an operator holding none of them (an Analyst with
-    `report.read` alone) is refused at the door as before.
-    """
-
-    def __init__(self, *permissions):
-        super().__init__(permissions[0])
-        self.permissions = tuple(permissions)
-
-    def has_permission(self, request, view):
-        return any(granted(request.user, p)[0] for p in self.permissions)
-
-    def has_object_permission(self, request, view, obj):
-        from servers.admin_access.bridge import node_of
-
-        return any(granted(request.user, p, node_of(obj))[0] for p in self.permissions)
-
-    def __repr__(self):
-        return f'AnyOfScopedPermission{self.permissions!r}'
 
 
 ACK_GATE = AnyOfScopedPermission(*sorted(set(ACK_PERMISSION.values())))

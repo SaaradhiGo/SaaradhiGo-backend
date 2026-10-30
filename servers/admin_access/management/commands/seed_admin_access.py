@@ -3,8 +3,21 @@
     python manage.py seed_admin_access                # geo + roles
     python manage.py seed_admin_access --test-admins  # QA only
 
-Idempotent: safe on every deploy. It creates and updates; it never removes,
-so a custom role or a hand-added city survives.
+Idempotent: safe on every deploy. It creates and updates CONFIGURATION (geo
+nodes and role TEMPLATES); it never removes, so a custom role or a hand-added
+city survives.
+
+ACCOUNTS ARE CREATE-IF-MISSING ONLY (owner, AUDIT 27.40)
+---------------------------------------------------------
+Role templates (`AdminRole.permissions`) are NOT accounts, and this command
+keeps updating them: that is what a template is. Accounts are different. A
+test admin that already exists is never written: not its password (or its
+lack of one), not its roles, `is_staff`, `is_superuser` or `ops_role`, not its
+assignments (a missing one is created; an existing one is never touched), not
+its second factor or break-glass flag. A NEW test admin is created with no
+usable password. The only way this file writes an account is
+`base.seeding.get_or_create_account`, and `tests/test_seed_never_modifies_accounts.py`
+fails if that changes.
 
 WHAT IT WILL NOT DO
 -------------------
@@ -35,7 +48,9 @@ import os
 
 from django.core.management.base import BaseCommand, CommandError
 
-from base.seeding import require_seedable_environment
+from base.seeding import (
+    create_assignment_if_missing, get_or_create_account, require_seedable_environment,
+)
 from django.db import transaction
 
 from servers.admin_audit.actor_option import (
@@ -244,16 +259,18 @@ class Command(BaseCommand):
     def _seed_test_admins(self, nodes):
         from django.contrib.auth import get_user_model
 
-        from servers.admin_access.models import AdminAssignment
-
         user_model = get_user_model()
         made = 0
         for index, (email, role_code, scope_code) in enumerate(TEST_ADMINS):
             role = AdminRole.objects.get(code=role_code)
             scope = nodes[scope_code]
             phone = f'+9188000000{index:02d}'
-            user, _ = user_model.objects.get_or_create(
-                email=email,
+            # No usable password on a NEW account: these exist for scope
+            # tests, not to be signed into with a guessable credential. An
+            # existing one is returned as it is, whatever its password.
+            user, _ = get_or_create_account(
+                user_model,
+                lookup={'email': email},
                 defaults={
                     'phone_number': phone,
                     'username': phone,
@@ -262,15 +279,8 @@ class Command(BaseCommand):
                     'is_staff': True,
                 },
             )
-            # No usable password: these exist for scope tests, not to be
-            # signed into with a guessable credential.
-            if user.has_usable_password():
-                user.set_unusable_password()
-                user.save(update_fields=['password'])
-            AdminAssignment.objects.get_or_create(
-                admin=user, role=role, scope=scope,
-                defaults={'reason': 'QA seed: one test login per role.'},
-            )
+            create_assignment_if_missing(
+                user, role, scope, reason='QA seed: one test login per role.')
             made += 1
         self.stdout.write(self.style.WARNING(
             f'  test admins: {made} seeded — labelled, QA only, no usable password'

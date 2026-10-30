@@ -1,16 +1,26 @@
 """Safety module (operator console, module 6): the /safety/admin/ API.
 
-  GET  incidents/                          queue + counts            safety.respond, scoped
-  POST incidents/                          open one by hand
-  GET  incidents/<id>/                     the case file
+  GET  incidents/                          queue + counts            safety.read | safety.respond, scoped
+  POST incidents/                          open one by hand          safety.respond
+  GET  incidents/<id>/                     the case file             safety.read | safety.respond
   POST incidents/<id>/assign|note|status|link|unlink|close/
   POST incidents/<id>/suspend-driver/      the EXISTING audited suspension
   POST incidents/<id>/block-rider/         the EXISTING audited block
   POST incidents/<id>/refer-police/        records the referral, no vendor
   GET  incidents/<id>/assignees/           responders who can be assigned
   POST tickets/<id>/escalate/              support.reply: ticket -> incident
-  GET  signals/    POST signals/<id>/dismiss/
-  GET  config/     POST config/<country>/  (edit: safety.config)
+  GET  signals/    POST signals/<id>/dismiss/   (GET: read | respond; dismiss: respond)
+  GET  config/     POST config/<country>/  (GET: read | respond; edit: safety.config)
+
+READ-ONLY ACCESS (owner ruling, AUDIT 27.40)
+--------------------------------------------
+`safety.read` ("View the Safety queue and incidents": City Ops Manager,
+Safety Officer, Super Admin) opens the four GETs above, within the SAME scope
+rule as `safety.respond` (out of scope is 404). Every write, the assignee
+list and the SOS contact reveal (`sos.views.reveal_sos_contact`) stay
+`safety.respond` only: a read-only caller gets 403 from each, the detail
+payload carries `actions` all false and `allowed_actions == []`, and every
+person stays masked (there is no reveal for them to ask for).
 
 RULES THIS FILE KEEPS
 ---------------------
@@ -40,7 +50,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from base.countries import COUNTRIES
 from base.utils import error_response, success_response
-from servers.admin_access.bridge import ScopedPermission, granted
+from servers.admin_access.bridge import AnyOfScopedPermission, ScopedPermission, granted
 from servers.admin_access.masking import mask_phone
 from servers.admin_access.scoping import ScopeNotHeld, requested_node, scoped, scoped_or_none
 from servers.admin_audit.services import record_admin_action
@@ -66,6 +76,9 @@ User = get_user_model()
 TARGET = 'safety_incident'
 SIGNAL_TARGET = 'safety_signal'
 CAPABILITY = 'safety.respond'
+READ_CAPABILITY = 'safety.read'
+#: The door of the four GETs: may look. Writes keep `ScopedPermission(CAPABILITY)`.
+READ_GATE = AnyOfScopedPermission(READ_CAPABILITY, CAPABILITY)
 
 CATEGORY_CODES = {c for c, _ in CATEGORIES}
 SEVERITY_CODES = {c for c, _ in SEVERITIES}
@@ -110,18 +123,24 @@ def _scope_refused(exc):
                           status=status.HTTP_403_FORBIDDEN)
 
 
-def _incident_for(request, incident_id, writable=False):
+def _can_respond(user, incident):
+    return incident_may(user, CAPABILITY, incident)
+
+
+def _incident_for(request, incident_id, writable=False, read=False):
     """`(incident, None)` or `(None, error response)`.
 
     Not in scope (or no such incident) is NOT_FOUND, identically; in scope
-    without `safety.respond` at the incident is 403. `writable` also refuses
-    a closed incident.
+    without `safety.respond` at the incident is 403 (with `read=True`,
+    `safety.read` is enough). `writable` also refuses a closed incident.
     """
     incident = incidents_visible_to(
         request.user, None, INCIDENT_QUERYSET).filter(pk=incident_id).first()
     if incident is None:
         return None, _not_found(incident_id)
-    if not incident_may(request.user, CAPABILITY, incident):
+    may = _can_respond(request.user, incident) or (
+        read and incident_may(request.user, READ_CAPABILITY, incident))
+    if not may:
         return None, _denied(incident_id)
     if writable and incident.status == CLOSED:
         return None, _closed(incident)
@@ -371,11 +390,16 @@ def queue_counts(user, node):
 
 
 @api_view(['GET', 'POST'])
-@permission_classes([IsAuthenticated, ScopedPermission(CAPABILITY)])
+@permission_classes([IsAuthenticated, READ_GATE])
 def safety_incidents(request):
     """GET: the queue (SOS first, then severity, then the oldest) with counts.
-    POST: open an incident by hand."""
+    POST: open an incident by hand (`safety.respond` only; the door admits
+    read-only callers for the GET, so the write asks again)."""
     if request.method == 'POST':
+        if not granted(request.user, CAPABILITY)[0]:
+            return error_response(
+                code='PERMISSION_DENIED', message='You do not hold safety.respond.',
+                field='general', issue=CAPABILITY, status=status.HTTP_403_FORBIDDEN)
         return _create_incident(request)
     now = timezone.now()
     try:
@@ -520,11 +544,31 @@ def allowed_actions(user, incident, people, blockers):
     }
 
 
+READ_ONLY_ACTIONS = {
+    'assign': False, 'note': False, 'status': False, 'link': False, 'unlink': False,
+    'refer_police': False, 'close': False, 'close_blockers': [], 'suspend_driver': False,
+    'block_rider': False, 'reveal_sos': False, 'edit_config': False,
+}
+
+
 def incident_payload(request, incident):
     annotated = _annotate(INCIDENT_QUERYSET).filter(pk=incident.pk).first() or incident
     people = _linked_people(request.user, incident)
     blockers = services.close_blockers(incident)
+    read_only = not _can_respond(request.user, incident)
+    if read_only:
+        # Nothing an account action could do is offered to a caller who may
+        # only look: the people stay (masked) but cannot be acted on.
+        for d in people['drivers']:
+            d['can_suspend'] = False
+        for r in people['riders']:
+            r['can_block'] = False
+    actions = dict(READ_ONLY_ACTIONS) if read_only else allowed_actions(
+        request.user, incident, people, blockers)
     return {
+        'read_only': read_only,
+        # The actions this caller may take now; empty when read-only.
+        'allowed_actions': [k for k, v in actions.items() if v is True],
         **_row(annotated, _unacknowledged_ids([incident])),
         'closing_summary': mask_free_text(incident.closing_summary) or None,
         'police_reference': incident.police_reference or None,
@@ -533,7 +577,7 @@ def incident_payload(request, incident):
         'sos_events': _sos_rows(incident),
         'signals': [_signal_row(s) for s in incident.signals.select_related('anchor_node')],
         'emergency': emergency_block(incident.country),
-        'actions': allowed_actions(request.user, incident, people, blockers),
+        'actions': actions,
         'vocabulary': {
             'categories': [c for c, _ in CATEGORIES], 'severities': [s for s, _ in SEVERITIES],
             'statuses': [s for s, _ in STATUSES], 'outcomes': [o for o, _ in OUTCOMES],
@@ -542,10 +586,10 @@ def incident_payload(request, incident):
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, ScopedPermission(CAPABILITY)])
+@permission_classes([IsAuthenticated, READ_GATE])
 def safety_incident_detail(request, incident_id):
-    """GET /safety/admin/incidents/<id>/  The case file."""
-    incident, refusal = _incident_for(request, incident_id)
+    """GET /safety/admin/incidents/<id>/  The case file (read-only for safety.read)."""
+    incident, refusal = _incident_for(request, incident_id, read=True)
     if refusal:
         return refusal
     return success_response(incident_payload(request, incident), status.HTTP_200_OK)
@@ -1070,7 +1114,7 @@ def safety_escalate_ticket(request, ticket_id):
 # ---------------------------------------------------------------------------
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, ScopedPermission(CAPABILITY)])
+@permission_classes([IsAuthenticated, READ_GATE])
 def safety_signals(request):
     """GET signals/?state=open|dismissed|all&kind=&country=  The review queue."""
     try:
@@ -1097,9 +1141,6 @@ def safety_signals(request):
     total = queryset.count()
     return success_response({
         'count': total, 'limit': limit, 'offset': offset,
-        'route_deviation': {'detected': False,
-                            'reason': 'No planned route is stored per trip, so there is nothing '
-                                      'to measure a deviation against.'},
         'results': [_signal_row(s) for s in queryset.order_by('-updated_at', '-id')[offset:offset + limit]],
     }, status.HTTP_200_OK)
 
@@ -1150,17 +1191,15 @@ def _config_row(code, user):
         'active': active.as_dict() if active is not None else None,
         'registry_numbers': cfg.registry_numbers(code),
         'history': [c.as_dict() for c in cfg.history(code, limit=10)],
-        'route_deviation': {'detected': False,
-                            'reason': 'Stubbed: no planned route is stored per trip.'},
     }
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, ScopedPermission(CAPABILITY)])
+@permission_classes([IsAuthenticated, READ_GATE])
 def safety_config(request):
     """GET config/  Per-country timers, thresholds and numbers, with history.
 
-    Readable by safety.respond; `can_edit` says whether the caller holds
+    Readable by safety.read and safety.respond; `can_edit` says whether the caller holds
     safety.config. A country with no config says so: there is no default."""
     return success_response({
         'can_edit': granted(request.user, 'safety.config')[0],

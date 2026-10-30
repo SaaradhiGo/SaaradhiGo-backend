@@ -367,10 +367,16 @@ class TestWhoamiAndTheSwitcher:
 
         body = client.get('/api/v1/admin-access/me/').json()['data']
 
-        assert body['roles'] == [{
+        # Capability names and the place they are held, nothing else (the
+        # console's link rule draws per-city links from `scope_path`).
+        (entry,) = body['roles']
+        permissions = entry.pop('permissions')
+        assert entry.pop('scope_path').endswith('/IN/IN-TG/')
+        assert 'driver.write' in permissions and 'safety.read' in permissions
+        assert entry == {
             'role': 'city_ops_manager', 'role_name': 'City Ops Manager',
             'scope': 'IN-TG', 'scope_name': 'Telangana', 'scope_kind': 'state',
-        }]
+        }
         assert 'driver.write' in body['permissions']
         assert 'finance.payout' not in body['permissions']
 

@@ -180,7 +180,10 @@ class TestScopeAndCapability:
     def test_every_role_on_the_queue_and_the_case(self, geo, world, pair, role):
         client, _ = operator(role, geo)
         hyd, _ = pair
-        wanted = 200 if role in SAFETY_ROLES else 403
+        # The four GETs admit `safety.read` too (City Ops, read-only); every
+        # write stays `safety.respond`.
+        may_look = role in SAFETY_ROLES or role == 'city_ops_manager'
+        wanted = 200 if may_look else 403
 
         assert client.get(INCIDENTS).status_code == wanted, role
         assert client.get(f'{INCIDENTS}{hyd.id}/').status_code == wanted, role
@@ -189,12 +192,14 @@ class TestScopeAndCapability:
         assert post(client, f'{INCIDENTS}{hyd.id}/note/', {'body': 'x'}).status_code in (
             (201, 200) if role in SAFETY_ROLES else (403,)), role
 
-    def test_city_ops_cannot_open_the_queue(self, geo, world, pair):
-        """City Ops sees SOS alert counts on the Command Centre, but the queue is
-        safety.respond only: this module grants City Ops nothing new."""
+    def test_city_ops_reads_the_queue_but_holds_no_write_capability(self, geo, world, pair):
+        """City Ops gets the read-only door (safety.read) and nothing else:
+        the full read-only matrix is in tests/test_safety_followups.py."""
         client, _ = operator('city_ops_manager', geo)
-        assert client.get(INCIDENTS).status_code == 403
-        assert 'safety.respond' not in AdminRole.objects.get(code='city_ops_manager').permissions
+        assert client.get(INCIDENTS).status_code == 200
+        permissions = AdminRole.objects.get(code='city_ops_manager').permissions
+        assert 'safety.respond' not in permissions
+        assert 'safety.read' in permissions
 
     def test_safety_config_is_super_admin_only_by_default(self):
         from servers.admin_access.roles import ROLE_TEMPLATES
@@ -235,7 +240,7 @@ class TestUnanchored:
 
     def test_no_one_without_the_capability_sees_it(self, geo, world):
         incident = incident_of(raise_sos(_rider('+919876700097', 'Lost Rider 3')))
-        for role in ('city_ops_manager', 'support_agent', 'analyst', 'marketing'):
+        for role in ('support_agent', 'analyst', 'marketing'):
             client, _ = operator(role, geo)
             assert client.get(f'{INCIDENTS}{incident.id}/').status_code == 403, role
 
@@ -509,7 +514,7 @@ class TestEscalation:
 
         assert escalation.sweep()['incidents_escalated'] == 0
 
-    def test_the_city_ops_manager_counts_the_escalation_but_cannot_open_the_queue(self, geo, world):
+    def test_the_city_ops_manager_counts_the_escalation_and_may_only_look_at_the_queue(self, geo, world):
         seed_config('IN')
         event = raise_sos(world['hyd_rider'], trip_id=world['hyd_trip'].id)
         age(event, 5)
@@ -519,7 +524,9 @@ class TestEscalation:
 
         alerts = city_ops.get('/api/v1/command-centre/admin/alerts/').json()['data']
         assert any(a['kind'] == SAFETY_SOS_ESCALATED for a in alerts['results'])
-        assert city_ops.get(INCIDENTS).status_code == 403
+        assert city_ops.get(INCIDENTS).status_code == 200      # read-only (safety.read)
+        assert post(city_ops, INCIDENTS, {'category': 'other', 'severity': 'low',
+                                          'title': 'x'}).status_code == 403
         theirs = marketing.get('/api/v1/command-centre/admin/alerts/').json()['data']
         assert not any(a['kind'] == SAFETY_SOS_ESCALATED for a in theirs['results'])
 
@@ -560,7 +567,6 @@ class TestSignals:
         assert signal.incident_id is None                   # below the incident line (20 min)
         listed = world['hyd_safety'][0].get(SIGNALS).json()['data']
         assert [s['id'] for s in listed['results']] == [signal.id]
-        assert listed['route_deviation']['detected'] is False
 
     def test_a_stop_above_the_incident_line_opens_an_incident_and_an_alert(self, geo, world):
         seed_config('IN')
@@ -639,12 +645,11 @@ class TestSignals:
 
         assert detection.evaluate()['created'] == 0
 
-    def test_route_deviation_is_a_stub_because_no_route_is_stored(self, geo, world):
-        seed_config('IN', )
-        trip = world['hyd_trip']
-        assert not any(f.name in ('route', 'polyline', 'planned_route', 'route_polyline')
-                       for f in Trip._meta.get_fields())
-        assert detection.evaluate_route_deviation(trip, SafetyCountryConfig.objects.get(), None) is None
+    def test_a_trip_with_no_stored_route_raises_no_deviation(self, geo, world):
+        """The deviation rule is real now (tests/test_safety_followups.py); a trip
+        with no stored polyline is skipped, never flagged."""
+        seed_config('IN', route_deviation_meters=300, route_deviation_minutes=3)
+        assert world['hyd_trip'].planned_route_polyline is None
         detection.evaluate()
         assert not SafetySignal.objects.filter(kind='route_deviation').exists()
 
@@ -1174,7 +1179,8 @@ class TestSeedCommand:
             assert (row.sos_ack_minutes, row.incident_assign_minutes) == (2, 5)
             assert (row.long_stop_minutes, row.long_stop_radius_m) == (8, 50)
             assert (row.eta_overrun_percent, row.eta_overrun_minutes) == (50, 15)
-            assert row.route_deviation_meters is None and row.created_by_email == actor.email
+            assert (row.route_deviation_meters, row.route_deviation_minutes) == (300, 3)
+            assert row.min_safety_officers == 1 and row.created_by_email == actor.email
         assert AdminAuditLog.objects.filter(action='safety_config_seeded').count() == 1
 
         SafetyCountryConfig.objects.filter(country='IN').update(sos_ack_minutes=9)

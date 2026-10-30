@@ -68,6 +68,10 @@ PERMISSIONS = {
     'zone.write': 'Draw and publish zones and geofences',
     'promo.write': 'Create and amend promotions and incentives',
     'notify.send': 'Send campaigns to riders or drivers',
+    # Read-only door to the Safety queue (owner ruling, AUDIT 27.40): City Ops
+    # may look at their own scope's incidents and signals; every write, the
+    # assignee list and the SOS contact reveal stay `safety.respond`.
+    'safety.read': 'View the Safety queue and incidents',
     'safety.respond': 'Act on SOS and incidents',
     # Super Admin only by default: the timers, thresholds and emergency
     # numbers that decide when an SOS escalates and what detection raises.
@@ -113,6 +117,8 @@ ROLE_TEMPLATES = [
             'driver.write', 'support.read', 'report.read', 'zone.read',
             'zone.write', 'promo.write', 'pii.view',
             'rider.note', 'rider.flag', 'rider.signout', 'rider.block',
+            # Read-only Safety queue within scope; no write, no reveal.
+            'safety.read',
             # SLA numbers for their own country, through a checker.
             'support.sla', 'support.dashboard',
         ],
@@ -148,7 +154,7 @@ ROLE_TEMPLATES = [
                        'unmask a contact during a live incident.',
         'permissions': [
             'trip.read', 'rider.read', 'driver.read', 'driver.write',
-            'safety.respond', 'support.read',
+            'safety.respond', 'safety.read', 'support.read',
             'rider.note', 'rider.flag', 'rider.signout', 'rider.block',
             # The one role that must be able to reach a person immediately.
             'pii.view',

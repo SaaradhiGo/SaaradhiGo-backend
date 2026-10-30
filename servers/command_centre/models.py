@@ -67,6 +67,13 @@ SOS_UNANCHORED = 'sos_unanchored'
 SAFETY_SOS_ESCALATED = 'safety_sos_escalated'
 SAFETY_INCIDENT_UNASSIGNED = 'safety_incident_unassigned'
 SAFETY_SIGNAL = 'safety_signal'
+#: A LIVE city with fewer Safety Officers than its country's minimum (or a
+#: country with no minimum configured). Critical, raised and cleared by the
+#: coverage sweep (`safety.coverage`), carries no personal data. It is not in
+#: `ACK_PERMISSION` on purpose: it cannot be acknowledged away, it clears
+#: when the gap is fixed. Being absent from `SOS_ALERT_KINDS` it is visible to
+#: whoever sees the city's other alerts.
+SAFETY_COVERAGE_GAP = 'safety_coverage_gap'
 ACK_PERMISSION = {
     SOS_UNANCHORED: 'safety.respond',
     SAFETY_SOS_ESCALATED: 'safety.respond',

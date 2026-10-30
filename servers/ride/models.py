@@ -32,6 +32,14 @@ class Trip(CurrencyStampedModel, models.Model):
     status_id=models.ForeignKey(TripStatus,on_delete=models.DO_NOTHING,related_name='trips',default=get_default_trip_status)
     requested_at=models.DateTimeField(auto_now_add=True)
     accepted_at=models.DateTimeField(blank=True,null=True)
+    # The route the driver was expected to drive (pickup to drop), fetched
+    # AFTER the accept commits (`ride.store_planned_route`). An encoded
+    # polyline, precision 5. Null when maps failed or has not answered yet; a
+    # trip without one is never flagged for route deviation. Observation
+    # only: nothing about fare, dispatch or the driver's screen reads it.
+    planned_route_polyline=models.TextField(blank=True,null=True)
+    planned_route_source=models.CharField(max_length=20,blank=True,default='')
+    planned_route_at=models.DateTimeField(blank=True,null=True)
     reached_at=models.DateTimeField(blank=True,null=True)
     started_at=models.DateTimeField(blank=True,null=True)
     completed_at=models.DateTimeField(blank=True,null=True, db_index=True)

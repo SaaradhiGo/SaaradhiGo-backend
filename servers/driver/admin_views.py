@@ -589,7 +589,6 @@ def list_withdrawals_admin(request):
     """
     from .models import WithdrawalRequest
     from .serializers import WithdrawalRequestSerializer
-    from rest_framework.pagination import PageNumberPagination
     from django.db.models import Q
     from django.utils import timezone
     from datetime import timedelta

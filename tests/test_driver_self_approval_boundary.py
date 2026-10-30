@@ -175,6 +175,8 @@ def test_the_admin_kyc_path_can_still_approve(driver):
     """
     from servers.driver.serializers import KYCApprovalSerializer
 
+    driver.user_id.full_name = 'Ravi Kumar'  # the KYC gate requires a real name
+    driver.user_id.save(update_fields=['full_name'])
     vehicle = Vehicle.objects.filter(driver_id=driver).first()
     vehicle.rc_doc = 'rc_docs/qa-placeholder.png'
     vehicle.save(update_fields=['rc_doc'])
@@ -261,3 +263,17 @@ def test_a_driver_cannot_write_their_own_review_outcome(api, driver):
     assert driver.doc_status != 'approved', (
         'a driver wrote their own document review outcome'
     )
+
+
+@pytest.mark.parametrize('name', ['', '+919876543210', 'ravi@example.test'])
+def test_the_admin_kyc_path_refuses_a_driver_without_a_real_name(driver, name):
+    """Owner ruling 2026-10-30: a nameless driver showed their number
+    wherever a name is printed. Approval now needs a name a person could be
+    addressed by; the documents check is unchanged."""
+    from servers.driver.serializers import KYCApprovalSerializer
+
+    driver.user_id.full_name = name
+    driver.user_id.save(update_fields=['full_name'])
+    s = KYCApprovalSerializer(driver, data={'approved': True}, partial=True)
+    assert s.is_valid() is False
+    assert 'full_name' in str(s.errors)

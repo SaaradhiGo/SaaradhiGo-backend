@@ -65,7 +65,10 @@ jobs:
   test:
     name: validate / test suite
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The suite takes 6-7 min and runs slower on a PR's merge commit while the
+    # push run of the same SHA is going; at 10 min the PR run hit the timeout
+    # (GitHub reports that as "cancelled") on #79 and #81. 25 leaves headroom.
+    timeout-minutes: 25
 
     services:
       redis:
@@ -133,7 +136,7 @@ jobs:
     # choice, and nothing here depends on post-15 behaviour — row locking and
     # READ COMMITTED have been stable for many major versions.
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
 
     services:
       postgres:

@@ -120,6 +120,8 @@ def test_update_kyc_status_admin(auth_client_admin, auth_client_driver):
 
     driver = Driver.objects.get(user_id=driver_user)
     assert driver.approved is False
+    driver_user.full_name = 'Ravi Kumar'  # the KYC gate requires a real name
+    driver_user.save(update_fields=['full_name'])
 
     # Seed the documents the KYC gate requires (just the truthy values —
     # the serializer only checks presence, not content).
@@ -372,6 +374,8 @@ def test_approving_clears_a_previous_rejection_reason(
 
     client, _ = auth_client_admin
     _, driver_user = auth_client_driver
+    driver_user.full_name = 'Ravi Kumar'  # the KYC gate requires a real name
+    driver_user.save(update_fields=['full_name'])
     driver = _driver_with_docs(driver_user)
     driver.license_expiry = tz.localdate() + tz.timedelta(days=400)
     driver.doc_status = 'rejected'

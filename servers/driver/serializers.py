@@ -154,6 +154,15 @@ class DriverAdminListSerializer(serializers.ModelSerializer):
         model = Driver
         fields = ['id', 'user_details', 'license_doc', 'license_expiry', 'status', 'total_trips', 'ratings', 'approved', 'active_vehicle']
 
+def has_real_name(user):
+    """A name a person could be addressed by: not blank, not a phone
+    number or an email standing in for one."""
+    name = (getattr(user, 'full_name', '') or '').strip()
+    if not name or '@' in name:
+        return False
+    return not name.replace('-', '').replace(' ', '').lstrip('+').isdigit()
+
+
 class KYCApprovalSerializer(serializers.ModelSerializer):
     """KYC approval is the gate that lets a driver accept rides on the
     platform. We refuse to mark `approved=True` unless the driver has
@@ -165,6 +174,9 @@ class KYCApprovalSerializer(serializers.ModelSerializer):
     - at least one Vehicle must exist with rc_doc uploaded
     - the active_vehicle must be assigned (so the driver can actually
       take rides post-approval)
+    - the account must carry a real name: not blank, not a phone number
+      or an email (owner ruling 2026-10-30; a nameless driver showed their
+      number wherever a name is printed)
 
     Approval can still be REJECTED (approved=False) at any time without
     these checks — withdrawal of approval doesn't depend on documents.
@@ -185,6 +197,8 @@ class KYCApprovalSerializer(serializers.ModelSerializer):
             )
 
         missing = []
+        if not has_real_name(driver.user_id):
+            missing.append('full_name')
         if not driver.license_doc:
             missing.append('license_doc')
         if not driver.license_expiry:
@@ -206,8 +220,8 @@ class KYCApprovalSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'documents': (
                     f"Cannot approve driver — missing: {', '.join(missing)}. "
-                    "Phase-0 KYC gate requires license doc + expiry, an active "
-                    "vehicle, and that vehicle's RC document on file."
+                    "Phase-0 KYC gate requires the driver's name, license doc + "
+                    "expiry, an active vehicle, and that vehicle's RC document on file."
                 )
             })
         return attrs

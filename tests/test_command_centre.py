@@ -625,6 +625,35 @@ class TestAlertList:
         assert data['open_count'] == data['count']
 
 
+
+class TestLiveSosOnlyForResponders:
+    """Owner ruling 2026-10-30: live SOS (queue figures and alerts) goes to
+    Safety, Super Admin and City Ops within scope; Marketing and Analyst see
+    the rest of the board and no live SOS."""
+
+    @pytest.mark.parametrize('role', ['marketing', 'analyst'])
+    def test_reports_roles_get_no_sos_figures_or_alerts(self, geo, world, alerts, role):
+        client, _ = operator(role, geo)
+        _, data = _get(client, window='24h')
+        assert data['sos_visible'] is False
+        queues = _row(data, 'IN-TG-HYD')['queues']
+        assert not {'sos_open', 'sos_oldest_open_minutes', 'sos_raised'} & set(queues)
+        assert 'tickets_open' in queues  # the rest of the board stays
+        listed = client.get(ALERTS).json()['data']
+        kinds = {r['kind'] for r in listed['results']}
+        assert listed['count'] > 0
+        assert not kinds & {'sos_unanchored', 'threshold_sos_open', 'threshold_sos_unacknowledged'}
+        assert listed['open_count'] == listed['count']
+
+    @pytest.mark.parametrize('role', ['city_ops_manager', 'super_admin'])
+    def test_responders_and_city_ops_keep_them(self, geo, world, alerts, role):
+        client, _ = operator(role, geo)
+        _, data = _get(client, window='24h')
+        assert data['sos_visible'] is True
+        assert 'sos_open' in _row(data, 'IN-TG-HYD')['queues']
+        kinds = {r['kind'] for r in client.get(ALERTS).json()['data']['results']}
+        assert 'threshold_sos_open' in kinds
+
 class TestAcknowledge:
     def _ack(self, client, alert, note='taken'):
         return client.post(f'{ALERTS}{alert.id}/acknowledge/', {'note': note}, format='json')

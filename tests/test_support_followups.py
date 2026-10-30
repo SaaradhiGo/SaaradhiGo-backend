@@ -718,8 +718,11 @@ class TestSlaChangeNeedsAChecker:
         assert agent.put(BASE + 'sla/IN/normal/', self.BODY, format='json').status_code == 403
 
     def test_an_unconfigured_country_is_blocked_not_defaulted(self, geo, world, policies):
-        # Approval policies are seeded for India only (by ruling): a US change
-        # is refused, never given India's rules.
+        # A country with no policy row is refused, never given India's rules.
+        # (The seed now writes the US set, AUDIT 27.44; remove it to prove the block.)
+        from servers.approvals.models import ApprovalPolicy
+
+        ApprovalPolicy.objects.filter(country='US').delete()
         admin, _ = operator('super_admin', geo)
         r = admin.put(BASE + 'sla/US/normal/', self.BODY, format='json')
         assert r.status_code == 409
@@ -754,4 +757,5 @@ class TestSlaChangeNeedsAChecker:
 
         row = active_policy('IN', 'support.sla_change')
         assert row is not None and row.limit_kind == 'always' and row.maker_limit is None
-        assert active_policy('US', 'support.sla_change') is None
+        us = active_policy('US', 'support.sla_change')    # the owner's US set, AUDIT 27.44
+        assert us is not None and us.limit_kind == 'always' and us.maker_limit is None

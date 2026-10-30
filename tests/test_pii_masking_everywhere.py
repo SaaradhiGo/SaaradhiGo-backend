@@ -400,6 +400,9 @@ INVENTORY = {
     'api/v1/sos/admin/': False,
     'api/v1/sos/admin/<int:sos_id>/': False,
     'api/v1/command-centre/admin/alerts/': False,
+    # Command Centre (#80): per-city counts, rates and thresholds; no person.
+    'api/v1/command-centre/admin/overview/': False,
+    'api/v1/command-centre/admin/thresholds/': False,
     # Maker-checker. `maker` / `checker` blocks are staff attribution and
     # are left alone (OPERATOR_IDENTITY_KEYS); the payload is masked.
     'api/v1/approvals/admin/requests/': True,

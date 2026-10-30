@@ -537,17 +537,39 @@ def strip_money(row):
     return row
 
 
-def build_overview(cities, window, *, now=None, include_money=True, scope_code=None):
+#: The overview keys that carry live SOS figures.
+SOS_QUEUE_KEYS = ('sos_open', 'sos_oldest_open_minutes', 'sos_raised')
+
+
+def strip_sos(row):
+    """The row without its live SOS queue, for a caller who cannot respond
+    to one (owner ruling 2026-10-30: live SOS goes to Safety, Super Admin
+    and City Ops; Analyst gets SOS history in Reports). Keys are removed,
+    not zeroed, as with money."""
+    row = dict(row)
+    queues = dict(row.get('queues', {}))
+    for key in SOS_QUEUE_KEYS:
+        queues.pop(key, None)
+    row['queues'] = queues
+    return row
+
+
+
+def build_overview(cities, window, *, now=None, include_money=True, include_sos=True,
+                   scope_code=None):
     """The endpoint's payload for `cities` (already scoped by the caller)."""
     now = now or timezone.now()
     contexts = city_contexts(cities)
     rows = measure(contexts, window, now)
     cities_out = [row if include_money else strip_money(row) for row in rows.values()]
+    if not include_sos:
+        cities_out = [strip_sos(row) for row in cities_out]
     return {
         'window': window,
         'generated_at': now.isoformat(),
         'scope': scope_code,
         'money_visible': include_money,
+        'sos_visible': include_sos,
         'definitions': DEFINITIONS,
         'cities': cities_out,
     }
@@ -558,4 +580,4 @@ def has_data(row):
     t = row['trips']
     return any(
         (t[k]['now'] or 0) + (t[k]['last_week'] or 0) for k in t
-    ) or (row['drivers']['online_now']['now'] or 0) or (row['queues']['sos_open']['now'] or 0)
+    ) or (row['drivers']['online_now']['now'] or 0) or (row['queues'].get('sos_open', {}).get('now') or 0)

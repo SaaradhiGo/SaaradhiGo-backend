@@ -46,7 +46,7 @@ from rest_framework_simplejwt.tokens import AccessToken
 
 from servers.admin_access.masking import (
     ALL_PII_FIELDS, BULLET, COORDINATE_FIELDS, DOCUMENT_FIELDS, EXPORT_REVEAL_ACTION,
-    OPERATOR_IDENTITY_KEYS, RAW_PII_PATTERNS, REVEAL_ACTION, exports_unmasked,
+    OPERATOR_IDENTITY_KEYS, PINNED_LOCATION, RAW_PII_PATTERNS, REVEAL_ACTION, exports_unmasked,
     mask_address, mask_last4, mask_payload, mask_upi, round_coordinate, STRICT, TRUSTED,
 )
 from servers.admin_access.models import AdminAssignment, AdminRole, GeoNode
@@ -717,7 +717,7 @@ def _is_masked(key, value):
         return True
     if not isinstance(value, str):
         return True
-    if BULLET in value:
+    if BULLET in value or value == PINNED_LOCATION:
         return True
     if key in COORDINATE_FIELDS:
         return len(value.split('.')[-1]) <= 2 if '.' in value else True

@@ -2,17 +2,18 @@
 
 WHAT THESE PROVE
 ----------------
-  * a rider's city is their latest trip's: Hyderabad operators see riders
-    whose latest trip is in Hyderabad, Austin riders (and a Hyderabad rider
-    who last rode in Austin) are 404 to them, Super Admin sees everybody
-    including riders with no trip; a refused `?scope=` is 403; a role
-    without `rider.read` is 403;
+  * a rider's scope is the multi-anchor rule (`servers/rider/scope.py`, with
+    its own tests in `test_rider_scope_and_actions.py`): Hyderabad
+    operators see riders with a recent Hyderabad trip (a traveller who also
+    rode in Austin included) and trip-less +91 riders; Austin-only riders
+    are 404 to them; a refused `?scope=` is 403; a role without
+    `rider.read` is 403;
   * every filter, the sort and the pages work server-side, and the joined
     range is each rider's own city day;
   * the detail carries profile, wallet (minor units, per currency), trips,
     tickets, SOS, ratings, counts, history and actions, and never a raw
     phone number or email;
-  * each write: `rider.write` (403 without), out of scope 404, audited,
+  * each write: its own capability (403 without), out of scope 404, audited,
     idempotent;
   * a blocked rider is refused at ride request in the socket's existing
     error frame and no trip is created; unblocking lets them book again;
@@ -94,10 +95,11 @@ def policies(geo):
 
 @pytest.fixture
 def rider_ops(geo):
-    """Nobody but Super Admin holds `rider.write` in the templates (an open
-    owner question), so the scoped writer is a custom Hyderabad role."""
+    """A custom Hyderabad role holding all four rider capabilities."""
     AdminRole.objects.get_or_create(code='rider_ops', defaults={
-        'name': 'Rider Ops', 'permissions': ['rider.read', 'rider.write', 'trip.read']})
+        'name': 'Rider Ops', 'permissions': [
+            'rider.read', 'rider.note', 'rider.flag', 'rider.signout', 'rider.block',
+            'trip.read']})
     return operator('rider_ops', geo)
 
 
@@ -143,6 +145,9 @@ def world(geo):
 
 
 HYD = ('lakshmi', 'ravi')
+#: Hyderabad scope: its own riders, the traveller (a Hyderabad trip in the
+#: window) and the trip-less +91 newcomer (country anchor).
+HYD_SCOPE = ('lakshmi', 'ravi', 'traveller', 'newcomer')
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +155,9 @@ HYD = ('lakshmi', 'ravi')
 # ---------------------------------------------------------------------------
 
 class TestScope:
-    def test_city_ops_sees_riders_whose_latest_trip_is_in_hyderabad(self, geo, world):
+    def test_city_ops_sees_riders_with_a_hyderabad_anchor(self, geo, world):
         client, _ = operator('city_ops_manager', geo)
-        assert set(ids(client.get(LIST))) == {world[k].id for k in HYD}
+        assert set(ids(client.get(LIST))) == {world[k].id for k in HYD_SCOPE}
 
     def test_super_admin_sees_everybody_including_riders_with_no_trip(self, geo, world):
         admin, _ = operator('super_admin', geo)
@@ -167,7 +172,7 @@ class TestScope:
         assert response.status_code == 403
         assert response.json()['error']['code'] == 'SCOPE_NOT_HELD'
 
-    @pytest.mark.parametrize('key', ['austin', 'traveller', 'newcomer'])
+    @pytest.mark.parametrize('key', ['austin'])
     def test_out_of_scope_detail_is_404(self, geo, world, key):
         client, _ = operator('city_ops_manager', geo)
         response = client.get(url(world[key]))
@@ -187,7 +192,7 @@ class TestScope:
     @pytest.mark.parametrize('role', ['support_agent', 'safety_officer', 'finance', 'analyst'])
     def test_every_rider_read_role_reads_hyderabad(self, geo, world, role):
         client, _ = operator(role, geo)
-        assert set(ids(client.get(LIST))) == {world[k].id for k in HYD}
+        assert set(ids(client.get(LIST))) == {world[k].id for k in HYD_SCOPE}
         assert client.get(url(world['lakshmi'])).status_code == 200
 
     def test_a_rider_token_is_refused(self, world):
@@ -202,12 +207,12 @@ class TestScope:
 class TestList:
     @pytest.mark.parametrize('query, expected', [
         ('trips_min=3', ('lakshmi',)),
-        ('trips_max=0', ('ravi',)),
+        ('trips_max=0', ('ravi', 'newcomer')),
         ('has_open_ticket=true', ('lakshmi',)),
-        ('has_open_ticket=false', ('ravi',)),
+        ('has_open_ticket=false', ('ravi', 'traveller', 'newcomer')),
         ('had_sos=true', ('lakshmi',)),
         ('low_rating=true', ('ravi',)),
-        ('blocked=false', ('lakshmi', 'ravi')),
+        ('blocked=false', ('lakshmi', 'ravi', 'traveller', 'newcomer')),
         ('flagged=true', ()),
     ])
     def test_filters(self, geo, world, query, expected):
@@ -279,7 +284,7 @@ class TestList:
 
 class TestDetail:
     def test_the_detail_sections(self, geo, world):
-        client, _ = operator('city_ops_manager', geo)
+        client, _ = operator('analyst', geo)
         response = client.get(url(world['lakshmi']))
         assert response.status_code == 200, response.content
         data = response.json()['data']
@@ -296,9 +301,9 @@ class TestDetail:
         assert data['sessions'] == {'active_sessions': 0, 'push_device': False}
         assert data['block'] == {'active': False} and data['flags'] == []
         actions = data['actions']
-        # City Ops holds rider.read, not rider.write.
+        # The Analyst reads and holds no rider action, and no pii.view.
         assert not any(actions[k] for k in ('block', 'unblock', 'note', 'flag', 'sign_out'))
-        assert actions['reveal'] is True
+        assert actions['reveal'] is False
 
     @pytest.mark.parametrize('role', ['support_agent', 'analyst', 'city_ops_manager'])
     def test_no_raw_phone_or_email_for_any_role(self, geo, world, role):
@@ -311,7 +316,7 @@ class TestDetail:
         admin, _ = operator('super_admin', geo)
         admin.post(url(world['newcomer'], 'note/'), {'body': 'called in'}, format='json')
         data = admin.get(url(world['newcomer'])).json()['data']
-        assert data['city'] is None
+        assert data['city']['code'] == 'IN' and data['city_source'] == 'country'
         assert data['actions']['block'] and data['actions']['sign_out']
         assert [n['body'] for n in data['notes']] == ['called in']
         assert [a['action'] for a in data['audit_trail']] == ['rider_note_added']
@@ -334,14 +339,14 @@ WRITES = [
 class TestWrites:
     @pytest.mark.parametrize('suffix, body', WRITES)
     def test_rider_read_alone_is_403(self, geo, world, suffix, body):
-        client, _ = operator('city_ops_manager', geo)
+        client, _ = operator('analyst', geo)
         response = client.post(url(world['lakshmi'], suffix), body, format='json')
         assert response.status_code == 403
 
     @pytest.mark.parametrize('suffix, body', WRITES)
     def test_out_of_scope_is_404(self, geo, world, rider_ops, suffix, body):
         client, _ = rider_ops
-        for key in ('austin', 'traveller', 'newcomer'):
+        for key in ('austin',):
             assert client.post(url(world[key], suffix), body,
                                format='json').status_code == 404
 
@@ -533,8 +538,8 @@ class TestBulk:
                      {'action': 'unblock', 'rider_ids': [1], 'idempotency_key': 'x'}):
             assert client.post(BULK, body, format='json').status_code == 400
 
-    def test_bulk_needs_rider_write(self, geo, world, policies):
-        client, _ = operator('city_ops_manager', geo)
+    def test_bulk_needs_rider_block(self, geo, world, policies):
+        client, _ = operator('support_agent', geo)
         assert client.post(BULK, {'action': 'block', 'reason_code': 'fraud',
                                   'rider_ids': [world['lakshmi'].id], 'idempotency_key': 'x'},
                            format='json').status_code == 403

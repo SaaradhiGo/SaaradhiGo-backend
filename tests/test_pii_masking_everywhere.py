@@ -970,7 +970,7 @@ class TestReveal:
             'receipt_email': RECEIPT_EMAIL,
         }
 
-    def test_a_rider_is_global_and_reveals_on_pii_view_anywhere(self, city_ops, world):
+    def test_a_rider_reveals_on_pii_view_at_one_of_their_anchors(self, city_ops, world):
         client, _ = city_ops
         data = reveal(client, target_type='rider', target_id=world['rider_user'].id,
                       fields=['phone_number', 'address', 'dob']).json()['data']
@@ -979,7 +979,8 @@ class TestReveal:
         assert data['fields']['address'] == f'{RIDER_HOUSE}, {RIDER_STREET}, Hyderabad, {RIDER_ZIP}'
         assert data['fields']['dob'] == RIDER_DOB
         row = AdminAuditLog.objects.filter(action=REVEAL_ACTION).order_by('-id').first()
-        assert row.after['scope_node'] is None
+        # Placed by the rider rule (`servers/rider/scope.py`): the Hyderabad trip.
+        assert row.after['scope_node'] == 'IN-TG-HYD'
 
     @pytest.mark.parametrize('target_type, key', [
         ('support_ticket', 'ticket'), ('withdrawal', 'withdrawal'), ('payment', 'payment'),

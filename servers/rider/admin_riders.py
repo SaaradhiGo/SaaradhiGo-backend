@@ -16,23 +16,19 @@ Trips module calls `rider_id`, the id the reveal endpoint takes for
 `target_type='rider'`, and the `target_id` of this module's audit rows, so
 one number names the rider everywhere in the console.
 
-HOW A RIDER'S CITY, AND SO SCOPE, IS DECIDED
---------------------------------------------
-A rider has no home-city column (`scoping.RIDERS_ARE_GLOBAL`). The module
-derives one: **the city of the rider's latest trip** (the trip's zone, which
-is stamped at booking). A rider is in the caller's scope when that latest
-trip is in `scoped()` / `scoped_to_request()` for `ride.Trip` - the same
-helpers and the same migration-bridge rules every trip list uses - and the
-capability is re-checked at that city with `granted()`. So a Hyderabad
-rider who last rode in Austin is Austin's for this module until they ride
-in Hyderabad again. A rider with no trip at all has no city: only callers
-whose scope is unrestricted (Global) see them, and a `?scope=` narrowing
-hides them. Out of scope answers 404; in scope without the capability 403.
+HOW A RIDER'S SCOPE IS DECIDED
+-----------------------------
+`rider.scope` holds the one rule (`riders_visible_to`, `rider_may`): a rider
+belongs to every city they rode in within `RIDER_SCOPE_TRIP_MONTHS`, plus a
+home city if known, else their phone's country. The list, the page, the
+writes, rider search and the reveal endpoint all use it. The `city` shown
+here is display only: the latest trip's city, else the home city, else the
+country. Out of scope answers 404; in scope without the capability 403.
 
 RULES THIS FILE KEEPS
 ---------------------
-* Every write: `ScopedPermission('rider.write')`, re-checked at the rider's
-  city, audited with `record_admin_action`, idempotent (a repeat changes
+* Every write: its own capability (`rider.note`, `rider.flag`,
+  `rider.signout`, `rider.block`), re-checked at the rider's anchors, audited with `record_admin_action`, idempotent (a repeat changes
   nothing and writes no second audit row).
 * Nothing here moves money. The wallet is DISPLAYED (balance and recent
   ledger rows, integer minor units with their currency); credits and debits
@@ -40,7 +36,8 @@ RULES THIS FILE KEEPS
 * Personal data leaves masked: the payload uses the field names the masking
   renderer knows (`full_name`, `phone_number`, `email`), and the console's
   `Revealable` goes through `/admin-access/reveal/` (logged).
-* A block refuses ride REQUESTS only (`rider.eligibility`); see `RiderBlock`.
+* A block refuses ride REQUESTS (`rider.eligibility`) and signs the rider
+  out, at trip end if one is under way; SOS always works. See `RiderBlock`.
 """
 
 import logging
@@ -59,9 +56,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission, granted
-from servers.admin_access.scoping import (
-    ScopeNotHeld, requested_node, scoped, scoped_to_request,
-)
+from servers.admin_access.scoping import ScopeNotHeld, requested_node
 from servers.admin_audit.services import record_admin_action
 from servers.approvals import bulk, registry
 from servers.approvals import service as approvals
@@ -71,6 +66,7 @@ from servers.ride.admin_trips import (
 )
 from servers.ride.models import Trip
 
+from .scope import anchor_nodes, riders_visible_to, rider_may
 from .models import Rider, RiderBlock, RiderFlag, RiderNote, Wallet, WalletTransaction
 
 logger = logging.getLogger(__name__)
@@ -122,7 +118,12 @@ def annotate(queryset):
 
     return queryset.annotate(
         latest_trip_id=Subquery(latest.values('id')[:1]),
-        city_node_id=Subquery(latest.values('zone__geo_node_id')[:1]),
+        city_node_id=Coalesce(
+            Subquery(latest.filter(zone__geo_node__isnull=False)
+                     .values('zone__geo_node_id')[:1]),
+            F('home_city_id'), output_field=IntegerField()),
+        trip_city_id=Subquery(latest.filter(zone__geo_node__isnull=False)
+                              .values('zone__geo_node_id')[:1]),
         last_trip_at=Subquery(latest.values('requested_at')[:1]),
         trips_total=trip_count(),
         trips_completed=trip_count(status_id__status_code='completed'),
@@ -136,28 +137,6 @@ def annotate(queryset):
     )
 
 
-def _unrestricted(user):
-    """True when the caller's scope covers everything, rows with no place
-    included: a Global assignment or superuser, or (until strict mode) an
-    unmigrated account, exactly as `scoping.scoped` treats them."""
-    from servers.admin_access.access import scope_paths
-    from servers.admin_access.bridge import is_migrated, strict_mode
-
-    if not strict_mode() and not is_migrated(user):
-        return True
-    return scope_paths(user) is None
-
-
-def riders_in_scope(user, trips_in_scope, *, narrowed=False):
-    """Riders whose latest trip is in `trips_in_scope` (an already `scoped()`
-    or `scoped_to_request()` Trip queryset). Trip-less riders are included
-    only for an unrestricted caller who did not narrow with `?scope=`."""
-    riders = annotate(Rider.objects.select_related('user_id'))
-    if _unrestricted(user) and not narrowed:
-        return riders
-    return riders.filter(latest_trip_id__in=trips_in_scope.values('id'))
-
-
 def _nodes(ids):
     from servers.admin_access.models import GeoNode
 
@@ -166,8 +145,13 @@ def _nodes(ids):
 
 
 def node_of_rider(rider):
+    """The node shown for the rider: latest trip city, else home city, else
+    the country their phone belongs to (display only; see `rider.scope`)."""
     node_id = getattr(rider, 'city_node_id', None)
-    return _nodes([node_id]).get(node_id) if node_id else None
+    if node_id:
+        return _nodes([node_id]).get(node_id)
+    anchors = anchor_nodes(rider)
+    return anchors[0] if anchors else None
 
 
 def _city(node):
@@ -331,13 +315,12 @@ def admin_list_riders(request):
     """GET /rider/admin/  Riders in the caller's scope (see the module
     docstring for how a rider's city is decided), filtered, sorted, paged."""
     try:
-        narrowed = requested_node(request) is not None
-        trips = scoped_to_request(request, Trip.objects.all())
+        node = requested_node(request)
     except ScopeNotHeld as exc:
         return _scope_refused(exc)
     try:
-        riders = filter_riders(request.query_params,
-                               riders_in_scope(request.user, trips, narrowed=narrowed))
+        riders = filter_riders(request.query_params, riders_visible_to(
+            request.user, node, annotate(Rider.objects.select_related('user_id'))))
     except BadInput as exc:
         return exc.response()
 
@@ -366,22 +349,32 @@ def _not_found(rider_id):
                           issue=f'No rider {rider_id}', status=status.HTTP_404_NOT_FOUND)
 
 
-def _rider_for(request, rider_id, trips_in_scope, *permissions):
+def _rider_for(request, rider_id, *permissions):
     """(rider, node, None) or (None, None, error response).
 
     Not in scope (or no such rider) is NOT_FOUND, identically; in scope
     without any of `permissions` at the rider's city is 403.
     """
-    rider = riders_in_scope(request.user, trips_in_scope).filter(user_id_id=rider_id).first()
+    rider = riders_visible_to(
+        request.user, None, annotate(Rider.objects.select_related('user_id'))
+    ).filter(user_id_id=rider_id).first()
     if rider is None:
         return None, None, _not_found(rider_id)
     node = node_of_rider(rider)
-    if permissions and not any(granted(request.user, p, node)[0] for p in permissions):
+    if permissions and not any(rider_may(request.user, p, rider) for p in permissions):
         return None, None, error_response(
             code='PERMISSION_DENIED',
             message=f'You do not hold {" or ".join(permissions)} for this rider\'s city.',
             field='rider_id', issue=permissions[0], status=status.HTTP_403_FORBIDDEN)
     return rider, node, None
+
+
+def _city_source(rider, node):
+    if node is None:
+        return None
+    if getattr(rider, 'trip_city_id', None):
+        return 'latest_trip'
+    return 'home_city' if rider.home_city_id else 'country'
 
 
 def _wallet(user):
@@ -524,17 +517,22 @@ def _audit_rows(rider, actions=None):
 
 def allowed_actions(user, rider, node):
     """What this caller may do to this rider, so the console shows only that."""
-    may_write = granted(user, 'rider.write', node)[0]
+    anchors = anchor_nodes(rider)
+
+    def may(permission):
+        return rider_may(user, permission, rider, anchors)
+
+    may_block, may_flag = may('rider.block'), may('rider.flag')
     blocked = RiderBlock.objects.filter(rider=rider, lifted_at__isnull=True).exists()
     return {
-        'block': may_write and not blocked,
-        'unblock': may_write and blocked,
-        'note': may_write,
-        'flag': may_write,
-        'unflag': may_write and RiderFlag.objects.filter(
+        'block': may_block and not blocked,
+        'unblock': may_block and blocked,
+        'note': may('rider.note'),
+        'flag': may_flag,
+        'unflag': may_flag and RiderFlag.objects.filter(
             rider=rider, cleared_at__isnull=True).exists(),
-        'sign_out': may_write,
-        'reveal': granted(user, 'pii.view', node)[0],
+        'sign_out': may('rider.signout'),
+        'reveal': may('pii.view'),
         'block_reasons': BLOCK_REASONS,
         'flag_reasons': FLAG_REASONS,
     }
@@ -544,8 +542,7 @@ def allowed_actions(user, rider, node):
 @permission_classes([IsAuthenticated, ScopedPermission('rider.read')])
 def admin_rider_detail(request, rider_id):
     """GET /rider/admin/<id>/  One rider, if in scope (404 otherwise)."""
-    rider, node, refusal = _rider_for(request, rider_id, scoped(request.user, Trip.objects.all()),
-                                      'rider.read')
+    rider, node, refusal = _rider_for(request, rider_id, 'rider.read')
     if refusal:
         return refusal
     user = rider.user_id
@@ -557,7 +554,9 @@ def admin_rider_detail(request, rider_id):
             'email': user.email, 'is_active': user.is_active,
         },
         'city': _city(node),
-        'city_source': 'latest_trip' if node is not None else None,
+        'city_source': _city_source(rider, node),
+        'anchors': [{'code': n.code, 'name': n.name, 'kind': n.kind}
+                    for n in anchor_nodes(rider)],
         'joined_at': _iso(getattr(user, 'created_at', None)),
         'last_trip_at': _iso(rider.last_trip_at),
         'blocked': bool(rider.is_blocked),
@@ -626,6 +625,10 @@ def operator_block(rider_pk, *, reason_code, note='', actor=None, http_request=N
                             after={'blocked': True, 'block_id': row.id,
                                    'reason_code': reason_code},
                             reason=note or BLOCK_REASONS.get(reason_code, reason_code))
+        # A block also ends the rider's sessions, but never under a trip.
+        from .block_signout import sign_out_or_defer
+
+        sign_out_or_defer(rider, row, http_request=http_request)
     return 'blocked', row
 
 
@@ -659,11 +662,10 @@ def _block_params(data):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, ScopedPermission('rider.write')])
+@permission_classes([IsAuthenticated, ScopedPermission('rider.block')])
 def admin_block_rider(request, rider_id):
     """POST /rider/admin/<id>/block/  {reason_code, note}"""
-    rider, _node, refusal = _rider_for(request, rider_id, scoped(request.user, Trip.objects.all()),
-                                       'rider.write')
+    rider, _node, refusal = _rider_for(request, rider_id, 'rider.block')
     if refusal:
         return refusal
     try:
@@ -679,11 +681,10 @@ def admin_block_rider(request, rider_id):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, ScopedPermission('rider.write')])
+@permission_classes([IsAuthenticated, ScopedPermission('rider.block')])
 def admin_unblock_rider(request, rider_id):
     """POST /rider/admin/<id>/unblock/  {note}"""
-    rider, _node, refusal = _rider_for(request, rider_id, scoped(request.user, Trip.objects.all()),
-                                       'rider.write')
+    rider, _node, refusal = _rider_for(request, rider_id, 'rider.block')
     if refusal:
         return refusal
     try:
@@ -700,11 +701,10 @@ def admin_unblock_rider(request, rider_id):
 # ---------------------------------------------------------------------------
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, ScopedPermission('rider.write')])
+@permission_classes([IsAuthenticated, ScopedPermission('rider.note')])
 def admin_note_rider(request, rider_id):
     """POST /rider/admin/<id>/note/  {body, idempotency_key?}  Internal only."""
-    rider, _node, refusal = _rider_for(request, rider_id, scoped(request.user, Trip.objects.all()),
-                                       'rider.write')
+    rider, _node, refusal = _rider_for(request, rider_id, 'rider.note')
     if refusal:
         return refusal
     try:
@@ -740,11 +740,10 @@ def _flag_reason(data, required=True):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, ScopedPermission('rider.write')])
+@permission_classes([IsAuthenticated, ScopedPermission('rider.flag')])
 def admin_flag_rider(request, rider_id):
     """POST /rider/admin/<id>/flag/  {reason, note}"""
-    rider, _node, refusal = _rider_for(request, rider_id, scoped(request.user, Trip.objects.all()),
-                                       'rider.write')
+    rider, _node, refusal = _rider_for(request, rider_id, 'rider.flag')
     if refusal:
         return refusal
     try:
@@ -771,11 +770,10 @@ def admin_flag_rider(request, rider_id):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, ScopedPermission('rider.write')])
+@permission_classes([IsAuthenticated, ScopedPermission('rider.flag')])
 def admin_unflag_rider(request, rider_id):
     """POST /rider/admin/<id>/unflag/  {reason (all when absent), note}"""
-    rider, _node, refusal = _rider_for(request, rider_id, scoped(request.user, Trip.objects.all()),
-                                       'rider.write')
+    rider, _node, refusal = _rider_for(request, rider_id, 'rider.flag')
     if refusal:
         return refusal
     try:
@@ -799,7 +797,7 @@ def admin_unflag_rider(request, rider_id):
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, ScopedPermission('rider.write')])
+@permission_classes([IsAuthenticated, ScopedPermission('rider.signout')])
 def admin_sign_out_rider(request, rider_id):
     """POST /rider/admin/<id>/sign-out/  {reason}
 
@@ -810,8 +808,7 @@ def admin_sign_out_rider(request, rider_id):
     """
     from servers.auth_user.session_revocation import revoke_all_refresh_tokens
 
-    rider, _node, refusal = _rider_for(request, rider_id, scoped(request.user, Trip.objects.all()),
-                                       'rider.write')
+    rider, _node, refusal = _rider_for(request, rider_id, 'rider.signout')
     if refusal:
         return refusal
     try:
@@ -865,7 +862,7 @@ bulk.register('rider_bulk')(execute_bulk)
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, ScopedPermission('rider.write')])
+@permission_classes([IsAuthenticated, ScopedPermission('rider.block')])
 def admin_bulk_riders(request):
     """POST /rider/admin/bulk/
     {action: block|unblock, rider_ids, reason_code, note, idempotency_key}
@@ -898,18 +895,19 @@ def admin_bulk_riders(request):
     except BadInput as exc:
         return exc.response()
 
-    visible = riders_in_scope(request.user, scoped(request.user, Trip.objects.all())).filter(
-        user_id_id__in=ids)
-    nodes = _nodes(r.city_node_id for r in visible)
+    visible = list(riders_visible_to(
+        request.user, None, annotate(Rider.objects.select_related('user_id'))
+    ).filter(user_id_id__in=ids))
     writable = {r.user_id_id: r for r in visible
-                if granted(request.user, 'rider.write', nodes.get(r.city_node_id))[0]}
+                if rider_may(request.user, 'rider.block', r)}
+    nodes = _nodes(r.city_node_id for r in writable.values())
     ordered = [i for i in ids if i in writable]
     not_found = [i for i in ids if i not in writable]
     if not ordered:
         return success_response({'state': 'executed', 'count': 0, 'result': {
             'action': action, 'results': [{'id': i, 'result': 'not_found'} for i in ids],
             'counts': {'not_found': len(ids)}}}, status.HTTP_200_OK)
-    countries = {_country(r, nodes.get(r.city_node_id)) for r in writable.values()}
+    countries = {_country(r, node_of_rider(r)) for r in writable.values()}
     if len(countries) != 1:
         return error_response(
             code='MIXED_COUNTRIES', message='A bulk action covers one country at a time.',

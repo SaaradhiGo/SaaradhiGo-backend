@@ -51,7 +51,7 @@ UNSCOPED_BY_DESIGN = {
 #: and "unauthenticated" never get confused for each other.
 GLOBAL_BUT_GATED = {
     'admin_list_users': 'Riders belong to no city; gated on pii.view.',
-    'admin_search_riders': 'Riders belong to no city; gated on rider.read, phones masked.',
+    'admin_search_riders': 'Scoped by riders_visible_to (rider.scope); phones masked.',
 }
 
 
@@ -121,7 +121,11 @@ def test_every_admin_endpoint_is_scope_gated(name):
 
 #: Views whose job is to return a collection. Named by the shape of their
 #: source rather than guessed from the name, below.
-LIST_CALL = re.compile(r'\b(scoped|scoped_or_none|scoped_to_request|in_scope)\s*\(')
+# `riders_visible_to` is the one rider rule (`servers/rider/scope.py`);
+# `_rider_for` is the rider module's single-rider wrapper around it (checked
+# below), so a rider view that calls either is scoped.
+LIST_CALL = re.compile(
+    r'\b(scoped|scoped_or_none|scoped_to_request|in_scope|riders_visible_to|_rider_for)\s*\(')
 UNFILTERED = re.compile(
     r'\b(Driver|Trip|Vehicle|Payment|TransactionHistory|WithdrawalRequest)'
     r'\.objects\s*\.\s*(all|filter|select_related|prefetch_related)\s*\('
@@ -151,7 +155,7 @@ MUST_SCOPE = {
     'admin_search_trips',
     'admin_search_drivers',
     'admin_search_vehicles',
-    # Riders module: a rider's city is their latest trip's (admin_riders).
+    # Riders module: the multi-anchor rider rule (servers/rider/scope.py).
     'admin_list_riders',
     'admin_rider_detail',
     'admin_block_rider',
@@ -162,6 +166,12 @@ MUST_SCOPE = {
     'admin_sign_out_rider',
     'admin_bulk_riders',
 }
+
+
+def test_the_rider_wrapper_really_uses_the_rider_rule():
+    from servers.rider import admin_riders
+
+    assert 'riders_visible_to(' in inspect.getsource(admin_riders._rider_for)
 
 
 @pytest.mark.parametrize('name', sorted(MUST_SCOPE))

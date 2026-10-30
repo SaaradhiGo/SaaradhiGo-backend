@@ -21,8 +21,9 @@ endpoints use, with the same `SCOPE_PATHS` anchors: a trip by its pickup
 zone, a driver by their home city, a vehicle through its driver. A row the
 operator could not open from the list does not appear here either -- there
 is no "found but not permitted" state, because that is the enumeration
-leak this module exists not to add. Riders are global by design
-(`scoping.RIDERS_ARE_GLOBAL`) and are gated on `rider.read` alone.
+leak this module exists not to add. Riders follow the one rider rule
+(`servers/rider/scope.py`: trip cities in the window, home city, else phone
+country), the same one the rider page uses, so every rider found opens.
 
 A KYC-only operator (`driver.kyc` without `driver.write` or `trip.read`)
 sees drivers still in KYC and nothing else, by the same predicate the
@@ -59,7 +60,8 @@ from servers.driver.admin_views import IN_KYC, for_kyc_view, kyc_only
 from servers.driver.models import Driver, Vehicle
 from servers.driver.plates import normalised_plate_expression
 from servers.ride.models import Trip
-from servers.rider.models import Rider
+from servers.rider.models import Rider  # noqa: F401
+from servers.rider.scope import riders_visible_to
 
 from .terms import TermError, parse_term
 from .throttles import AdminSearchThrottle
@@ -245,11 +247,11 @@ def admin_search_riders(request):
         q |= Q(user_id__full_name__icontains=term.name)
     if q:
         riders = (
-            Rider.objects.select_related('user_id')
+            riders_visible_to(request.user)
             .annotate(phone_tail=phone_tail('user_id__phone_number'))
             .filter(q)
-            # The console has no rider page yet; the latest trip is where a
-            # rider's record can be opened from.
+            # Only riders the caller can open: the same rule as the rider
+            # page (`rider.scope`), so no result ever leads to a 404.
             .annotate(last_trip_id=Max('user_id__trips__id'))
             .order_by('-id')[:_limit(request)]
         )

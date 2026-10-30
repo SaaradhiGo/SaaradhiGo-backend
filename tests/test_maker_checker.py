@@ -64,13 +64,14 @@ API = '/api/v1/approvals/admin'
 PAYOUT_PATCH = 'servers.driver.services.trigger_payout_creation'
 
 # ---------------------------------------------------------------------------
-# A counting executor for the refund action, which has no real executor yet
+# Counting executors. The framework is tested against stand-ins, swapped in
+# for each test: the Trips module now registers the real refund and bulk
+# executors (servers.ride.admin_trips), which have their own tests.
 # ---------------------------------------------------------------------------
 
 CALLS = []
 
 
-@registry.register(SUPPORT_REFUND)
 def _counting_refund_executor(request):
     CALLS.append(request.id)
     return {'refunded': request.amount, 'currency': request.currency}
@@ -79,15 +80,32 @@ def _counting_refund_executor(request):
 DEACTIVATE_CALLS = []
 
 
-@registry.register(DRIVER_DEACTIVATE)
 def _counting_deactivate_executor(request):
     DEACTIVATE_CALLS.append(request.id)
     return {'deactivated': request.target_id}
 
 
-@registry.register(BULK_ACTION)
 def _bulk_executor(request):
     return {'records': request.amount}
+
+
+STAND_INS = {
+    SUPPORT_REFUND: _counting_refund_executor,
+    DRIVER_DEACTIVATE: _counting_deactivate_executor,
+    BULK_ACTION: _bulk_executor,
+}
+
+
+@pytest.fixture(autouse=True)
+def _stand_in_executors():
+    saved = {key: registry._EXECUTORS.get(key) for key in STAND_INS}
+    registry._EXECUTORS.update(STAND_INS)
+    yield
+    for key, fn in saved.items():
+        if fn is None:
+            registry._EXECUTORS.pop(key, None)
+        else:
+            registry._EXECUTORS[key] = fn
 
 
 @pytest.fixture(autouse=True)

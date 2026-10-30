@@ -7,6 +7,10 @@ from .views import (
     apply_promo_endpoint, trip_chat_history,
 )
 from .admin_views import admin_list_trips, admin_live_locations, admin_dashboard, admin_trip_detail
+from .admin_trips import (
+    admin_adjust_fare, admin_bulk_trips, admin_cancel_trip, admin_flag_trip,
+    admin_note_trip, admin_refund_trip, admin_unflag_trip,
+)
 
 urlpatterns = [
     # path('ride-request/', ride_request),
@@ -33,6 +37,14 @@ urlpatterns = [
     # Admin Panel APIs
     path('admin/trips/', admin_list_trips),
     path('admin/trips/<int:trip_id>/', admin_trip_detail),
+    # Trips module writes (console module 2)
+    path('admin/trips/bulk/', admin_bulk_trips),
+    path('admin/trips/<int:trip_id>/cancel/', admin_cancel_trip),
+    path('admin/trips/<int:trip_id>/refund/', admin_refund_trip),
+    path('admin/trips/<int:trip_id>/adjust-fare/', admin_adjust_fare),
+    path('admin/trips/<int:trip_id>/flag/', admin_flag_trip),
+    path('admin/trips/<int:trip_id>/unflag/', admin_unflag_trip),
+    path('admin/trips/<int:trip_id>/note/', admin_note_trip),
     path('admin/live-locations/', admin_live_locations),
     path('admin/dashboard/', admin_dashboard),
 ]

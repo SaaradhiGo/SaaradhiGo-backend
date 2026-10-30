@@ -120,6 +120,24 @@ def finance_holders(country, nodes=()):
     return list(out.values())
 
 
+def deliver_payout_notice(notice):
+    """STUB: nobody is notified (Notifications module). The row stays queued."""
+    logger.warning('payout_notice_queued_not_sent', extra={
+        'event': 'payout_notice_queued_not_sent', 'notice_id': notice.id,
+        'driver_id': notice.driver_id})
+    return False
+
+
+def _queue_driver_notices(run, drivers):
+    """One outbox row per skipped driver per run. Idempotent: (run, driver) is unique."""
+    from .models import DriverPayoutNotice
+
+    for d in drivers:
+        notice, created = DriverPayoutNotice.objects.get_or_create(run=run, driver=d)
+        if created:
+            deliver_payout_notice(notice)
+
+
 def _notify_skipped(run, config, skipped, drivers):
     """One inbox item per finance holder in scope: who was skipped and why."""
     from servers.support.models import OperatorNotification
@@ -246,6 +264,7 @@ def run_country(config, now=None):
                 reason=REASON)
             if skipped:
                 _notify_skipped(run, config, skipped, skipped_drivers)
+                _queue_driver_notices(run, skipped_drivers)
     except IntegrityError:
         # Another worker created this week's run between our check and our insert.
         return {'country': country, 'ran': False, 'why': 'already_ran', 'week_start': str(week)}

@@ -1213,6 +1213,40 @@ class TestWeeklyRunSkipsDriversWithNoHandle:
         assert india['recent_runs'][0]['skipped'][0]['driver_id'] == skipped.id
 
 
+class TestSkippedDriverNoticeAndOverview(TestWeeklyRunSkipsDriversWithNoHandle):
+    def test_a_skipped_driver_gets_one_queued_notice_and_a_rerun_adds_none(self, india_weekly):
+        from servers.payments.models import DriverPayoutNotice
+        from servers.payments.weekly_payout import _queue_driver_notices, run_weekly_payouts
+
+        skipped = self.funded(india_weekly, 'N1', handle=False)
+        self.funded(india_weekly, 'N2', handle=True)
+        run_weekly_payouts(self.MONDAY)
+        notice = DriverPayoutNotice.objects.get()
+        assert (notice.driver_id, notice.status, notice.kind) == (skipped.id, 'queued', 'add_payout_details')
+        assert notice.sent_at is None                      # the send is a stub
+        run_weekly_payouts(self.MONDAY)                    # same week again: nothing new
+        _queue_driver_notices(PayoutRun.objects.get(), [skipped])
+        assert DriverPayoutNotice.objects.count() == 1
+
+    def test_the_finance_overview_counts_skipped_drivers_in_the_viewers_scope_only(self, india_weekly):
+        from servers.payments.weekly_payout import run_weekly_payouts
+
+        a = self.funded(india_weekly, 'N3', handle=False)
+        run_weekly_payouts(self.MONDAY)
+        us_driver = make_driver(india_weekly.geo, 'US-TX-AUS', 'N4', currency='USD', calling='1')
+        PayoutRun.objects.create(country='US', currency='USD', week_start=self.MONDAY.date(),
+                                 skipped=[{'driver_id': us_driver.id, 'reason': 'no_payout_handle'}])
+        rng = '?from=2026-10-01&to=2026-11-30'
+        hyd_fin, _ = operator('finance', india_weekly.geo)
+        data = get(hyd_fin, f'/api/v1/payments/admin/overview/{rng}')
+        assert data['skipped_in_latest_run'] == [
+            {'country': 'IN', 'week_start': '2026-11-02', 'count': 1}]
+        sup, _ = india_weekly.super
+        both = get(sup, f'/api/v1/payments/admin/overview/{rng}')['skipped_in_latest_run']
+        assert [(r['country'], r['count']) for r in both] == [('IN', 1), ('US', 1)]
+        assert 'driver_id' not in str(data['skipped_in_latest_run'])
+
+
 class TestNoPayoutRailHoldsTheApproval:
     def us_withdrawal(self, world, *, amount=5_000):
         us_driver = make_driver(world.geo, 'US-TX-AUS', 'R1', currency='USD', calling='1')

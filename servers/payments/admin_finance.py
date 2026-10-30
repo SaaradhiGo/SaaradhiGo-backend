@@ -713,6 +713,28 @@ def overview_rows(user, node, d_from, d_to, permission=READ):
     return out
 
 
+def skipped_in_latest_runs(user, node):
+    """Per country: how many drivers the LATEST weekly run skipped (no payout handle),
+    counting only drivers inside the viewer's scope (money_visible_to on the driver's
+    home city). A count only: the ids never leave this function."""
+    from .models import PayoutRun
+
+    out = []
+    seen = set()
+    for run in PayoutRun.objects.order_by('-week_start', '-id'):
+        if run.country in seen:
+            continue
+        seen.add(run.country)
+        ids = [s['driver_id'] for s in (run.skipped or [])]
+        if not ids:
+            continue
+        visible = money_visible_to(user, Driver, node, queryset=Driver.objects.filter(id__in=ids))
+        count = visible.count()
+        if count:
+            out.append({'country': run.country, 'week_start': run.week_start, 'count': count})
+    return sorted(out, key=lambda r: r['country'])
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, ScopedPermission('finance.read')])
 def finance_overview(request):
@@ -736,6 +758,7 @@ def finance_overview(request):
     if d_from is None or d_to is None:
         return _bad(BadParam('from', 'from and to are both required'))
     out = overview_rows(request.user, node, d_from, d_to)
+    skipped = skipped_in_latest_runs(request.user, node)
     names = {n.id: n for n in GeoNode.objects.filter(id__in={k[0] for k in out if k[0]})}
     columns = ['gross_minor', 'commission_minor', 'driver_net_minor', 'refunds_minor',
                'payouts_paid_minor', 'payouts_pending_minor', 'payouts_failed_minor']
@@ -759,6 +782,8 @@ def finance_overview(request):
         'columns': columns,
         'rows': rows,
         'totals': [{'currency': cur, **dict(vals)} for cur, vals in sorted(totals.items())],
+        # A COUNT per country, in the viewer's scope: never a name or a phone number.
+        'skipped_in_latest_run': skipped,
         'note': 'Totals are grouped by currency. Nothing is summed across currencies.',
     }, status.HTTP_200_OK)
 

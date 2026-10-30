@@ -43,7 +43,7 @@ from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission, granted, node_of
 from servers.admin_access.scoping import scoped, scoped_or_none
 from servers.admin_audit.services import record_admin_action
-from servers.approvals import bulk, registry
+from servers.approvals import adjust, bulk, registry
 from servers.approvals import service as approvals
 from servers.approvals.actions import (
     BULK_ACTION, FINANCE_ADJUST, FINANCE_REFUND, SUPPORT_REFUND,
@@ -1115,7 +1115,7 @@ def execute_adjustment(request_row):
 
 registry.register(SUPPORT_REFUND)(execute_refund)
 registry.register(FINANCE_REFUND)(execute_refund)
-registry.register(FINANCE_ADJUST)(execute_adjustment)
+adjust.register(TARGET)(execute_adjustment)
 
 
 # A refund tied to a ticket that is rejected, cancelled or lets expire goes

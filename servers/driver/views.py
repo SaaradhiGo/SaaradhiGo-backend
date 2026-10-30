@@ -265,7 +265,7 @@ def driver_withdrawal_balance(request):
     """
     from .services import calculate_available_balance, is_withdrawal_blocked, get_withdrawal_block_remaining
     from servers.payments.payout_config import (
-        NOT_AVAILABLE_MESSAGE, config_for_driver, minimum_withdrawal,
+        NOT_AVAILABLE_MESSAGE, config_for_driver, fee_display, fee_percent, minimum_withdrawal,
     )
 
     driver = request.user.driver
@@ -281,8 +281,15 @@ def driver_withdrawal_balance(request):
         'available_balance': float(available),
         'blocked': blocked,
         'block_remaining_seconds': block_remaining.total_seconds() if block_remaining else None,
-        'fee_percent': float(config.fee_percent) if config else None,
+        # THE FEE RULE: this is the percentage `withdrawal_fee` charges, read
+        # from the same config value; `fee_display` is None when there is no
+        # fee, so the app hides the line.
+        'fee_percent': float(fee_percent(config)) if config else None,
+        'fee_display': fee_display(config) if config else None,
         'minimum_withdrawal': float(minimum_withdrawal(config)) if config else None,
+        # The currency the amounts above are in (the driver's country), so the
+        # app never has to choose a symbol.
+        'currency': config.currency if config else None,
     }
     if config is None:
         response_data['withdrawals_available'] = False
@@ -305,7 +312,9 @@ def driver_withdrawal_request(request):
     from .models import WithdrawalRequest
     from .serializers import WithdrawalRequestCreateSerializer
     from django.utils import timezone
-    from servers.payments.payout_config import NOT_AVAILABLE_MESSAGE, config_for_driver
+    from servers.payments.payout_config import (
+        NOT_AVAILABLE_MESSAGE, config_for_driver, withdrawal_fee,
+    )
 
     driver = request.user.driver
 
@@ -381,12 +390,24 @@ def driver_withdrawal_request(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Create withdrawal request
+        # Create withdrawal request. The fee is stamped from the ONE function
+        # that also feeds the balance endpoint's `fee_percent`.
         withdrawal = WithdrawalRequest.objects.create(
             driver=driver,
             amount=amount,
-            status='pending'
+            status='pending',
         )
+        fee_minor = withdrawal_fee(payout_config, withdrawal.amount_minor)
+        if fee_minor >= withdrawal.amount_minor:
+            transaction.set_rollback(True)
+            return error_response(
+                code='AMOUNT_BELOW_FEE',
+                message='The amount is not more than the transfer fee.',
+                field='amount', issue='Choose a larger amount',
+                status=status.HTTP_400_BAD_REQUEST)
+        if fee_minor:
+            withdrawal.fee_minor = fee_minor
+            withdrawal.save(update_fields=['fee_minor'])
         
         # Instantly deduct from wallet
         idempotency_key = f"withdrawal_{withdrawal.id}_{uuid.uuid4().hex[:16]}"

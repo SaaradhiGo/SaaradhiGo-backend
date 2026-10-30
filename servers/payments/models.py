@@ -388,7 +388,7 @@ class PayoutCountryConfig(models.Model):
     the stuck-payout check is skipped for that country.
 
     Versioned like `ApprovalPolicy`: a change is a new row, the old one closes.
-    Part A only reads and seeds; editing arrives in Part B.
+    Edits are the maker-checker action `finance.payout_config_change` (Part B).
     """
 
     country = models.CharField(max_length=2, db_index=True)
@@ -398,6 +398,20 @@ class PayoutCountryConfig(models.Model):
     fee_percent = models.DecimalField(max_digits=5, decimal_places=2)
     minimum_withdrawal_minor = models.BigIntegerField()
     stuck_payout_hours = models.PositiveIntegerField(null=True, blank=True)
+
+    # --- schedule (Part B, owner ruling AUDIT 27.43) -------------------------
+    ON_REQUEST = 'on_request'
+    WEEKLY = 'weekly'
+    SCHEDULE_CHOICES = [(ON_REQUEST, 'On request'), (WEEKLY, 'Weekly')]
+    #: `on_request`: a driver asks. `weekly`: a scheduled run creates the
+    #: withdrawals on `payout_weekday` (Monday = 0) in the country's own zone.
+    payout_schedule = models.CharField(
+        max_length=12, choices=SCHEDULE_CHOICES, default=ON_REQUEST)
+    payout_weekday = models.PositiveSmallIntegerField(null=True, blank=True)
+    # Instant cash-out is NOT built. These two fields only keep the model open
+    # for it; nothing reads them.
+    instant_cashout_enabled = models.BooleanField(default=False)
+    instant_cashout_fee_flat_minor = models.BigIntegerField(null=True, blank=True)
 
     is_active = models.BooleanField(default=True)
     version = models.PositiveIntegerField(default=1)
@@ -429,6 +443,11 @@ class PayoutCountryConfig(models.Model):
                 condition=models.Q(minimum_withdrawal_minor__gte=0),
                 name='payout_config_minimum_not_negative',
             ),
+            models.CheckConstraint(
+                condition=(models.Q(payout_weekday__isnull=True)
+                           | models.Q(payout_weekday__lte=6)),
+                name='payout_config_weekday_range',
+            ),
         ]
 
     def __str__(self):
@@ -455,6 +474,10 @@ class PayoutCountryConfig(models.Model):
             'minimum_withdrawal_minor': self.minimum_withdrawal_minor,
             'minimum_withdrawal': str(from_minor(self.minimum_withdrawal_minor, currency)),
             'stuck_payout_hours': self.stuck_payout_hours,
+            'payout_schedule': self.payout_schedule,
+            'payout_weekday': self.payout_weekday,
+            'instant_cashout_enabled': self.instant_cashout_enabled,
+            'instant_cashout_fee_flat_minor': self.instant_cashout_fee_flat_minor,
             'is_active': self.is_active,
             'version': self.version,
             'valid_from': self.valid_from,
@@ -571,3 +594,35 @@ class ReconciliationItem(models.Model):
 
     def __str__(self):
         return f'ReconciliationItem {self.kind} {self.dedupe_key}'
+
+
+class PayoutRun(models.Model):
+    """One scheduled weekly payout run for a country: the idempotency record.
+
+    `(country, week_start)` is unique, so the beat task can fire every hour and
+    still create each week's withdrawals and its ONE approval request exactly
+    once. `week_start` is the Monday of the week in the country's own zone.
+    """
+
+    country = models.CharField(max_length=2, db_index=True)
+    currency = models.CharField(max_length=3)
+    week_start = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    withdrawal_count = models.PositiveIntegerField(default=0)
+    amount_minor = models.BigIntegerField(default=0)
+    #: The payout-run ApprovalRequest, when one was opened.
+    approval_request_id = models.BigIntegerField(null=True, blank=True)
+    #: `opened`, `blocked_no_policy`, `nothing_to_pay`.
+    outcome = models.CharField(max_length=24, default='opened')
+    #: True when the per-run cap cut the list short (the rest waits a week).
+    truncated = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ['-week_start', 'country']
+        constraints = [
+            models.UniqueConstraint(fields=['country', 'week_start'],
+                                    name='payout_run_one_per_country_week'),
+        ]
+
+    def __str__(self):
+        return f'PayoutRun {self.country} {self.week_start}'

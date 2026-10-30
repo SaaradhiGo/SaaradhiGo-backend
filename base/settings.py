@@ -439,6 +439,14 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'payments.reconcile_stuck_withdrawals',
         'schedule': _crontab(minute='*/10'),
     },
+    'payments-weekly-payout-run-hourly': {
+        # Weekly payout countries (PayoutCountryConfig.payout_schedule): on the
+        # configured weekday in the country's own zone, create the withdrawals
+        # for drivers at or above the minimum and open ONE payout-run approval
+        # request. Idempotent per country per week; a no-op for every other hour.
+        'task': 'payments.weekly_payout_run',
+        'schedule': _crontab(minute=5),
+    },
     'payments-reconcile-daily': {
         # Local-data reconciliation: payments vs webhooks, trips vs
         # settlements, payouts vs payout webhooks and stuck payouts. Writes

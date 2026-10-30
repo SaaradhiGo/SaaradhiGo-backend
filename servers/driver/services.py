@@ -1303,6 +1303,15 @@ def trigger_payout_creation(withdrawal):
         """
         refund_reference = f"refund_withdrawal_{withdrawal_obj.id}"
         refund_idempotency_key = f"refund_withdrawal_{withdrawal_obj.id}"
+        # A payout Finance retried (payout_actions.retry_failed) debits the wallet
+        # again, so its next failure must be refunded again: one refund per
+        # attempt, the first keeping the reference it always had.
+        from servers.payments.payout_actions import retry_attempts
+
+        attempts = retry_attempts(withdrawal_obj.id)
+        if attempts:
+            refund_reference = f"refund_withdrawal_{withdrawal_obj.id}_r{attempts}"
+            refund_idempotency_key = refund_reference
 
         with transaction.atomic():
             wallet = Wallet.objects.select_for_update().get(
@@ -1725,7 +1734,9 @@ def initiate_upi_payout(withdrawal, driver):
 
         payout_result = gateway.create_upi_payout(
             upi_id=driver.upi_id,
-            amount_minor=withdrawal.amount_minor,
+            # What the driver receives: the request less the transfer fee that
+            # was stamped from payout_config.withdrawal_fee (0 today).
+            amount_minor=withdrawal.amount_minor - (withdrawal.fee_minor or 0),
             purpose="payout",
             currency=withdrawal.currency,
             reference_id=reference_id,

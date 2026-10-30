@@ -4,6 +4,10 @@ from .views import (
     switch_payment_method, retry_payment, pending_payments
 )
 from .admin_views import admin_list_transactions
+from .admin_actions import (
+    driver_adjust, payout_approve, payout_bulk, payout_config_propose, payout_investigation,
+    payout_reject, payout_retry, rider_wallet_credit,
+)
 from .admin_finance import (
     finance_driver_ledger, finance_export, finance_overview, finance_payment_detail,
     finance_payments, finance_payout_config, finance_payout_detail, finance_payouts,
@@ -30,6 +34,15 @@ urlpatterns = [
     path('admin/settlements/', finance_settlements),
     path('admin/payouts/', finance_payouts),
     path('admin/payouts/<int:payout_id>/', finance_payout_detail),
+    # Finance write side (module 7, part B). Every money write is a maker-checker request.
+    path('admin/payouts/bulk-action/', payout_bulk),
+    path('admin/payouts/<int:payout_id>/approve/', payout_approve),
+    path('admin/payouts/<int:payout_id>/reject/', payout_reject),
+    path('admin/payouts/<int:payout_id>/retry/', payout_retry),
+    path('admin/payouts/<int:payout_id>/investigation/', payout_investigation),
+    path('admin/drivers/<int:driver_id>/adjust/', driver_adjust),
+    path('admin/riders/<int:rider_id>/wallet-credit/', rider_wallet_credit),
+    path('admin/payout-config/<str:country>/', payout_config_propose),
     path('admin/drivers/<int:driver_id>/ledger/', finance_driver_ledger),
     path('admin/overview/', finance_overview),
     path('admin/reconciliation/', finance_reconciliation),

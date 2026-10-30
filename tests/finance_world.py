@@ -78,10 +78,13 @@ def zone(code, node, **extra):
 
 
 def seed_in_payout_config():
-    """What `seed_payout_config` leaves behind on a deployed environment."""
+    """What `seed_payout_config --country IN` leaves behind: the India row, the
+    owner's values (fee 0, minimum 500.00 INR, 24 hours, on request). The US is
+    seeded by the full command and by `apply_payout_ruling`."""
     from conftest import seed_actor
 
-    call_command('seed_payout_config', actor_email=seed_actor().email, stdout=StringIO())
+    call_command('seed_payout_config', country=['IN'], actor_email=seed_actor().email,
+                 stdout=StringIO())
 
 
 def make_driver(geo, node_code, tag, *, currency, calling, city_node=True):

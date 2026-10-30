@@ -532,6 +532,8 @@ def allowed_actions(user, rider, node):
         'unflag': may_flag and RiderFlag.objects.filter(
             rider=rider, cleared_at__isnull=True).exists(),
         'sign_out': may('rider.signout'),
+        # Closed-loop wallet credit through a checker (Finance module, Part B).
+        'wallet_credit': may('finance.adjust'),
         'reveal': may('pii.view'),
         'block_reasons': BLOCK_REASONS,
         'flag_reasons': FLAG_REASONS,

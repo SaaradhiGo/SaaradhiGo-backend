@@ -129,6 +129,19 @@ def geo(db):
 
 @pytest.fixture
 def policies(geo):
+    """The India policies only.
+
+    The seed now also writes the United States (owner, AUDIT 27.44; see
+    tests/test_finance_actions.py). This file proves the FRAMEWORK's behaviour
+    for a country with no policy, so the US rows are removed here."""
+    out = StringIO()
+    call_command('seed_approval_policies', actor_email=seed_actor().email, stdout=out)
+    ApprovalPolicy.objects.filter(country='US').delete()
+    return out.getvalue()
+
+
+@pytest.fixture
+def raw_seed(geo):
     out = StringIO()
     call_command('seed_approval_policies', actor_email=seed_actor().email, stdout=out)
     return out.getvalue()
@@ -239,12 +252,19 @@ def actions_for(request):
 # ===========================================================================
 
 class TestSeed:
-    def test_india_defaults_and_nothing_for_the_us(self, policies):
+    def test_india_defaults_are_unchanged_and_the_us_has_the_owners_set(self, raw_seed):
         active = {(p.country, p.action_key): p for p in ApprovalPolicy.objects.filter(is_active=True)}
-        assert set(active) == {
+        assert {k for k in active if k[0] == 'IN'} == {
             ('IN', 'support.refund'), ('IN', 'finance.refund'), ('IN', 'finance.adjust'),
             ('IN', 'finance.payout'), ('IN', 'pricing.change'), ('IN', 'driver.deactivate'),
             ('IN', 'bulk.action'), ('IN', 'support.sla_change'),
+            ('IN', 'finance.payout_config_change'), ('IN', 'finance.wallet_credit'),
+        }
+        assert {k for k in active if k[0] == 'US'} == {
+            ('US', 'support.refund'), ('US', 'finance.refund'), ('US', 'finance.adjust'),
+            ('US', 'finance.wallet_credit'), ('US', 'finance.payout'), ('US', 'bulk.action'),
+            ('US', 'pricing.change'), ('US', 'driver.deactivate'), ('US', 'support.sla_change'),
+            ('US', 'finance.payout_config_change'),
         }
         assert (active['IN', 'support.refund'].maker_limit,
                 active['IN', 'support.refund'].currency) == (50_000, 'INR')
@@ -255,10 +275,11 @@ class TestSeed:
             assert active['IN', key].currency == ''
         assert (active['IN', 'bulk.action'].limit_kind,
                 active['IN', 'bulk.action'].maker_limit) == ('count', 50)
-        assert not ApprovalPolicy.objects.filter(country='US').exists()
-        assert 'US: none written' in policies
+        assert (active['US', 'support.refund'].maker_limit, active['US', 'support.refund'].currency) == (1_500, 'USD')
+        assert active['US', 'finance.refund'].maker_limit == 15_000
+        assert active['US', 'finance.payout'].maker_limit == 100_000
 
-    def test_the_seed_is_idempotent_and_never_overwrites(self, policies):
+    def test_the_seed_is_idempotent_and_never_overwrites(self, raw_seed):
         # A two-person decision changed a limit; a redeploy must not undo it.
         service.write_policy_version(
             country='IN', action_key='support.refund', limit_kind='money',
@@ -284,8 +305,8 @@ class TestSeed:
         row = AdminAuditLog.objects.get(action='approval_policies_seeded')
         assert row.actor_id == actor.pk
         assert row.actor_label == f'{actor.email} via seed_approval_policies'
-        assert len(row.after['created']) == 8
-        assert row.after['us_policies_written'] == 0
+        assert len(row.after['created']) == 20
+        assert row.after['us_policies_written'] == 10
 
     def test_every_catalogue_action_is_a_known_capability(self):
         from servers.admin_access.roles import ALL_PERMISSIONS
@@ -840,7 +861,7 @@ class TestPolicyChange:
         assign(analyst, 'analyst', geo['IN-TG-HYD'])
         resp = client(analyst).get(f'{API}/policies/?country=IN')
         assert resp.status_code == 200
-        assert len(resp.json()['data']['policies']) == 8
+        assert len(resp.json()['data']['policies']) == 10
         assert client(hyd_support).get(f'{API}/policies/').status_code == 403
 
 

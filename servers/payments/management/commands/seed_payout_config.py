@@ -1,21 +1,20 @@
-"""Seed the payout configuration for India.
+"""Seed the payout configuration for India and the United States.
 
     python manage.py seed_payout_config --actor-email <operator>
 
-India gets EXACTLY what the code did before `PayoutCountryConfig` existed:
-platform fee 2.00 percent, minimum withdrawal 500.00 INR (50000 paise), a
-payout counted as stuck after 24 hours.
+A fresh environment gets the owner's values (AUDIT 27.43, see
+OWNER_RULING in payout_config): India fee 0, minimum 500.00 INR, stuck after 24
+hours, on request; United States fee 0, minimum 1.00 USD, stuck after 72 hours,
+weekly (Mondays).
 
-CREATE-IF-MISSING, AND NO UNITED STATES ROW
--------------------------------------------
+CREATE-IF-MISSING
+-----------------
 A country that already has any row is left exactly as it is (the config is
-changed through the console, Part B, and a redeploy must not undo that). A
-second run writes nothing, including to the audit log. Nothing here creates a
-row for the United States or any other country: what a new market's fee and
-minimum should be is the owner's decision, and until it is made the market has
-no payout rules (withdrawals are refused with WITHDRAWALS_NOT_AVAILABLE).
-One summary audit row per run that created something, naming the operator
-(`--actor-email`, mandatory).
+changed through the console, and a redeploy must not undo that). A second run
+writes nothing, including to the audit log. An environment that already holds
+the OLD India row (platform fee 2 percent) is moved to the owner's values by the
+one-off apply_payout_ruling command, not by this seed. One summary audit row
+per run that created something, naming the operator (--actor-email, mandatory).
 """
 
 from django.core.management.base import BaseCommand
@@ -25,38 +24,44 @@ from servers.admin_audit.actor_option import add_actor_argument, attributed, req
 from servers.admin_audit.models import actor_snapshot
 from servers.admin_audit.services import record_admin_action
 from servers.payments.models import PayoutCountryConfig
-from servers.payments.payout_config import INDIA_SEED
+from servers.payments.payout_config import OWNER_RULING
+from servers.payments.payout_config_write import CONFIG_FIELDS
 
 COMMAND = 'seed_payout_config'
 AUDIT_ACTION = 'payout_config_seeded'
-SEED_REASON = ('Seed: India payout values as they were hard-coded '
-               '(fee 2.00 percent, minimum 500.00 INR, stuck after 24 hours).')
+SEED_REASON = ("Seed: the owner's payout values (AUDIT 27.43): India fee 0, minimum 500.00 INR, "
+               'stuck after 24 hours, on request; United States fee 0, minimum 1.00 USD, '
+               'stuck after 72 hours, weekly.')
 
 
 class Command(BaseCommand):
-    help = 'Seed the India payout configuration. Never modifies an existing row.'
+    help = 'Seed the payout configuration (India, United States). Never modifies an existing row.'
 
     def add_arguments(self, parser):
         add_actor_argument(parser)
+        parser.add_argument(
+            '--country', action='append', default=None,
+            help='Seed only this country (repeatable). Default: every country in the ruling.')
 
     def handle(self, *args, **options):
         actor = require_actor(options, COMMAND)
         created, skipped = [], []
         with attributed(actor, COMMAND, reason=SEED_REASON):
             with transaction.atomic():
-                country = INDIA_SEED['country']
-                if PayoutCountryConfig.objects.filter(country=country).exists():
-                    skipped.append(country)
-                else:
-                    snap = actor_snapshot(actor)
+                snap = actor_snapshot(actor)
+                only = {c.upper() for c in (options.get('country') or [])}
+                for seed in OWNER_RULING:
+                    country = seed['country']
+                    if only and country not in only:
+                        continue
+                    if PayoutCountryConfig.objects.filter(country=country).exists():
+                        skipped.append(country)
+                        continue
                     PayoutCountryConfig.objects.create(
-                        country=country,
-                        fee_percent=INDIA_SEED['fee_percent'],
-                        minimum_withdrawal_minor=INDIA_SEED['minimum_withdrawal_minor'],
-                        stuck_payout_hours=INDIA_SEED['stuck_payout_hours'],
                         reason=SEED_REASON,
                         created_by_id=snap['actor_id'], created_by_label=snap['actor_label'],
                         created_by_email=snap['actor_email'], created_by_role=snap['actor_role'],
+                        **{k: seed[k] for k in ('country',) + CONFIG_FIELDS},
                     )
                     created.append(country)
                 if created:

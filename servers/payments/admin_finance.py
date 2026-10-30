@@ -202,14 +202,40 @@ def _payout_handle(w):
     return {'upi_id': mask_upi(getattr(driver, 'upi_id', '') or '')}
 
 
+def _approval_summary(r):
+    return {
+        'id': r.id,
+        'status': r.status,
+        'requested_at': r.requested_at,
+        'expires_at': r.expires_at,
+        'decided_at': r.decided_at,
+        'maker': {'id': r.maker_id, 'label': r.maker_label, 'role': r.maker_role},
+        'checker': ({'id': r.checker_id, 'label': r.checker_label, 'role': r.checker_role}
+                    if r.checker_id else None),
+        'batch': r.target_type == 'withdrawal_batch',
+    }
+
+
 def _approvals_for(withdrawal_ids):
-    """`{withdrawal_id: latest payout ApprovalRequest summary}` in one query."""
+    """`{withdrawal_id: latest payout ApprovalRequest summary}`.
+
+    One query for single-payout requests, and one bounded query for the
+    payout-run (batch) requests still open or recently decided, so a payout in
+    a weekly run shows the run's request."""
     from servers.approvals.actions import FINANCE_PAYOUT
     from servers.approvals.models import ApprovalRequest
 
     if not withdrawal_ids:
         return {}
     latest = {}
+    wanted = set(int(i) for i in withdrawal_ids)
+    batches = (ApprovalRequest.objects
+               .filter(action_key=FINANCE_PAYOUT, target_type='withdrawal_batch')
+               .order_by('-id')[:200])
+    for r in reversed(list(batches)):
+        for wid in (r.payload or {}).get('withdrawal_ids', []):
+            if wid in wanted:
+                latest[wid] = _approval_summary(r)
     rows = ApprovalRequest.objects.filter(
         action_key=FINANCE_PAYOUT, target_type='withdrawal_request',
         target_id__in=[str(i) for i in withdrawal_ids]).order_by('id')
@@ -227,7 +253,31 @@ def _approvals_for(withdrawal_ids):
     return latest
 
 
-def payout_row(w, approvals=None, now=None):
+NO_POLICY_MESSAGE = 'Blocked: no approval policy in this country.'
+
+
+def payout_blocked_countries(withdrawals):
+    """Country codes (among these payouts) with no active FINANCE_PAYOUT policy.
+
+    One query. Such a payout cannot be approved from the console: the generic
+    maker-checker refuses (THRESHOLD_NOT_CONFIGURED) and nothing is invented."""
+    from servers.approvals.actions import FINANCE_PAYOUT
+    from servers.approvals.executors import payout_country
+    from servers.approvals.models import ApprovalPolicy
+
+    countries = {payout_country(w) for w in withdrawals}
+    countries.discard(None)
+    if not countries:
+        return set()
+    have = set(ApprovalPolicy.objects.filter(
+        action_key=FINANCE_PAYOUT, is_active=True, country__in=countries,
+    ).values_list('country', flat=True))
+    return countries - have
+
+
+def payout_row(w, approvals=None, now=None, blocked=None):
+    from servers.approvals.executors import payout_country
+
     now = now or timezone.now()
     open_ = w.status in OPEN_PAYOUT_STATUSES
     row = {
@@ -249,7 +299,19 @@ def payout_row(w, approvals=None, now=None):
         'requested_at': w.requested_at,
         'processed_at': w.processed_at,
         'age_seconds': int((now - w.requested_at).total_seconds()) if open_ else None,
+        'fee_minor': w.fee_minor,
+        'origin': w.origin,
+        'under_investigation': w.investigation_since is not None,
+        'investigation_note': w.investigation_note,
+        'investigation_since': w.investigation_since,
+        'retryable': w.status == 'failed' and not w.payout_reference_id,
     }
+    if blocked is not None:
+        country = payout_country(w)
+        row['country'] = country
+        row['approval_blocked'] = bool(w.status == 'pending' and country in blocked)
+        row['approval_blocked_reason'] = (
+            NO_POLICY_MESSAGE if row['approval_blocked'] else None)
     row.update(_payout_handle(w))
     if approvals is not None:
         row['approval'] = approvals.get(w.id)
@@ -503,8 +565,9 @@ def finance_payouts(request):
     paginator = FinancePagination()
     page = paginator.paginate_queryset(qs, request)
     approvals = _approvals_for([w.id for w in page])
+    blocked = payout_blocked_countries(page)
     data = paginator.get_paginated_response(
-        [payout_row(w, approvals, now) for w in page]).data
+        [payout_row(w, approvals, now, blocked) for w in page]).data
     data['tabs'] = [tabs[s] for s in PAYOUT_TAB_ORDER]
     return success_response(data, status.HTTP_200_OK)
 
@@ -521,7 +584,7 @@ def finance_payout_detail(request, payout_id):
     if refusal:
         return _refusal(refusal, 'Payout')
     approvals = _approvals_for([withdrawal.id])
-    data = payout_row(withdrawal, approvals)
+    data = payout_row(withdrawal, approvals, blocked=payout_blocked_countries([withdrawal]))
     data['admin_notes'] = withdrawal.admin_notes
     # Masked by the renderer; the console offers the logged reveal beside it.
     data['driver_phone'] = getattr(withdrawal.driver.user_id, 'phone_number', '') or ''
@@ -833,22 +896,46 @@ def finance_reconciliation_resolve(request, item_id):
 
 
 # ---------------------------------------------------------------------------
-# Payout configuration (read only in Part A)
+# Payout configuration (read here; edits are finance.payout_config_change requests)
 # ---------------------------------------------------------------------------
+
+HISTORY_LIMIT = 20
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, ScopedPermission('finance.read')])
 def finance_payout_config(request):
     """GET /payments/admin/payout-config/ — each visible country's payout rules,
-    or the plain statement that it has none."""
+    their version history, the pending change requests, the recent scheduled
+    runs, and the plain statement of whether the country can be edited or is
+    blocked for want of an approval policy."""
+    from servers.admin_access.bridge import granted
+    from servers.approvals.actions import FINANCE_PAYOUT, FINANCE_PAYOUT_CONFIG
+    from servers.approvals.models import REQUESTED, ApprovalPolicy, ApprovalRequest
+
+    from .models import PayoutRun
+
     node, refusal = _scope_node(request)
     if refusal:
         return refusal
     active = {c.country: c for c in PayoutCountryConfig.objects.filter(is_active=True)}
+    editable_in = set(country_codes_visible(request.user, node, 'finance.config'))
+    policies = {(p.country, p.action_key) for p in ApprovalPolicy.objects.filter(
+        is_active=True, action_key__in=[FINANCE_PAYOUT, FINANCE_PAYOUT_CONFIG])}
     rows = []
     for code in country_codes_visible(request.user, node, READ):
         country = COUNTRIES[code]
         cfg = active.get(code)
+        history = [c.as_dict() for c in
+                   PayoutCountryConfig.objects.filter(country=code).order_by('-version')[:HISTORY_LIMIT]]
+        pending = [r.as_dict() for r in ApprovalRequest.objects.filter(
+            action_key=FINANCE_PAYOUT_CONFIG, target_id=code, status=REQUESTED).order_by('-id')[:5]]
+        runs = [{'id': r.id, 'week_start': r.week_start, 'withdrawal_count': r.withdrawal_count,
+                 'amount_minor': r.amount_minor, 'currency': r.currency, 'outcome': r.outcome,
+                 'approval_request_id': r.approval_request_id, 'truncated': r.truncated,
+                 'created_at': r.created_at}
+                for r in PayoutRun.objects.filter(country=code).order_by('-week_start')[:8]]
+        can_edit = code in editable_in and cfg is not None
         rows.append({
             'country': code, 'name': country.name, 'currency': country.currency,
             'configured': cfg is not None,
@@ -856,8 +943,26 @@ def finance_payout_config(request):
             'message': None if cfg else (
                 'Not configured. Drivers here cannot withdraw until the owner sets the '
                 'fee and the minimum.'),
+            'history': history,
+            'pending_changes': pending,
+            'recent_runs': runs,
+            'editable': can_edit,
+            'change_blocked': (can_edit and (code, FINANCE_PAYOUT_CONFIG) not in policies),
+            'change_blocked_reason': (
+                'Blocked: no approval policy in this country.'
+                if can_edit and (code, FINANCE_PAYOUT_CONFIG) not in policies else None),
+            'payout_approval_blocked': (code, FINANCE_PAYOUT) not in policies,
+            'payout_approval_blocked_reason': (
+                'Blocked: no approval policy in this country. Payouts here cannot be '
+                'approved until one is configured.'
+                if (code, FINANCE_PAYOUT) not in policies else None),
         })
-    return success_response({'countries': rows, 'editable': False}, status.HTTP_200_OK)
+    return success_response({
+        'countries': rows,
+        'editable': granted(request.user, 'finance.config')[0],
+        'fee_warning': ('Any fee above zero is shown to drivers exactly as it is charged: '
+                        'the same value feeds the driver app and the withdrawal.'),
+    }, status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------

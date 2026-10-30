@@ -88,11 +88,15 @@ def _country_phone_q(paths):
     return q
 
 
-def riders_visible_to(user, node=None, queryset=None):
+def riders_visible_to(user, node=None, queryset=None, paths=None):
     """Riders in the caller's scope (see the module docstring).
 
     `node` is the already-validated `?scope=` node (`requested_node`), or
     None. `queryset` defaults to every rider.
+
+    `paths` narrows the caller's scope to those path prefixes (the places a
+    particular capability is held, `payments.scope.paths_for`); None means
+    every assignment counts, as everywhere else. An empty list sees nobody.
     """
     from servers.admin_access.access import scope_paths
     from servers.ride.models import Trip
@@ -102,6 +106,8 @@ def riders_visible_to(user, node=None, queryset=None):
     riders = queryset if queryset is not None else Rider.objects.select_related('user_id')
     if node is not None:
         paths = [node.path]
+    elif paths is not None:
+        pass  # already narrowed to where one capability is held
     elif unrestricted(user):
         return riders
     else:

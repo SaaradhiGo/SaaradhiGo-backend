@@ -11,5 +11,6 @@ class ApprovalsConfig(AppConfig):
         # them here, once, is what makes "approve" able to find the code to
         # run; an executor module nobody imports is a request nobody can
         # approve, and that would only be discovered by the checker.
-        from . import executors  # noqa: F401
+        from . import adjust, executors  # noqa: F401
+        from servers.payments import finance_executors  # noqa: F401  (Part B finance actions)
         from servers.support import sla_change  # noqa: F401  (support.sla_change)

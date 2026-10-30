@@ -36,6 +36,18 @@ RECON_LOOKBACK_HOURS = 24
 RECON_BATCH_SIZE = 100
 
 
+@shared_task(name='payments.weekly_payout_run')
+def weekly_payout_run():
+    """Create the scheduled weekly payouts for countries whose config says weekly.
+
+    Fires every hour; each country acts only on its own weekday in its own time
+    zone, and once per week (servers.payments.weekly_payout). Opens ONE payout-run
+    approval request; dispatches nothing."""
+    from servers.payments.weekly_payout import run_weekly_payouts
+
+    return run_weekly_payouts()
+
+
 @shared_task(name='payments.reconcile_stuck_payments')
 def reconcile_stuck_payments():
     """Find local payments that are stuck mid-flight and converge state.

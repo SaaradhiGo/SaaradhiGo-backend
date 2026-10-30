@@ -10,6 +10,8 @@ The driver's settlement balance (`Wallet`, scope driver) moves only through
   * `withdrawal`     debit    a payout request (taken at request time)
   * `refund_rejected_withdrawal` / `refund_failed_withdrawal`  credit   money
     returned because the payout was rejected, or failed at the gateway
+  * `adjustment`     credit or debit   a manual correction by Finance through a
+    maker-checker request (Part B); the entry carries its reason code and note
 
 A row counts when it is `completed`, or when it is the pending debit of a
 withdrawal (taken from the balance at request time). So
@@ -34,10 +36,14 @@ wallet.
 
 FEES
 ----
-Today the commission is the only fee, and it is on the settlement line. The
-withdrawal fee percentage in `PayoutCountryConfig` is configuration the
-withdrawal path does not charge, so the statement has no fee line to show.
+The commission is on the settlement line. The withdrawal transfer fee
+(`payout_config.withdrawal_fee`) is 0 in every configured country and is taken
+from the PAYOUT, not the wallet (the wallet is debited the full amount), so the
+statement has no fee line; a non-zero fee is stamped on the withdrawal row
+(`fee_minor`).
 """
+
+import re
 
 from django.db.models import BigIntegerField, Case, F, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
@@ -50,7 +56,12 @@ SIGNED = Case(
     default=Value(0), output_field=BigIntegerField(),
 )
 
+#: `withdrawal_12`, `refund_withdrawal_12`, `refund_withdrawal_12_r1`,
+#: `refund_rejected_withdrawal_12` -> 12.
+WITHDRAWAL_REF = re.compile(r'^(?:refund_rejected_withdrawal|refund_withdrawal|withdrawal)_(\d+)')
+
 ENTRY_KINDS = {
+    'adjustment': 'adjustment',
     'trip_earnings': 'settlement',
     'trip_commission': 'settlement',
     'withdrawal': 'withdrawal_requested',
@@ -140,6 +151,8 @@ def entry_dicts(driver, in_range_rows, opening_minor, offset, limit):
                   .order_by('version')):
             settlements[s.trip_id] = s
 
+    adjustments = _adjustment_details([t.reference_id for t in page if t.purpose == 'adjustment'])
+
     out = []
     for txn in page:
         signed = txn.amount_minor if txn.txn_type == 'credit' else -txn.amount_minor
@@ -172,11 +185,35 @@ def entry_dicts(driver, in_range_rows, opening_minor, offset, limit):
                     'payment_method': s.payment_method,
                     'version': s.version,
                 }
-        for prefix in ('refund_withdrawal_', 'refund_rejected_withdrawal_', 'withdrawal_'):
-            if ref.startswith(prefix) and ref[len(prefix):].isdigit():
-                entry['withdrawal_id'] = int(ref[len(prefix):])
-                break
+        match = WITHDRAWAL_REF.match(ref)
+        if match:
+            entry['withdrawal_id'] = int(match.group(1))
+        elif txn.purpose == 'adjustment':
+            entry['adjustment'] = adjustments.get(txn.reference_id)
         out.append(entry)
+    return out
+
+
+def _adjustment_details(references):
+    """`{reference: {request_id, reason_code, note, ...}}` for adjustment rows."""
+    from servers.approvals.models import ApprovalRequest
+
+    ids = {}
+    for ref in references:
+        if ref and ref.startswith('adjustment_') and ref[11:].isdigit():
+            ids[int(ref[11:])] = ref
+    if not ids:
+        return {}
+    out = {}
+    for row in ApprovalRequest.objects.filter(pk__in=list(ids)):
+        payload = row.payload or {}
+        out[ids[row.pk]] = {
+            'approval_request_id': row.pk,
+            'reason_code': payload.get('reason_code'),
+            'note': payload.get('note'),
+            'maker': {'label': row.maker_label, 'role': row.maker_role},
+            'checker': {'label': row.checker_label, 'role': row.checker_role} if row.checker_id else None,
+        }
     return out
 
 

@@ -164,6 +164,11 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # compares our own tables, calls no gateway, and writes only
         # ReconciliationRun / ReconciliationItem rows; no money, trip or status.
         'payments.run_daily_reconciliation',
+        # Weekly payout run (Finance part B). Trigger: beat, hourly. acks_late is
+        # safe: PayoutRun is unique per (country, week), the whole run is one
+        # transaction, and it opens a request a checker must approve; it
+        # dispatches nothing itself.
+        'payments.weekly_payout_run',
         'pricing.fare_shadow_sweep',
         # No explicit name= on the decorator, unlike its siblings in the same
         # module, so Celery registers the full dotted path. Nothing references

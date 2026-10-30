@@ -8,8 +8,7 @@ from servers.admin_access.scoping import (
     ScopeNotHeld, scoped, scoped_or_none, scoped_to_request,
 )
 from servers.ride.models import Trip, Receipt, ChatMessage, PromoRedemption, FarePricing, Rating
-from servers.ride.serializers import TripListSerializer
-from rest_framework.pagination import PageNumberPagination
+from servers.ride.admin_trips import detail_extras
 from servers.redis_client import get_all_active_drivers, get_all_active_riders
 from base.money import format_totals, sum_by_currency
 from servers.command_centre.services import open_alert_count
@@ -17,60 +16,35 @@ from servers.command_centre.services import open_alert_count
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, ScopedPermission('trip.read')])
 def admin_list_trips(request):
+    """Admin trip list: scoped, filtered, sorted and paged server-side.
+
+    Filters (all optional, combinable): status (csv), id, driver_id,
+    rider_id (alias user_id), payment_method (csv), vehicle_type (csv),
+    date_from / date_to (YYYY-MM-DD, each trip's own city day), has_sos,
+    has_ticket, flagged, stale; `?scope=` narrows to a held city or country;
+    `?ordering=` one of requested_at, completed_at, fare, status, id (prefix
+    `-` for descending). Pages: `?page=`, `?page_size=` (max 100).
+
+    The body lives in `admin_trips.list_response`; this view keeps the gate
+    and the URL the console already calls.
     """
-    Admin view to list all trips with pagination and filtering.
-    Filters:
-    - status: pending | accepted | arriving | in_progress | completed | cancelled
-    - driver_id: (int)
-    - user_id: (int) (rider)
-    """
+    from .admin_trips import annotate_markers, list_response
+
     try:
-        # Scoped to the caller's cities by the pickup zone stamped on the
-        # trip. Without `scoped()` this returned every trip in both
-        # countries to any operator.
-        trips = scoped_to_request(request, Trip.objects.select_related(
-            'status_id', 'driver_id', 'vehicle_id', 'user_id', 'requested_vehicle_type'
-        )).order_by('-requested_at')
-
-        status_filter = request.query_params.get('status')
-        if status_filter:
-            trips = trips.filter(status_id__status_code=status_filter)
-
-        driver_id = request.query_params.get('driver_id')
-        if driver_id:
-            trips = trips.filter(driver_id=driver_id)
-            
-        user_id = request.query_params.get('user_id')
-        if user_id:
-            trips = trips.filter(user_id=user_id)
-
-        paginator = PageNumberPagination()
-        paginator.page_size = 20
-        paginator.page_size_query_param = 'page_size'
-        paginator.max_page_size = 100
-        
-        result_page = paginator.paginate_queryset(trips, request)
-        serializer = TripListSerializer(result_page, many=True)
-        return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
-
+        trips = scoped_to_request(request, annotate_markers(Trip.objects.select_related(
+            'status_id', 'driver_id', 'driver_id__user_id', 'vehicle_id',
+            'vehicle_id__vehicle_type_id', 'user_id', 'requested_vehicle_type',
+            'zone', 'zone__geo_node',
+        )))
+        return list_response(request, trips)
     except ScopeNotHeld as exc:
-        # Ahead of the broad handler below: a refused scope is an
-        # authorization answer, and reporting it as INTERNAL_ERROR would
-        # hide a denial behind a server fault.
+        # A refused scope is an authorization answer, not a server fault.
         return error_response(
             code='SCOPE_NOT_HELD',
             message=str(exc),
             field='scope',
             issue='Requested scope is outside your assignments',
             status=status.HTTP_403_FORBIDDEN,
-        )
-    except Exception as e:
-        return error_response(
-            code='INTERNAL_ERROR',
-            message='An unexpected error occurred',
-            field='general',
-            issue=str(e),
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
 @api_view(['GET'])
@@ -122,7 +96,7 @@ def admin_trip_detail(request, trip_id):
         trip = scoped_or_none(request.user, Trip.objects.select_related(
             'status_id', 'driver_id', 'driver_id__user_id',
             'vehicle_id', 'vehicle_id__vehicle_type_id', 'user_id',
-            'requested_vehicle_type',
+            'requested_vehicle_type', 'zone', 'zone__geo_node',
         ), id=trip_id)
         if trip is None:
             raise Trip.DoesNotExist
@@ -374,6 +348,9 @@ def admin_trip_detail(request, trip_id):
             'promo': promo_payload,
             'zone': zone_payload,
             'otp': trip.otp,
+            # Trips module (console module 2): timeline, fare in minor units,
+            # payment summary, tickets, flags, notes, money actions, audit.
+            **detail_extras(request, trip),
         },
         status.HTTP_200_OK,
     )

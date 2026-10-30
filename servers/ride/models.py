@@ -745,3 +745,129 @@ class TripLocationPoint(models.Model):
 
     def __str__(self):
         return f'TripLocationPoint trip={self.trip_id} seq={self.sequence}'
+
+
+# ---------------------------------------------------------------------------
+# Operator console: Trips module (flags, internal notes, money actions)
+# ---------------------------------------------------------------------------
+#
+# WHY THREE SMALL TABLES
+# ----------------------
+# The console needs to remember three things the trip row has no place for:
+# that an operator flagged it (and why, for Fraud & Risk later), what
+# operators wrote about it (internal, never shown to the rider or driver),
+# and every refund or fare adjustment made on it with the approval that
+# allowed it. Columns on `Trip` would cover one flag and one note; these
+# keep the history, and keep the rider/driver contracts untouched because
+# nothing in the rider or driver apps reads them.
+
+
+class TripFlag(models.Model):
+    """An operator's flag on a trip. Active while `cleared_at` is NULL."""
+
+    FRAUD_SUSPICION = 'fraud_suspicion'
+    SAFETY = 'safety'
+    DISPUTE = 'dispute'
+    REASON_CHOICES = [
+        (FRAUD_SUSPICION, 'Fraud suspicion'),
+        (SAFETY, 'Safety'),
+        (DISPUTE, 'Dispute'),
+    ]
+
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name='operator_flags')
+    reason = models.CharField(max_length=32, choices=REASON_CHOICES)
+    note = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    cleared_at = models.DateTimeField(null=True, blank=True)
+    cleared_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    clear_note = models.TextField(blank=True, default='')
+
+    class Meta:
+        constraints = [
+            # One open flag per reason per trip: flagging twice is the same flag.
+            models.UniqueConstraint(
+                fields=['trip', 'reason'], condition=models.Q(cleared_at__isnull=True),
+                name='trip_flag_one_active_per_reason',
+            ),
+        ]
+
+    def __str__(self):
+        return f'TripFlag trip={self.trip_id} {self.reason}'
+
+
+class TripNote(models.Model):
+    """An internal operator note. Never shown to riders or drivers."""
+
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name='operator_notes')
+    body = models.TextField()
+    author = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    idempotency_key = models.CharField(max_length=200, unique=True, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    def __str__(self):
+        return f'TripNote trip={self.trip_id}'
+
+
+class TripMoneyAction(models.Model):
+    """One refund or manual fare adjustment on a trip: the ledger row.
+
+    Written only by the approvals executors (`servers.ride.admin_trips`),
+    so every row was either within its maker's limit or approved by a
+    checker, and `approval_request` says which. Amounts are integer minor
+    units of `currency`; a refund is positive, an adjustment is signed.
+    """
+
+    REFUND = 'refund'
+    ADJUSTMENT = 'adjustment'
+    KIND_CHOICES = [(REFUND, 'Refund'), (ADJUSTMENT, 'Fare adjustment')]
+
+    WALLET_CREDIT = 'wallet_credit'
+    GATEWAY = 'gateway'
+    LEDGER_ONLY = 'ledger_only'
+    METHOD_CHOICES = [
+        (WALLET_CREDIT, 'Credited to the rider wallet'),
+        (GATEWAY, 'Refund to the original payment method'),
+        (LEDGER_ONLY, 'Recorded in the ledger only'),
+    ]
+
+    COMPLETED = 'completed'
+    PENDING_GATEWAY = 'pending_gateway'
+    RECORDED = 'recorded'
+    STATUS_CHOICES = [
+        (COMPLETED, 'Completed'),
+        (PENDING_GATEWAY, 'Pending gateway refund (not yet sent to the provider)'),
+        (RECORDED, 'Recorded'),
+    ]
+
+    trip = models.ForeignKey(Trip, on_delete=models.PROTECT, related_name='money_actions')
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES)
+    amount_minor = models.BigIntegerField()
+    currency = models.CharField(max_length=3)
+    method = models.CharField(max_length=16, choices=METHOD_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES)
+    reason = models.TextField()
+    approval_request = models.ForeignKey(
+        'approvals.ApprovalRequest', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='+')
+    wallet_transaction = models.ForeignKey(
+        'rider.WalletTransaction', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='+')
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        constraints = [
+            # One ledger row per approval: an executor retried cannot pay twice.
+            models.UniqueConstraint(
+                fields=['approval_request'], condition=models.Q(approval_request__isnull=False),
+                name='trip_money_action_one_per_request',
+            ),
+        ]
+
+    def __str__(self):
+        return f'TripMoneyAction trip={self.trip_id} {self.kind} {self.amount_minor} {self.currency}'

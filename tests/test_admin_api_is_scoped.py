@@ -32,6 +32,7 @@ from servers.admin_access.bridge import ScopedPermission
 ADMIN_VIEW_MODULES = [
     'servers.driver.admin_views',
     'servers.driver.admin_drivers',
+    'servers.rider.admin_riders',
     'servers.ride.admin_views',
     'servers.payments.admin_views',
     'servers.auth_user.admin_views',
@@ -150,6 +151,16 @@ MUST_SCOPE = {
     'admin_search_trips',
     'admin_search_drivers',
     'admin_search_vehicles',
+    # Riders module: a rider's city is their latest trip's (admin_riders).
+    'admin_list_riders',
+    'admin_rider_detail',
+    'admin_block_rider',
+    'admin_unblock_rider',
+    'admin_note_rider',
+    'admin_flag_rider',
+    'admin_unflag_rider',
+    'admin_sign_out_rider',
+    'admin_bulk_riders',
 }
 
 

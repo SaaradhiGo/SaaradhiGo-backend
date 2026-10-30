@@ -5,6 +5,11 @@ from .views import (
     get_wallet_balance, delete_favorite_location, get_wallet_transactions, wallet_payment,
     get_notification_preferences, update_notification_preferences,
 )
+from .admin_riders import (
+    admin_block_rider, admin_bulk_riders, admin_flag_rider, admin_list_riders,
+    admin_note_rider, admin_rider_detail, admin_sign_out_rider, admin_unblock_rider,
+    admin_unflag_rider,
+)
 
 urlpatterns=[
     path('locations/',save_favorite_locations),
@@ -22,4 +27,14 @@ urlpatterns=[
     path('wallet/balance/', get_wallet_balance),
     path('wallet/transactions/', get_wallet_transactions),
     path('wallet/payment/', wallet_payment),
+    # Riders module (console module 4). <rider_id> is the rider's account id.
+    path('admin/', admin_list_riders),
+    path('admin/bulk/', admin_bulk_riders),
+    path('admin/<int:rider_id>/', admin_rider_detail),
+    path('admin/<int:rider_id>/block/', admin_block_rider),
+    path('admin/<int:rider_id>/unblock/', admin_unblock_rider),
+    path('admin/<int:rider_id>/note/', admin_note_rider),
+    path('admin/<int:rider_id>/flag/', admin_flag_rider),
+    path('admin/<int:rider_id>/unflag/', admin_unflag_rider),
+    path('admin/<int:rider_id>/sign-out/', admin_sign_out_rider),
 ]

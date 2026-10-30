@@ -270,3 +270,96 @@ class NotificationPreference(models.Model):
 
     def __str__(self):
         return f'NotifPrefs for {self.user_id_id}'
+
+# ---------------------------------------------------------------------------
+# Riders module (operator console, module 4)
+# ---------------------------------------------------------------------------
+
+class RiderBlock(models.Model):
+    """An operator block on a rider. Active while `lifted_at` is NULL.
+
+    A blocked rider cannot REQUEST a ride (`rider.eligibility.may_request_rides`,
+    checked by the ride-request socket before a trip is created and on
+    retry). Nothing else changes: the account still signs in, sees its
+    history, pays what it owes, raises tickets and SOS. Ending sessions is a
+    separate operator action (force sign-out).
+    """
+
+    REASON_CHOICES = [
+        ('fraud', 'Suspected fraud'),
+        ('abuse', 'Abuse of drivers or staff'),
+        ('safety', 'Safety concern'),
+        ('payment', 'Unpaid dues / payment abuse'),
+        ('chargebacks', 'Repeated chargebacks'),
+        ('other', 'Other (note required)'),
+    ]
+
+    rider = models.ForeignKey(Rider, on_delete=models.CASCADE, related_name='blocks')
+    reason_code = models.CharField(max_length=32, choices=REASON_CHOICES)
+    note = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    lifted_at = models.DateTimeField(null=True, blank=True)
+    lifted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                  related_name='+')
+    lift_note = models.TextField(blank=True, default='')
+
+    class Meta:
+        constraints = [
+            # Blocking twice is the same block.
+            models.UniqueConstraint(fields=['rider'], condition=models.Q(lifted_at__isnull=True),
+                                    name='rider_one_active_block'),
+        ]
+
+    def __str__(self):
+        return f'RiderBlock rider={self.rider_id} {self.reason_code}'
+
+
+class RiderFlag(models.Model):
+    """An operator's risk flag on a rider (feeds Fraud & Risk). Active while
+    `cleared_at` is NULL. Separate from `Rider.flagged_for_review`, which is
+    the rating rule's flag and is shown to drivers."""
+
+    REASON_CHOICES = [
+        ('fraud_suspicion', 'Fraud suspicion'),
+        ('promo_abuse', 'Promo / referral abuse'),
+        ('payment_risk', 'Payment risk'),
+        ('safety', 'Safety'),
+        ('other', 'Other'),
+    ]
+
+    rider = models.ForeignKey(Rider, on_delete=models.CASCADE, related_name='operator_flags')
+    reason = models.CharField(max_length=32, choices=REASON_CHOICES)
+    note = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    cleared_at = models.DateTimeField(null=True, blank=True)
+    cleared_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='+')
+    clear_note = models.TextField(blank=True, default='')
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['rider', 'reason'],
+                                    condition=models.Q(cleared_at__isnull=True),
+                                    name='rider_flag_one_active_per_reason'),
+        ]
+
+    def __str__(self):
+        return f'RiderFlag rider={self.rider_id} {self.reason}'
+
+
+class RiderNote(models.Model):
+    """An internal operator note. Never shown to the rider."""
+
+    rider = models.ForeignKey(Rider, on_delete=models.CASCADE, related_name='operator_notes')
+    body = models.TextField()
+    author = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                               related_name='+')
+    idempotency_key = models.CharField(max_length=200, unique=True, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    def __str__(self):
+        return f'RiderNote rider={self.rider_id}'

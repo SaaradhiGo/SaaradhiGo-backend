@@ -37,6 +37,7 @@ ADMIN_VIEW_MODULES = [
     'servers.payments.admin_views',
     'servers.auth_user.admin_views',
     'servers.search.views',
+    'servers.support.admin_support',
 ]
 
 #: Endpoint -> why it is not scope-gated. Every entry is a decision.
@@ -124,8 +125,14 @@ def test_every_admin_endpoint_is_scope_gated(name):
 # `riders_visible_to` is the one rider rule (`servers/rider/scope.py`);
 # `_rider_for` is the rider module's single-rider wrapper around it (checked
 # below), so a rider view that calls either is scoped.
+# `tickets_visible_to` is the Support module's one ticket rule
+# (`servers/support/scope.py`: trip city, else a driver's home city, else
+# wherever the rider is visible); `_ticket_for` is the module's single-ticket
+# wrapper around it (checked below), so a support view that calls either is
+# scoped. Added for the rider case the SCOPE_PATHS row cannot express.
 LIST_CALL = re.compile(
-    r'\b(scoped|scoped_or_none|scoped_to_request|in_scope|riders_visible_to|_rider_for)\s*\(')
+    r'\b(scoped|scoped_or_none|scoped_to_request|in_scope|riders_visible_to|_rider_for'
+    r'|tickets_visible_to|_ticket_for)\s*\(')
 UNFILTERED = re.compile(
     r'\b(Driver|Trip|Vehicle|Payment|TransactionHistory|WithdrawalRequest)'
     r'\.objects\s*\.\s*(all|filter|select_related|prefetch_related)\s*\('
@@ -165,6 +172,17 @@ MUST_SCOPE = {
     'admin_unflag_rider',
     'admin_sign_out_rider',
     'admin_bulk_riders',
+    # Support module: the ticket rule (servers/support/scope.py).
+    'admin_list_tickets',
+    'admin_ticket_detail',
+    'admin_reply',
+    'admin_note',
+    'admin_set_status',
+    'admin_set_priority',
+    'admin_set_category',
+    'admin_assign',
+    'admin_assignees',
+    'admin_macro_preview',
 }
 
 
@@ -172,6 +190,12 @@ def test_the_rider_wrapper_really_uses_the_rider_rule():
     from servers.rider import admin_riders
 
     assert 'riders_visible_to(' in inspect.getsource(admin_riders._rider_for)
+
+
+def test_the_ticket_wrapper_really_uses_the_ticket_rule():
+    from servers.support import admin_support
+
+    assert 'tickets_visible_to(' in inspect.getsource(admin_support._ticket_for)
 
 
 @pytest.mark.parametrize('name', sorted(MUST_SCOPE))

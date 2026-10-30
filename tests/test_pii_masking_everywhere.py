@@ -64,7 +64,7 @@ from servers.ride.models import FarePricing, Receipt, Trip, TripStatus
 from servers.rider.models import Rider, Wallet
 from servers.sos.models import SOSEvent
 from servers.sos.views import CONTACT_REVEALED_ACTION
-from servers.support.models import SupportMessage, SupportTicket
+from servers.support.models import SupportMacro, SupportMessage, SupportTicket
 
 pytestmark = pytest.mark.django_db
 
@@ -268,6 +268,7 @@ def world(geo):
                                   body='Left my bag; call me.')
     SupportMessage.objects.create(ticket=ticket, author=driver_user, author_role='user',
                                   body='Found it.')
+    macro = SupportMacro.objects.create(title='Lost item', body='Hi {first_name}, we are looking.')
 
     sos = SOSEvent.objects.create(
         user=rider_user, user_label=RIDER_NAME, initiated_by='rider', trip=trip,
@@ -299,7 +300,7 @@ def world(geo):
     return {
         'rider_user': rider_user, 'driver_user': driver_user, 'driver': driver,
         'vehicle': vehicle, 'trip': trip, 'payment': payment, 'withdrawal': withdrawal,
-        'ticket': ticket, 'sos': sos, 'alert': alert, 'aus_driver': aus_driver,
+        'ticket': ticket, 'macro': macro, 'sos': sos, 'alert': alert, 'aus_driver': aus_driver,
         'aus_trip': aus_trip, 'hyd_zone': hyd_zone, 'approval': approval, 'maker': maker,
     }
 
@@ -373,7 +374,7 @@ def _ids(world):
     return {
         'driver_id': world['driver'].id, 'trip_id': world['trip'].id,
         'rider_id': world['rider_user'].id,
-        'ticket_id': world['ticket'].id, 'sos_id': world['sos'].id,
+        'ticket_id': world['ticket'].id, 'macro_id': world['macro'].id, 'sos_id': world['sos'].id,
         'alert_id': world['alert'].id, 'withdrawal_id': world['withdrawal'].id,
         'pk': world['hyd_zone'].id, 'request_id': world['approval'].id,
     }
@@ -402,6 +403,12 @@ INVENTORY = {
     'api/v1/payments/admin/transactions/': True,
     'api/v1/support/admin/tickets/': True,
     'api/v1/support/admin/tickets/<int:ticket_id>/': True,
+    # Support module (console module 5). Free text is masked by the module;
+    # the macro / SLA routes name no person.
+    'api/v1/support/admin/tickets/<int:ticket_id>/assignees/': False,
+    'api/v1/support/admin/macros/': False,
+    'api/v1/support/admin/macros/<int:macro_id>/preview/': False,
+    'api/v1/support/admin/sla/': False,
     # SOS labels are contact-masked for everybody (incident rule); the
     # reveal there is per active incident.
     'api/v1/sos/admin/': False,
@@ -446,6 +453,7 @@ SEARCH_TERMS = {
     'api/v1/search/admin/drivers/': lambda ids: '?q=Suresh',
     'api/v1/search/admin/riders/': lambda ids: '?q=Ravi',
     'api/v1/search/admin/vehicles/': lambda ids: '?q=TS09AB1234',
+    'api/v1/support/admin/macros/<int:macro_id>/preview/': lambda ids: f'?ticket={ids["ticket_id"]}',
 }
 
 

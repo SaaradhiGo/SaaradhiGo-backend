@@ -76,6 +76,7 @@ WRITING_COMMANDS = [
     'seed_admin_access',
     'seed_alert_thresholds',
     'seed_approval_policies',
+    'seed_support_sla',
     'seed_us_test_city',
     'set_operator_password',
 ]
@@ -343,6 +344,13 @@ def _fp_policies():
         'country', 'action_key', 'version', 'maker_limit', 'is_active')))
 
 
+def _fp_support_sla():
+    from servers.support.models import SupportSlaPolicy
+
+    return tuple(sorted(SupportSlaPolicy.objects.values_list(
+        'country', 'priority', 'first_response_minutes', 'resolution_minutes')))
+
+
 QA_OPERATOR_PHONE = '+919555000001'
 
 
@@ -396,6 +404,8 @@ CASES = [
          _prepare_simulate, _fp_eligibility),
     Case('seed_approval_policies', 'seed_approval_policies',
          _prepare_seed_policies, _fp_policies),
+    Case('seed_support_sla', 'seed_support_sla',
+         _prepare_seed_policies, _fp_support_sla),
     Case('seed_alert_thresholds', 'seed_alert_thresholds',
          _prepare_seed_thresholds, _fp_thresholds, needs_operator_to_prepare=True),
     Case('seed_us_test_city', 'seed_us_test_city',

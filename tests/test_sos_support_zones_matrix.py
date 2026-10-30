@@ -553,7 +553,11 @@ class TestTicketScope:
         assert world['hyd_ticket'].id in ids
         assert world['driver_ticket'].id in ids        # requester's home city
         assert world['aus_ticket'].id not in ids
-        assert world['rider_offtrip_ticket'].id not in ids   # no anchor: Global only
+        # A rider's trip-less ticket follows the rider (owner ruling: "a new
+        # rider who can't book is a core support case"): this +91 rider is
+        # visible in India, so Hyderabad sees the ticket. It used to be
+        # Global only. See servers/support/scope.py.
+        assert world['rider_offtrip_ticket'].id in ids
 
     def test_super_admin_sees_everything(self, geo, world):
         client, _ = operator(SUPER_ADMIN, geo)

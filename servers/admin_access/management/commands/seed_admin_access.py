@@ -89,12 +89,15 @@ GEO = [
 TEST_ADMINS = [
     ('qa.cityops@saaradhigo.test', 'city_ops_manager', 'IN-TG-HYD'),
     ('qa.support@saaradhigo.test', 'support_agent', 'IN-TG-HYD'),
-    ('qa.supportlead@saaradhigo.test', 'support_lead', 'IN-TG-HYD'),
     ('qa.safety@saaradhigo.test', 'safety_officer', 'IN-TG-HYD'),
     ('qa.kyc@saaradhigo.test', 'kyc_verifier', 'IN-TG-HYD'),
     ('qa.finance@saaradhigo.test', 'finance', 'IN-TG-HYD'),
     ('qa.marketing@saaradhigo.test', 'marketing', 'IN-TG-HYD'),
     ('qa.analyst@saaradhigo.test', 'analyst', 'IN-TG-HYD'),
+    # Append only: a login's phone is its position in this list, and QA
+    # already holds the earlier ones. Inserting in the middle gives the next
+    # login an existing login's phone and the seed stops on a duplicate.
+    ('qa.supportlead@saaradhigo.test', 'support_lead', 'IN-TG-HYD'),
 ]
 
 

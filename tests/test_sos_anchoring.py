@@ -204,14 +204,19 @@ class TestUnanchored:
         payload = world['super_admin'].get('/api/v1/ride/admin/dashboard/').json()['data']
         assert payload['alerts']['open'] == 1
 
-    def test_the_alert_list_is_read_by_report_read_holders(self, geo, world, event):
-        analyst, _ = operator('analyst', geo)
-        response = analyst.get(ALERTS)
+    def test_the_alert_list_is_read_by_those_who_may_respond(self, geo, world, event):
+        # Owner ruling 2026-10-30: live SOS goes to responders and City Ops.
+        ops, _ = operator('city_ops_manager', geo)
+        response = ops.get(ALERTS)
 
         assert response.status_code == 200
         rows = response.json()['data']['results']
         assert [r['payload']['sos_id'] for r in rows] == [event.id]
         assert response.json()['data']['open_count'] == 1
+
+        analyst, _ = operator('analyst', geo)                # report.read, cannot respond
+        quiet = analyst.get(ALERTS).json()['data']
+        assert quiet['results'] == [] and quiet['open_count'] == 0
 
         support, _ = operator('support_agent', geo)        # no report.read
         assert support.get(ALERTS).status_code == 403
@@ -219,7 +224,7 @@ class TestUnanchored:
 
     def test_acknowledging_needs_the_kinds_own_capability_and_is_audited(self, geo, world, event):
         alert = OperatorAlert.objects.get(source_id=str(event.id))
-        analyst, _ = operator('analyst', geo)                # may list, may not take
+        analyst, _ = operator('analyst', geo)                # may neither see nor take
         refused = analyst.post(f'{ALERTS}{alert.id}/acknowledge/', {}, format='json')
         assert refused.status_code == 403
 
@@ -239,4 +244,4 @@ class TestUnanchored:
         assert world['super_admin'].post(f'{ALERTS}{alert.id}/acknowledge/', {}, format='json').status_code == 200
         assert AdminAuditLog.objects.filter(action='operator_alert_acknowledged').count() == 1
         assert world['super_admin'].get('/api/v1/ride/admin/dashboard/').json()['data']['alerts']['open'] == 0
-        assert analyst.get(f'{ALERTS}?status=acknowledged').json()['data']['count'] == 1
+        assert world['super_admin'].get(f'{ALERTS}?status=acknowledged').json()['data']['count'] == 1

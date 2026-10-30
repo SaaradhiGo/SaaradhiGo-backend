@@ -81,7 +81,11 @@ SCOPE_PATHS = {
         'trip__zone__geo_node__path',
     ),
     # A ticket is anchored by the trip it is about, else by the requester's
-    # home city if the requester is a driver. Same caveat for riders.
+    # home city if the requester is a driver. THIS ROW IS NOT THE SUPPORT
+    # MODULE'S RULE: a rider's trip-less ticket has no path here, and the
+    # owner ruled it must be visible wherever that rider is visible. Every
+    # support surface uses `servers.support.scope.tickets_visible_to`, which
+    # adds the rider case; the row stays so the generic table resolves.
     'support.SupportTicket': (
         'trip_id__zone__geo_node__path',
         'user_id__driver__home_city__path',

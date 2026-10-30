@@ -857,14 +857,58 @@ def _country_or_refusal(trip):
     return country, None
 
 
+def _linked_ticket(request, trip):
+    """The support ticket id a refund is for, validated, or None.
+
+    The ticket must be about THIS trip and visible to the caller; anything
+    else is refused rather than silently unlinked."""
+    raw = request.data.get('ticket_id')
+    if raw in (None, ''):
+        return None
+    from servers.support.models import SupportTicket
+    from servers.support.scope import tickets_visible_to
+
+    ticket_id = _int(raw, 'ticket_id')
+    ticket = tickets_visible_to(request.user, None, SupportTicket.objects.filter(
+        id=ticket_id, trip_id=trip)).first()
+    if ticket is None:
+        raise BadInput('TICKET_TRIP_MISMATCH',
+                       'That ticket does not exist for this trip.', 'ticket_id')
+    return ticket.id
+
+
+def _note_refund_on_ticket(request, ticket_id, row, amount, currency):
+    """Record the link: an audit row on the ticket and, while the refund waits
+    for a checker, a system message. (A refund that ran at once posts its
+    own "done" message from the executor.)"""
+    from servers.support.service import post_system_message
+
+    shown = f'{from_minor(amount, currency)} {currency}'
+    record_admin_action(
+        request, action='support_ticket_refund_requested', target_type='support_ticket',
+        target_id=ticket_id,
+        after={'trip_id': row.target_id, 'approval_request_id': row.id,
+               'amount_minor': amount, 'currency': currency, 'state': row.status},
+        reason=f'refund requested from ticket #{ticket_id}')
+    if row.status == REQUESTED:
+        post_system_message(
+            ticket_id, f'A refund of {shown} has been requested for this trip and is '
+                       f'waiting for approval.', key=f'refund-pending:{row.id}')
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, ScopedPermission('support.refund')])
 def admin_refund_trip(request, trip_id):
-    """POST /ride/admin/trips/<id>/refund/  {amount_minor, reason, idempotency_key}
+    """POST /ride/admin/trips/<id>/refund/  {amount_minor, reason, idempotency_key, ticket_id?}
 
     A caller holding `finance.read` here refunds under `finance.refund`;
     anyone else holding `support.refund` under `support.refund`. Within the
     maker's limit it runs now (200); above it waits for a checker (202).
+
+    `ticket_id` (the Support module's fare review) links the refund to a
+    support ticket ABOUT THIS TRIP: the id goes into the request's reason
+    and payload, and the ticket gets a system message when the refund is
+    requested and again when it is done. It changes no amount and no limit.
     """
     trip, refusal = _trip_for_write(request, trip_id, 'support.refund')
     if refusal:
@@ -876,8 +920,11 @@ def admin_refund_trip(request, trip_id):
                            'amount_minor')
         reason = _text(request.data, 'reason', required=True)
         key = _idempotency_key(request)
+        ticket_id = _linked_ticket(request, trip)
     except BadInput as exc:
         return exc.response()
+    if ticket_id:
+        reason = f'{reason} [support ticket #{ticket_id}]'[:2000]
     country, refusal = _country_or_refusal(trip)
     if refusal:
         return refusal
@@ -897,12 +944,15 @@ def admin_refund_trip(request, trip_id):
             action_key, actor=request.user, country=country, amount=amount,
             currency=trip.currency, scope_node=node, target_type=TARGET, target_id=trip.id,
             payload={'trip_id': trip.id, 'amount_minor': amount, 'currency': trip.currency,
-                     'method': refund_method(trip)},
+                     'method': refund_method(trip),
+                     **({'ticket_id': ticket_id} if ticket_id else {})},
             idempotency_key=f'trip_refund:{trip.id}:{key}', reason=reason,
             http_request=request,
         )
     except approvals.ApprovalError as exc:
         return exc.response()
+    if ticket_id and not outcome.duplicate:
+        _note_refund_on_ticket(request, ticket_id, outcome.request, amount, trip.currency)
     return _approval_answer(outcome, {'trip_id': trip.id})
 
 
@@ -1013,6 +1063,15 @@ def execute_refund(request_row):
                    'action_key': request_row.action_key},
             reason=request_row.request_reason or '',
         )
+    ticket_id = payload.get('ticket_id')
+    if ticket_id:
+        from servers.support.service import post_system_message
+
+        done = ('The refund of %s %s for this trip has been issued.'
+                if state == TripMoneyAction.COMPLETED else
+                'The refund of %s %s for this trip has been approved and is being processed.')
+        post_system_message(ticket_id, done % (from_minor(amount, trip.currency), trip.currency),
+                            key=f'refund-done:{request_row.id}')
     return {'money_action_id': row.id, 'status': state, 'method': method,
             'amount_minor': amount, 'currency': trip.currency,
             'wallet_transaction_id': wallet_txn}

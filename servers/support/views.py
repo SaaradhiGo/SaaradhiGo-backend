@@ -13,14 +13,13 @@ Admin / support-staff surface, each gated on a capability IN SCOPE:
   POST   /api/v1/support/admin/tickets/<id>/reply/  staff reply, `support.reply`
   POST   /api/v1/support/admin/tickets/<id>/assign/ assign, `support.reply`
 
-A ticket is anchored by the trip it is about, else by the requester's
-home city if the requester is a driver (`scoping.SCOPE_PATHS`). The list
-is filtered to the operator's scope; a ticket outside it answers NOT
-FOUND, never FORBIDDEN, so an out-of-scope operator cannot walk ids.
+The operator surface is in `admin_support.py`; its scope rule (trip city,
+else a driver's home city, else wherever the rider is visible) is
+`scope.tickets_visible_to`. A ticket outside it answers NOT FOUND, never
+FORBIDDEN, so an out-of-scope operator cannot walk ids. Internal notes are
+never returned here: the message model's default manager leaves them out.
 """
 import logging
-from datetime import datetime
-
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -29,11 +28,8 @@ from rest_framework.pagination import PageNumberPagination
 
 from base.permissions import is_operator
 from base.utils import error_response, success_response
-from servers.admin_access.bridge import ScopedPermission, granted, node_of
-from servers.admin_access.scoping import (
-    ScopeNotHeld, scoped_or_none, scoped_to_request,
-)
 from servers.support.models import SupportMessage, SupportTicket
+from servers.support.scope import ticket_may, tickets_visible_to
 from servers.support.serializers import SupportMessageSerializer, SupportTicketSerializer
 
 logger = logging.getLogger(__name__)
@@ -42,6 +38,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # User-side
 # ---------------------------------------------------------------------------
+
+def _not_found(ticket_id):
+    """The one answer for "does not exist" AND "not in your scope"."""
+    return error_response(
+        code='NOT_FOUND', message='Ticket not found.', field='ticket_id',
+        issue=f'Ticket {ticket_id}', status=status.HTTP_404_NOT_FOUND,
+    )
+
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -117,10 +121,11 @@ def ticket_detail(request, ticket_id):
                 code='FORBIDDEN', message='Not your ticket.', field='ticket_id',
                 issue='User mismatch', status=status.HTTP_403_FORBIDDEN,
             )
-        if _scoped_ticket_or_none(request, ticket_id) is None:
+        visible = tickets_visible_to(request.user, None, SupportTicket.objects.filter(
+            id=ticket_id)).exists()
+        if not visible:
             return _not_found(ticket_id)
-        allowed, _how = granted(request.user, 'support.read', node_of(ticket))
-        if not allowed:
+        if not ticket_may(request.user, 'support.read', ticket):
             return error_response(
                 code='FORBIDDEN', message='You do not have permission to do that here.',
                 field='ticket_id', issue='support.read not held',
@@ -183,119 +188,9 @@ def close_my_ticket(request, ticket_id):
 # ---------------------------------------------------------------------------
 # Admin / support-staff side
 # ---------------------------------------------------------------------------
-
-TICKET_ADMIN_QUERYSET = SupportTicket.objects.select_related(
-    'user_id', 'trip_id', 'trip_id__zone', 'trip_id__zone__geo_node',
-).prefetch_related('messages')
-
-
-def _not_found(ticket_id):
-    """The one answer for "does not exist" AND "not in your scope"."""
-    return error_response(
-        code='NOT_FOUND', message='Ticket not found.', field='ticket_id',
-        issue=f'Ticket {ticket_id}', status=status.HTTP_404_NOT_FOUND,
-    )
-
-
-def _scoped_ticket_or_none(request, ticket_id):
-    """The ticket, if it exists AND sits inside the caller's scope."""
-    return scoped_or_none(request.user, TICKET_ADMIN_QUERYSET, id=ticket_id)
-
-
-def _scope_refused(exc):
-    return error_response(
-        code='SCOPE_NOT_HELD', message=str(exc), field='scope',
-        issue='Requested scope is outside your assignments',
-        status=status.HTTP_403_FORBIDDEN,
-    )
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated, ScopedPermission('support.read')])
-def admin_list_tickets(request):
-    # Scoped by the trip's zone, else the requester's home city. Without
-    # `scoped()` the permission check above would pass and the list would
-    # still hold every ticket in both countries.
-    try:
-        qs = scoped_to_request(request, TICKET_ADMIN_QUERYSET).order_by('-created_at')
-    except ScopeNotHeld as exc:
-        return _scope_refused(exc)
-    status_filter = request.query_params.get('status')
-    if status_filter:
-        qs = qs.filter(status=status_filter)
-    issue_filter = request.query_params.get('issue_type')
-    if issue_filter:
-        qs = qs.filter(issue_type=issue_filter)
-    paginator = PageNumberPagination()
-    paginator.page_size = 25
-    page = paginator.paginate_queryset(qs, request)
-    return success_response(paginator.get_paginated_response(SupportTicketSerializer(page, many=True).data).data, status.HTTP_200_OK)
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated, ScopedPermission('support.read')])
-def admin_ticket_detail(request, ticket_id):
-    """One ticket with its thread, if it is in the caller's scope."""
-    ticket = _scoped_ticket_or_none(request, ticket_id)
-    if ticket is None:
-        return _not_found(ticket_id)
-    return success_response(SupportTicketSerializer(ticket).data, status.HTTP_200_OK)
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated, ScopedPermission('support.reply')])
-def admin_reply(request, ticket_id):
-    body = (request.data.get('body') or '').strip()
-    next_status = (request.data.get('status') or '').strip()  # optional state change
-    if not body:
-        return error_response(
-            code='MISSING_FIELDS', message='body is required',
-            field='body', issue='Reply cannot be empty',
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    ticket = _scoped_ticket_or_none(request, ticket_id)
-    if ticket is None:
-        return _not_found(ticket_id)
-    msg = SupportMessage.objects.create(
-        ticket=ticket, author=request.user, author_role='support', body=body,
-    )
-    fields = ['updated_at']
-    if next_status in dict(SupportTicket.STATUS_CHOICES):
-        ticket.status = next_status
-        fields.append('status')
-        if next_status == 'CLOSED':
-            ticket.resolved_at = timezone.now()
-            fields.append('resolved_at')
-    elif ticket.status == 'OPEN':
-        ticket.status = 'IN_PROGRESS'
-        fields.append('status')
-    ticket.save(update_fields=fields)
-    return success_response(SupportMessageSerializer(msg).data, status.HTTP_201_CREATED)
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated, ScopedPermission('support.reply')])
-def admin_assign(request, ticket_id):
-    staff_user_id = request.data.get('assigned_to')
-    if not staff_user_id:
-        return error_response(
-            code='MISSING_FIELDS', message='assigned_to is required',
-            field='assigned_to', issue='Staff user id',
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    from django.contrib.auth import get_user_model
-    User = get_user_model()
-    try:
-        staff = User.objects.get(id=staff_user_id, is_staff=True)
-    except User.DoesNotExist:
-        return error_response(
-            code='NOT_FOUND', message='Staff user not found.',
-            field='assigned_to', issue=f'User {staff_user_id}',
-            status=status.HTTP_404_NOT_FOUND,
-        )
-    ticket = _scoped_ticket_or_none(request, ticket_id)
-    if ticket is None:
-        return _not_found(ticket_id)
-    ticket.assigned_to = staff
-    ticket.save(update_fields=['assigned_to', 'updated_at'])
-    return success_response(SupportTicketSerializer(ticket).data, status.HTTP_200_OK)
+# The operator console's queue, ticket page and writes live in
+# `admin_support`; these names stay importable (and routed) so the URLs the
+# console used before keep working, now through the audited code.
+from servers.support.admin_support import (  # noqa: E402,F401
+    admin_assign, admin_list_tickets, admin_reply, admin_ticket_detail,
+)

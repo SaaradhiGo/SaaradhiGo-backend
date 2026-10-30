@@ -57,6 +57,10 @@ PERMISSIONS = {
     'driver.deactivate': 'Permanently deactivate a driver',
     'support.reply': 'Reply to and resolve support tickets',
     'support.refund': 'Issue a refund within the role limit',
+    # Super Admin only by default: macros speak for the company to riders and
+    # drivers, and the SLA policy sets what "late" means for every ticket.
+    'support.macro': 'Create, edit and deactivate support macros',
+    'support.sla': 'Change the support SLA policy',
     'finance.payout': 'Approve and execute payout runs',
     'finance.adjust': 'Post a ledger adjustment',
     'pricing.write': 'Change fare cards, multipliers and commission',

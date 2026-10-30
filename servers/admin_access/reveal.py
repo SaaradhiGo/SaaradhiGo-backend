@@ -73,7 +73,9 @@ REVEALABLE_FIELDS = {
         'pickup_address', 'destination_address',
         'pickup_coordinates', 'destination_coordinates', 'receipt_email',
     ),
-    'support_ticket': ('requester_name', 'requester_phone', 'requester_email'),
+    # `thread`: the ticket's description and every message with contact
+    # details unmasked (the console shows them masked). Logged like the rest.
+    'support_ticket': ('requester_name', 'requester_phone', 'requester_email', 'thread'),
     'withdrawal': ('driver_name', 'driver_phone', 'driver_email', 'upi_id', 'bank_account'),
     'payment': ('payer_name', 'payer_phone', 'payer_email'),
 }
@@ -253,17 +255,34 @@ def _resolve_trip(request, target_id):
 
 
 def _resolve_ticket(request, target_id):
-    from servers.support.models import SupportTicket
+    """A ticket is placed by `servers/support/scope.py` (trip city, else a
+    driver's home city, else wherever the rider is visible); a rider's ticket
+    then decides `pii.view` at the rider's anchors, like the rider page."""
+    from servers.support.admin_support import TICKET_QUERYSET
+    from servers.support.models import SupportMessage
+    from servers.support.scope import ticket_node, ticket_rider, tickets_visible_to
 
-    ticket = scoped_or_none(
-        request.user,
-        SupportTicket.objects.select_related('user_id', 'trip_id', 'trip_id__zone',
-                                             'trip_id__zone__geo_node'),
-        id=target_id,
-    )
+    ticket = tickets_visible_to(request.user, None, TICKET_QUERYSET).filter(
+        id=target_id).first()
     if ticket is None:
         return None, None, None
-    return ticket, node_of(ticket), _prefixed('requester', ticket.user_id)
+    rider = ticket_rider(ticket)
+    if rider is not None:
+        request.reveal_rider = rider
+
+    def thread():
+        return {
+            'description': ticket.description,
+            'messages': [
+                {'id': m.id, 'author_role': m.author_role, 'body': m.body}
+                for m in SupportMessage.everything.filter(ticket=ticket).order_by(
+                    'created_at', 'id')
+            ],
+        }
+
+    fields = _prefixed('requester', ticket.user_id)
+    fields['thread'] = thread
+    return ticket, ticket_node(ticket), fields
 
 
 def _resolve_withdrawal(request, target_id):

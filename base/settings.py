@@ -439,6 +439,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'payments.reconcile_stuck_withdrawals',
         'schedule': _crontab(minute='*/10'),
     },
+    'payments-reconcile-daily': {
+        # Local-data reconciliation: payments vs webhooks, trips vs
+        # settlements, payouts vs payout webhooks and stuck payouts. Writes
+        # ReconciliationRun / ReconciliationItem only; no gateway call.
+        'task': 'payments.run_daily_reconciliation',
+        'schedule': _crontab(hour=3, minute=30),
+    },
     'fare-shadow-sweep-every-15-min': {
         # Observes what a metered fare would have charged on completed trips.
         # Writes only to TripFareShadow -- no rider is charged from this. A
@@ -757,6 +764,11 @@ ADMIN_ACCESS_STRICT = os.environ.get(
 # A rider belongs to every city where they took a trip in this many months
 # (operator scope; see servers/rider/scope.py).
 RIDER_SCOPE_TRIP_MONTHS = int(os.environ.get('RIDER_SCOPE_TRIP_MONTHS', '12'))
+
+# The most rows one Finance CSV export (settlements, payouts, payments) may
+# contain. Above it the export is refused with a 400 asking for a narrower
+# range or scope; it is never silently truncated.
+FINANCE_EXPORT_MAX_ROWS = int(os.environ.get('FINANCE_EXPORT_MAX_ROWS', '50000'))
 
 # Who a deploy's unattended writes are attributed to.
 #

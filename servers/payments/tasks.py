@@ -441,3 +441,23 @@ def reconcile_stuck_withdrawals():
         'failed': failed,
         'skipped': skipped,
     }
+
+
+@shared_task(name='payments.run_daily_reconciliation')
+def run_daily_reconciliation():
+    """Daily local reconciliation: payments, webhooks, settlements, payouts.
+
+    Compares our own tables with each other (no gateway call, no import) and
+    writes `ReconciliationRun` / `ReconciliationItem` rows only. Idempotent: a
+    finished (day, country, gateway) is skipped, a finding is raised once, and
+    a worker killed mid-run (acks_late redelivery) converges on the same rows.
+    See `servers.payments.reconciliation`.
+    """
+    from servers.payments.reconciliation import run_daily
+
+    runs = run_daily()
+    raised = sum(sum((run.counts or {}).values()) for run in runs)
+    failed = [f'{run.country}/{run.gateway}/{run.date}' for run in runs if run.status == 'error']
+    if failed:
+        logger.error('reconciliation: %d run(s) failed: %s', len(failed), failed)
+    return {'runs': len(runs), 'new_findings': raised, 'failed': failed}

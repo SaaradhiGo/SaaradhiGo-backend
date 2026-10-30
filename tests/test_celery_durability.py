@@ -157,6 +157,13 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         'driver.sweep_stale_driver_presence',
         'payments.reconcile_stuck_payments',
         'payments.reconcile_stuck_withdrawals',
+        # Daily LOCAL reconciliation (Finance read side). Trigger: beat, 03:30.
+        # acks_late is safe: a finished (day, country, gateway) run is skipped,
+        # a finding is keyed on (kind, subject) so a redelivered or doubled run
+        # raises nothing twice, and a resolved finding is never reopened. It
+        # compares our own tables, calls no gateway, and writes only
+        # ReconciliationRun / ReconciliationItem rows; no money, trip or status.
+        'payments.run_daily_reconciliation',
         'pricing.fare_shadow_sweep',
         # No explicit name= on the decorator, unlike its siblings in the same
         # module, so Celery registers the full dotted path. Nothing references

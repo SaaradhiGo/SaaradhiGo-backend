@@ -396,6 +396,29 @@ def currency_for_trip(trip):
 # Models: an integer column, read and written as a Decimal
 # ---------------------------------------------------------------------------
 
+def currency_of(instance, currency_field):
+    """The currency an amount on `instance` is in, resolving a blank one.
+
+    A money column no longer carries a `default='INR'`: the currency comes from
+    the row's own trip, zone or wallet (`base.currency_stamp`), which the model
+    constructor has already been given by the time a property keyword such as
+    `amount=` is applied (Django sets fields first, properties after). So a
+    blank currency is derived HERE, once, and written back onto the instance;
+    the stamp at save then finds nothing to change. Only when nothing at all
+    can be derived does the platform default apply, and `CurrencyStampedModel`
+    logs that at ERROR when the row is saved.
+    """
+    currency = getattr(instance, currency_field)
+    if currency:
+        return currency
+    derive = getattr(instance, '_derive_currency', None)
+    found = derive() if callable(derive) else None
+    chosen = normalize_currency(found) if found else DEFAULT_CURRENCY
+    if found:
+        setattr(instance, currency_field, chosen)
+    return chosen
+
+
 class MinorUnitsAmount(property):
     """`trip.estimated_fare` as a Decimal, stored as `trip.estimated_fare_minor`.
 
@@ -420,11 +443,11 @@ class MinorUnitsAmount(property):
 
         def fget(instance):
             return from_minor(getattr(instance, minor_field),
-                              getattr(instance, currency_field))
+                              currency_of(instance, currency_field))
 
         def fset(instance, value):
             setattr(instance, minor_field,
-                    to_minor(value, getattr(instance, currency_field)))
+                    to_minor(value, currency_of(instance, currency_field)))
 
         super().__init__(fget, fset, doc=f'Decimal view of `{minor_field}`.')
 

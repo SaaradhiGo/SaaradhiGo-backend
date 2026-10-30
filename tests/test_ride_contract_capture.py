@@ -284,6 +284,11 @@ class TestCaptureTheRideLifecycle:
         assert response.status_code == 200, body
 
     def test_driver_withdrawal_balance(self, world):
+        # India's payout rules, as `seed_payout_config` leaves them on a deployed
+        # environment: the contract below is the unchanged India response.
+        from finance_world import seed_in_payout_config
+
+        seed_in_payout_config()
         client = _client_for(world['driver_user'])
 
         response = client.get('/api/v1/driver/withdrawals/balance/')

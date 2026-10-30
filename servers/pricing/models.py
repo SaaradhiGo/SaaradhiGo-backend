@@ -606,7 +606,7 @@ class TripFareShadow(CurrencyStampedModel, models.Model):
     shadow_estimate = MinorUnitsAmount('shadow_estimate_minor')
     shadow_actual = MinorUnitsAmount('shadow_actual_minor')
     currency_source_fields = ('trip',)
-    currency = models.CharField(max_length=3, default='INR', db_index=True)
+    currency = models.CharField(max_length=3, db_index=True)
 
     # Inputs, so a surprising row can be understood without re-deriving them.
     estimated_distance_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)

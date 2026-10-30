@@ -2,7 +2,7 @@ from django.db import models
 from django.contrib.auth import get_user_model
 from servers.driver.models import Vehicle,Driver,VehicleType
 from base.currency_stamp import CurrencyStampedModel
-from base.money import MinorUnitsAmount, as_decimal, from_minor, to_minor
+from base.money import MinorUnitsAmount, as_decimal, currency_of, from_minor, to_minor
 
 User=get_user_model()
 # Create your models here.
@@ -104,7 +104,7 @@ class Trip(CurrencyStampedModel, models.Model):
     # same reasoning as the already-stored `zone_code` and `rate_card_version`.
     # Without it, every cross-market Sum() in this codebase is a meaningless
     # number and nothing says so.
-    currency = models.CharField(max_length=3, default='INR', db_index=True)
+    currency = models.CharField(max_length=3, db_index=True)
     surge_multiplier=models.DecimalField(max_digits=4,decimal_places=2,default=1.00)
     payment_method=models.CharField(max_length=50,blank=True,null=True)
     payment_status=models.CharField(max_length=50,blank=True,null=True)
@@ -286,7 +286,7 @@ class FarePricing(CurrencyStampedModel, models.Model):
     # Stamped at write time from the trip's zone. Denormalised on purpose: the
     # currency a row was written in is a fact about that row, not a lookup
     # against today's zone configuration.
-    currency = models.CharField(max_length=3, default='INR', db_index=True)
+    currency = models.CharField(max_length=3, db_index=True)
 
     # --- which snapshot this is ---------------------------------------------
     snapshot_type = models.CharField(
@@ -453,7 +453,7 @@ class Receipt(CurrencyStampedModel, models.Model):
     # same reasoning as the already-stored `zone_code` and `rate_card_version`.
     # Without it, every cross-market Sum() in this codebase is a meaningless
     # number and nothing says so.
-    currency = models.CharField(max_length=3, default='INR', db_index=True)
+    currency = models.CharField(max_length=3, db_index=True)
     payment_method=models.CharField(max_length=32,blank=True,default='')
     payment_status=models.CharField(max_length=32,blank=True,default='')
     sent_to_email=models.EmailField(blank=True,default='')
@@ -559,7 +559,7 @@ class PromoCode(CurrencyStampedModel, models.Model):
     min_fare_minor = models.BigIntegerField(default=0)
     max_discount_amount = MinorUnitsAmount('max_discount_amount_minor')
     min_fare = MinorUnitsAmount('min_fare_minor')
-    currency = models.CharField(max_length=3, default='INR', db_index=True)
+    currency = models.CharField(max_length=3, db_index=True)
 
     # Optional zone scope. NULL = applies in all active zones.
     zone = models.ForeignKey(
@@ -598,13 +598,13 @@ class PromoCode(CurrencyStampedModel, models.Model):
     @property
     def discount_value(self):
         if self.discount_type == 'flat':
-            return from_minor(self.discount_flat_minor, self.currency)
+            return from_minor(self.discount_flat_minor, currency_of(self, 'currency'))
         return self.discount_percent
 
     @discount_value.setter
     def discount_value(self, value):
         if self.discount_type == 'flat':
-            self.discount_flat_minor = to_minor(value, self.currency)
+            self.discount_flat_minor = to_minor(value, currency_of(self, 'currency'))
             self.discount_percent = None
         else:
             self.discount_percent = None if value is None else as_decimal(value)
@@ -629,7 +629,7 @@ class PromoRedemption(CurrencyStampedModel, models.Model):
     currency_source_fields = ('trip', 'promo')
     discount_amount_minor = models.BigIntegerField()
     discount_amount = MinorUnitsAmount('discount_amount_minor')
-    currency = models.CharField(max_length=3, default='INR', db_index=True)
+    currency = models.CharField(max_length=3, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     # Free-form note (e.g. the fare-quote id the user saw when applying)
     notes = models.CharField(max_length=256, blank=True, default='')

@@ -40,6 +40,7 @@ from decimal import Decimal
 import pytest
 from django.contrib.auth import get_user_model
 from django.urls import get_resolver
+from django.utils import timezone
 from django.urls.resolvers import URLPattern, URLResolver
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 from rest_framework_simplejwt.tokens import AccessToken
@@ -254,6 +255,12 @@ def world(geo):
     withdrawal = WithdrawalRequest.objects.create(
         driver=driver, amount=Decimal('500.00'), payout_method='upi', currency='INR',
     )
+    from servers.payments.models import TripSettlement
+    TripSettlement.objects.create(
+        trip=trip, driver=driver, gross_fare_minor=21500, commission_percent=Decimal('20.00'),
+        commission_amount_minor=4300, driver_net_minor=17200, currency='INR',
+        payment_method='online', settled_at=timezone.now(),
+    )
     aus_trip = Trip.objects.create(
         user_id=aus_user, driver_id=aus_driver, zone=aus_zone, status_id=_status('completed'),
         pickup_lat=Decimal('30.26'), pickup_long=Decimal('-97.74'),
@@ -344,8 +351,16 @@ def support(geo):
     return operator('support_agent', geo)
 
 
+def _json_or_text(response):
+    """The parsed JSON body, or the text of a CSV export."""
+    if response['Content-Type'].startswith('text/csv'):
+        return response.content.decode()
+    return response.json()
+
+
 def body_of(response):
-    return json.dumps(response.json(), ensure_ascii=False)
+    payload = _json_or_text(response)
+    return payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
 
 
 def _without_staff(payload):
@@ -360,7 +375,10 @@ def _without_staff(payload):
 
 
 def customer_body_of(response):
-    return json.dumps(_without_staff(response.json()), ensure_ascii=False)
+    payload = _json_or_text(response)
+    if isinstance(payload, str):
+        return payload
+    return json.dumps(_without_staff(payload), ensure_ascii=False)
 
 
 def raw_pii_in(text):
@@ -383,6 +401,8 @@ def _ids(world):
         'alert_id': world['alert'].id, 'withdrawal_id': world['withdrawal'].id,
         'incident_id': world['sos'].incident_id, 'signal_id': world['signal'].id,
         'pk': world['hyd_zone'].id, 'request_id': world['approval'].id,
+        'payment_id': world['payment'].id, 'payout_id': world['withdrawal'].id,
+        'kind': 'payouts',
     }
 
 
@@ -407,6 +427,19 @@ INVENTORY = {
     'api/v1/ride/admin/dashboard/': False,
     'api/v1/payments/admin/payments/': True,
     'api/v1/payments/admin/transactions/': True,
+    # Finance read side (module 7, part A). Gateway ids are masked to their tail
+    # by the view, payout handles by the maskers, and raw webhook payloads and
+    # gateway metadata are never returned. The export is CSV: swept as text.
+    'api/v1/payments/admin/payments/<int:payment_id>/': True,
+    'api/v1/payments/admin/settlements/': True,
+    'api/v1/payments/admin/payouts/': True,
+    'api/v1/payments/admin/payouts/<int:payout_id>/': True,
+    'api/v1/payments/admin/drivers/<int:driver_id>/ledger/': True,
+    'api/v1/payments/admin/overview/': False,
+    'api/v1/payments/admin/reconciliation/': False,
+    'api/v1/payments/admin/reconciliation/items/': False,
+    'api/v1/payments/admin/payout-config/': False,
+    'api/v1/payments/admin/export/<str:kind>/': False,
     'api/v1/support/admin/tickets/': True,
     'api/v1/support/admin/tickets/<int:ticket_id>/': True,
     # Support module (console module 5). Free text is masked by the module;
@@ -671,15 +704,17 @@ class TestEveryEndpointAsEveryRole:
         assert 'license_docs/' in body_of(kyc.get(url))
         assert analyst.get(url).json()['data']['license_doc_url'] is None
 
-    def test_gateway_metadata_is_masked_inside_the_json_blob(self, geo, world):
-        """Cashfree echoes the customer's phone and email into the metadata
-        the payment row keeps; the walker reaches into it by key name."""
+    def test_gateway_metadata_is_not_returned_at_all_by_the_finance_payments(self, geo, world):
+        """Cashfree echoes the customer's phone and email into the metadata the
+        payment row keeps. The finance list does not return that blob (nor the
+        signature); gateway ids show their last four characters only."""
         client, _ = operator('finance', geo)
         rows = client.get('/api/v1/payments/admin/payments/').json()['data']['results']
-        details = rows[0]['gateway_metadata']['customer_details']
+        body = json.dumps(rows)
 
-        assert details['customer_phone'] != RIDER_PHONE and details['customer_phone'].endswith('0001')
-        assert 'ravi.kumar' not in details['customer_email']
+        assert 'gateway_metadata' not in rows[0] and 'gateway_signature' not in rows[0]
+        assert 'customer_phone' not in body and 'ravi.kumar' not in body
+        assert 'order_1' not in body
 
     def test_ticket_bodies_are_left_alone_and_authors_are_initials(self, support, world):
         """Support reads the message; the requester's contact is what is masked."""
@@ -721,6 +756,14 @@ class TestEveryEndpointAsEveryRole:
 # ---------------------------------------------------------------------------
 # The guards
 # ---------------------------------------------------------------------------
+
+#: Export modules that are NEVER unmasked, so they do not call `exports_unmasked`
+#: (whose only job is to let a `pii.view` holder opt in with `?reveal=1`).
+#: `payments/admin_finance.py`: money rows are exported masked exactly like the
+#: JSON, whatever the caller holds -- there is no reveal for a bulk export of
+#: payments, payouts or settlements. `test_finance_read.py` proves `?reveal=1`
+#: is ignored and writes no `pii_export_revealed` row.
+NEVER_UNMASKED_EXPORTS = {'payments/admin_finance.py'}
 
 SENSITIVE_KEY = re.compile(
     r'phone|email|address|upi|ifsc|account_number|licen[cs]e|aadhaar|ssn|dob|contact',
@@ -803,7 +846,13 @@ class TestTheSweepGuard:
             response = client.get(_fill(route, _ids(world)))
             if response.status_code != 200:
                 continue
-            for path, _value in _walk(response.json()):
+            payload = _json_or_text(response)
+            if isinstance(payload, str):
+                # A CSV export: its column names are its keys.
+                paths = [(h, None) for h in payload.splitlines()[0].split(',')]
+            else:
+                paths = list(_walk(payload))
+            for path, _value in paths:
                 key = path.rsplit('.', 1)[-1].split('[')[0]
                 if SENSITIVE_KEY.search(key) and not key.endswith(NOT_PERSONAL_SUFFIXES):
                     if key not in ALL_PII_FIELDS:
@@ -862,7 +911,8 @@ class TestTheSweepGuard:
             if 'migrations' in path.parts or 'admin_dashboard' in path.parts:
                 continue
             text = path.read_text(encoding='utf-8')
-            if 'Content-Disposition' in text and 'exports_unmasked' not in text:
+            if ('Content-Disposition' in text and 'exports_unmasked' not in text
+                    and path.relative_to(root).as_posix() not in NEVER_UNMASKED_EXPORTS):
                 offenders.append(path.relative_to(root).as_posix())
 
         assert offenders == [], offenders

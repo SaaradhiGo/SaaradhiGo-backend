@@ -64,6 +64,9 @@ PERMISSIONS = {
     'support.dashboard': 'View the support SLA dashboard',
     'finance.payout': 'Approve and execute payout runs',
     'finance.adjust': 'Post a ledger adjustment',
+    # CSV exports of settlements, payouts and payments: scoped and masked like
+    # the screens, every export audited with its filters and row count.
+    'finance.export': 'Export settlements, payouts and payments as CSV',
     'pricing.write': 'Change fare cards, multipliers and commission',
     'zone.write': 'Draw and publish zones and geofences',
     'promo.write': 'Create and amend promotions and incentives',
@@ -181,7 +184,7 @@ ROLE_TEMPLATES = [
                        'support limit, invoices and reconciliation.',
         'permissions': [
             'trip.read', 'driver.read', 'rider.read', 'support.read',
-            'finance.read', 'finance.payout', 'finance.adjust',
+            'finance.read', 'finance.payout', 'finance.adjust', 'finance.export',
             'support.refund', 'report.read', 'zone.read', 'pii.view',
             'rider.note',
         ],

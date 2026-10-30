@@ -13,6 +13,7 @@ from servers.admin_access import urls as admin_access_urls
 from servers.approvals import urls as approvals_urls
 from servers.command_centre import urls as command_centre_urls
 from servers.search import urls as search_urls
+from servers.safety import urls as safety_urls
 
 urlpatterns = [
     path('uploads/presign/', presign_upload),
@@ -28,4 +29,5 @@ urlpatterns = [
     path('approvals/', include(approvals_urls.urlpatterns)),
     path('command-centre/', include(command_centre_urls.urlpatterns)),
     path('search/', include(search_urls.urlpatterns)),
+    path('safety/', include(safety_urls.urlpatterns)),
 ]

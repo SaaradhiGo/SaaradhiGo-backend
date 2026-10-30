@@ -104,6 +104,20 @@ class SOSEvent(models.Model):
         help_text='How anchor_node was chosen. Set on creation; blank is resolved on save.',
     )
 
+    # THE CASE FILE (safety module). Every SOS opens a `safety.SafetyIncident`
+    # or joins the open one for its trip; see `safety.services.attach_sos`.
+    # NULL only for a row written before the module existed or when the
+    # attach itself failed -- the escalation sweep backfills those, so an SOS
+    # is never left without a case.
+    incident = models.ForeignKey(
+        'safety.SafetyIncident', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='sos_events',
+    )
+    #: Set once by the escalation sweep when this SOS sat unacknowledged past
+    #: its country's `sos_ack_minutes`. The conditional UPDATE that sets it is
+    #: what makes the escalation fire exactly once per event.
+    escalated_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
@@ -138,6 +152,13 @@ class SOSEvent(models.Model):
             from .anchoring import alert_unanchored
 
             alert_unanchored(self)
+        if creating:
+            # The case file. Never allowed to fail the SOS itself: the row is
+            # already written, and the escalation sweep backfills a missing
+            # incident.
+            from servers.safety.services import attach_sos_safely
+
+            attach_sos_safely(self)
 
 
 class SOSEventUpdate(models.Model):

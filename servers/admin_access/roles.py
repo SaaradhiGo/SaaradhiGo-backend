@@ -69,6 +69,9 @@ PERMISSIONS = {
     'promo.write': 'Create and amend promotions and incentives',
     'notify.send': 'Send campaigns to riders or drivers',
     'safety.respond': 'Act on SOS and incidents',
+    # Super Admin only by default: the timers, thresholds and emergency
+    # numbers that decide when an SOS escalates and what detection raises.
+    'safety.config': 'Change the per-country safety timers, thresholds and numbers',
     'fraud.review': 'Review and action fraud flags',
 
     # Running the platform itself

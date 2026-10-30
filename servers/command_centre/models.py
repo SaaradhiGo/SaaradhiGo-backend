@@ -60,8 +60,18 @@ SEVERITY_CHOICES = [(INFO, 'Info'), (WARNING, 'Warning'), (CRITICAL, 'Critical')
 #: not listed cannot be acknowledged over the API -- a deliberate default,
 #: because "anyone may dismiss it" is how an alert stops being one.
 SOS_UNANCHORED = 'sos_unanchored'
+#: Safety module: an SOS nobody acknowledged in time, a critical incident
+#: nobody picked up in time, and a detected signal above its incident line.
+#: All three are live-safety alerts: `safety.respond` takes them, and they
+#: join `SOS_ALERT_KINDS` (so Marketing and Analyst never see them).
+SAFETY_SOS_ESCALATED = 'safety_sos_escalated'
+SAFETY_INCIDENT_UNASSIGNED = 'safety_incident_unassigned'
+SAFETY_SIGNAL = 'safety_signal'
 ACK_PERMISSION = {
     SOS_UNANCHORED: 'safety.respond',
+    SAFETY_SOS_ESCALATED: 'safety.respond',
+    SAFETY_INCIDENT_UNASSIGNED: 'safety.respond',
+    SAFETY_SIGNAL: 'safety.respond',
     # Threshold alerts: an operational rate (unfulfilled, acceptance, ETA) is
     # the City Ops Manager's to take (`trip.write`); an SOS line is Safety's;
     # the payout-age line is Finance's (`finance.read`, the capability that

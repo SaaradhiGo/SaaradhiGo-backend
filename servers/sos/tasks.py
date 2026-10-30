@@ -12,8 +12,11 @@ def dispatch_sos(self, sos_id):
     """Fan an SOS event out to ops + the caller's emergency contact.
 
     Three channels:
-      1. FCM push to every staff user with role='admin' (the ops on-call
-         crowd). Reuses the async push facade so we don't block.
+      1. FCM push to the operators holding `safety.respond` at the event's
+         anchor (Global holders included; an unanchored event goes to every
+         holder). It used to go to every staff user with the legacy role
+         'admin' in every city, which paged Austin for Hyderabad. Reuses the
+         async push facade so we don't block.
       2. SMS to the caller's emergency_contact (if set), via the
          existing SNS helper. Best-effort.
       3. (Future) Real-time event on /ops/sos/live WebSocket — wired
@@ -25,8 +28,8 @@ def dispatch_sos(self, sos_id):
     in case of full-channel outage.
     """
     from servers.sos.models import SOSEvent
-    from django.contrib.auth import get_user_model
     from servers.auth_user.services import send_push_notification
+    from servers.safety.scope import responders_for
 
     try:
         event = SOSEvent.objects.select_related('user', 'trip').get(id=sos_id)
@@ -34,7 +37,6 @@ def dispatch_sos(self, sos_id):
         logger.warning(f"dispatch_sos: SOSEvent {sos_id} vanished")
         return False
 
-    User = get_user_model()
     title = "SOS — immediate response required"
     body_lines = [
         f"SOS #{event.id} ({event.event_type}) by {event.user_label or 'unknown'}",
@@ -47,10 +49,9 @@ def dispatch_sos(self, sos_id):
 
     # 1. Ops on-call push.
     try:
-        ops_users = User.objects.filter(
-            is_staff=True,
-            role='admin',
-        ).exclude(fcm_token__isnull=True).exclude(fcm_token='')
+        ops_users = [
+            u for u in responders_for(event.anchor_node) if u.fcm_token
+        ]
         notified = 0
         for u in ops_users:
             if send_push_notification(

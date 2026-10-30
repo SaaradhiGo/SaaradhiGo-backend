@@ -39,6 +39,7 @@ ADMIN_VIEW_MODULES = [
     'servers.search.views',
     'servers.support.admin_support',
     'servers.support.admin_followups',
+    'servers.safety.admin_views',
 ]
 
 #: Endpoint -> why it is not scope-gated. Every entry is a decision.
@@ -133,7 +134,7 @@ def test_every_admin_endpoint_is_scope_gated(name):
 # scoped. Added for the rider case the SCOPE_PATHS row cannot express.
 LIST_CALL = re.compile(
     r'\b(scoped|scoped_or_none|scoped_to_request|in_scope|riders_visible_to|_rider_for'
-    r'|tickets_visible_to|_ticket_for)\s*\(')
+    r'|tickets_visible_to|_ticket_for|incidents_visible_to|signals_visible_to|_incident_for)\s*\(')
 UNFILTERED = re.compile(
     r'\b(Driver|Trip|Vehicle|Payment|TransactionHistory|WithdrawalRequest)'
     r'\.objects\s*\.\s*(all|filter|select_related|prefetch_related)\s*\('
@@ -185,6 +186,22 @@ MUST_SCOPE = {
     'admin_assignees',
     'admin_macro_preview',
     'admin_sla_dashboard',
+    # Safety module: the incident rule (servers/safety/scope.py).
+    'safety_incidents',
+    'safety_incident_detail',
+    'safety_assignees',
+    'safety_assign',
+    'safety_set_status',
+    'safety_link',
+    'safety_unlink',
+    'safety_suspend_driver',
+    'safety_block_rider',
+    'safety_refer_police',
+    'safety_close',
+    'safety_note',
+    'safety_escalate_ticket',
+    'safety_signals',
+    'safety_dismiss_signal',
 }
 
 

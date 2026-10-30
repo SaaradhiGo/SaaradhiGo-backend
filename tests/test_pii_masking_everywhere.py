@@ -278,6 +278,10 @@ def world(geo):
         kind='sos_unanchored', severity='critical', title='SOS could not be routed',
         payload={'sos_id': sos.id}, source_type='sos_event', source_id=str(sos.id),
     )
+    from servers.safety.models import SafetySignal
+    signal = SafetySignal.objects.create(
+        kind='long_stop', trip=trip, country='IN', anchor_node=geo['IN-TG-HYD'],
+        measured={'stopped_minutes': 12.0, 'radius_m': 50}, threshold_version=1)
     # A maker-checker request for the payout: its maker/checker blocks are
     # staff attribution; its payload names the payee like a payout row does.
     maker = User.objects.create_user(
@@ -301,6 +305,7 @@ def world(geo):
         'rider_user': rider_user, 'driver_user': driver_user, 'driver': driver,
         'vehicle': vehicle, 'trip': trip, 'payment': payment, 'withdrawal': withdrawal,
         'ticket': ticket, 'macro': macro, 'sos': sos, 'alert': alert, 'aus_driver': aus_driver,
+        'signal': signal,
         'aus_trip': aus_trip, 'hyd_zone': hyd_zone, 'approval': approval, 'maker': maker,
     }
 
@@ -376,6 +381,7 @@ def _ids(world):
         'rider_id': world['rider_user'].id,
         'ticket_id': world['ticket'].id, 'macro_id': world['macro'].id, 'sos_id': world['sos'].id,
         'alert_id': world['alert'].id, 'withdrawal_id': world['withdrawal'].id,
+        'incident_id': world['sos'].incident_id, 'signal_id': world['signal'].id,
         'pk': world['hyd_zone'].id, 'request_id': world['approval'].id,
     }
 
@@ -417,6 +423,12 @@ INVENTORY = {
     # SOS labels are contact-masked for everybody (incident rule); the
     # reveal there is per active incident.
     'api/v1/sos/admin/': False,
+    # Safety module: masked people, free text and coordinates are the renderer's.
+    'api/v1/safety/admin/incidents/': False,
+    'api/v1/safety/admin/incidents/<int:incident_id>/': True,
+    'api/v1/safety/admin/incidents/<int:incident_id>/assignees/': False,
+    'api/v1/safety/admin/signals/': False,
+    'api/v1/safety/admin/config/': False,
     'api/v1/sos/admin/<int:sos_id>/': False,
     'api/v1/command-centre/admin/alerts/': False,
     # Command Centre (#80): per-city counts, rates and thresholds; no person.

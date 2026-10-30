@@ -188,6 +188,14 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         'ride.issue_receipt_for_trip',
         'ride.persist_location_trail',
         'sos.dispatch_sos',
+        # Safety module sweeps (every minute). acks_late is safe: escalation
+        # fires through a conditional UPDATE on a per-event marker that only
+        # one run can win, signals are one row per (trip, kind) behind a unique
+        # constraint and promotion re-checks under a row lock, so a redelivered
+        # or doubled run converges. They write signals, incidents, alerts and
+        # audit rows, and push to operators; no trip, money or driver status.
+        'safety.escalation_sweep',
+        'safety.evaluate_signals',
     }
     actual = set(tasks)
     added = actual - expected

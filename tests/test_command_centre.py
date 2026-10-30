@@ -295,6 +295,12 @@ class TestTodayIsTheCitysDay:
         assert overview.window_bounds('7d', now, ZoneInfo('America/Chicago')) == (now - WEEK, now)
 
     def test_the_endpoint_reports_each_citys_window(self, geo, world):
+        # Austin is paused and its fixture trips are two hours old, so in its
+        # first two local hours "today" is empty and the row would drop out.
+        # An online driver keeps the row whatever the clock says.
+        world['aus_driver'].status = 'online'
+        world['aus_driver'].approved = True
+        world['aus_driver'].save(update_fields=['status', 'approved'])
         client, _ = operator('super_admin', geo)
         _, data = _get(client, window='today')
         hyd, aus = _row(data, 'IN-TG-HYD'), _row(data, 'US-TX-AUS')

@@ -6,7 +6,7 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import AnonymousUser
 
-from servers.driver.qa_eligibility import may_operate
+from servers.driver.qa_eligibility import is_dispatchable, may_operate
 from django.core.cache import cache
 from base.utils import generate_otp
 from base.money import currency_for_trip, format_money
@@ -143,6 +143,11 @@ class LocationBroadcastMixin:
                 return
 
 
+# Application close code for "this driver may not operate": used when a connect
+# is refused for eligibility AND when an operator suspends a connected driver.
+DRIVER_NOT_ELIGIBLE_CLOSE_CODE = 4004
+
+
 class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     """
     WebSocket consumer for real-time driver location updates.
@@ -169,7 +174,7 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         # eligibility that is honoured ONLY in a QA environment. `approved`
         # still means a real document review and nothing else.
         if not may_operate(self.driver):
-            await self.close(code=4004)
+            await self.close(code=DRIVER_NOT_ELIGIBLE_CLOSE_CODE)
             return
         lat = self.scope.get('lat')
         lng = self.scope.get('lng')
@@ -297,6 +302,12 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             # Update location in Redis Geo (using the "smart" checker)
             result = await self._add_driver_location(lng, lat)
 
+            if result.get('ineligible'):
+                # Suspended (or otherwise no longer dispatchable) between the
+                # connect and this ping. Never re-index; end the session.
+                await self.close(code=DRIVER_NOT_ELIGIBLE_CLOSE_CODE)
+                return
+
             if result.get('success'):
                 self._gps_accepted = getattr(self, '_gps_accepted', 0) + 1
                 # Queued, not sent: this acknowledgement is emitted per GPS frame,
@@ -374,6 +385,16 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             }))
 
     # -- Event handlers (called via channel layer) --
+
+    async def driver_suspended(self, event):
+        """An operator suspended this driver: end the session server-side.
+
+        Sent to the `driver_<id>` group by `operator_suspend`. Closes with the
+        same code a refused connect uses (4004, "not eligible to operate"), so
+        the app's existing handling applies and a reconnect is refused the same
+        way until the driver is reinstated.
+        """
+        await self.close(code=DRIVER_NOT_ELIGIBLE_CLOSE_CODE)
 
     async def trip_taken(self, event):
         """Another driver won this ride — dismiss the request card."""
@@ -488,9 +509,12 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         """Flip the driver offline + close the open DriverSession."""
         try:
             from servers.driver.fatigue import record_session_end
-            self.driver.status = "off"
-            # Scoped for the same reason as going online, above.
-            self.driver.save(update_fields=['status'])
+            # Never overwrite 'blocked': a suspension closes this very socket,
+            # and writing 'off' here would silently lift the block.
+            from servers.driver.models import Driver
+            Driver.objects.filter(pk=self.driver.pk).exclude(
+                status__iexact='blocked').update(status='off')
+            self.driver.refresh_from_db(fields=['status'])
             record_session_end(self.driver, reason='offline')
             return {'ok': True}
         except Exception as e:
@@ -507,7 +531,15 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         return remove_driver(self.driver_id)
     @database_sync_to_async
     def _add_driver_location(self, lng, lat):
-        from servers.redis_client import add_driver_location
+        from servers.driver.models import Driver
+        from servers.redis_client import add_driver_location, remove_driver
+        # Fresh read, not the instance loaded at connect: a suspension after
+        # connect must stop the very next ping from re-indexing the driver.
+        current = Driver.objects.filter(pk=self.driver_id).first()
+        if not is_dispatchable(current):
+            remove_driver(self.driver_id)
+            return {'success': False, 'ineligible': True,
+                    'error': 'Driver is not eligible to operate'}
         return add_driver_location(self.driver_id, lng=lng, lat=lat)
 
     @database_sync_to_async

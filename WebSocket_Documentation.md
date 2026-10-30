@@ -11,6 +11,8 @@ This consumer tracks the driver's real-time live location, activates them to an 
 **Endpoint:** `ws://<host>/ws/driver/location/?token=<JWT>&lat=<lat>&lng=<lng>`
 **Role:** Driver Only
 
+**Close code 4004** (driver not eligible to operate): sent when a connect is refused, and also when an operator suspends a connected driver. The server closes the socket, drops the driver from the dispatch index, and refuses further location pings until reinstatement and a fresh connect.
+
 ### Connection Flow
 1. Connect with JWT Token, latitude, and longitude.
 2. Server verifies `Driver` status. Driver is added to spatial indexing and marked as `online`.

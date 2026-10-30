@@ -31,6 +31,7 @@ wall-clock duration reflects that. Without genuine blocking that assertion
 fails, so a green result cannot come from thread-scheduling luck.
 """
 
+import contextlib
 import threading
 import time
 from decimal import Decimal
@@ -107,12 +108,45 @@ def _accept_raw(trip_id, driver_user):
     consumer.user = driver_user
 
     raw = TripStatusConsumer.__dict__['_accept_trip'].func
-    with mock.patch.object(rc, 'set_driver_active_trip', return_value=True), \
-            mock.patch.object(rc, 'remove_driver', return_value=True), \
-            mock.patch.object(rc, 'cache_trip', return_value=True), \
-            mock.patch('servers.ride.dispatch.dismiss_outstanding_offers', return_value=[]), \
-            mock.patch('servers.auth_user.services.send_push_notification', return_value=True):
+    with _stubbed_side_effects():
         return raw(consumer)
+
+
+_stub_lock = threading.Lock()
+_stub_depth = 0
+_stub_stack = None
+
+
+@contextlib.contextmanager
+def _stubbed_side_effects():
+    """Patch once for however many threads are inside at the same time.
+
+    Two threads each entering their own `mock.patch.object` on the same
+    attribute can exit out of order: the second thread saved the first
+    thread's mock as the "original" and puts it back, leaving `rc.remove_driver`
+    (and the rest) permanently stubbed for every later test in the process. A
+    reference count restores the real functions exactly once, when the last
+    thread leaves.
+    """
+    global _stub_depth, _stub_stack
+    with _stub_lock:
+        if _stub_depth == 0:
+            stack = contextlib.ExitStack()
+            stack.enter_context(mock.patch.object(rc, 'set_driver_active_trip', return_value=True))
+            stack.enter_context(mock.patch.object(rc, 'remove_driver', return_value=True))
+            stack.enter_context(mock.patch.object(rc, 'cache_trip', return_value=True))
+            stack.enter_context(mock.patch('servers.ride.dispatch.dismiss_outstanding_offers', return_value=[]))
+            stack.enter_context(mock.patch('servers.auth_user.services.send_push_notification', return_value=True))
+            _stub_stack = stack
+        _stub_depth += 1
+    try:
+        yield
+    finally:
+        with _stub_lock:
+            _stub_depth -= 1
+            if _stub_depth == 0:
+                _stub_stack.close()
+                _stub_stack = None
 
 
 @pytest.fixture

@@ -85,3 +85,35 @@ def eligibility_label(driver) -> str:
     if is_qa_test_driver(driver):
         return 'qa-simulated'
     return 'not-eligible'
+
+
+def is_dispatchable(driver) -> bool:
+    """May this driver be INDEXED and OFFERED rides right now?
+
+    `may_operate` plus "not blocked". Suspension writes `approved=False` AND
+    `status='blocked'`; a QA test driver is eligible without `approved`, so the
+    status column is the only thing that keeps a suspended one out. Every
+    dispatch-side read (the location ping that writes the geo index, and
+    candidate selection when offering) goes through this one definition.
+    """
+    if driver is None:
+        return False
+    if (getattr(driver, 'status', '') or '').strip().lower() == 'blocked':
+        return False
+    return may_operate(driver)
+
+
+def dispatchable_driver_ids(driver_ids):
+    """The subset of `driver_ids` that is dispatchable, read from PostgreSQL.
+
+    One query for the whole candidate list; ids that no longer exist drop out.
+    Returns a set of strings, matching how ids appear in geo members.
+    """
+    from servers.driver.models import Driver
+
+    ids = [i for i in driver_ids if str(i).isdigit()]
+    if not ids:
+        return set()
+    rows = Driver.objects.filter(pk__in=ids).exclude(status__iexact='blocked')
+    return {str(d.pk) for d in rows if may_operate(d)}
+

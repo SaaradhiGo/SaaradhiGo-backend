@@ -718,6 +718,17 @@ def _take_off_the_road(driver_id):
             remove_driver(driver_id)
         except Exception:  # noqa: BLE001
             logger.warning('suspend: could not drop driver %s from the geo index', driver_id)
+        # Close any open driver socket (consumer `driver_suspended` -> 4004).
+        # Without this the socket's next ping would re-index the driver.
+        try:
+            from asgiref.sync import async_to_sync
+            from channels.layers import get_channel_layer
+            layer = get_channel_layer()
+            if layer is not None:
+                async_to_sync(layer.group_send)(
+                    f'driver_{driver_id}', {'type': 'driver_suspended'})
+        except Exception:  # noqa: BLE001
+            logger.warning('suspend: could not signal driver %s sockets', driver_id)
     transaction.on_commit(drop)
 
 

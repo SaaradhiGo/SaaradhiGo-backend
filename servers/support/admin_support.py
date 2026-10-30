@@ -54,11 +54,13 @@ from servers.ride.admin_trips import (
 )
 
 from . import macros as macro_lib
-from .models import SupportMacro, SupportMessage, SupportSlaPolicy, SupportTicket
+from .models import (
+    SupportCountryConfig, SupportMacro, SupportMessage, SupportSlaPolicy, SupportTicket,
+)
 from .scope import profile, ticket_may, ticket_place, tickets_visible_to
 from .sla import (
     DEFAULT_MINUTES, DUE_SOON_MINUTES, PRIORITIES, PRIORITY_RANK, apply_due_times,
-    sla_state,
+    enter_status, sla_state,
 )
 from .text import mask_free_text
 
@@ -137,6 +139,9 @@ def _snapshot(ticket):
         'first_responded_at': _iso(ticket.first_responded_at),
         'resolved_at': _iso(ticket.resolved_at),
         'resolution_due_at': _iso(ticket.resolution_due_at),
+        'waiting_since': _iso(ticket.waiting_since),
+        'resolution_paused_seconds': ticket.resolution_paused_seconds,
+        'returned_at': _iso(ticket.returned_at),
     }
 
 
@@ -199,6 +204,9 @@ def _row(ticket, now):
         'updated_at': _iso(ticket.updated_at),
         'resolved_at': _iso(ticket.resolved_at),
         'first_responded_at': _iso(ticket.first_responded_at),
+        'returned_at': _iso(ticket.returned_at),
+        'returned_reason': (mask_free_text(ticket.returned_reason)
+                            if ticket.returned_at else None),
         'sla': sla_state(ticket, now),
     }
 
@@ -221,16 +229,17 @@ def _annotate(queryset):
 
 def _breached_q(now):
     """Open and past a deadline that has not been met."""
+    # A paused ticket (waiting on the user) does not breach resolution.
     return Q(status__in=OPEN_STATUSES) & (
         Q(first_responded_at__isnull=True, first_response_due_at__lt=now)
-        | Q(resolution_due_at__lt=now))
+        | Q(resolution_due_at__lt=now, waiting_since__isnull=True))
 
 
 def _due_soon_q(now):
     soon = now + timedelta(minutes=DUE_SOON_MINUTES)
     return Q(status__in=OPEN_STATUSES) & ~_breached_q(now) & (
         Q(first_responded_at__isnull=True, first_response_due_at__lte=soon)
-        | Q(resolution_due_at__lte=soon))
+        | Q(resolution_due_at__lte=soon, waiting_since__isnull=True))
 
 
 def _day_range_q(date_from, date_to):
@@ -318,6 +327,10 @@ def filter_tickets(request, queryset, now):
     elif breach:
         raise BadInput('INVALID_FILTER', 'breach must be breached or due_soon.', 'breach')
 
+    if (params.get('returned') or '').strip().lower() in ('me', '1', 'true'):
+        queryset = queryset.filter(
+            assigned_to=request.user, returned_at__isnull=False, status__in=OPEN_STATUSES)
+
     country = (params.get('country') or '').strip().upper()
     if country:
         queryset = queryset.filter(country=country)
@@ -358,6 +371,7 @@ def queue_counts(user, node, now):
         breaching=Count('id', filter=_breached_q(now)),
         open=Count('id', filter=open_q),
         closed=Count('id', filter=Q(status='CLOSED')),
+        returned=Count('id', filter=open_q & Q(assigned_to=user, returned_at__isnull=False)),
     )
 
 
@@ -541,14 +555,30 @@ def _new_status(data):
     return value
 
 
+STATUS_FIELDS = ['status', 'resolved_at']
+
+
 def _set_status(ticket, new_status, now):
-    """Move the ticket to `new_status`, keeping resolved_at honest."""
-    ticket.status = new_status
+    """Move the ticket to `new_status`, keeping resolved_at and the
+    waiting-on-user pause honest. Returns every field to save."""
+    extra = enter_status(ticket, new_status, now)
     if new_status == 'CLOSED':
         if ticket.resolved_at is None:
             ticket.resolved_at = now
+        if ticket.returned_at is not None:
+            ticket.returned_at, ticket.returned_reason = None, ''
+            extra += ['returned_at', 'returned_reason']
     else:
         ticket.resolved_at = None
+    return STATUS_FIELDS + extra
+
+
+def _clear_returned(ticket):
+    """The agent has picked the returned ticket up again."""
+    if ticket.returned_at is None:
+        return []
+    ticket.returned_at, ticket.returned_reason = None, ''
+    return ['returned_at', 'returned_reason']
 
 
 def _macro_for(ticket, macro_id):
@@ -621,11 +651,11 @@ def admin_reply(request, ticket_id):
                 locked.first_responded_at = now
                 fields.append('first_responded_at')
             if next_status is not None:
-                _set_status(locked, next_status, now)
-                fields += ['status', 'resolved_at']
+                fields += _set_status(locked, next_status, now)
             elif locked.status == 'OPEN':
-                locked.status = 'IN_PROGRESS'
-                fields.append('status')
+                fields += _set_status(locked, 'IN_PROGRESS', now)
+            fields += _clear_returned(locked)
+            fields = list(dict.fromkeys(fields))
             locked.save(update_fields=fields)
             record_admin_action(
                 request, action='support_ticket_replied', target_type=TARGET,
@@ -723,8 +753,7 @@ def admin_set_status(request, ticket_id):
     def apply(ticket, now):
         if ticket.status == wanted:
             return None
-        _set_status(ticket, wanted, now)
-        return ['status', 'resolved_at']
+        return _set_status(ticket, wanted, now)
     return _change(request, ticket, 'status', apply, 'support_ticket_status_changed')
 
 
@@ -827,7 +856,7 @@ def admin_assign(request, ticket_id):
         if locked.assigned_to_id == (assignee.id if assignee else None):
             return None
         locked.assigned_to = assignee
-        return ['assigned_to']
+        return ['assigned_to', *_clear_returned(locked)]
     return _change(request, ticket, 'assignee', apply, 'support_ticket_assigned')
 
 
@@ -857,6 +886,8 @@ def _macro_dict(macro):
         'country': macro.country, 'issue_types': list(macro.issue_types or []),
         'active': macro.active, 'created_by': _staff(macro.created_by),
         'updated_at': _iso(macro.updated_at),
+        'version': (macro.versions.order_by('-version').values_list('version', flat=True)
+                    .first() or 0) if macro.pk else 0,
     }
 
 
@@ -969,6 +1000,9 @@ def _create_macro(request):
             field='country', issue='support.macro', status=status.HTTP_403_FORBIDDEN)
     with transaction.atomic():
         macro = SupportMacro.objects.create(created_by=request.user, **fields)
+        from .admin_followups import write_macro_version
+
+        write_macro_version(macro, request.user)
         record_admin_action(
             request, action='support_macro_created', target_type=MACRO_TARGET,
             target_id=macro.id, after=_macro_dict(macro), reason='macro created')
@@ -1014,6 +1048,10 @@ def admin_macro_detail(request, macro_id):
         for key, value in changed.items():
             setattr(macro, key, value)
         macro.save()
+        if any(k in changed for k in ('title', 'body', 'locale', 'issue_types')):
+            from .admin_followups import write_macro_version
+
+            write_macro_version(macro, request.user)
         record_admin_action(
             request, action=action, target_type=MACRO_TARGET, target_id=macro.id,
             before=before, after=_macro_dict(macro), reason=action)
@@ -1057,30 +1095,114 @@ def _sla_row(country, priority, row):
     }
 
 
+def _country_node(country):
+    return GeoNode.objects.filter(kind=COUNTRY, code=country).first()
+
+
+def _pending_changes(user):
+    """Open `support.sla_change` requests in countries the caller may read."""
+    from servers.approvals.actions import SUPPORT_SLA_CHANGE
+    from servers.approvals.models import REQUESTED, ApprovalRequest
+
+    rows = []
+    for r in ApprovalRequest.objects.filter(
+            action_key=SUPPORT_SLA_CHANGE, status=REQUESTED).order_by('-id')[:100]:
+        node = _country_node(r.country)
+        if not granted(user, 'support.read', node)[0]:
+            continue
+        p = r.payload or {}
+        rows.append({
+            'id': r.id, 'country': r.country, 'kind': p.get('kind'),
+            'priority': p.get('priority'),
+            'first_response_minutes': p.get('first_response_minutes'),
+            'resolution_minutes': p.get('resolution_minutes'),
+            'waiting_reminder_days': p.get('waiting_reminder_days'),
+            'waiting_autoclose_days': p.get('waiting_autoclose_days'),
+            'refund_review_hours': p.get('refund_review_hours'),
+            'reason': r.request_reason, 'maker_label': r.maker_label,
+            'maker_id': r.maker_id, 'requested_at': _iso(r.requested_at),
+            'expires_at': _iso(r.expires_at),
+        })
+    return rows
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, ScopedPermission('support.read')])
 def admin_sla(request):
-    """GET /support/admin/sla/  The policy for every country and priority."""
+    """GET /support/admin/sla/  The policy for every country and priority, each
+    country's support settings (or "not configured"), and the changes still
+    waiting for a checker."""
+    from .sla_change import config_dict
+
     rows = {(r.country, r.priority): r
             for r in SupportSlaPolicy.objects.select_related('updated_by')}
+    configs = {c.country: c for c in SupportCountryConfig.objects.select_related('updated_by')}
+    editable = [c for c in COUNTRIES
+                if granted(request.user, 'support.sla', _country_node(c))[0]]
     return success_response({
         'results': [_sla_row(c, p, rows.get((c, p))) for c in COUNTRIES for p in PRIORITIES],
-        'may_edit': granted(request.user, 'support.sla')[0],
-        'note': 'The clock does not pause while a ticket waits on the user.',
+        'config': [{**config_dict(c, configs.get(c)),
+                    'updated_at': _iso(configs[c].updated_at) if c in configs else None,
+                    'updated_by': _staff(configs[c].updated_by) if c in configs else None}
+                   for c in COUNTRIES],
+        'pending': _pending_changes(request.user),
+        'may_edit': bool(editable),
+        'editable_countries': editable,
+        'note': 'Waiting on the user pauses the resolution clock only. A change '
+                'needs a second person to approve it before it applies.',
     }, status.HTTP_200_OK)
+
+
+def _propose_sla_change(request, country, kind, target_id, payload, key_tail):
+    """Raise the maker-checker request for an SLA / config change (202)."""
+    from servers.approvals import service as approvals
+    from servers.approvals.actions import SUPPORT_SLA_CHANGE
+    from servers.approvals.models import REQUESTED
+
+    node = _country_node(country)
+    reason = _text(request.data, 'reason', limit=2000) or 'Support SLA change'
+    try:
+        outcome = approvals.require_approval_or_execute(
+            SUPPORT_SLA_CHANGE, actor=request.user, country=country, scope_node=node,
+            target_type=SLA_TARGET if kind == 'sla_policy' else 'support_country_config',
+            target_id=target_id, payload={'kind': kind, 'country': country, **payload},
+            idempotency_key=f'sla_change:{target_id}:{key_tail}', reason=reason,
+            http_request=request)
+    except approvals.ApprovalError as exc:
+        return exc.response()
+    row = outcome.request
+    body = {'approval_request': row.as_dict(), 'duplicate': outcome.duplicate}
+    if row.status == REQUESTED:
+        body['state'] = 'pending_approval'
+        return success_response(body, status.HTTP_202_ACCEPTED)
+    if row.status == 'failed':
+        return error_response(code=row.error_code or 'EXECUTION_FAILED',
+                              message=row.error or 'The change could not be applied.',
+                              field='general', issue=row.error or row.error_code,
+                              status=status.HTTP_409_CONFLICT)
+    body['state'] = 'executed' if row.status == 'executed' else row.status
+    body['result'] = row.result
+    return success_response(body, status.HTTP_200_OK)
 
 
 @api_view(['PUT'])
 @permission_classes([IsAuthenticated, ScopedPermission('support.sla')])
 def admin_sla_update(request, country, priority):
     """PUT /support/admin/sla/<country>/<priority>/
-    {first_response_minutes, resolution_minutes}  Applies to tickets created
-    (or re-prioritised) from now on."""
+    {first_response_minutes, resolution_minutes, reason?}
+
+    Does NOT change the policy: it raises a maker-checker request
+    (`support.sla_change`, always a checker) and answers 202. The change
+    applies, audited, when a different `support.sla` holder approves it, and
+    then only to tickets created (or re-prioritised) from that moment.
+    A City Ops Manager can ask only for a country inside their scope."""
+    from .sla_change import KIND_POLICY, check_policy, policy_dict
+
     country = country.upper()
     if country not in COUNTRIES or priority not in PRIORITY_RANK:
         return error_response(code='NOT_FOUND', message='No such SLA row.', field='country',
                               issue=f'{country}/{priority}', status=status.HTTP_404_NOT_FOUND)
-    node = GeoNode.objects.filter(kind=COUNTRY, code=country).first()
+    node = _country_node(country)
     if not granted(request.user, 'support.sla', node)[0]:
         return error_response(
             code='PERMISSION_DENIED', message=f'You do not hold support.sla for {country}.',
@@ -1088,33 +1210,58 @@ def admin_sla_update(request, country, priority):
     try:
         first = _int(request.data.get('first_response_minutes'), 'first_response_minutes')
         resolution = _int(request.data.get('resolution_minutes'), 'resolution_minutes')
-        if first < 1 or resolution < 1:
-            raise BadInput('INVALID_MINUTES', 'Minutes must be at least 1.',
-                           'first_response_minutes')
-        if resolution < first:
-            raise BadInput('INVALID_MINUTES',
-                           'Resolution cannot be shorter than first response.',
-                           'resolution_minutes')
-        if max(first, resolution) > 60 * 24 * 90:
-            raise BadInput('INVALID_MINUTES', 'Minutes must be at most 90 days.',
-                           'resolution_minutes')
+        error = check_policy(first, resolution)
+        if error:
+            raise BadInput('INVALID_MINUTES', error, 'resolution_minutes')
     except BadInput as exc:
         return exc.response()
-    with transaction.atomic():
-        row = SupportSlaPolicy.objects.select_for_update().filter(
-            country=country, priority=priority).first()
-        before = _sla_row(country, priority, row)
-        if row is not None and (row.first_response_minutes, row.resolution_minutes) == (
-                first, resolution):
-            return success_response({**before, 'changed': False}, status.HTTP_200_OK)
-        if row is None:
-            row = SupportSlaPolicy(country=country, priority=priority)
-        row.first_response_minutes, row.resolution_minutes = first, resolution
-        row.updated_by = request.user
-        row.save()
-        after = _sla_row(country, priority, row)
-        record_admin_action(
-            request, action='support_sla_changed', target_type=SLA_TARGET,
-            target_id=f'{country}:{priority}', before=before, after=after,
-            reason=_text(request.data, 'reason', limit=2000) or 'SLA policy changed')
-    return success_response({**after, 'changed': True}, status.HTTP_200_OK)
+    row = SupportSlaPolicy.objects.filter(country=country, priority=priority).first()
+    if row is not None and (row.first_response_minutes, row.resolution_minutes) == (
+            first, resolution):
+        return success_response({**policy_dict(country, priority, row), 'changed': False},
+                                status.HTTP_200_OK)
+    stamp = _iso(row.updated_at) if row else 'new'
+    return _propose_sla_change(
+        request, country, KIND_POLICY, f'{country}:{priority}',
+        {'priority': priority, 'first_response_minutes': first, 'resolution_minutes': resolution},
+        f'{first}:{resolution}:{stamp}')
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated, ScopedPermission('support.sla')])
+def admin_country_config_update(request, country):
+    """PUT /support/admin/sla/config/<country>/
+    {waiting_reminder_days, waiting_autoclose_days, refund_review_hours, reason?}
+
+    The country's waiting-on-user and refund-review numbers. Same rule as an
+    SLA value: a request for a checker (202), never applied on the spot."""
+    from .sla_change import KIND_CONFIG, check_config, config_dict
+
+    country = country.upper()
+    if country not in COUNTRIES:
+        return error_response(code='NOT_FOUND', message='No such country.', field='country',
+                              issue=country, status=status.HTTP_404_NOT_FOUND)
+    node = _country_node(country)
+    if not granted(request.user, 'support.sla', node)[0]:
+        return error_response(
+            code='PERMISSION_DENIED', message=f'You do not hold support.sla for {country}.',
+            field='country', issue='support.sla', status=status.HTTP_403_FORBIDDEN)
+    try:
+        reminder = _int(request.data.get('waiting_reminder_days'), 'waiting_reminder_days')
+        autoclose = _int(request.data.get('waiting_autoclose_days'), 'waiting_autoclose_days')
+        hours = _int(request.data.get('refund_review_hours'), 'refund_review_hours')
+        error = check_config(reminder, autoclose, hours)
+        if error:
+            raise BadInput('INVALID_CONFIG', error, 'waiting_autoclose_days')
+    except BadInput as exc:
+        return exc.response()
+    row = SupportCountryConfig.objects.filter(country=country).first()
+    if row is not None and (row.waiting_reminder_days, row.waiting_autoclose_days,
+                            row.refund_review_hours) == (reminder, autoclose, hours):
+        return success_response({**config_dict(country, row), 'changed': False},
+                                status.HTTP_200_OK)
+    return _propose_sla_change(
+        request, country, KIND_CONFIG, f'config:{country}',
+        {'waiting_reminder_days': reminder, 'waiting_autoclose_days': autoclose,
+         'refund_review_hours': hours},
+        f'{reminder}:{autoclose}:{hours}:v{row.version if row else 0}')

@@ -48,7 +48,7 @@ BASE = '/api/v1/support/admin/'
 LIST = BASE + 'tickets/'
 MY_TICKETS = '/api/v1/support/tickets/'
 READ_ROLES = {'support_agent', 'finance', 'safety_officer', 'city_ops_manager', SUPER_ADMIN}
-WRITE_ROLES = {'support_agent', SUPER_ADMIN}
+WRITE_ROLES = {'support_agent', 'support_lead', SUPER_ADMIN}
 NO_ACCESS = ['marketing', 'analyst', 'kyc_verifier']
 ROLES = [t['code'] for t in ROLE_TEMPLATES]
 
@@ -243,15 +243,14 @@ class TestCapabilities:
         data = operator('safety_officer', geo)[0].get(url(world['t_hyd'])).json()['data']
         assert data['allowed_actions']['reveal'] and not data['allowed_actions']['reply']
 
-    def test_macro_and_sla_capabilities_are_super_admin_only(self):
+    def test_macro_and_sla_capabilities_are_held_by_named_roles_only(self):
+        # AUDIT 27.36: the Support Lead keeps the saved replies, City Ops
+        # asks for SLA changes (through a checker); nobody else holds either.
         assert validate_templates() == []
         holders = {t['code'] for t in ROLE_TEMPLATES if 'support.macro' in t['permissions']}
-        assert holders == {SUPER_ADMIN}
+        assert holders == {SUPER_ADMIN, 'support_lead'}
         holders = {t['code'] for t in ROLE_TEMPLATES if 'support.sla' in t['permissions']}
-        assert holders == {SUPER_ADMIN}
-        for t in ROLE_TEMPLATES:
-            if t['code'] != SUPER_ADMIN:
-                assert 'support.macro' not in t['permissions']
+        assert holders == {SUPER_ADMIN, 'city_ops_manager'}
 
 
 # ===========================================================================
@@ -389,7 +388,8 @@ class TestAssignment:
         assert listed(client, '?assigned=none&status=open') == {
             world['t_newcomer'].id, world['t_driver'].id}
         queues = client.get(LIST).json()['data']['queues']
-        assert queues == {'mine': 1, 'unassigned': 2, 'breaching': 0, 'open': 3, 'closed': 0}
+        assert queues == {'mine': 1, 'unassigned': 2, 'breaching': 0, 'open': 3, 'closed': 0,
+                          'returned': 0}
         post(client, world['t_driver'], 'status/', {'status': 'CLOSED'})
         assert listed(client, '?status=CLOSED') == {world['t_driver'].id}
         assert client.get(LIST).json()['data']['queues']['closed'] == 1
@@ -486,12 +486,9 @@ class TestSla:
                            ).status_code == 403
         admin, _ = operator(SUPER_ADMIN, geo)
         body = {'first_response_minutes': 120, 'resolution_minutes': 600}
+        # A change is a REQUEST for a checker now (see test_support_followups).
         changed = admin.put(BASE + 'sla/IN/normal/', body, format='json')
-        assert changed.status_code == 200 and changed.json()['data']['changed'] is True
-        again = admin.put(BASE + 'sla/IN/normal/', body, format='json')
-        assert again.json()['data']['changed'] is False
-        row = AdminAuditLog.objects.filter(action='support_sla_changed').get()
-        assert row.before['first_response_minutes'] == 240 and row.after['first_response_minutes'] == 120
+        assert changed.status_code == 409, changed.content  # no policy seeded in this fixture
         assert admin.put(BASE + 'sla/IN/normal/', {'first_response_minutes': 50,
                                                    'resolution_minutes': 10}, format='json'
                          ).status_code == 400
@@ -682,15 +679,19 @@ class TestFareReview:
         assert r.status_code == 200, r.content
         assert r.json()['data']['approval_request']['payload']['ticket_id'] == ticket.id
         assert f'#{ticket.id}' in r.json()['data']['approval_request']['request_reason']
-        messages = list(SupportMessage.everything.filter(ticket=ticket, author_role='system'))
-        assert len(messages) == 1 and 'has been issued' in messages[0].body
+        messages = list(SupportMessage.everything.filter(
+            ticket=ticket, author_role='system').order_by('id'))
+        # The same neutral line a waiting refund gets, then the "issued" line.
+        assert len(messages) == 2
+        assert messages[0].body.startswith("We're reviewing your refund request.")
+        assert 'has been issued' in messages[1].body
         assert audit(ticket, 'support_ticket_refund_requested').count() == 1
         data = client.get(url(ticket)).json()['data']
         assert data['refund']['requests'][0]['money_action_status'] == 'completed'
         # A repeat with the same key is the same request: no second message.
         again = self.refund(client, ticket, 20_000)
         assert again.status_code == 200 and again.json()['data']['duplicate'] is True
-        assert SupportMessage.everything.filter(ticket=ticket, author_role='system').count() == 1
+        assert SupportMessage.everything.filter(ticket=ticket, author_role='system').count() == 2
 
     def test_over_the_limit_waits_for_a_checker_then_completes(self, geo, world, policies):
         client, _ = operator('support_agent', geo)
@@ -705,7 +706,7 @@ class TestFareReview:
         request = ApprovalRequest.objects.get(pk=r.json()['data']['approval_request']['id'])
         assert request.status == REQUESTED
         pending = SupportMessage.everything.get(ticket=ticket, author_role='system')
-        assert 'waiting for approval' in pending.body
+        assert pending.body.startswith("We're reviewing your refund request.")
         data = client.get(url(ticket)).json()['data']
         assert data['refund']['requests'][0]['status'] == 'requested'
         # A checker (finance + approval.check) approves it; the ticket hears.

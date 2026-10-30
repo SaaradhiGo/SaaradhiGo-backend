@@ -485,6 +485,7 @@ def _expire_if_due(row):
         row.save(update_fields=['status'])
         _audit(row, 'approval_expired', actor=None, http_request=None,
                actor_label=EXPIRY_LABEL, reason='expired before a checker acted')
+        registry.notify_closed(row, registry.EXPIRED_OUTCOME)
         return True
     return False
 
@@ -575,6 +576,7 @@ def reject(request, checker, reason, http_request=None):
             row.save()
             _audit(row, 'approval_rejected', actor=checker, http_request=http_request,
                    before=before, reason=reason)
+            registry.notify_closed(row, registry.REJECTED_OUTCOME)
     if overdue:
         raise _expired(row)
     return row
@@ -604,6 +606,7 @@ def cancel(request, maker, reason='', http_request=None):
             row.save()
             _audit(row, 'approval_cancelled', actor=maker, http_request=http_request,
                    before=before, reason=reason)
+            registry.notify_closed(row, registry.CANCELLED_OUTCOME)
     if overdue:
         raise _expired(row)
     return row

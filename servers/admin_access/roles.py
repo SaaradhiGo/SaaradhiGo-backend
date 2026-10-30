@@ -61,6 +61,7 @@ PERMISSIONS = {
     # drivers, and the SLA policy sets what "late" means for every ticket.
     'support.macro': 'Create, edit and deactivate support macros',
     'support.sla': 'Change the support SLA policy',
+    'support.dashboard': 'View the support SLA dashboard',
     'finance.payout': 'Approve and execute payout runs',
     'finance.adjust': 'Post a ledger adjustment',
     'pricing.write': 'Change fare cards, multipliers and commission',
@@ -109,6 +110,8 @@ ROLE_TEMPLATES = [
             'driver.write', 'support.read', 'report.read', 'zone.read',
             'zone.write', 'promo.write', 'pii.view',
             'rider.note', 'rider.flag', 'rider.signout', 'rider.block',
+            # SLA numbers for their own country, through a checker.
+            'support.sla', 'support.dashboard',
         ],
     },
     {
@@ -119,6 +122,19 @@ ROLE_TEMPLATES = [
         'permissions': [
             'trip.read', 'rider.read', 'driver.read',
             'support.read', 'support.reply', 'support.refund',
+            'rider.note', 'rider.flag', 'rider.signout',
+        ],
+    },
+    {
+        'code': 'support_lead',
+        'name': 'Support Lead',
+        'description': 'Leads the support desk: tickets, refunds up to the '
+                       'limit, saved replies and the SLA dashboard. Same '
+                       'scope rules as every role; assigned by people.',
+        'permissions': [
+            'trip.read', 'rider.read', 'driver.read',
+            'support.read', 'support.reply', 'support.refund',
+            'support.macro', 'support.dashboard',
             'rider.note', 'rider.flag', 'rider.signout',
         ],
     },

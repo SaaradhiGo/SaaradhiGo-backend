@@ -486,6 +486,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'driver.sweep_stale_driver_presence',
         'schedule': 60.0,
     },
+    'support-waiting-sweep-hourly': {
+        # Support: one reminder, then auto-close, for tickets waiting on the
+        # user, per country config. Skips safety tickets and countries with
+        # no SupportCountryConfig row. Idempotent.
+        'task': 'support.sweep_waiting_tickets',
+        'schedule': _crontab(minute=7),
+    },
     'command-centre-threshold-sweep-every-minute': {
         # Command Centre: measure every city against its active alert
         # thresholds and raise / escalate / clear OperatorAlerts. Idempotent

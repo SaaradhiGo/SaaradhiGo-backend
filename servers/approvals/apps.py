@@ -12,3 +12,4 @@ class ApprovalsConfig(AppConfig):
         # run; an executor module nobody imports is a request nobody can
         # approve, and that would only be discovered by the checker.
         from . import executors  # noqa: F401
+        from servers.support import sla_change  # noqa: F401  (support.sla_change)

@@ -409,6 +409,11 @@ INVENTORY = {
     'api/v1/support/admin/macros/': False,
     'api/v1/support/admin/macros/<int:macro_id>/preview/': False,
     'api/v1/support/admin/sla/': False,
+    # Follow-ups (AUDIT 27.36): the dashboard is counts and staff names only; the
+    # inbox is the caller's own notifications; macro history is staff-authored text.
+    'api/v1/support/admin/sla/dashboard/': False,
+    'api/v1/support/admin/inbox/': False,
+    'api/v1/support/admin/macros/<int:macro_id>/versions/': False,
     # SOS labels are contact-masked for everybody (incident rule); the
     # reveal there is per active incident.
     'api/v1/sos/admin/': False,

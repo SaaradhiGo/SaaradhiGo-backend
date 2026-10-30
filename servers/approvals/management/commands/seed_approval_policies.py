@@ -11,6 +11,7 @@ WHAT IT SEEDS (owner rulings, AUDIT.md §10 / §22, INR in paise)
     pricing.change      always a checker
     driver.deactivate   always a checker
     bulk.action         maker alone up to 50 records
+    support.sla_change  always a checker
 
 Nothing is written for the United States. That is the ruling, not an
 omission: a US action that needs a threshold is refused with
@@ -44,7 +45,7 @@ from servers.admin_audit.actor_option import (
 from servers.admin_audit.services import record_admin_action
 from servers.approvals.actions import (
     BULK_ACTION, DRIVER_DEACTIVATE, FINANCE_ADJUST, FINANCE_PAYOUT,
-    FINANCE_REFUND, PRICING_CHANGE, SUPPORT_REFUND,
+    FINANCE_REFUND, PRICING_CHANGE, SUPPORT_REFUND, SUPPORT_SLA_CHANGE,
 )
 from servers.approvals.models import ALWAYS, COUNT, MONEY
 from servers.approvals.service import active_policy, write_policy_version
@@ -61,6 +62,7 @@ INDIA_DEFAULTS = [
     ('IN', PRICING_CHANGE, ALWAYS, '', None),
     ('IN', DRIVER_DEACTIVATE, ALWAYS, '', None),
     ('IN', BULK_ACTION, COUNT, '', 50),
+    ('IN', SUPPORT_SLA_CHANGE, ALWAYS, '', None),
 ]
 
 #: Deliberately empty. See the module docstring.

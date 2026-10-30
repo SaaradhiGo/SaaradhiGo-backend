@@ -1,7 +1,11 @@
 from django.urls import path
 
+from servers.support.admin_followups import (
+    admin_inbox, admin_inbox_read, admin_macro_restore, admin_macro_versions,
+    admin_sla_dashboard,
+)
 from servers.support.admin_support import (
-    admin_assignees, admin_macro_detail, admin_macro_preview, admin_macros, admin_note,
+    admin_country_config_update, admin_assignees, admin_macro_detail, admin_macro_preview, admin_macros, admin_note,
     admin_set_category, admin_set_priority, admin_set_status, admin_sla, admin_sla_update,
 )
 from servers.support.views import (
@@ -37,6 +41,12 @@ urlpatterns = [
     path('admin/macros/', admin_macros),
     path('admin/macros/<int:macro_id>/', admin_macro_detail),
     path('admin/macros/<int:macro_id>/preview/', admin_macro_preview),
+    path('admin/macros/<int:macro_id>/versions/', admin_macro_versions),
+    path('admin/macros/<int:macro_id>/restore/', admin_macro_restore),
+    path('admin/inbox/', admin_inbox),
+    path('admin/inbox/read/', admin_inbox_read),
     path('admin/sla/', admin_sla),
+    path('admin/sla/dashboard/', admin_sla_dashboard),
+    path('admin/sla/config/<str:country>/', admin_country_config_update),
     path('admin/sla/<str:country>/<str:priority>/', admin_sla_update),
 ]

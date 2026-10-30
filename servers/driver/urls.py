@@ -6,6 +6,10 @@ from .views import (
     driver_incentives, driver_elite_status
 )
 from .onboarding_views import driver_onboarding
+from .admin_drivers import (
+    admin_approve_driver, admin_bulk_drivers, admin_kyc_queue, admin_note_driver,
+    admin_reinstate_driver, admin_review_document, admin_suspend_driver, admin_vehicle_status,
+)
 from .admin_views import (
     list_drivers_admin, retrieve_driver_admin, driver_full_detail_admin,
     update_kyc_status_admin, delete_driver_admin, get_vehicle_details,
@@ -46,6 +50,15 @@ urlpatterns = [
     path('admin/<int:driver_id>/update-kyc/', update_kyc_status_admin),
     path('admin/<int:driver_id>/delete/', delete_driver_admin),
     path('admin/<int:driver_id>/vehicles/', get_vehicle_details),
+    # Drivers & KYC module (console module 3)
+    path('admin/kyc-queue/', admin_kyc_queue),
+    path('admin/bulk/', admin_bulk_drivers),
+    path('admin/<int:driver_id>/documents/review/', admin_review_document),
+    path('admin/<int:driver_id>/approve/', admin_approve_driver),
+    path('admin/<int:driver_id>/suspend/', admin_suspend_driver),
+    path('admin/<int:driver_id>/reinstate/', admin_reinstate_driver),
+    path('admin/<int:driver_id>/note/', admin_note_driver),
+    path('admin/<int:driver_id>/vehicles/<int:vehicle_id>/status/', admin_vehicle_status),
     
     # Admin Withdrawal Management
     path('admin/withdrawals/', list_withdrawals_admin),

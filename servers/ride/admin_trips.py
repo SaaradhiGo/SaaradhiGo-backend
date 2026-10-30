@@ -43,7 +43,7 @@ from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission, granted, node_of
 from servers.admin_access.scoping import scoped, scoped_or_none
 from servers.admin_audit.services import record_admin_action
-from servers.approvals import registry
+from servers.approvals import bulk, registry
 from servers.approvals import service as approvals
 from servers.approvals.actions import (
     BULK_ACTION, FINANCE_ADJUST, FINANCE_REFUND, SUPPORT_REFUND,
@@ -1190,7 +1190,8 @@ def execute_bulk(request_row):
     return {'action': action, 'results': results, 'counts': counts}
 
 
-registry.register(BULK_ACTION)(execute_bulk)
+# bulk.action is shared by every module; the dispatcher routes by target type.
+bulk.register('trip_bulk')(execute_bulk)
 
 
 @api_view(['POST'])

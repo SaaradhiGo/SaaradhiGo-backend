@@ -385,6 +385,9 @@ INVENTORY = {
     'api/v1/driver/admin/': True,
     'api/v1/driver/admin/<int:driver_id>/': True,
     'api/v1/driver/admin/<int:driver_id>/full/': True,
+    # Empty in this world (no driver has documents awaiting review); the rows
+    # are the list's rows, and test_drivers_module checks them masked.
+    'api/v1/driver/admin/kyc-queue/': False,
     'api/v1/driver/admin/<int:driver_id>/vehicles/': False,
     'api/v1/driver/admin/withdrawals/': True,
     'api/v1/ride/admin/trips/': True,

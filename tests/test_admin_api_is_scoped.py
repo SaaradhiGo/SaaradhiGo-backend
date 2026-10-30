@@ -31,6 +31,7 @@ from servers.admin_access.bridge import ScopedPermission
 
 ADMIN_VIEW_MODULES = [
     'servers.driver.admin_views',
+    'servers.driver.admin_drivers',
     'servers.ride.admin_views',
     'servers.payments.admin_views',
     'servers.auth_user.admin_views',

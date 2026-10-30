@@ -165,22 +165,28 @@ def test_update_kyc_status_admin_rejects_without_documents(auth_client_admin, au
     assert response.status_code == status.HTTP_400_BAD_REQUEST
 
 @pytest.mark.django_db
-def test_delete_driver_admin(auth_client_admin, auth_client_driver):
-    """Test deleting a driver."""
+def test_delete_driver_admin_raises_a_deactivation_request(auth_client_admin, auth_client_driver):
+    """Delete no longer deletes: it asks a checker to deactivate (AUDIT s.10,
+    "permanent driver deactivation: always a checker"). The row is kept."""
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    from conftest import seed_actor
+
+    call_command('seed_approval_policies', actor_email=seed_actor().email, stdout=StringIO())
     client, admin_user = auth_client_admin
     driver_client, driver_user = auth_client_driver
-    
+
     driver = Driver.objects.get(user_id=driver_user)
     driver_id = driver.id
-    
+
     url = f"/api/v1/driver/admin/{driver_id}/delete/"
     response = client.delete(url)
-    
-    assert response.status_code == status.HTTP_200_OK
-    
-    # Verify deleted
-    with pytest.raises(Driver.DoesNotExist):
-        Driver.objects.get(id=driver_id)
+
+    assert response.status_code == status.HTTP_202_ACCEPTED, response.content
+    assert response.json()['data']['approval_request']['action_key'] == 'driver.deactivate'
+    assert Driver.objects.filter(id=driver_id).exists()
 
 
 # ---------------------------------------------------------------------------

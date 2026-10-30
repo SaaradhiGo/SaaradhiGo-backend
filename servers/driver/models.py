@@ -466,3 +466,103 @@ class IncentiveQuest(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.target_trips} trips for {self.reward_amount})"
+
+
+# ---------------------------------------------------------------------------
+# Drivers & KYC module (operator console, module 3)
+# ---------------------------------------------------------------------------
+
+class DriverDocumentReview(models.Model):
+    """One operator decision on one document. The latest row per document is
+    its review state; older rows are its history.
+
+    Needed because `Driver.doc_status` / `doc_rejection_reason` hold ONE
+    state for the whole driver, and the console reviews each document on its
+    own. Those two columns stay what the driver app reads: a rejection here
+    also writes them, so the driver sees the reason in the app they have.
+
+    `file_name` is the stored file the decision was about. A re-upload has a
+    different name, so the document is back to "not reviewed" without anyone
+    having to reset it.
+    """
+
+    APPROVED = 'approved'
+    REJECTED = 'rejected'
+    STATE_CHOICES = [(APPROVED, 'Approved'), (REJECTED, 'Rejected')]
+
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE,
+                               related_name='document_reviews')
+    vehicle = models.ForeignKey('Vehicle', on_delete=models.CASCADE, null=True, blank=True,
+                                related_name='document_reviews')
+    document_key = models.CharField(max_length=32)
+    file_name = models.CharField(max_length=512, blank=True, default='')
+    state = models.CharField(max_length=10, choices=STATE_CHOICES)
+    #: Shown to the driver on a rejection.
+    reason = models.TextField(blank=True, default='')
+    reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name='+')
+    reviewed_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['driver', 'document_key', '-reviewed_at'],
+                                name='doc_review_driver_key_idx')]
+
+    def __str__(self):
+        return f'DriverDocumentReview driver={self.driver_id} {self.document_key} {self.state}'
+
+
+class DriverSuspension(models.Model):
+    """An operator suspension. Active while `lifted_at` is NULL.
+
+    Suspending writes the same two columns the licence-expiry sweeper writes
+    (`status='blocked'`, `approved=False`), which is what the dispatch gates
+    already check (`qa_eligibility.may_operate` at socket connect and on
+    accept, `status == 'blocked'` on offers): no new dispatch rule.
+    `previous_approved` is what reinstating restores.
+    """
+
+    REASON_CHOICES = [
+        ('documents', 'Document problem'),
+        ('safety', 'Safety concern'),
+        ('fraud', 'Suspected fraud'),
+        ('conduct', 'Conduct / complaints'),
+        ('rider_complaints', 'Repeated rider complaints'),
+        ('other', 'Other (note required)'),
+        ('deactivated', 'Permanently deactivated'),
+    ]
+
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='suspensions')
+    reason_code = models.CharField(max_length=32, choices=REASON_CHOICES)
+    note = models.TextField(blank=True, default='')
+    previous_approved = models.BooleanField(default=False)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    lifted_at = models.DateTimeField(null=True, blank=True)
+    lifted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                  related_name='+')
+    lift_note = models.TextField(blank=True, default='')
+
+    class Meta:
+        constraints = [
+            # Suspending twice is the same suspension.
+            models.UniqueConstraint(fields=['driver'], condition=models.Q(lifted_at__isnull=True),
+                                    name='driver_one_active_suspension'),
+        ]
+
+    def __str__(self):
+        return f'DriverSuspension driver={self.driver_id} {self.reason_code}'
+
+
+class DriverNote(models.Model):
+    """An internal operator note. Never shown to the driver."""
+
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='operator_notes')
+    body = models.TextField()
+    author = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                               related_name='+')
+    idempotency_key = models.CharField(max_length=200, unique=True, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    def __str__(self):
+        return f'DriverNote driver={self.driver_id}'

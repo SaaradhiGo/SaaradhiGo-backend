@@ -29,7 +29,9 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
 
-from servers.admin_access.masking import mask_email, mask_name, mask_phone
+from servers.admin_access.masking import (
+    STRICT, TRUSTED, mask_email, mask_name, mask_payload, mask_phone,
+)
 from servers.admin_access.models import AdminAssignment, AdminRole, GeoNode
 from servers.driver.models import Driver
 
@@ -121,6 +123,18 @@ class TestTheMaskers:
 
     def test_a_single_name_survives(self):
         assert mask_name('Ravi') == 'Ravi'
+
+    def test_a_name_that_is_a_phone_number_is_masked_as_one(self):
+        """An account with no name shows its number in the name field."""
+        assert mask_name('+919876543210') == '+91••••••3210'
+        assert mask_name('ravi@example.test') == 'r•••@example.test'
+
+    @pytest.mark.parametrize('policy', [STRICT, TRUSTED], ids=['strict', 'trusted'])
+    def test_a_phone_in_a_name_field_is_masked_for_every_viewer(self, policy):
+        payload = {'driver_name': '+919876543210', 'full_name': 'Ravi Kumar'}
+        mask_payload(payload, policy)
+        assert payload['driver_name'] == '+91••••••3210'
+        assert payload['full_name'] == ('Ravi Kumar' if policy is TRUSTED else 'Ravi K.')
 
     def test_empty_values_pass_through(self):
         """A mask that turns None into bullets invents data."""

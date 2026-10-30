@@ -121,16 +121,28 @@ def mask_email(value):
     return f'{local[0]}{BULLET * max(1, len(local) - 1)}@{domain}'
 
 
+def _contact_shaped(text):
+    """True for an email or a phone number, whichever field it sits in."""
+    return '@' in text or text.replace('-', '').replace(' ', '').lstrip('+').isdigit()
+
+
 def mask_name(value):
     """`Ravi Kumar` -> `Ravi K.`
 
     The first name survives. An operator has to be able to say "I am
     looking at Ravi's record" out loud in a stand-up without reading a
     full legal name off the screen.
+
+    A "name" that is really a phone number or an email (an account created
+    without a name shows its number there) is masked as what it is: a
+    single word survives whole, so `+919876543210` would otherwise leak.
     """
     if not value:
         return value
-    parts = str(value).strip().split()
+    text = str(value).strip()
+    if _contact_shaped(text):
+        return mask_contact(text)
+    parts = text.split()
     if len(parts) == 1:
         return parts[0]
     return f'{parts[0]} {parts[-1][0]}.'
@@ -426,6 +438,10 @@ def mask_payload(payload, policy=STRICT):
         elif key in NAME_FIELDS:
             if not policy.full_names and isinstance(value, str):
                 payload[key] = mask_name(value)
+            elif isinstance(value, str) and _contact_shaped(value.strip()):
+                # A full name is shown to trusted viewers; a number in the
+                # name field is still a number, masked for everybody.
+                payload[key] = mask_contact(value)
         elif key in COORDINATE_FIELDS:
             if not policy.exact_coordinates:
                 payload[key] = round_coordinate(value)

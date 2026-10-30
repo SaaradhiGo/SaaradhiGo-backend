@@ -127,8 +127,8 @@ class TestTheHierarchy:
 # ---------------------------------------------------------------------------
 
 class TestRoles:
-    def test_all_eight_are_seeded(self, geo):
-        assert AdminRole.objects.filter(is_template=True).count() == 8
+    def test_all_nine_are_seeded(self, geo):
+        assert AdminRole.objects.filter(is_template=True).count() == 9
 
     def test_every_seeded_permission_exists(self):
         """A permission string that is not in the catalogue grants nothing

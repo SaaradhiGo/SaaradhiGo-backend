@@ -1,7 +1,7 @@
 """The role x capability matrix for SOS, support tickets, zones and rate cards.
 
 Every row of the matrix the owner ruled on (2026-10-28), as a test, for
-each of the eight seeded roles, over real HTTP with a JWT. The matrix:
+each of the nine seeded roles, over real HTTP with a JWT. The matrix:
 
   endpoint                          cap              SA  CityOps Support Safety KYC Fin Mkt Analyst
   GET  /sos/admin/  (+ detail)      safety.respond    G    -       -       R     -   -   -    -
@@ -52,13 +52,14 @@ pytestmark = pytest.mark.django_db
 User = get_user_model()
 
 ROLES = [t['code'] for t in ROLE_TEMPLATES]
-assert len(ROLES) == 8
+assert len(ROLES) == 9
 
 # --- the matrix, as data ----------------------------------------------------
 
 SOS_ROLES = {SUPER_ADMIN, 'safety_officer'}
-TICKET_READ_ROLES = {SUPER_ADMIN, 'city_ops_manager', 'support_agent', 'safety_officer', 'finance'}
-TICKET_WRITE_ROLES = {SUPER_ADMIN, 'support_agent'}
+TICKET_READ_ROLES = {SUPER_ADMIN, 'city_ops_manager', 'support_agent', 'support_lead',
+                      'safety_officer', 'finance'}
+TICKET_WRITE_ROLES = {SUPER_ADMIN, 'support_agent', 'support_lead'}
 ZONE_READ_ROLES = {SUPER_ADMIN, 'city_ops_manager', 'finance', 'analyst'}
 PRICING_WRITE_ROLES = {SUPER_ADMIN}
 

@@ -46,6 +46,7 @@ DRIVER_DEACTIVATE = 'driver.deactivate'
 BULK_ACTION = 'bulk.action'
 POLICY_CHANGE = 'approvals.policy_change'
 THRESHOLD_CHANGE = 'command_centre.threshold_change'
+SUPPORT_SLA_CHANGE = 'support.sla_change'
 
 ACTIONS = {
     action.key: action for action in (
@@ -62,6 +63,10 @@ ACTIONS = {
         # action (owner, AUDIT.md section 10). Anchored at the city.
         Action(THRESHOLD_CHANGE, 'Change to a Command Centre alert threshold', 'platform.settings',
                always_checker=True),
+        # A support SLA value (or a country's waiting / refund-review numbers).
+        # Always a checker: the policy row is `always`, seeded per country.
+        Action(SUPPORT_SLA_CHANGE, 'Change to a support SLA or country support setting',
+               'support.sla'),
     )
 }
 

@@ -146,6 +146,13 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # redelivered run converges on the same alerts. Writes alerts and
         # audit rows only; no trip, money or driver status.
         'command_centre.evaluate_alert_thresholds',
+        # Support waiting-on-user sweep (hourly): one reminder, then auto-close,
+        # per SupportCountryConfig. acks_late is safe: a reminder is guarded by
+        # reminder_sent_at and a system-message key, an auto-close by a row lock
+        # that re-checks WAITING_USER, so a redelivered run converges. Skips
+        # safety tickets and countries with no config row. Writes tickets,
+        # system messages and audit rows only; no money.
+        'support.sweep_waiting_tickets',
         'driver.block_expired_driver_licenses',
         'driver.sweep_stale_driver_presence',
         'payments.reconcile_stuck_payments',

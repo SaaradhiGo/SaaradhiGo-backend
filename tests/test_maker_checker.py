@@ -244,7 +244,7 @@ class TestSeed:
         assert set(active) == {
             ('IN', 'support.refund'), ('IN', 'finance.refund'), ('IN', 'finance.adjust'),
             ('IN', 'finance.payout'), ('IN', 'pricing.change'), ('IN', 'driver.deactivate'),
-            ('IN', 'bulk.action'),
+            ('IN', 'bulk.action'), ('IN', 'support.sla_change'),
         }
         assert (active['IN', 'support.refund'].maker_limit,
                 active['IN', 'support.refund'].currency) == (50_000, 'INR')
@@ -284,7 +284,7 @@ class TestSeed:
         row = AdminAuditLog.objects.get(action='approval_policies_seeded')
         assert row.actor_id == actor.pk
         assert row.actor_label == f'{actor.email} via seed_approval_policies'
-        assert len(row.after['created']) == 7
+        assert len(row.after['created']) == 8
         assert row.after['us_policies_written'] == 0
 
     def test_every_catalogue_action_is_a_known_capability(self):
@@ -840,7 +840,7 @@ class TestPolicyChange:
         assign(analyst, 'analyst', geo['IN-TG-HYD'])
         resp = client(analyst).get(f'{API}/policies/?country=IN')
         assert resp.status_code == 200
-        assert len(resp.json()['data']['policies']) == 7
+        assert len(resp.json()['data']['policies']) == 8
         assert client(hyd_support).get(f'{API}/policies/').status_code == 403
 
 

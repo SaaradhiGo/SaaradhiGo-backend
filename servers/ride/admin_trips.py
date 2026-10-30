@@ -877,23 +877,31 @@ def _linked_ticket(request, trip):
     return ticket.id
 
 
-def _note_refund_on_ticket(request, ticket_id, row, amount, currency):
-    """Record the link: an audit row on the ticket and, while the refund waits
-    for a checker, a system message. (A refund that ran at once posts its
-    own "done" message from the executor.)"""
+def _post_refund_review_message(ticket_id, request_id):
+    """The ONE rider-facing line about a refund request, however it is being
+    handled: neutral, with the country's review timeframe if one is
+    configured. Nothing about approval, checking or any internal step."""
+    from servers.support.models import SupportTicket
     from servers.support.service import post_system_message
+    from servers.support.sla import refund_review_sentence
 
-    shown = f'{from_minor(amount, currency)} {currency}'
+    country = SupportTicket.objects.filter(pk=ticket_id).values_list(
+        'country', flat=True).first()
+    post_system_message(ticket_id, refund_review_sentence(country or ''),
+                        key=f'refund-pending:{request_id}')
+
+
+def _note_refund_on_ticket(request, ticket_id, row, amount, currency):
+    """Record the link: an audit row on the ticket and the neutral "we're
+    reviewing" line for the rider (the same whether the refund ran at once
+    or waits for a checker)."""
     record_admin_action(
         request, action='support_ticket_refund_requested', target_type='support_ticket',
         target_id=ticket_id,
         after={'trip_id': row.target_id, 'approval_request_id': row.id,
                'amount_minor': amount, 'currency': currency, 'state': row.status},
         reason=f'refund requested from ticket #{ticket_id}')
-    if row.status == REQUESTED:
-        post_system_message(
-            ticket_id, f'A refund of {shown} has been requested for this trip and is '
-                       f'waiting for approval.', key=f'refund-pending:{row.id}')
+    _post_refund_review_message(ticket_id, row.id)
 
 
 @api_view(['POST'])
@@ -1067,9 +1075,12 @@ def execute_refund(request_row):
     if ticket_id:
         from servers.support.service import post_system_message
 
-        done = ('The refund of %s %s for this trip has been issued.'
+        # The "we're reviewing" line comes first (a refund that ran at once
+        # has not posted it yet); the key makes a second post a no-op.
+        _post_refund_review_message(ticket_id, request_row.id)
+        done = ('Your refund of %s %s for this trip has been issued.'
                 if state == TripMoneyAction.COMPLETED else
-                'The refund of %s %s for this trip has been approved and is being processed.')
+                'Your refund of %s %s for this trip has been processed and is on its way.')
         post_system_message(ticket_id, done % (from_minor(amount, trip.currency), trip.currency),
                             key=f'refund-done:{request_row.id}')
     return {'money_action_id': row.id, 'status': state, 'method': method,
@@ -1105,6 +1116,18 @@ def execute_adjustment(request_row):
 registry.register(SUPPORT_REFUND)(execute_refund)
 registry.register(FINANCE_REFUND)(execute_refund)
 registry.register(FINANCE_ADJUST)(execute_adjustment)
+
+
+# A refund tied to a ticket that is rejected, cancelled or lets expire goes
+# back to the agent who asked (one callback, no polling).
+def _refund_closed(request_row, outcome):
+    from servers.support.service import return_refund_to_agent
+
+    return_refund_to_agent(request_row, outcome)
+
+
+registry.on_closed(SUPPORT_REFUND)(_refund_closed)
+registry.on_closed(FINANCE_REFUND)(_refund_closed)
 
 
 # ---------------------------------------------------------------------------

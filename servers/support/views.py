@@ -161,9 +161,16 @@ def add_user_message(request, ticket_id):
         ticket=ticket, author=request.user, author_role='user', body=body,
     )
     # If support was waiting on the user, move it back to in-progress.
+    # The user answering ends the pause on the resolution clock.
     if ticket.status == 'WAITING_USER':
-        ticket.status = 'IN_PROGRESS'
-        ticket.save(update_fields=['status', 'updated_at'])
+        from django.db import transaction
+        from servers.support.sla import enter_status
+
+        with transaction.atomic():
+            locked = SupportTicket.objects.select_for_update().get(pk=ticket.pk)
+            if locked.status == 'WAITING_USER':
+                fields = enter_status(locked, 'IN_PROGRESS', timezone.now())
+                locked.save(update_fields=['status', 'updated_at', *fields])
     return success_response(SupportMessageSerializer(msg).data, status.HTTP_201_CREATED)
 
 
@@ -179,9 +186,12 @@ def close_my_ticket(request, ticket_id):
         )
     if ticket.status == 'CLOSED':
         return success_response(SupportTicketSerializer(ticket).data, status.HTTP_200_OK)
-    ticket.status = 'CLOSED'
-    ticket.resolved_at = timezone.now()
-    ticket.save(update_fields=['status', 'resolved_at', 'updated_at'])
+    from servers.support.sla import enter_status
+
+    now = timezone.now()
+    fields = enter_status(ticket, 'CLOSED', now)
+    ticket.resolved_at = now
+    ticket.save(update_fields=['status', 'resolved_at', 'updated_at', *fields])
     return success_response(SupportTicketSerializer(ticket).data, status.HTTP_200_OK)
 
 

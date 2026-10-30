@@ -75,7 +75,7 @@ GEO = [
 ]
 
 #: One test login per seeded role. QA only — see `_refuse_in_production`.
-#: Eight roles need eight logins; testing them through one account with
+#: Every role needs its own login; testing them through one account with
 #: everything proves nothing about scope.
 #: NOTE THE ABSENCE OF A SUPER ADMIN.
 #:
@@ -89,6 +89,7 @@ GEO = [
 TEST_ADMINS = [
     ('qa.cityops@saaradhigo.test', 'city_ops_manager', 'IN-TG-HYD'),
     ('qa.support@saaradhigo.test', 'support_agent', 'IN-TG-HYD'),
+    ('qa.supportlead@saaradhigo.test', 'support_lead', 'IN-TG-HYD'),
     ('qa.safety@saaradhigo.test', 'safety_officer', 'IN-TG-HYD'),
     ('qa.kyc@saaradhigo.test', 'kyc_verifier', 'IN-TG-HYD'),
     ('qa.finance@saaradhigo.test', 'finance', 'IN-TG-HYD'),

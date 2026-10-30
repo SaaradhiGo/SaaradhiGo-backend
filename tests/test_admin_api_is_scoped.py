@@ -38,6 +38,7 @@ ADMIN_VIEW_MODULES = [
     'servers.auth_user.admin_views',
     'servers.search.views',
     'servers.support.admin_support',
+    'servers.support.admin_followups',
 ]
 
 #: Endpoint -> why it is not scope-gated. Every entry is a decision.
@@ -183,6 +184,7 @@ MUST_SCOPE = {
     'admin_assign',
     'admin_assignees',
     'admin_macro_preview',
+    'admin_sla_dashboard',
 }
 
 

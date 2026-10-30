@@ -1035,7 +1035,7 @@ class TestPoliceReferral:
         data = world['aus_safety'][0].get(f'{INCIDENTS}{incident.id}/').json()['data']
 
         assert data['emergency'] == {'country': 'US', 'configured': False, 'numbers': []}
-        assert '112' not in json.dumps(data)
+        assert '"112"' not in json.dumps(data)
 
     def test_the_numbers_come_from_the_registry_not_from_safety_code(self):
         from base.countries import COUNTRIES

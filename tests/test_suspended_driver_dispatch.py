@@ -36,7 +36,7 @@ VT = 'sedan'
 def _make_driver(suffix):
     vt, _ = VehicleType.objects.get_or_create(type=VT)
     u = User.objects.create_user(phone_number=f'+9198400{suffix:05d}', role='driver')
-    d = Driver.objects.create(user_id=u, approved=True, status='active')
+    d = Driver.objects.create(id=7000 + suffix, user_id=u, approved=True, status='active')
     v = Vehicle.objects.create(driver_id=d, vehicle_type_id=vt,
                                vehicle_number=f'TS09SU{suffix:04d}')
     d.active_vehicle = v
@@ -90,6 +90,17 @@ async def _wait_indexed(driver_id, timeout=10):
     return False
 
 
+async def _assert_not_indexed(driver_id, timeout=5):
+    """Disconnect cleanup is asynchronous; allow it to land, then require absence."""
+    for _ in range(int(timeout * 10)):
+        if not await asyncio.to_thread(_indexed, driver_id):
+            return
+        await asyncio.sleep(0.1)
+    members = await asyncio.to_thread(
+        rc.redis_client.zrange, rc.geo_key_for(VT), 0, -1)
+    raise AssertionError(f'driver {driver_id} still indexed; members={members}')
+
+
 async def _expect_close(comm, timeout=10):
     """Drain frames until the socket's close arrives; return its code."""
     deadline = asyncio.get_event_loop().time() + timeout
@@ -118,7 +129,7 @@ async def test_suspend_closes_a_connected_drivers_socket():
 
     assert await _expect_close(comm) == 4004
     await asyncio.sleep(0.5)
-    assert not await asyncio.to_thread(_indexed, driver.id)
+    await _assert_not_indexed(driver.id)
     # Closing the socket must not lift the block (disconnect used to write 'off').
     fresh = await asyncio.to_thread(Driver.objects.get, pk=driver.pk)
     assert fresh.status == 'blocked' and fresh.approved is False
@@ -138,11 +149,11 @@ async def test_a_ping_after_suspension_does_not_reindex_the_driver():
         Driver.objects.filter(pk=driver.pk).update(approved=False, status='blocked')
         rc.remove_driver(driver.id)
     await asyncio.to_thread(_block_quietly)
-    assert not await asyncio.to_thread(_indexed, driver.id)
+    await _assert_not_indexed(driver.id)
 
     await comm.send_to(text_data=json.dumps({'lat': 17.4455, 'lng': 78.3805}))
     assert await _expect_close(comm) == 4004
-    assert not await asyncio.to_thread(_indexed, driver.id)
+    await _assert_not_indexed(driver.id)
 
 
 @pytest.mark.postgres

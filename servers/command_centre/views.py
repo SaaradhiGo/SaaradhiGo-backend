@@ -98,12 +98,12 @@ def _cities_for(request):
     return list(cities), requested_node(request)
 
 
-def _cache_key(request, window, include_money, node, include_sos=True):
+def _cache_key(request, window, include_money, node, include_sos=True, finance_codes=()):
     paths = scope_paths(request.user)
     digest = hashlib.sha256(repr((
         sorted(paths) if paths is not None else '*',
         node.code if node is not None else '',
-        window, include_money, include_sos,
+        window, include_money, include_sos, tuple(finance_codes),
     )).encode()).hexdigest()[:32]
     return f'command_centre:overview:{digest}'
 
@@ -128,8 +128,14 @@ def admin_overview(request):
 
     include_money, _how = granted(request.user, 'finance.read')
     include_sos = sees_live_sos(request.user)
+    # Aggregate money tiles (finance.aggregate): city totals only, in the places
+    # that capability is held. Never a per-driver figure.
+    from servers.payments.aggregates import cities_with_aggregate, finance_aggregates
+
+    finance_cities = cities_with_aggregate(request.user, cities)
     ttl = int(getattr(settings, 'COMMAND_CENTRE_OVERVIEW_CACHE_SECONDS', 30) or 0)
-    key = _cache_key(request, window, include_money, node, include_sos)
+    key = _cache_key(request, window, include_money, node, include_sos,
+                     [c.code for c in finance_cities] + [f'recon:{include_money}'])
     if ttl:
         cached = cache.get(key)
         if cached is not None:
@@ -137,6 +143,13 @@ def admin_overview(request):
 
     payload = build_overview(cities, window, include_money=include_money,
                              include_sos=include_sos, scope_code=node.code if node is not None else None)
+    payload['finance'] = {
+        'visible': bool(finance_cities),
+        'tiles': list(finance_aggregates(finance_cities, window).values()) if finance_cities else [],
+        # The reconciliation page needs finance.read; the tile shows the count
+        # to every holder but links only for those who can open the page.
+        'reconciliation_link': bool(include_money),
+    }
     # On an UNRESTRICTED board (Super Admin) a paused city with nothing in
     # it is noise, while a paused city with trips (Austin on QA) is a row
     # the owner asked to see. An operator scoped to a city always gets that

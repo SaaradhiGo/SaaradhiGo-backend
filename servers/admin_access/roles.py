@@ -64,6 +64,12 @@ PERMISSIONS = {
     'support.dashboard': 'View the support SLA dashboard',
     'finance.payout': 'Approve and execute payout runs',
     'finance.adjust': 'Post a ledger adjustment',
+    # Per-country payout rules (fee, minimum, stuck hours, schedule), always
+    # through a checker. Finance and Super Admin only.
+    'finance.config': 'Change a country payout settings (through a checker)',
+    # Totals for a city, never a person's earnings: GMV, take rate, payouts
+    # pending, reconciliation status. Held without finance.read.
+    'finance.aggregate': 'See aggregate money metrics, no individual earnings',
     # CSV exports of settlements, payouts and payments: scoped and masked like
     # the screens, every export audited with its filters and row count.
     'finance.export': 'Export settlements, payouts and payments as CSV',
@@ -124,6 +130,8 @@ ROLE_TEMPLATES = [
             'safety.read',
             # SLA numbers for their own country, through a checker.
             'support.sla', 'support.dashboard',
+            # Aggregate money on the Command Centre, no individual earnings.
+            'finance.aggregate',
         ],
     },
     {
@@ -185,6 +193,7 @@ ROLE_TEMPLATES = [
         'permissions': [
             'trip.read', 'driver.read', 'rider.read', 'support.read',
             'finance.read', 'finance.payout', 'finance.adjust', 'finance.export',
+            'finance.config', 'finance.aggregate',
             'support.refund', 'report.read', 'zone.read', 'pii.view',
             'rider.note',
         ],
@@ -207,6 +216,8 @@ ROLE_TEMPLATES = [
             'trip.read', 'driver.read', 'rider.read', 'report.read',
             # Reports need rate context; a rate card names no person.
             'zone.read',
+            # Aggregate money only; never an individual's earnings.
+            'finance.aggregate',
         ],
     },
 ]

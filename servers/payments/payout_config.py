@@ -17,25 +17,49 @@ The driver's home city decides when there is one; else the country of their phon
 number; else the currency of the wallet they are paid from (see
 `driver_payout_country`). A driver who can be placed in no country has no rules.
 
-INDIA'S VALUES
---------------
-`INDIA_SEED` is exactly what the code did before this module existed (2 percent,
-500.00 rupees, a payout stuck after 24 hours). It is only ever written by
-`seed_payout_config`, create-if-missing; nothing here reads it as a fallback.
+THE FEE RULE (owner, AUDIT 27.43)
+---------------------------------
+Any fee shown to a driver or a rider must be the fee actually charged, read
+from the same config value. `withdrawal_fee` is the ONLY source for both the
+number the balance endpoint shows (`fee_percent`, `fee_display`) and the
+amount taken when a withdrawal is created. `tests/test_finance_actions.py`
+holds display and charge to the same value.
+
+THE OWNER'S VALUES
+------------------
+`OWNER_RULING` is what the owner ruled in AUDIT 27.43 (India: fee 0, minimum
+500.00 INR, stuck after 24 hours, on request. United States: fee 0, minimum
+1.00 USD, stuck after 72 hours, weekly). `seed_payout_config` writes them for a
+fresh environment (create-if-missing); the one-off `apply_payout_ruling`
+command writes them as a new version on an environment that already has the
+old India row. Nothing here reads them as a fallback.
 """
 
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from base.countries import COUNTRIES, get_country
 from base.money import from_minor
 
-#: Today's India behaviour, in the units the model stores.
+#: The owner's payout values (AUDIT 27.43), in the units the model stores.
+#: Weekday 0 is Monday: weekend earnings are paid out at the start of the week.
 INDIA_SEED = {
     'country': 'IN',
-    'fee_percent': Decimal('2.00'),
+    'fee_percent': Decimal('0.00'),
     'minimum_withdrawal_minor': 50000,  # 500.00 INR
     'stuck_payout_hours': 24,
+    'payout_schedule': 'on_request',
+    'payout_weekday': None,
 }
+US_SEED = {
+    'country': 'US',
+    'fee_percent': Decimal('0.00'),
+    'minimum_withdrawal_minor': 100,  # 1.00 USD
+    'stuck_payout_hours': 72,
+    'payout_schedule': 'weekly',
+    'payout_weekday': 0,
+}
+OWNER_RULING = (INDIA_SEED, US_SEED)
+RULING_REASON = 'Owner ruling, AUDIT 27.43'
 
 _COUNTRY_OF_CURRENCY = {c.currency: c.code for c in COUNTRIES.values()}
 
@@ -93,3 +117,42 @@ def minimum_withdrawal(config):
 
 
 NOT_AVAILABLE_MESSAGE = 'Withdrawals are not available in your country yet.'
+
+
+# ---------------------------------------------------------------------------
+# The fee: one source for what is shown and what is charged
+# ---------------------------------------------------------------------------
+
+def fee_percent(config):
+    """The configured transfer fee as a Decimal percentage; 0 with no config."""
+    if config is None:
+        return Decimal('0')
+    return Decimal(str(config.fee_percent))
+
+
+def withdrawal_fee(config, amount_minor):
+    """The transfer fee, in minor units, taken from a withdrawal of `amount_minor`.
+
+    THE ONLY SOURCE of a withdrawal fee. The driver balance endpoint shows
+    `fee_percent(config)`; the withdrawal path charges this; both read the
+    same `config.fee_percent`. Rounded half up to a whole minor unit.
+    """
+    pct = fee_percent(config)
+    if pct <= 0 or not amount_minor:
+        return 0
+    return int((Decimal(int(amount_minor)) * pct / Decimal('100'))
+               .quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+
+
+def fee_display(config):
+    """What a driver is shown for the fee, or None when there is no fee to show.
+
+    The text is derived from the same percentage `withdrawal_fee` charges, so
+    the two cannot drift apart. None (fee 0, or no config) tells the app to
+    hide the line.
+    """
+    pct = fee_percent(config)
+    if pct <= 0:
+        return None
+    text = format(pct.normalize(), 'f')
+    return f'{text}%'

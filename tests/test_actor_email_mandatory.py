@@ -63,6 +63,8 @@ User = get_user_model()
 #: THE list. The meta-test below compares it with the command modules that
 #: import `servers.admin_audit.actor_option`.
 WRITING_COMMANDS = [
+    # A one-off RULING command (not a seed_*): the owner's payout values, AUDIT 27.43.
+    'apply_payout_ruling',
     'bootstrap_qa_accounts',
     'bootstrap_qa_operator',
     'create_operator',
@@ -425,6 +427,8 @@ CASES = [
     Case('seed_safety_config', 'seed_safety_config',
          _prepare_seed_policies, _fp_safety_config),
     Case('seed_payout_config', 'seed_payout_config',
+         _prepare_seed_policies, _fp_payout_config),
+    Case('apply_payout_ruling', 'apply_payout_ruling',
          _prepare_seed_policies, _fp_payout_config),
     Case('seed_alert_thresholds', 'seed_alert_thresholds',
          _prepare_seed_thresholds, _fp_thresholds, needs_operator_to_prepare=True),

@@ -97,8 +97,10 @@
           "available_balance": 0.0,
           "blocked": false,
           "block_remaining_seconds": null,
-          "fee_percent": 2.0,
-          "minimum_withdrawal": 500.0
+          "fee_percent": 0.0,
+          "fee_display": null,
+          "minimum_withdrawal": 500.0,
+          "currency": "INR"
         },
         "meta": {
           "timestamp": "2026-01-01T00:00:00.000000+05:30"

@@ -402,6 +402,16 @@ class WithdrawalRequest(CurrencyStampedModel, models.Model):
     failure_count = models.IntegerField(default=0, help_text='Number of times payout attempt failed')
     last_failure_at = models.DateTimeField(null=True, blank=True, help_text='Timestamp of last failure')
     failure_reason = models.CharField(max_length=255, blank=True, null=True, help_text='Reason for last failure')
+    # The transfer fee actually charged on this request, in minor units, stamped
+    # at creation from `payout_config.withdrawal_fee` (the one source of the fee
+    # a driver is shown). The gateway is sent `amount_minor - fee_minor`.
+    fee_minor = models.BigIntegerField(default=0)
+    # `driver` (the driver asked) or `scheduled` (the weekly run created it).
+    origin = models.CharField(max_length=12, default='driver')
+    # Finance has flagged this payout for a closer look. Moves no money.
+    investigation_note = models.TextField(blank=True, default='')
+    investigation_since = models.DateTimeField(null=True, blank=True)
+    investigation_by_label = models.CharField(max_length=255, blank=True, default='')
 
     def __str__(self):
         return f'Withdrawal {self.id} - Driver {self.driver} - {self.amount}'

@@ -311,6 +311,7 @@ def require_approval_or_execute(
     action_key, *, actor, country, amount=None, currency=None,
     scope_node=None, target=None, target_type='', target_id='',
     payload=None, execute=None, idempotency_key, reason='', http_request=None,
+    system_label='',
 ):
     """Do it now if the maker may, else raise a request for a checker.
 
@@ -321,7 +322,11 @@ def require_approval_or_execute(
     registered, and that is checked before anything is written, so a module
     cannot raise a request that nobody can ever approve.
     """
-    if not is_operator(actor):
+    # A scheduled job (the weekly payout run) is the maker of its own request:
+    # `actor=None, system_label='system:...'`. It can only OPEN a request, never
+    # execute one: a system maker is always sent to a checker.
+    system_maker = actor is None and bool(system_label)
+    if not system_maker and not is_operator(actor):
         raise NotPermitted('Only an operator may raise a maker-checker request.',
                            code='NOT_AN_OPERATOR')
     if not idempotency_key:
@@ -329,6 +334,12 @@ def require_approval_or_execute(
                              code='IDEMPOTENCY_KEY_REQUIRED', field='idempotency_key')
 
     needs_checker, policy = decide(action_key, country, amount, currency)
+    if system_maker:
+        needs_checker = True
+    # A request naming many targets (a payout run) is never within ONE target's limit.
+    multi_key = action_for(action_key).multi_target_key
+    if multi_key and (payload or {}).get(multi_key) is not None:
+        needs_checker = True
     country = _check_country(country)
     if currency:
         currency = str(currency).upper().strip()
@@ -356,7 +367,12 @@ def require_approval_or_execute(
         payload=payload or {}, request_reason=(reason or '')[:10000],
         idempotency_key=idempotency_key[:200],
     )
-    row.set_maker(actor)
+    if system_maker:
+        row.maker_id = 0
+        row.maker_label = system_label[:255]
+        row.maker_role = 'system'
+    else:
+        row.set_maker(actor)
     if not needs_checker:
         # Nobody else is asked, and the row says so: no checker, decided
         # on the spot, with the limit it was under written into the audit.
@@ -377,7 +393,7 @@ def require_approval_or_execute(
 
     if needs_checker:
         _audit(row, 'approval_requested', actor=actor, http_request=http_request,
-               reason=reason)
+               reason=reason, actor_label=system_label if system_maker else '')
         return Outcome(row, executed=False)
 
     _audit(

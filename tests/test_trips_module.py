@@ -88,6 +88,11 @@ def ids(response):
 @pytest.fixture
 def policies(geo):
     call_command('seed_approval_policies', actor_email=seed_actor().email, stdout=StringIO())
+    # These tests prove the framework's blocked path for a country with no policy,
+    # so the US rows the seed now writes (AUDIT 27.44) are removed.
+    from servers.approvals.models import ApprovalPolicy
+
+    ApprovalPolicy.objects.filter(country='US').delete()
 
 
 @pytest.fixture

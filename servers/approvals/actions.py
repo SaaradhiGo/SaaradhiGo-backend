@@ -35,6 +35,10 @@ class Action:
     #: True for the built-in rule: no policy row is consulted, a checker is
     #: always required, in every country.
     always_checker: bool = False
+    #: A payload key naming MANY targets (a payout run: withdrawal_ids). A request
+    #: carrying it always needs a checker, whatever the policy's maker_limit says:
+    #: the limit is for ONE target. Generic, so every country behaves the same.
+    multi_target_key: str = ''
 
 
 SUPPORT_REFUND = 'support.refund'
@@ -47,13 +51,16 @@ BULK_ACTION = 'bulk.action'
 POLICY_CHANGE = 'approvals.policy_change'
 THRESHOLD_CHANGE = 'command_centre.threshold_change'
 SUPPORT_SLA_CHANGE = 'support.sla_change'
+FINANCE_PAYOUT_CONFIG = 'finance.payout_config_change'
+FINANCE_WALLET_CREDIT = 'finance.wallet_credit'
 
 ACTIONS = {
     action.key: action for action in (
         Action(SUPPORT_REFUND, 'Refund issued by support on one trip', 'support.refund'),
         Action(FINANCE_REFUND, 'Refund issued by finance', 'support.refund'),
         Action(FINANCE_ADJUST, 'Manual ledger adjustment', 'finance.adjust'),
-        Action(FINANCE_PAYOUT, 'Payout run: release withdrawals to drivers', 'finance.payout'),
+        Action(FINANCE_PAYOUT, 'Payout run: release withdrawals to drivers', 'finance.payout',
+               multi_target_key='withdrawal_ids'),
         Action(PRICING_CHANGE, 'Change to fare cards, multipliers or commission', 'pricing.write'),
         Action(DRIVER_DEACTIVATE, 'Permanent deactivation of a driver', 'driver.deactivate'),
         Action(BULK_ACTION, 'Bulk action over many records', 'admin.manage'),
@@ -67,6 +74,11 @@ ACTIONS = {
         # Always a checker: the policy row is `always`, seeded per country.
         Action(SUPPORT_SLA_CHANGE, 'Change to a support SLA or country support setting',
                'support.sla'),
+        # Payout rules (fee, minimum, stuck hours, schedule) for a country. A
+        # policy row per country decides it; the seeded rule is `always`.
+        Action(FINANCE_PAYOUT_CONFIG, 'Change to a country payout setting', 'finance.config'),
+        # A closed-loop credit added to a rider wallet by an operator.
+        Action(FINANCE_WALLET_CREDIT, 'Credit added to a rider wallet', 'finance.adjust'),
     )
 }
 

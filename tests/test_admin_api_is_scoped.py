@@ -36,6 +36,7 @@ ADMIN_VIEW_MODULES = [
     'servers.ride.admin_views',
     'servers.payments.admin_views',
     'servers.payments.admin_finance',
+    'servers.payments.admin_actions',
     'servers.auth_user.admin_views',
     'servers.search.views',
     'servers.support.admin_support',
@@ -147,7 +148,8 @@ LIST_CALL = re.compile(
     r'\b(scoped|scoped_or_none|scoped_to_request|in_scope|riders_visible_to|_rider_for'
     r'|tickets_visible_to|_ticket_for|incidents_visible_to|signals_visible_to|_incident_for'
     r'|money_visible_to|fetch_one|payments_queryset|settlements_queryset|payouts_queryset'
-    r'|_items_queryset|overview_rows|country_codes_visible)\s*\(')
+    r'|_items_queryset|overview_rows|country_codes_visible'
+    r'|in_scope_rows?|approve_core|reject_core|bulk_core)\s*\(')
 UNFILTERED = re.compile(
     r'\b(Driver|Trip|Vehicle|Payment|TransactionHistory|WithdrawalRequest)'
     r'\.objects\s*\.\s*(all|filter|select_related|prefetch_related)\s*\('
@@ -183,6 +185,14 @@ MUST_SCOPE = {
     'finance_reconciliation_items',
     'finance_reconciliation_resolve',
     'finance_payout_config',
+    'payout_approve',
+    'payout_reject',
+    'payout_bulk',
+    'payout_retry',
+    'payout_investigation',
+    'driver_adjust',
+    'rider_wallet_credit',
+    'payout_config_propose',
     'finance_export',
     'admin_list_transactions',
     'admin_search_trips',
@@ -233,6 +243,19 @@ def test_the_rider_wrapper_really_uses_the_rider_rule():
     from servers.rider import admin_riders
 
     assert 'riders_visible_to(' in inspect.getsource(admin_riders._rider_for)
+
+
+@pytest.mark.parametrize('name', ['approve_core', 'reject_core', 'bulk_core'])
+def test_the_payout_action_cores_really_use_the_money_rule(name):
+    """The old /driver/admin/withdrawals/* views and the new /payments/admin/payouts/*
+    views are thin callers of these; the scope check lives in them (and in
+    `in_scope_row(s)`, which is `fetch_one`)."""
+    from servers.payments import admin_actions, payout_actions
+
+    assert 'in_scope_row' in inspect.getsource(getattr(admin_actions, name)) or \
+        'in_scope_rows' in inspect.getsource(getattr(admin_actions, name))
+    assert 'fetch_one(' in inspect.getsource(payout_actions.in_scope_row)
+    assert 'fetch_one(' in inspect.getsource(payout_actions.in_scope_rows)
 
 
 def test_the_ticket_wrapper_really_uses_the_ticket_rule():

@@ -31,6 +31,24 @@ def post_system_message(ticket_id, body, *, key):
         return None
 
 
+def post_internal_note(ticket_id, body, *, key, author=None):
+    """An operator-only note on a ticket, once per `key`. Never raises."""
+    scoped_key = f'internal:{ticket_id}:{key}'
+    try:
+        if not SupportTicket.objects.filter(pk=ticket_id).exists():
+            return None
+        if SupportMessage.everything.filter(idempotency_key=scoped_key).exists():
+            return None
+        return SupportMessage.everything.create(
+            ticket_id=ticket_id, author=author, author_role='internal', body=body,
+            idempotency_key=scoped_key)
+    except IntegrityError:
+        return None
+    except Exception:  # noqa: BLE001
+        logger.exception('support: internal note failed for ticket %s', ticket_id)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # A refund that was turned down goes back to the agent who asked
 # ---------------------------------------------------------------------------

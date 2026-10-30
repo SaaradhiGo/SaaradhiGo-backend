@@ -12,6 +12,8 @@ WHAT IT SEEDS (owner rulings, AUDIT.md §10 / §22, INR in paise)
     driver.deactivate   always a checker
     bulk.action         maker alone up to 50 records
     support.sla_change  always a checker
+    finance.payout_config_change  always a checker
+    finance.wallet_credit         always a checker
 
 Nothing is written for the United States. That is the ruling, not an
 omission: a US action that needs a threshold is refused with
@@ -45,7 +47,8 @@ from servers.admin_audit.actor_option import (
 from servers.admin_audit.services import record_admin_action
 from servers.approvals.actions import (
     BULK_ACTION, DRIVER_DEACTIVATE, FINANCE_ADJUST, FINANCE_PAYOUT,
-    FINANCE_REFUND, PRICING_CHANGE, SUPPORT_REFUND, SUPPORT_SLA_CHANGE,
+    FINANCE_PAYOUT_CONFIG, FINANCE_REFUND, FINANCE_WALLET_CREDIT, PRICING_CHANGE,
+    SUPPORT_REFUND, SUPPORT_SLA_CHANGE,
 )
 from servers.approvals.models import ALWAYS, COUNT, MONEY
 from servers.approvals.service import active_policy, write_policy_version
@@ -63,12 +66,30 @@ INDIA_DEFAULTS = [
     ('IN', DRIVER_DEACTIVATE, ALWAYS, '', None),
     ('IN', BULK_ACTION, COUNT, '', 50),
     ('IN', SUPPORT_SLA_CHANGE, ALWAYS, '', None),
+    # Part B (owner, AUDIT 27.43): payout settings and rider wallet credits
+    # always need a checker. Seeded for the countries that already have
+    # policies (India); none for the US.
+    ('IN', FINANCE_PAYOUT_CONFIG, ALWAYS, '', None),
+    ('IN', FINANCE_WALLET_CREDIT, ALWAYS, '', None),
 ]
 
-#: Deliberately empty. See the module docstring.
-US_DEFAULTS = []
+#: The United States (owner rulings, AUDIT 27.44), USD minor units.
+#: A payout RUN (finance.payout carrying withdrawal_ids) always needs a checker
+#: whatever maker_limit says: that is the framework's multi_target_key rule.
+US_DEFAULTS = [
+    ('US', SUPPORT_REFUND, MONEY, 'USD', 1_500),
+    ('US', FINANCE_REFUND, MONEY, 'USD', 15_000),
+    ('US', FINANCE_ADJUST, ALWAYS, '', None),
+    ('US', FINANCE_WALLET_CREDIT, ALWAYS, '', None),
+    ('US', FINANCE_PAYOUT, MONEY, 'USD', 100_000),
+    ('US', BULK_ACTION, ALWAYS, '', None),
+    ('US', PRICING_CHANGE, ALWAYS, '', None),
+    ('US', DRIVER_DEACTIVATE, ALWAYS, '', None),
+    ('US', SUPPORT_SLA_CHANGE, ALWAYS, '', None),
+    ('US', FINANCE_PAYOUT_CONFIG, ALWAYS, '', None),
+]
 
-SEED_REASON = 'Seed: India maker-checker defaults (AUDIT.md §10/§22). US left unconfigured by ruling.'
+SEED_REASON = 'Seed: maker-checker defaults (AUDIT.md §10/§22 India; §27.44 United States).'
 
 
 class Command(BaseCommand):
@@ -104,7 +125,7 @@ class Command(BaseCommand):
                         after={
                             'created': [p.as_dict() for p in created],
                             'skipped_existing': skipped,
-                            'us_policies_written': 0,
+                            'us_policies_written': sum(1 for p in created if p.country == 'US'),
                         },
                         reason=SEED_REASON,
                     )
@@ -120,5 +141,5 @@ class Command(BaseCommand):
             self.stdout.write(f'  left as configured: {", ".join(skipped)}')
         self.stdout.write(self.style.SUCCESS(
             f'{len(created)} policies created, {len(skipped)} already configured. '
-            f'US: none written; US actions stay blocked until configured.'
+            f'Countries without a policy for an action stay blocked.'
         ))

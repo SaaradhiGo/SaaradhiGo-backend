@@ -413,7 +413,8 @@ class TestPayoutConfigRead:
         countries = {c['country']: c for c in data(client.get(f'{BASE}/payout-config/'))['countries']}
         assert set(countries) == {'IN'} and countries['IN']['configured'] is True
         cfg = countries['IN']['config']
-        assert cfg['fee_percent'] == '2.00' and cfg['minimum_withdrawal_minor'] == 50000
+        # The owner's values (AUDIT 27.43): fee 0, minimum 500.00 INR.
+        assert cfg['fee_percent'] == '0.00' and cfg['minimum_withdrawal_minor'] == 50000
         assert cfg['stuck_payout_hours'] == 24 and cfg['currency'] == 'INR'
 
     def test_super_admin_sees_the_us_as_not_configured(self, world, geo):
@@ -421,9 +422,10 @@ class TestPayoutConfigRead:
         payload = data(client.get(f'{BASE}/payout-config/'))
         us = next(c for c in payload['countries'] if c['country'] == 'US')
         assert us['configured'] is False and us['config'] is None and 'Not configured' in us['message']
-        assert payload['editable'] is False
+        # Super Admin holds finance.config; the change itself is a request (Part B).
+        assert payload['editable'] is True
 
-    def test_there_is_no_write_route(self, world):
+    def test_the_collection_route_has_no_write(self, world):
         client, _ = world.finance
         assert client.post(f'{BASE}/payout-config/', {}, format='json').status_code == 405
 
@@ -474,8 +476,10 @@ class TestIndiaPayoutsAreUnchanged:
     def test_the_balance_endpoint_has_the_same_shape_and_values(self, world):
         client = client_for(world.in_driver.user_id)
         body = client.get('/api/v1/driver/withdrawals/balance/').json()['data']
-        assert list(body) == self.LEGACY_BALANCE_KEYS
-        assert body['fee_percent'] == 2.0 and body['minimum_withdrawal'] == 500.0
+        # Same keys in the same order, then the two Part B additions.
+        assert [k for k in body if k in self.LEGACY_BALANCE_KEYS] == self.LEGACY_BALANCE_KEYS and set(body) - set(self.LEGACY_BALANCE_KEYS) == {'fee_display', 'currency'}
+        assert body['fee_percent'] == 0.0 and body['minimum_withdrawal'] == 500.0
+        assert body['fee_display'] is None and body['currency'] == 'INR'
         assert isinstance(body['fee_percent'], float) and isinstance(body['minimum_withdrawal'], float)
         assert body['blocked'] is False and body['block_remaining_seconds'] is None
         assert body['available_balance'] == float(calculate_available_balance(world.in_driver))
@@ -518,8 +522,8 @@ class TestIndiaPayoutsAreUnchanged:
         d = make_driver(geo, 'IN-TG-HYD', 'NEW', currency='INR', calling='91', city_node=False)
         Wallet.objects.filter(user_id=d.user_id).delete()
         body = client_for(d.user_id).get('/api/v1/driver/withdrawals/balance/').json()['data']
-        assert list(body) == self.LEGACY_BALANCE_KEYS
-        assert body['fee_percent'] == 2.0 and body['minimum_withdrawal'] == 500.0
+        assert [k for k in body if k in self.LEGACY_BALANCE_KEYS] == self.LEGACY_BALANCE_KEYS and set(body) - set(self.LEGACY_BALANCE_KEYS) == {'fee_display', 'currency'}
+        assert body['fee_percent'] == 0.0 and body['minimum_withdrawal'] == 500.0
 
     def test_a_us_driver_is_never_given_indias_rules_whatever_their_wallet_says(self, geo):
         """A wallet written without a currency was labelled INR. The phone number
@@ -549,12 +553,14 @@ class TestIndiaPayoutsAreUnchanged:
 
 
 class TestSeedPayoutConfig:
-    def test_it_creates_india_only_and_never_a_us_row(self, geo):
-        seed_in_payout_config()
-        rows = list(PayoutCountryConfig.objects.all())
-        assert [(r.country, r.fee_percent, r.minimum_withdrawal_minor, r.stuck_payout_hours)
-                for r in rows] == [('IN', Decimal('2.00'), 50000, 24)]
-        assert not PayoutCountryConfig.objects.filter(country='US').exists()
+    def test_it_creates_the_owners_values_for_india_and_the_us(self, geo):
+        call_command('seed_payout_config', actor_email=seed_actor().email, stdout=StringIO())
+        rows = list(PayoutCountryConfig.objects.order_by('country'))
+        assert [(r.country, r.fee_percent, r.minimum_withdrawal_minor, r.stuck_payout_hours,
+                 r.payout_schedule, r.payout_weekday, r.currency) for r in rows] == [
+            ('IN', Decimal('0.00'), 50000, 24, 'on_request', None, 'INR'),
+            ('US', Decimal('0.00'), 100, 72, 'weekly', 0, 'USD')]
+        assert not any(r.instant_cashout_enabled or r.instant_cashout_fee_flat_minor for r in rows)
 
     def test_a_minimum_is_an_amount_so_it_carries_its_countrys_currency(self, geo):
         seed_in_payout_config()

@@ -237,3 +237,22 @@ def issue_support_credit(user, amount, ticket_ref, idempotency_key, reason_note=
             + (f" ({reason_note})" if reason_note else "")
         ),
     )
+
+
+def issue_admin_credit(user, amount_minor, currency, approval_request_id) -> CreditResult:
+    """A closed-loop credit an operator added (Finance, through a checker).
+
+    Idempotent on the approval request: running the executor twice credits
+    once. No push text is written here: the console speaks to the rider
+    through the support ticket, and a push would need the country's wording.
+    """
+    from base.money import from_minor
+
+    amt = from_minor(int(amount_minor), currency)
+    if amt <= 0:
+        return CreditResult(False, None, Decimal('0.00'), reason='invalid_amount')
+    return _issue_credit(
+        user=user, amount=amt, purpose='admin_credit',
+        idempotency_key=f'admin_credit:{approval_request_id}',
+        reference_id=f'admin_credit_{approval_request_id}',
+    )

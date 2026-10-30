@@ -50,6 +50,8 @@ from servers.admin_access.scoping import ModelIsNotScopable
 DRIVER_LEDGER_PURPOSES = (
     'trip_earnings', 'trip_commission', 'withdrawal',
     'refund_failed_withdrawal', 'refund_rejected_withdrawal',
+    # A manual correction on the driver's balance (Part B).
+    'adjustment',
 )
 
 #: `model label -> ORM lookup(s) reaching GeoNode.path`. One table, so a view
@@ -152,11 +154,15 @@ def money_visible_to(user, model, node=None, queryset=None, permission=None):
     return qs.filter(_covered(paths, (anchor,)))
 
 
-def _riders_q(user, node, owner):
+def _riders_q(user, node, owner, paths=None):
+    """The rider rule, narrowed to `paths`: the places the permission is held.
+
+    Without that narrowing an operator with Finance in one city and Support in
+    another would see the second city's rider wallet rows."""
     from servers.rider.models import Rider
     from servers.rider.scope import riders_visible_to
 
-    riders = riders_visible_to(user, node, Rider.objects.all())
+    riders = riders_visible_to(user, node, Rider.objects.all(), paths=paths)
     return Q(**{f'{owner}__in': riders.values('user_id')})
 
 
@@ -170,7 +176,8 @@ def _wallet_rows(user, qs, node, permission, *, owner, is_wallet=False):
     rider_side = ~driver_side
     driver_q = driver_side & (_covered(paths, (f'{owner}__driver__home_city__path',))
                               if paths else Q(pk__in=[]))
-    return qs.filter(driver_q | (rider_side & _riders_q(user, node, owner)))
+    # `paths` already carries both the permission narrowing and the ?scope= node.
+    return qs.filter(driver_q | (rider_side & _riders_q(user, None, owner, paths=paths)))
 
 
 def country_codes_visible(user, node=None, permission=None):

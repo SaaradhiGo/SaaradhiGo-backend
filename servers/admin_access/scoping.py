@@ -26,14 +26,12 @@ own city's KYC queue mid-review.
 Money follows the driver, because a payout is an obligation to a person, not
 to a place.
 
-A RIDER HAS NO ANCHOR, DELIBERATELY
------------------------------------
-Riders travel. Anchoring a rider to a city would mean a Hyderabad rider who
-takes one trip in Austin is either invisible to Austin support, or
-permanently reassigned to it. Rider access is therefore granted through the
-TRIP being discussed (`rider.read` plus a trip in scope), and the bare rider
-list is a global endpoint restricted to `pii.view` holders. See
-`RIDERS_ARE_GLOBAL`.
+A RIDER HAS MANY ANCHORS, DECIDED IN ONE PLACE
+----------------------------------------------
+Riders travel, so a rider is not a `SCOPE_PATHS` row. `servers/rider/scope.py`
+owns the rule (every city ridden in within `RIDER_SCOPE_TRIP_MONTHS`, plus a
+home city, else the phone's country) and every rider surface uses it. See
+`RIDERS_ARE_GLOBAL` for why `rider.Rider` stays out of this table.
 """
 
 from django.db.models import Q
@@ -94,9 +92,9 @@ SCOPE_PATHS = {
 #: them here is how "this one is global" stays a decision on the record
 #: instead of a missing filter nobody noticed.
 RIDERS_ARE_GLOBAL = (
-    'A rider belongs to no city: they travel. Access to an individual '
-    'rider goes through a trip in the admin scope; the unfiltered list '
-    'requires pii.view and is audited.'
+    'A rider belongs to no single city: they travel. Use '
+    'servers.rider.scope.riders_visible_to, which anchors a rider at every '
+    'recent trip city, a home city, else the phone country.'
 )
 
 GLOBAL_BY_DESIGN = {

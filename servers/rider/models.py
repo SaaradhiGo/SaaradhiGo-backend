@@ -29,6 +29,13 @@ class Rider(models.Model):
     review_flagged_at=models.DateTimeField(null=True,blank=True)
     review_cleared_at=models.DateTimeField(null=True,blank=True)
     review_notes=models.TextField(blank=True,default='')
+    # The rider's home city, an anchor for operator scope
+    # (`rider.scope`). The signup flow records no location and the rider app
+    # contracts do not change, so this is NULL until something that knows
+    # (a future profile field, an operator) sets it; a rider with neither a
+    # home city nor a recent trip is anchored at their phone's country.
+    home_city=models.ForeignKey('admin_access.GeoNode',null=True,blank=True,
+                                on_delete=models.SET_NULL,related_name='+')
 
     def __str__(self):
         return self.user_id.full_name if self.user_id.full_name else self.user_id.phone_number
@@ -281,8 +288,9 @@ class RiderBlock(models.Model):
     A blocked rider cannot REQUEST a ride (`rider.eligibility.may_request_rides`,
     checked by the ride-request socket before a trip is created and on
     retry). Nothing else changes: the account still signs in, sees its
-    history, pays what it owes, raises tickets and SOS. Ending sessions is a
-    separate operator action (force sign-out).
+    history, pays what it owes, raises tickets and SOS (SOS always works).
+    A block also signs the rider out (refresh tokens revoked), except during
+    an active trip: then at trip end (`signout_pending`).
     """
 
     REASON_CHOICES = [
@@ -304,6 +312,9 @@ class RiderBlock(models.Model):
     lifted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
                                   related_name='+')
     lift_note = models.TextField(blank=True, default='')
+    # Set when the block landed during an active trip: the rider is signed
+    # out when that trip ends (`rider.block_signout`), then this clears.
+    signout_pending = models.BooleanField(default=False)
 
     class Meta:
         constraints = [

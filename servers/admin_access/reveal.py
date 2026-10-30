@@ -194,14 +194,26 @@ def _resolve_driver(request, target_id):
 
 
 def _resolve_user(request, target_id, role=None):
-    """An account. Riders have no anchor (`scoping.RIDERS_ARE_GLOBAL`); a
-    driver's account is scoped through their driver profile."""
+    """An account. A rider is placed by `servers/rider/scope.py`; a driver's
+    account is scoped through their driver profile."""
     from django.contrib.auth import get_user_model
     from servers.driver.models import Driver
+    from servers.rider.models import Rider
+    from servers.rider.scope import anchor_nodes, rider_in_scope
 
     user = get_user_model().objects.filter(id=target_id).first()
     if user is None or (role and user.role != role):
         return None, None, None
+    rider = Rider.objects.filter(user_id=user).first()
+    if rider is not None and Driver.objects.filter(user_id=user).first() is None:
+        # A rider is placed by `servers/rider/scope.py` (trip cities, home
+        # city, else phone country), the rule the rider page uses. The
+        # capability is then decided at the rider's anchors below.
+        if not rider_in_scope(request.user, rider):
+            return None, None, None
+        request.reveal_rider = rider
+        anchors = anchor_nodes(rider)
+        return user, anchors[0] if anchors else None, _account_fields(user)
     profile = Driver.objects.select_related('home_city').filter(user_id=user).first()
     if profile is not None:
         if scoped_or_none(request.user, Driver.objects.all(), id=profile.id) is None:
@@ -362,7 +374,13 @@ def reveal_pii(request):
     # role in Austin reaches an Austin driver through scope and is refused
     # here. A record with no node (a rider) was passed by scope above and
     # is decided on "anywhere", which is the rule for riders everywhere.
-    allowed_here, _how = granted(request.user, 'pii.view', node)
+    rider = getattr(request, 'reveal_rider', None)
+    if rider is not None:
+        from servers.rider.scope import rider_may
+
+        allowed_here = rider_may(request.user, 'pii.view', rider)
+    else:
+        allowed_here, _how = granted(request.user, 'pii.view', node)
     if not allowed_here:
         return error_response(
             code='PII_VIEW_NOT_HELD_HERE',

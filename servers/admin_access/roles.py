@@ -44,7 +44,14 @@ PERMISSIONS = {
 
     # Acting
     'trip.write': 'Cancel, adjust or flag a trip',
-    'rider.write': 'Block, credit or amend a rider account',
+    # Rider actions are separate capabilities (owner ruling, AUDIT 27.32).
+    # `rider.write` no longer gates any rider action; it survives only for
+    # creating QA test accounts (`auth_user.invite_views`), Super Admin only.
+    'rider.write': 'Create rider test accounts (QA only)',
+    'rider.note': 'Add internal notes to a rider',
+    'rider.flag': 'Flag and unflag a rider for risk review',
+    'rider.signout': 'Sign a rider out of every session',
+    'rider.block': 'Block and unblock a rider (and sign them out)',
     'driver.write': 'Suspend, reinstate or amend a driver account',
     'driver.kyc': 'Approve or reject driver and vehicle documents',
     'driver.deactivate': 'Permanently deactivate a driver',
@@ -97,6 +104,7 @@ ROLE_TEMPLATES = [
             'trip.read', 'trip.write', 'rider.read', 'driver.read',
             'driver.write', 'support.read', 'report.read', 'zone.read',
             'zone.write', 'promo.write', 'pii.view',
+            'rider.note', 'rider.flag', 'rider.signout', 'rider.block',
         ],
     },
     {
@@ -107,6 +115,7 @@ ROLE_TEMPLATES = [
         'permissions': [
             'trip.read', 'rider.read', 'driver.read',
             'support.read', 'support.reply', 'support.refund',
+            'rider.note', 'rider.flag', 'rider.signout',
         ],
     },
     {
@@ -117,6 +126,7 @@ ROLE_TEMPLATES = [
         'permissions': [
             'trip.read', 'rider.read', 'driver.read', 'driver.write',
             'safety.respond', 'support.read',
+            'rider.note', 'rider.flag', 'rider.signout', 'rider.block',
             # The one role that must be able to reach a person immediately.
             'pii.view',
         ],
@@ -144,6 +154,7 @@ ROLE_TEMPLATES = [
             'trip.read', 'driver.read', 'rider.read', 'support.read',
             'finance.read', 'finance.payout', 'finance.adjust',
             'support.refund', 'report.read', 'zone.read', 'pii.view',
+            'rider.note',
         ],
     },
     {

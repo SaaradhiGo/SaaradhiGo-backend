@@ -726,6 +726,10 @@ ADMIN_ACCESS_STRICT = os.environ.get(
     'ADMIN_ACCESS_STRICT', 'false'
 ).strip().lower() in {'1', 'true', 'yes'}
 
+# A rider belongs to every city where they took a trip in this many months
+# (operator scope; see servers/rider/scope.py).
+RIDER_SCOPE_TRIP_MONTHS = int(os.environ.get('RIDER_SCOPE_TRIP_MONTHS', '12'))
+
 # Who a deploy's unattended writes are attributed to.
 #
 # Every management command that writes access, money or driver status

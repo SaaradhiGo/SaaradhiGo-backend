@@ -240,8 +240,12 @@ def mask_address(value):
     if not value:
         return value
     text = str(value).strip()
-    if text.startswith(BULLET):
+    if text.startswith(BULLET) or text == PINNED_LOCATION:
         return text
+    if _COORDINATES.match(text):
+        # A dropped pin has no locality to keep; masking the pair by
+        # position printed `•••• 80.`. Say what it is; the reveal has it.
+        return PINNED_LOCATION
     parts = [p.strip() for p in text.split(',') if p.strip()]
     if len(parts) >= 4:
         kept = parts[-3:]
@@ -256,6 +260,9 @@ def mask_address(value):
 
 
 _POSTCODE = re.compile(r'\b\d{5,}\b')
+_COORDINATES = re.compile(r'^\(?\s*-?\d{1,3}(\.\d+)?\s*,\s*-?\d{1,3}(\.\d+)?\s*\)?$')
+#: What a masked coordinate-only address reads as.
+PINNED_LOCATION = 'Pinned location'
 
 
 def round_coordinate(value, decimals=COORDINATE_DECIMALS):

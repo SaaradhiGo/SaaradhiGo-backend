@@ -126,12 +126,12 @@ def _cities_for(request):
     return list(cities), requested_node(request)
 
 
-def _cache_key(request, window, include_money, node):
+def _cache_key(request, window, include_money, node, include_sos=True):
     paths = scope_paths(request.user)
     digest = hashlib.sha256(repr((
         sorted(paths) if paths is not None else '*',
         node.code if node is not None else '',
-        window, include_money,
+        window, include_money, include_sos,
     )).encode()).hexdigest()[:32]
     return f'command_centre:overview:{digest}'
 
@@ -155,15 +155,16 @@ def admin_overview(request):
         return _scope_refused(exc)
 
     include_money, _how = granted(request.user, 'finance.read')
+    include_sos = sees_live_sos(request.user)
     ttl = int(getattr(settings, 'COMMAND_CENTRE_OVERVIEW_CACHE_SECONDS', 30) or 0)
-    key = _cache_key(request, window, include_money, node)
+    key = _cache_key(request, window, include_money, node, include_sos)
     if ttl:
         cached = cache.get(key)
         if cached is not None:
             return success_response({**cached, 'cached': True}, status.HTTP_200_OK)
 
     payload = build_overview(cities, window, include_money=include_money,
-                             scope_code=node.code if node is not None else None)
+                             include_sos=include_sos, scope_code=node.code if node is not None else None)
     # On an UNRESTRICTED board (Super Admin) a paused city with nothing in
     # it is noise, while a paused city with trips (Austin on QA) is a row
     # the owner asked to see. An operator scoped to a city always gets that
@@ -185,14 +186,29 @@ def admin_overview(request):
 # Alerts
 # ---------------------------------------------------------------------------
 
+#: Who sees LIVE SOS (owner ruling 2026-10-30): the responders
+#: (`safety.respond`: Safety, Super Admin) and City Ops (`trip.write`),
+#: each within their scope. Marketing and Analyst hold `report.read` and see
+#: the rest of the board; SOS history for analysis belongs in Reports.
+LIVE_SOS_CAPABILITIES = ('safety.respond', 'trip.write')
+#: Alert kinds that are live SOS: the ones Safety acknowledges.
+SOS_ALERT_KINDS = frozenset(k for k, cap in ACK_PERMISSION.items() if cap == 'safety.respond')
+
+
+def sees_live_sos(user):
+    return any(granted(user, cap)[0] for cap in LIVE_SOS_CAPABILITIES)
+
+
 def _visible_alerts(user):
     """City-anchored alerts within the caller's scope, plus every alert
-    that has no city at all."""
+    that has no city at all; live SOS alerts only for `sees_live_sos`."""
     from django.db.models import Q
 
     from servers.admin_access.bridge import is_migrated, strict_mode
 
     qs = OperatorAlert.objects.select_related('city')
+    if not sees_live_sos(user):
+        qs = qs.exclude(kind__in=SOS_ALERT_KINDS)
     if not strict_mode() and not is_migrated(user):
         return qs  # unmigrated accounts are unscoped everywhere, until strict mode
     paths = scope_paths(user)

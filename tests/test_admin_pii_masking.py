@@ -30,7 +30,8 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
 
 from servers.admin_access.masking import (
-    STRICT, TRUSTED, mask_email, mask_name, mask_payload, mask_phone,
+    PINNED_LOCATION, STRICT, TRUSTED, mask_address, mask_email, mask_name, mask_payload,
+    mask_phone,
 )
 from servers.admin_access.models import AdminAssignment, AdminRole, GeoNode
 from servers.driver.models import Driver
@@ -128,6 +129,11 @@ class TestTheMaskers:
         """An account with no name shows its number in the name field."""
         assert mask_name('+919876543210') == '+91••••••3210'
         assert mask_name('ravi@example.test') == 'r•••@example.test'
+
+    @pytest.mark.parametrize('pin', ['16.50620, 80.64800', '(17.385, 78.4867)', '-33.9,151.2'])
+    def test_a_coordinate_only_address_reads_as_a_pinned_location(self, pin):
+        assert mask_address(pin) == PINNED_LOCATION
+        assert mask_address(PINNED_LOCATION) == PINNED_LOCATION  # a second pass keeps it
 
     @pytest.mark.parametrize('policy', [STRICT, TRUSTED], ids=['strict', 'trusted'])
     def test_a_phone_in_a_name_field_is_masked_for_every_viewer(self, policy):

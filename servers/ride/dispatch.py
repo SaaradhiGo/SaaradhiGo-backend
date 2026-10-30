@@ -291,6 +291,14 @@ def _candidate_driver_ids(trip, radius, epoch):
         if driver_id in already or driver_id in ids:
             continue
         ids.append(driver_id)
+
+    # The geo index is a cache of who is online, not of who may be offered a
+    # ride: a suspended driver's open socket could re-add them between the
+    # suspension and the socket closing. PostgreSQL decides at selection time.
+    if ids:
+        from servers.driver.qa_eligibility import dispatchable_driver_ids
+        allowed = dispatchable_driver_ids(ids)
+        ids = [i for i in ids if i in allowed]
     return ids
 
 

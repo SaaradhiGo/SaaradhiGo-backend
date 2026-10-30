@@ -221,7 +221,10 @@ class TestList:
 
     def test_last_trip_range(self, geo, world):
         client, _ = operator('city_ops_manager', geo)
-        today = timezone.now().date()
+        # The filter reads each rider's CITY day, so "today" must be
+        # Hyderabad's, not the UTC date: they differ every evening (UTC).
+        from servers.driver.admin_drivers import city_tz
+        today = timezone.now().astimezone(city_tz(geo['IN-TG-HYD'])).date()
         query = f'last_trip_from={today - timedelta(days=1)}&last_trip_to={today}'
         assert ids(client.get(f'{LIST}?{query}')) == [world['ravi'].id]
 

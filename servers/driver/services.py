@@ -13,16 +13,6 @@ from base.money import DEFAULT_CURRENCY, format_money, from_minor, normalize_cur
 from .models import Driver, WithdrawalRequest
 from servers.rider.models import Wallet
 
-# Smallest payout per currency. Roughly equivalent real amounts rather than the
-# same number: 500 rupees is about six dollars, and 500 dollars is not a
-# minimum, it is a barrier. One global figure is either meaningless in India or
-# prohibitive in the US.
-_MINIMUM_WITHDRAWAL = {
-    'INR': Decimal('500'),
-    'USD': Decimal('10'),
-}
-
-
 def driver_currency(driver):
     """The currency a driver is paid in: their wallet's, else the default."""
     try:
@@ -36,9 +26,17 @@ def driver_currency(driver):
 
 
 def minimum_withdrawal_for(driver):
-    """The smallest payout this driver's market allows."""
-    return _MINIMUM_WITHDRAWAL.get(
-        driver_currency(driver), _MINIMUM_WITHDRAWAL[DEFAULT_CURRENCY])
+    """The smallest payout this driver's country allows, or None.
+
+    None means the country has no payout configuration (`PayoutCountryConfig`):
+    there is no minimum to quote because withdrawals are not available there yet.
+    """
+    from servers.payments.payout_config import config_for_driver, minimum_withdrawal
+
+    _country, config = config_for_driver(driver)
+    if config is None:
+        return None
+    return minimum_withdrawal(config)
 
 
 def _contact_domain():
@@ -97,6 +95,12 @@ def validate_withdrawal_amount(driver, amount, available=None):
     minimum = minimum_withdrawal_for(driver)
     currency = driver_currency(driver)
 
+    if minimum is None:
+        # No payout rules for this country (owner decides them): refused, not
+        # defaulted to another market's numbers.
+        from servers.payments.payout_config import NOT_AVAILABLE_MESSAGE
+        return False, NOT_AVAILABLE_MESSAGE
+
     if amount < minimum:
         return False, (
             f'Minimum withdrawal amount is {format_money(minimum, currency)}'
@@ -108,12 +112,13 @@ def validate_withdrawal_amount(driver, amount, available=None):
     return True, ""
 
 
-def calculate_platform_fee(amount):
+def calculate_platform_fee(amount, fee_percent):
+    """Platform fee on a withdrawal: `fee_percent` of `amount`.
+
+    The percentage comes from the country's `PayoutCountryConfig`; there is no
+    default here (it used to be a hard-coded 2 percent for every market).
     """
-    Calculate platform fee (2% of withdrawal amount).
-    Returns fee amount.
-    """
-    return amount * 0.02
+    return Decimal(str(amount)) * Decimal(str(fee_percent)) / Decimal('100')
 
 
 def is_withdrawal_blocked(driver):

@@ -272,6 +272,8 @@ def test_the_withdrawal_endpoint_uses_the_us_minimum_not_indias(vehicle_type):
     rupee sign beside a dollar balance. $25 is above the $10 US minimum and far
     below Rs.500, so only the old code refuses it for being too small.
     """
+    from test_multi_country import _configure_payouts
+    _configure_payouts('US')
     client, _ = _driver_client(vehicle_type, calling_code='1', currency='USD',
                                balance='500.00')
     resp = client.post(WITHDRAW_URL, {'amount': '25.00'}, format='json')
@@ -284,6 +286,8 @@ def test_the_withdrawal_endpoint_uses_the_us_minimum_not_indias(vehicle_type):
 def test_the_withdrawal_endpoint_still_enforces_indias_minimum(vehicle_type):
     """The control. Rs.100 is below India's Rs.500 and must still be refused,
     in rupees."""
+    from test_multi_country import _configure_payouts
+    _configure_payouts('IN')
     client, _ = _driver_client(vehicle_type, calling_code='91', currency='INR',
                                balance='5000.00')
     resp = client.post(WITHDRAW_URL, {'amount': '100.00'}, format='json')

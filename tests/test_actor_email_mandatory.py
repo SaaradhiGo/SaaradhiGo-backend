@@ -76,6 +76,7 @@ WRITING_COMMANDS = [
     'seed_admin_access',
     'seed_alert_thresholds',
     'seed_approval_policies',
+    'seed_payout_config',
     'seed_safety_config',
     'seed_support_sla',
     'seed_us_test_city',
@@ -359,6 +360,13 @@ def _fp_support_sla():
         'country', 'priority', 'first_response_minutes', 'resolution_minutes')))
 
 
+def _fp_payout_config():
+    from servers.payments.models import PayoutCountryConfig
+
+    return tuple(sorted(PayoutCountryConfig.objects.values_list(
+        'country', 'version', 'fee_percent', 'minimum_withdrawal_minor', 'is_active')))
+
+
 QA_OPERATOR_PHONE = '+919555000001'
 
 
@@ -416,6 +424,8 @@ CASES = [
          _prepare_seed_policies, _fp_support_sla),
     Case('seed_safety_config', 'seed_safety_config',
          _prepare_seed_policies, _fp_safety_config),
+    Case('seed_payout_config', 'seed_payout_config',
+         _prepare_seed_policies, _fp_payout_config),
     Case('seed_alert_thresholds', 'seed_alert_thresholds',
          _prepare_seed_thresholds, _fp_thresholds, needs_operator_to_prepare=True),
     Case('seed_us_test_city', 'seed_us_test_city',

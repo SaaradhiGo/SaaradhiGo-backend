@@ -35,6 +35,7 @@ ADMIN_VIEW_MODULES = [
     'servers.rider.admin_riders',
     'servers.ride.admin_views',
     'servers.payments.admin_views',
+    'servers.payments.admin_finance',
     'servers.auth_user.admin_views',
     'servers.search.views',
     'servers.support.admin_support',
@@ -132,9 +133,21 @@ def test_every_admin_endpoint_is_scope_gated(name):
 # wherever the rider is visible); `_ticket_for` is the module's single-ticket
 # wrapper around it (checked below), so a support view that calls either is
 # scoped. Added for the rider case the SCOPE_PATHS row cannot express.
+# `money_visible_to` is the Finance module's one money rule
+# (`servers/payments/scope.py`: trip city for payments and settlements, the
+# driver's home city for payouts and ledgers, the rider rule for rider wallet
+# rows, unrestricted callers only for anything unplaceable); `fetch_one` is its
+# single-row form (404 out of scope, 403 without the capability there), and
+# `payments_queryset` / `settlements_queryset` / `payouts_queryset` /
+# `_items_queryset` / `overview_rows` are the finance views' shared builders,
+# each of which starts from `money_visible_to` (checked below), so a finance
+# view that calls any of them is scoped. `country_codes_visible` is the same
+# rule for a per-country answer (the payout configuration).
 LIST_CALL = re.compile(
     r'\b(scoped|scoped_or_none|scoped_to_request|in_scope|riders_visible_to|_rider_for'
-    r'|tickets_visible_to|_ticket_for|incidents_visible_to|signals_visible_to|_incident_for)\s*\(')
+    r'|tickets_visible_to|_ticket_for|incidents_visible_to|signals_visible_to|_incident_for'
+    r'|money_visible_to|fetch_one|payments_queryset|settlements_queryset|payouts_queryset'
+    r'|_items_queryset|overview_rows|country_codes_visible)\s*\(')
 UNFILTERED = re.compile(
     r'\b(Driver|Trip|Vehicle|Payment|TransactionHistory|WithdrawalRequest)'
     r'\.objects\s*\.\s*(all|filter|select_related|prefetch_related)\s*\('
@@ -159,7 +172,18 @@ MUST_SCOPE = {
     'bulk_action_withdrawal_admin',
     'admin_list_trips',
     'admin_trip_detail',
-    'admin_list_payments',
+    'finance_payments',
+    'finance_payment_detail',
+    'finance_settlements',
+    'finance_payouts',
+    'finance_payout_detail',
+    'finance_driver_ledger',
+    'finance_overview',
+    'finance_reconciliation',
+    'finance_reconciliation_items',
+    'finance_reconciliation_resolve',
+    'finance_payout_config',
+    'finance_export',
     'admin_list_transactions',
     'admin_search_trips',
     'admin_search_drivers',
@@ -215,6 +239,16 @@ def test_the_ticket_wrapper_really_uses_the_ticket_rule():
     from servers.support import admin_support
 
     assert 'tickets_visible_to(' in inspect.getsource(admin_support._ticket_for)
+
+
+@pytest.mark.parametrize('helper', [
+    'payments_queryset', 'settlements_queryset', 'payouts_queryset', '_items_queryset',
+    'overview_rows',
+])
+def test_the_finance_helpers_really_start_from_the_money_rule(helper):
+    from servers.payments import admin_finance
+
+    assert 'money_visible_to(' in inspect.getsource(getattr(admin_finance, helper))
 
 
 @pytest.mark.parametrize('name', sorted(MUST_SCOPE))

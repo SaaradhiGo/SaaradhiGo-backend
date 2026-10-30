@@ -594,9 +594,15 @@ def list_withdrawals_admin(request):
     from datetime import timedelta
 
     try:
-        withdrawals = scoped_to_request(
-            request,
-            WithdrawalRequest.objects.select_related(
+        # The one money-scope rule (servers/payments/scope.py): the driver's
+        # home city, narrowed by ?scope= and to where finance.read is held.
+        from servers.admin_access.scoping import requested_node
+        from servers.payments.scope import money_visible_to
+
+        withdrawals = money_visible_to(
+            request.user, WithdrawalRequest, node=requested_node(request),
+            permission='finance.read',
+            queryset=WithdrawalRequest.objects.select_related(
                 'driver', 'driver__user_id', 'driver__home_city',
             ),
         ).order_by('-requested_at')

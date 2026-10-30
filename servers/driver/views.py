@@ -263,22 +263,30 @@ def driver_withdrawal_balance(request):
     GET /api/driver/withdrawals/balance/
     Returns available balance, block status, fee percentage.
     """
-    from .services import calculate_available_balance, is_withdrawal_blocked, calculate_platform_fee, get_withdrawal_block_remaining
-    from django.utils import timezone
+    from .services import calculate_available_balance, is_withdrawal_blocked, get_withdrawal_block_remaining
+    from servers.payments.payout_config import (
+        NOT_AVAILABLE_MESSAGE, config_for_driver, minimum_withdrawal,
+    )
 
     driver = request.user.driver
     available = calculate_available_balance(driver)
     blocked = is_withdrawal_blocked(driver)
     block_remaining = get_withdrawal_block_remaining(driver)
-    fee_percent = 2.0  # 2% platform fee
+    # The fee and the minimum come from the driver's country (PayoutCountryConfig),
+    # not from literals. A country with no row keeps the balance readable and
+    # says so; it never borrows another country's numbers.
+    _country, config = config_for_driver(driver)
 
     response_data = {
         'available_balance': float(available),
         'blocked': blocked,
         'block_remaining_seconds': block_remaining.total_seconds() if block_remaining else None,
-        'fee_percent': fee_percent,
-        'minimum_withdrawal': 500.0,
+        'fee_percent': float(config.fee_percent) if config else None,
+        'minimum_withdrawal': float(minimum_withdrawal(config)) if config else None,
     }
+    if config is None:
+        response_data['withdrawals_available'] = False
+        response_data['message'] = NOT_AVAILABLE_MESSAGE
     return success_response(response_data, status.HTTP_200_OK)
 
 
@@ -293,13 +301,25 @@ def driver_withdrawal_request(request):
         calculate_available_balance,
         validate_withdrawal_amount,
         is_withdrawal_blocked,
-        calculate_platform_fee,
     )
     from .models import WithdrawalRequest
     from .serializers import WithdrawalRequestCreateSerializer
     from django.utils import timezone
+    from servers.payments.payout_config import NOT_AVAILABLE_MESSAGE, config_for_driver
 
     driver = request.user.driver
+
+    # A country with no payout configuration cannot withdraw yet (the owner
+    # decides its fee and minimum). Refused before anything is read or locked.
+    _country, payout_config = config_for_driver(driver)
+    if payout_config is None:
+        return error_response(
+            code='WITHDRAWALS_NOT_AVAILABLE',
+            message=NOT_AVAILABLE_MESSAGE,
+            field='withdrawal',
+            issue='No payout configuration exists for your country',
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
     # Validate block period
     if is_withdrawal_blocked(driver):

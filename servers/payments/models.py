@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils import timezone
 from django.contrib.auth import get_user_model
 from base.currency_stamp import CurrencyStampedModel
 from base.money import MinorUnitsAmount
@@ -40,7 +41,7 @@ class Payment(CurrencyStampedModel, models.Model):
     # Stamped at write time from the trip's zone. Denormalised on purpose: the
     # currency a row was written in is a fact about that row, not a lookup
     # against today's zone configuration.
-    currency = models.CharField(max_length=3, default='INR', db_index=True)
+    currency = models.CharField(max_length=3, db_index=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
 
     # Payment gateway
@@ -85,6 +86,11 @@ class Payment(CurrencyStampedModel, models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            # Finance reads and the daily reconciliation scan payments by a
+            # created_at window; without this they scan the whole table.
+            models.Index(fields=['-created_at'], name='payment_created_idx'),
+        ]
         constraints = [
             # Belt-and-braces against the switch/retry double-pay vector:
             # at most one *completed* Payment may exist per trip. PR #8
@@ -113,6 +119,28 @@ class TransactionHistory(CurrencyStampedModel, models.Model):
         ('refund', 'Refund to Rider'),
     ]
 
+    def _derive_currency(self):
+        """The trip's currency; a payout (no trip) takes its withdrawal's, else
+        the driver's wallet's. Never a platform default: a US payout row must
+        not be stamped in rupees."""
+        from base.money import normalize_currency
+
+        found = super()._derive_currency()
+        if found:
+            return found
+        withdrawal = self.withdrawal_request if self.withdrawal_request_id else None
+        if withdrawal is not None and withdrawal.currency:
+            return normalize_currency(withdrawal.currency)
+        try:
+            from servers.rider.models import Wallet
+
+            wallet_currency = (Wallet.objects
+                               .filter(user_id=self.driver_id.user_id_id).order_by('scope')
+                               .values_list('currency', flat=True).first())
+        except Exception:  # noqa: BLE001 - no driver yet: nothing to derive
+            wallet_currency = None
+        return normalize_currency(wallet_currency) if wallet_currency else None
+
     trip_id = models.ForeignKey('ride.Trip', on_delete=models.CASCADE, related_name='transactions', null=True, blank=True)
     user_id = models.ForeignKey(User, on_delete=models.CASCADE, related_name='transactions')
     driver_id = models.ForeignKey('driver.Driver', on_delete=models.CASCADE, related_name='transactions')
@@ -124,7 +152,7 @@ class TransactionHistory(CurrencyStampedModel, models.Model):
     # Stamped at write time from the trip's zone. Denormalised on purpose: the
     # currency a row was written in is a fact about that row, not a lookup
     # against today's zone configuration.
-    currency = models.CharField(max_length=3, default='INR', db_index=True)
+    currency = models.CharField(max_length=3, db_index=True)
     
     # Payment gateway fields
     payment_gateway = models.CharField(
@@ -153,6 +181,10 @@ class TransactionHistory(CurrencyStampedModel, models.Model):
     class Meta:
         verbose_name_plural = 'Transaction histories'
         ordering = ['-created_at']
+        indexes = [
+            # Payouts paid per day (Finance overview) filter by created_at.
+            models.Index(fields=['-created_at'], name='txnhistory_created_idx'),
+        ]
 
 
 class WebhookEvent(models.Model):
@@ -280,7 +312,7 @@ class TripSettlement(CurrencyStampedModel, models.Model):
     # Stamped at write time from the trip's zone. Denormalised on purpose: the
     # currency a row was written in is a fact about that row, not a lookup
     # against today's zone configuration.
-    currency = models.CharField(max_length=3, default='INR', db_index=True)
+    currency = models.CharField(max_length=3, db_index=True)
 
     # Decides the ledger's direction and who is holding the fare meanwhile.
     payment_method = models.CharField(max_length=32, blank=True, default='')
@@ -332,3 +364,210 @@ class TripSettlement(CurrencyStampedModel, models.Model):
     @property
     def is_reconstructed(self):
         return self.source == self.SOURCE_RECONSTRUCTED
+
+
+# ---------------------------------------------------------------------------
+# Payout configuration per country
+# ---------------------------------------------------------------------------
+
+class PayoutCountryConfig(models.Model):
+    """The payout rules of ONE country, versioned. Replaces two hard-coded numbers.
+
+    Until this model existed the platform fee (`fee_percent = 2.0`) and the
+    smallest withdrawal (`minimum_withdrawal: 500.0`) were literals in
+    `driver/views.py`, and a currency table in `driver/services.py` decided the
+    minimum for the two currencies someone had thought of. A country with no row
+    here has NO payout rules: the driver balance endpoint says "withdrawals not
+    available in your country yet" and a withdrawal request is refused with
+    `WITHDRAWALS_NOT_AVAILABLE`. There is deliberately no fallback to another
+    country's numbers (the owner decides a new country's payout values).
+
+    `minimum_withdrawal_minor` is in minor units of the country's own currency
+    (`base.countries`). `stuck_payout_hours` is how long a payout may sit in
+    `processed` before reconciliation raises it; NULL means "not configured" and
+    the stuck-payout check is skipped for that country.
+
+    Versioned like `ApprovalPolicy`: a change is a new row, the old one closes.
+    Part A only reads and seeds; editing arrives in Part B.
+    """
+
+    country = models.CharField(max_length=2, db_index=True)
+    #: The country's own currency (`base.countries`), filled on save. The minimum
+    #: is an amount, so it carries the currency it is in.
+    currency = models.CharField(max_length=3, blank=True)
+    fee_percent = models.DecimalField(max_digits=5, decimal_places=2)
+    minimum_withdrawal_minor = models.BigIntegerField()
+    stuck_payout_hours = models.PositiveIntegerField(null=True, blank=True)
+
+    is_active = models.BooleanField(default=True)
+    version = models.PositiveIntegerField(default=1)
+    valid_from = models.DateTimeField(default=timezone.now, editable=False)
+    valid_to = models.DateTimeField(null=True, blank=True)
+    reason = models.TextField(blank=True, default='')
+
+    # Who put this version in place: a snapshot, like an audit row.
+    created_by_id = models.BigIntegerField(null=True, blank=True)
+    created_by_label = models.CharField(max_length=255, blank=True, default='')
+    created_by_email = models.CharField(max_length=254, blank=True, default='')
+    created_by_role = models.CharField(max_length=64, blank=True, default='')
+
+    class Meta:
+        ordering = ['country', '-version']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['country'], condition=models.Q(is_active=True),
+                name='payout_config_one_active_per_country',
+            ),
+            models.UniqueConstraint(
+                fields=['country', 'version'], name='payout_config_version_unique',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(fee_percent__gte=0) & models.Q(fee_percent__lte=100),
+                name='payout_config_fee_percent_range',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(minimum_withdrawal_minor__gte=0),
+                name='payout_config_minimum_not_negative',
+            ),
+        ]
+
+    def __str__(self):
+        return f'PayoutCountryConfig {self.country} v{self.version}'
+
+    def save(self, *args, **kwargs):
+        from base.countries import get_country
+
+        # A country's payout minimum is in that country's currency, always.
+        self.country = str(self.country).upper()
+        self.currency = get_country(self.country).currency
+        return super().save(*args, **kwargs)
+
+    def as_dict(self):
+        from base.countries import get_country
+        from base.money import from_minor
+
+        currency = self.currency or get_country(self.country).currency
+        return {
+            'id': self.id,
+            'country': self.country,
+            'currency': currency,
+            'fee_percent': str(self.fee_percent),
+            'minimum_withdrawal_minor': self.minimum_withdrawal_minor,
+            'minimum_withdrawal': str(from_minor(self.minimum_withdrawal_minor, currency)),
+            'stuck_payout_hours': self.stuck_payout_hours,
+            'is_active': self.is_active,
+            'version': self.version,
+            'valid_from': self.valid_from,
+            'valid_to': self.valid_to,
+            'reason': self.reason,
+            'created_by': {
+                'id': self.created_by_id, 'label': self.created_by_label,
+                'role': self.created_by_role,
+            },
+        }
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation (local data only)
+# ---------------------------------------------------------------------------
+
+class ReconciliationRun(models.Model):
+    """One day's reconciliation for (country, currency, gateway).
+
+    `date` is the calendar day in the country's default timezone; the window it
+    covers is that day's UTC bounds. The run is written once per key
+    (`recon_run_unique`), so the daily task is idempotent.
+    """
+
+    OK = 'ok'
+    ISSUES = 'issues'
+    ERROR = 'error'
+    STATUS_CHOICES = [(OK, 'No findings'), (ISSUES, 'Findings raised'), (ERROR, 'Run failed')]
+
+    date = models.DateField(db_index=True)
+    country = models.CharField(max_length=2, db_index=True)
+    currency = models.CharField(max_length=3)
+    gateway = models.CharField(max_length=32)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=OK)
+    #: `{kind: new items raised by this run}`.
+    counts = models.JSONField(default=dict, blank=True)
+    #: `{kind: 'ran' | 'not_configured'}` plus the statement-source state.
+    checks = models.JSONField(default=dict, blank=True)
+    window_start = models.DateTimeField()
+    window_end = models.DateTimeField()
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    error = models.CharField(max_length=500, blank=True, default='')
+
+    class Meta:
+        ordering = ['-date', 'country', 'currency']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['date', 'country', 'currency', 'gateway'], name='recon_run_unique',
+            ),
+        ]
+
+    def __str__(self):
+        return f'Reconciliation {self.date} {self.country}/{self.currency}/{self.gateway}'
+
+
+class ReconciliationItem(models.Model):
+    """One thing reconciliation found that a human should look at."""
+
+    PAYMENT_NO_WEBHOOK = 'payment_no_webhook'
+    WEBHOOK_NO_PAYMENT = 'webhook_no_payment'
+    AMOUNT_MISMATCH = 'amount_mismatch'
+    TRIP_NO_SETTLEMENT = 'trip_no_settlement'
+    SETTLEMENT_GROSS_MISMATCH = 'settlement_gross_mismatch'
+    PAYOUT_WEBHOOK_NOT_PAID = 'payout_webhook_not_paid'
+    PAYOUT_STUCK = 'payout_stuck'
+    KIND_CHOICES = [
+        (PAYMENT_NO_WEBHOOK, 'Payment captured without a confirming webhook'),
+        (WEBHOOK_NO_PAYMENT, 'Confirming webhook with no captured payment'),
+        (AMOUNT_MISMATCH, 'Amount or currency differs between payment and webhook'),
+        (TRIP_NO_SETTLEMENT, 'Completed trip with no settlement'),
+        (SETTLEMENT_GROSS_MISMATCH, "Settlement gross differs from the trip's final fare"),
+        (PAYOUT_WEBHOOK_NOT_PAID, 'Payout marked processed by webhook, withdrawal not paid'),
+        (PAYOUT_STUCK, 'Payout stuck in processing'),
+    ]
+    KINDS = [k for k, _ in KIND_CHOICES]
+
+    run = models.ForeignKey(ReconciliationRun, on_delete=models.CASCADE, related_name='items')
+    kind = models.CharField(max_length=32, choices=KIND_CHOICES, db_index=True)
+    #: One live finding per subject: a re-run does not raise it twice, and a
+    #: resolved item is not reopened by the next day's run.
+    dedupe_key = models.CharField(max_length=120, unique=True)
+    country = models.CharField(max_length=2, db_index=True)
+    currency = models.CharField(max_length=3)
+    payment = models.ForeignKey(
+        'payments.Payment', null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    withdrawal = models.ForeignKey(
+        'driver.WithdrawalRequest', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='+')
+    trip = models.ForeignKey(
+        'ride.Trip', null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    #: A gateway reference when no local row exists (a webhook with no payment).
+    reference = models.CharField(max_length=256, blank=True, default='')
+    expected = models.CharField(max_length=255, blank=True, default='')
+    seen = models.CharField(max_length=255, blank=True, default='')
+    #: The city the subject sits in, for scope. NULL = nothing placeable:
+    #: unrestricted callers only.
+    anchor_node = models.ForeignKey(
+        'admin_access.GeoNode', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    resolved_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    resolved_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    resolved_by_label = models.CharField(max_length=255, blank=True, default='')
+    resolution_note = models.TextField(blank=True, default='')
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [
+            models.Index(fields=['resolved_at', '-created_at'], name='recon_item_open_idx'),
+            models.Index(fields=['run', 'kind'], name='recon_item_run_kind_idx'),
+        ]
+
+    def __str__(self):
+        return f'ReconciliationItem {self.kind} {self.dedupe_key}'

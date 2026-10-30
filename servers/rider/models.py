@@ -158,7 +158,7 @@ class WalletTransaction(CurrencyStampedModel, models.Model):
     # same reasoning as the already-stored `zone_code` and `rate_card_version`.
     # Without it, every cross-market Sum() in this codebase is a meaningless
     # number and nothing says so.
-    currency = models.CharField(max_length=3, default='INR', db_index=True)
+    currency = models.CharField(max_length=3, db_index=True)
     txn_type = models.CharField(max_length=20, choices=[
         ('credit', 'Credit'),  # Added via payment gateway
         ('debit', 'Debit')     # Used for both gateway and direct payments

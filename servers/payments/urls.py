@@ -3,7 +3,13 @@ from .views import (
     create_order, verify_payment, payment_webhook, payout_webhook, payment_history, refund_payment,
     switch_payment_method, retry_payment, pending_payments
 )
-from .admin_views import admin_list_payments, admin_list_transactions
+from .admin_views import admin_list_transactions
+from .admin_finance import (
+    finance_driver_ledger, finance_export, finance_overview, finance_payment_detail,
+    finance_payments, finance_payout_config, finance_payout_detail, finance_payouts,
+    finance_reconciliation, finance_reconciliation_items, finance_reconciliation_resolve,
+    finance_settlements,
+)
 
 urlpatterns = [
     path('create-order/', create_order),
@@ -17,6 +23,18 @@ urlpatterns = [
     path('pending/', pending_payments),
     
     # Admin Panel APIs
-    path('admin/payments/', admin_list_payments),
+    path('admin/payments/', finance_payments),
+    path('admin/payments/<int:payment_id>/', finance_payment_detail),
     path('admin/transactions/', admin_list_transactions),
+    # Finance read side (module 7, part A). Scope: servers/payments/scope.py.
+    path('admin/settlements/', finance_settlements),
+    path('admin/payouts/', finance_payouts),
+    path('admin/payouts/<int:payout_id>/', finance_payout_detail),
+    path('admin/drivers/<int:driver_id>/ledger/', finance_driver_ledger),
+    path('admin/overview/', finance_overview),
+    path('admin/reconciliation/', finance_reconciliation),
+    path('admin/reconciliation/items/', finance_reconciliation_items),
+    path('admin/reconciliation/items/<int:item_id>/resolve/', finance_reconciliation_resolve),
+    path('admin/payout-config/', finance_payout_config),
+    path('admin/export/<str:kind>/', finance_export),
 ]

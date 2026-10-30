@@ -390,7 +390,7 @@ class WithdrawalRequest(CurrencyStampedModel, models.Model):
     # same reasoning as the already-stored `zone_code` and `rate_card_version`.
     # Without it, every cross-market Sum() in this codebase is a meaningless
     # number and nothing says so.
-    currency = models.CharField(max_length=3, default='INR', db_index=True)
+    currency = models.CharField(max_length=3, db_index=True)
     payout_method = models.CharField(max_length=20, choices=PAYOUT_METHOD_CHOICES, default='upi')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     requested_at = models.DateTimeField(auto_now_add=True)
@@ -408,6 +408,12 @@ class WithdrawalRequest(CurrencyStampedModel, models.Model):
 
     class Meta:
         ordering = ['-requested_at']
+        indexes = [
+            # The payout queue's date filter and the stuck-payout check
+            # (status = processed, processed_at older than N hours).
+            models.Index(fields=['-requested_at'], name='withdrawal_requested_idx'),
+            models.Index(fields=['status', 'processed_at'], name='withdrawal_status_proc_idx'),
+        ]
 
 
 class DriverUPIContact(models.Model):

@@ -864,12 +864,30 @@ def test_a_missing_document_is_named_for_the_operator(vehicle_type):
 # Payout minimums and messages speak the driver's currency
 # ===========================================================================
 
+
+def _configure_payouts(*countries):
+    """Payout rules are per-country configuration; a country with none cannot
+    withdraw. India is what `seed_payout_config` writes. The US row is a
+    HYPOTHETICAL owner decision ($10 minimum), here only so these tests keep
+    exercising the market-aware message and minimum logic they were written for.
+    """
+    from finance_world import seed_in_payout_config
+    from servers.payments.models import PayoutCountryConfig
+
+    if 'IN' in countries:
+        seed_in_payout_config()
+    if 'US' in countries:
+        PayoutCountryConfig.objects.create(
+            country='US', fee_percent=Decimal('2.00'), minimum_withdrawal_minor=1000)
+
+
 def test_a_us_driver_is_not_told_their_minimum_is_500_rupees(vehicle_type):
     """The message said "Minimum withdrawal amount is ₹500" to everyone.
 
     A US driver was shown a rupee sign beside a dollar balance and blocked from
     withdrawing anything under $500 -- which is not a minimum, it is a barrier.
     """
+    _configure_payouts('US')
     from servers.driver.services import (
         minimum_withdrawal_for, validate_withdrawal_amount,
     )
@@ -894,6 +912,7 @@ def test_the_minimum_is_no_longer_what_blocks_a_us_driver(vehicle_type):
     for lack of balance. What matters is that it is refused for THAT reason and
     not because $25 is under a 500-rupee minimum, which is what used to happen.
     """
+    _configure_payouts('US')
     from servers.driver.services import validate_withdrawal_amount
 
     d = _driver(vehicle_type, 'US')
@@ -911,6 +930,7 @@ def test_the_minimum_is_no_longer_what_blocks_a_us_driver(vehicle_type):
 
 def test_an_indian_driver_still_has_a_500_rupee_minimum(vehicle_type):
     """India's threshold must not have moved."""
+    _configure_payouts('IN')
     from servers.driver.services import (
         minimum_withdrawal_for, validate_withdrawal_amount,
     )
@@ -926,6 +946,7 @@ def test_an_indian_driver_still_has_a_500_rupee_minimum(vehicle_type):
 
 
 def test_an_insufficient_balance_message_uses_the_right_symbol(vehicle_type):
+    _configure_payouts('US')
     from servers.driver.services import validate_withdrawal_amount
 
     d = _driver(vehicle_type, 'US')

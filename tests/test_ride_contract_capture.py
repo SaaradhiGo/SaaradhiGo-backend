@@ -109,7 +109,7 @@ def world(db):
     vehicle_type, _ = VehicleType.objects.get_or_create(type='sedan')
     zone = ServiceZone.objects.create(
         code='IN-TG-HYD-CONTRACT', name='Hyderabad contract capture',
-        zone_type='city', city='Hyderabad',
+        zone_type='city', city='Hyderabad', country='IN',
         polygon_geojson=HYD_POLYGON, priority=10,
     )
     RateCard.objects.create(

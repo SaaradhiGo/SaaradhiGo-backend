@@ -251,32 +251,17 @@ def get_platform_setting(key: str, default, *, cast=None, cache_ttl=300):
 
 
 def commission_percent_for_trip(trip) -> Decimal:
-    """Platform commission % for a trip.
+    """Platform commission % for a trip: the trip's own snapshot, else the layered
+    rule effective when it was requested (module 8, AUDIT 27.36).
 
-    Order of authority:
-      1. RateCard.commission_percent for the trip's zone + vehicle type,
-         effective at the time the trip was requested
-      2. PlatformSettings.PLATFORM_COMMISSION_PERCENT (database-backed, restart-free)
-      3. settings.PLATFORM_COMMISSION_PERCENT fallback
-      4. default of 18%
+    There is NO fallback chain any more (rate card, PlatformSettings key, env
+    setting, hard-coded 18). With no rule in force this raises
+    `commission.CommissionNotConfigured` rather than inventing a rate. See
+    `servers/pricing/commission.py`.
     """
-    try:
-        card = rate_card_for_trip(trip=trip)
-        if card is not None and card.commission_percent is not None:
-            return Decimal(str(card.commission_percent))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning('commission lookup failed for trip %s: %s', getattr(trip, 'id', '?'), exc)
+    from servers.pricing.commission import commission_for_trip
 
-    setting_value = get_platform_setting(
-        'PLATFORM_COMMISSION_PERCENT',
-        getattr(settings, 'PLATFORM_COMMISSION_PERCENT', Decimal('18')),
-        cast=lambda v: Decimal(str(v)),
-        cache_ttl=60,
-    )
-    try:
-        return Decimal(str(setting_value))
-    except (ValueError, ArithmeticError):
-        return Decimal('18')
+    return commission_for_trip(trip).percent
 
 
 def gst_percent_for_trip(trip) -> Decimal:

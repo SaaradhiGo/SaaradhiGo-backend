@@ -983,8 +983,13 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             # per-city report read this instead of re-running a
             # point-in-polygon lookup against a zone table that may have
             # changed since the ride happened.
+            from servers.pricing.commission import snapshot_for_booking
             from servers.pricing.services import find_zone_for_point
             pickup_zone = find_zone_for_point(pickup_lat, pickup_lng)
+            # The commission this trip will be settled at, fixed NOW (module 8,
+            # AUDIT 27.36): percent, rule id and rule version. Never recomputed.
+            commission_snapshot = snapshot_for_booking(
+                pickup_zone, requested_vt.id if requested_vt else None)
 
             with transaction.atomic():
                 trip = Trip.objects.create(
@@ -1003,6 +1008,7 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     surge_multiplier=fare['surge_multiplier'],
                     requested_vehicle_type=requested_vt,
                     payment_method=payment_method,
+                    **commission_snapshot,
                 )
 
                 FarePricing.objects.create(

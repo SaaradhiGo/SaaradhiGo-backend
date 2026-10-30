@@ -2,11 +2,12 @@
 
 READINESS ITEMS
 ---------------
-`city_readiness(node)` returns a list of `{key, ok, detail}`. Today there is
-one item, `safety_coverage` (enough Safety Officers for the country's
-configured minimum). Module 15 adds fare cards, zones, commission and
-providers to the SAME list by appending items to `ITEMS`; nothing else in
-this file changes. An item that cannot be determined is NOT ok: a country
+`city_readiness(node)` returns a list of `{key, ok, detail}`. Items today:
+`safety_coverage` (enough Safety Officers for the country's configured
+minimum), `commission` (an active commission rule covers every vehicle class,
+module 8) and `fare_card` (an active card for every vehicle class in the
+city's zone, module 8). Module 15 adds zones and providers to the SAME list by
+appending items to `ITEMS`; nothing else in this file changes. An item that cannot be determined is NOT ok: a country
 with no safety config is "not configured", never a pass.
 
 THE ONE DOOR
@@ -67,8 +68,67 @@ def _safety_coverage(node):
     return {'key': 'safety_coverage', 'ok': result['ok'], 'detail': detail}
 
 
+def _city_zones(node):
+    from servers.pricing.models import ServiceZone
+
+    return list(ServiceZone.objects.filter(geo_node=node, is_active=True))
+
+
+def _commission(node):
+    """A commission rule governs every vehicle class in this city (module 8)."""
+    from django.utils import timezone
+
+    from servers.driver.models import VehicleType
+    from servers.pricing.commission import resolve
+
+    country = node.country
+    if country is None:
+        return {'key': 'commission', 'ok': False,
+                'detail': 'This city is not under a country, so no commission rule can apply.'}
+    now = timezone.now()
+    classes = list(VehicleType.objects.all())
+    missing = [vt.type for vt in classes if resolve(country.code, node.id, vt.id, now) is None]
+    if not classes:
+        missing = [] if resolve(country.code, node.id, None, now) else ['(any vehicle class)']
+    if missing:
+        return {'key': 'commission', 'ok': False,
+                'detail': f'No active commission rule for {country.code} covers: '
+                          f'{", ".join(missing)}. Approve one under Pricing.'}
+    return {'key': 'commission', 'ok': True,
+            'detail': f'An active commission rule covers every vehicle class in {node.code}.'}
+
+
+def _fare_card(node):
+    """An active fare card for every enabled vehicle class in the city's zone.
+
+    Every VehicleType row counts as enabled: there is no enable flag today."""
+    from django.utils import timezone
+
+    from servers.driver.models import VehicleType
+    from servers.pricing.services import get_active_rate_card
+
+    zones = _city_zones(node)
+    if not zones:
+        return {'key': 'fare_card', 'ok': False,
+                'detail': f'{node.code} has no active service zone, so it has no fare cards.'}
+    now = timezone.now()
+    classes = list(VehicleType.objects.all())
+    if not classes:
+        return {'key': 'fare_card', 'ok': False, 'detail': 'No vehicle classes are configured.'}
+    gaps = []
+    for zone in zones:
+        for vt in classes:
+            if get_active_rate_card(zone, vt, at=now) is None:
+                gaps.append(f'{zone.code}/{vt.type}')
+    if gaps:
+        return {'key': 'fare_card', 'ok': False,
+                'detail': f'No active fare card for: {", ".join(gaps)}.'}
+    return {'key': 'fare_card', 'ok': True,
+            'detail': f'Every vehicle class has an active fare card in {node.code}.'}
+
+
 #: Append here. Each is `callable(node) -> {key, ok, detail}`.
-ITEMS = [_safety_coverage]
+ITEMS = [_safety_coverage, _commission, _fare_card]
 
 
 def city_readiness(node):

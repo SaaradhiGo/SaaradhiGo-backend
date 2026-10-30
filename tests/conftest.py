@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 from rest_framework.test import APIClient
 from django.contrib.auth import get_user_model
@@ -60,6 +62,43 @@ def clear_driver_redis_state():
     _clear()
     yield
     _clear()
+
+
+@pytest.fixture(autouse=True)
+def default_commission_rules(request):
+    """An active country-level 15% commission rule for IN and US in every DB test.
+
+    Module 8 removed every commission default: with no rule in force a settlement
+    raises `CommissionNotConfigured`. The tests that merely SETTLE a trip should not
+    each have to build a rule, so this gives them the owner's 15% (AUDIT 27.36).
+    Tests about rules themselves opt out with `@pytest.mark.no_default_commission`
+    and build exactly what they need. Rules are created country-level with no geo
+    node, so they never get in the way of a test that seeds the geo tree.
+    """
+    if request.node.get_closest_marker('no_default_commission'):
+        yield
+        return
+    names = set(request.fixturenames)
+    marker = request.node.get_closest_marker('django_db')
+    if marker is not None:
+        request.getfixturevalue(
+            'transactional_db' if marker.kwargs.get('transaction') else 'db')
+    elif 'db' in names:
+        request.getfixturevalue('db')
+    elif 'transactional_db' in names:
+        request.getfixturevalue('transactional_db')
+    else:
+        yield
+        return
+    from servers.pricing.commission_models import ACTIVE, CommissionRule
+
+    for country in ('IN', 'US'):
+        CommissionRule.objects.get_or_create(
+            country=country, geo_node=None, vehicle_type=None, version=1,
+            defaults={'percent': 15, 'status': ACTIVE, 'reason': 'test default (owner 15%)',
+                      # In force since forever: a test may back-date a trip.
+                      'effective_from': datetime(2000, 1, 1, tzinfo=timezone.utc)})
+    yield
 
 
 @pytest.fixture(autouse=True)

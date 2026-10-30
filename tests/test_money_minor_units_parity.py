@@ -181,6 +181,15 @@ def market(db):
         night_surge_multiplier=Decimal('1.10'), surge_cap_multiplier=Decimal('2.00'),
         commission_percent=Decimal('25.00'), gst_percent=Decimal('8.875'),
     )
+    # The golden file was captured when the commission came from these rate cards
+    # (18 and 25). Commission is a CommissionRule now (module 8); the same two rates
+    # are set as country rules so the money path stays comparable with the golden.
+    from servers.pricing.commission_models import ACTIVE, CommissionRule
+    for country, pct in (('IN', '18.00'), ('US', '25.00')):
+        CommissionRule.objects.update_or_create(
+            country=country, geo_node=None, vehicle_type=None, version=1,
+            defaults={'percent': Decimal(pct), 'status': ACTIVE, 'effective_from': past,
+                      'reason': 'golden-file parity'})
     return {'vt': vt, 'IN': hyd, 'US': nyc}
 
 

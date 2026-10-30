@@ -35,23 +35,24 @@ def test_healthz_ok(api_client):
 
 
 @pytest.mark.django_db
-def test_platform_commission_uses_db_setting_without_restart():
+def test_a_platform_commission_db_setting_is_no_longer_read():
+    """The PlatformSettings commission override was REMOVED (module 8, AUDIT 27.36).
+
+    It used to win over everything but a rate card. Now the commission is the layered
+    CommissionRule model and nothing reads this key, so a stale row cannot change a
+    settlement. With no rule for the trip's country the lookup raises (it has no
+    fallback), instead of answering with the old override.
+    """
     from decimal import Decimal
 
+    from servers.pricing.commission import CommissionNotConfigured
+    from servers.pricing.commission_models import CommissionRule
     from servers.pricing.models import PlatformSettings
     from servers.pricing.services import commission_percent_for_trip
 
-    settings = __import__('django.conf').conf.settings
-    original = getattr(settings, 'PLATFORM_COMMISSION_PERCENT', Decimal('18'))
-    settings.PLATFORM_COMMISSION_PERCENT = Decimal('18')
-
     PlatformSettings.objects.update_or_create(
         key='PLATFORM_COMMISSION_PERCENT',
-        defaults={
-            'value': '24.50',
-            'setting_type': 'decimal',
-            'description': 'Runtime override for platform commission.',
-        },
+        defaults={'value': '24.50', 'setting_type': 'decimal', 'description': 'stale row'},
     )
 
     class _DummyTrip:
@@ -60,9 +61,14 @@ def test_platform_commission_uses_db_setting_without_restart():
         pickup_lat = 17.385
         pickup_long = 78.486
         zone = None
+        commission_percent_snapshot = None
 
-    assert commission_percent_for_trip(_DummyTrip()) == Decimal('24.50')
-    settings.PLATFORM_COMMISSION_PERCENT = original
+    # The suite gives every DB test the owner's 15% rule; the stale 24.50 is not read.
+    assert commission_percent_for_trip(_DummyTrip()) == Decimal('15.00')
+    # And with no rule in force there is no fallback to that row either: it raises.
+    CommissionRule.objects.all().delete()
+    with pytest.raises(CommissionNotConfigured):
+        commission_percent_for_trip(_DummyTrip())
 
 
 # -------------------------------------------------------------------------

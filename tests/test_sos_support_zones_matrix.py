@@ -61,7 +61,8 @@ TICKET_READ_ROLES = {SUPER_ADMIN, 'city_ops_manager', 'support_agent', 'support_
                       'safety_officer', 'finance'}
 TICKET_WRITE_ROLES = {SUPER_ADMIN, 'support_agent', 'support_lead'}
 ZONE_READ_ROLES = {SUPER_ADMIN, 'city_ops_manager', 'finance', 'analyst'}
-PRICING_WRITE_ROLES = {SUPER_ADMIN}
+# City Ops holds pricing.write since module 8 (drafts; a checker approves). Nobody else may.
+PRICING_WRITE_ROLES = {SUPER_ADMIN, 'city_ops_manager'}
 
 TARGET_STATUS = {'acknowledge': 'acknowledged', 'resolve': 'resolved', 'false-alarm': 'false_alarm'}
 
@@ -95,7 +96,7 @@ def _zone(code, node, **extra):
     zone, _ = ServiceZone.objects.get_or_create(
         code=code,
         defaults={
-            'name': node.name, 'zone_type': 'city', 'city': node.name,
+            'name': node.name, 'zone_type': 'city', 'city': node.name, 'country': 'IN',
             'polygon_geojson': POLYGON, 'is_active': True, **extra,
         },
     )
@@ -234,7 +235,7 @@ def ids_in(response):
 
 def _zone_payload(code):
     return {
-        'code': code, 'name': code, 'zone_type': 'city', 'city': 'Hyderabad',
+        'code': code, 'name': code, 'zone_type': 'city', 'city': 'Hyderabad', 'country': 'IN',
         'polygon_geojson': POLYGON, 'is_active': True, 'priority': 10,
     }
 
@@ -255,7 +256,7 @@ class TestTheTemplates:
         assert holders == SOS_ROLES
 
     def test_pricing_write_is_super_admin_only(self):
-        """Until maker-checker exists. No other template may grow it quietly."""
+        """Super Admin and City Ops (module 8: drafts, a checker approves). No other template may grow it quietly."""
         holders = {t['code'] for t in ROLE_TEMPLATES if 'pricing.write' in t['permissions']}
 
         assert holders == PRICING_WRITE_ROLES
@@ -645,7 +646,10 @@ class TestZoneMatrix:
             # Austin has a rate card and a trip (PROTECT) -- the write is
             # authorised; the database refuses the delete. Either is fine
             # here; what matters is that it was not a 403/404.
-            assert deleted.status_code not in (401, 403, 404), deleted.status_code
+            if role == SUPER_ADMIN:
+                assert deleted.status_code not in (401, 403, 404), deleted.status_code
+            else:
+                assert deleted.status_code == 404      # Austin is outside a Hyderabad City Ops scope
             rows = AdminAuditLog.objects.filter(target_type='service_zone').order_by('id')[before:]
             actions = [r.action for r in rows]
             assert 'service_zone_created' in actions and 'service_zone_updated' in actions
@@ -658,12 +662,18 @@ class TestZoneMatrix:
     @pytest.mark.parametrize('role', ROLES)
     def test_rate_card_writes(self, geo, world, role):
         client, user = operator(role, geo)
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        from conftest import seed_actor
+        call_command('seed_approval_policies', actor_email=seed_actor().email, stdout=StringIO())
         auto, _ = VehicleType.objects.get_or_create(type='auto')
         payload = {
             'zone': world['hyd_zone'].pk, 'vehicle_type': auto.pk,
             'base_fare': '25.00', 'per_km_fare': '10.00', 'per_min_fare': '1.50',
-            'min_fare': '40.00', 'commission_percent': '18.00', 'gst_percent': '5.00',
-            'surge_cap_multiplier': '1.50',
+            'min_fare': '40.00', 'gst_percent': '5.00',
+            'surge_cap_multiplier': '1.50', 'reason': 'matrix test',
         }
 
         cards_before = RateCard.objects.count()
@@ -672,9 +682,12 @@ class TestZoneMatrix:
                                {'notes': f'reviewed by {role}'}, format='json')
 
         if role in PRICING_WRITE_ROLES:
-            assert created.status_code == 201, created.content[:300]
+            # Module 8: creating a card is a maker-checker REQUEST (202), nothing is written
+            # until a checker approves; a notes-only edit stays direct and audited.
+            assert created.status_code == 202, created.content[:300]
+            assert RateCard.objects.count() == cards_before
             assert retired.status_code == 200, retired.content[:300]
-            assert AdminAuditLog.objects.filter(action='rate_card_created', actor_id=user.id).exists()
+            assert AdminAuditLog.objects.filter(action='approval_requested', actor_id=user.id).exists()
             assert AdminAuditLog.objects.filter(action='rate_card_updated', actor_id=user.id).exists()
         else:
             assert (created.status_code, retired.status_code) == (403, 403), role
@@ -717,7 +730,7 @@ class TestZoneScope:
         """Drawn before its node existed. A Global assignment (not only a
         superuser) must still see it, or nobody can link it."""
         orphan = ServiceZone.objects.create(
-            code='ORPHAN', name='Orphan', zone_type='city', city='Nowhere',
+            code='ORPHAN', name='Orphan', zone_type='city', city='Nowhere', country='IN',
             polygon_geojson=POLYGON,
         )
         city_ops, _ = operator('city_ops_manager', geo)

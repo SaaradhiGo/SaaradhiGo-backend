@@ -616,6 +616,9 @@ class PayoutRun(models.Model):
     outcome = models.CharField(max_length=24, default='opened')
     #: True when the per-run cap cut the list short (the rest waits a week).
     truncated = models.BooleanField(default=False)
+    #: Drivers the run SKIPPED, with why: `[{driver_id, reason, balance_minor}]`.
+    #: Today the only reason is `no_payout_handle` (no UPI / bank fund account).
+    skipped = models.JSONField(default=list, blank=True)
 
     class Meta:
         ordering = ['-week_start', 'country']

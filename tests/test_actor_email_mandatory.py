@@ -63,6 +63,8 @@ User = get_user_model()
 #: THE list. The meta-test below compares it with the command modules that
 #: import `servers.admin_audit.actor_option`.
 WRITING_COMMANDS = [
+    # A one-off RULING command (not a seed_*): the owner's 15% commission, AUDIT 27.44.
+    'apply_commission_ruling',
     # A one-off RULING command (not a seed_*): the owner's payout values, AUDIT 27.43.
     'apply_payout_ruling',
     'bootstrap_qa_accounts',
@@ -369,6 +371,23 @@ def _fp_payout_config():
         'country', 'version', 'fee_percent', 'minimum_withdrawal_minor', 'is_active')))
 
 
+def _prepare_commission_ruling(settings, monkeypatch):
+    # The suite gives every DB test the owner's 15% already; the ruling is only
+    # observable on an environment that has none, which is what QA is.
+    from servers.pricing.commission_models import CommissionRule
+
+    CommissionRule.objects.all().delete()
+    return [], {}
+
+
+def _fp_commission_rules():
+    from servers.pricing.commission_models import CommissionCountryConfig, CommissionRule
+
+    return (tuple(sorted(CommissionRule.objects.values_list(
+        'country', 'version', 'percent', 'status'))),
+        tuple(sorted(CommissionCountryConfig.objects.values_list('country', 'version'))))
+
+
 QA_OPERATOR_PHONE = '+919555000001'
 
 
@@ -430,6 +449,8 @@ CASES = [
          _prepare_seed_policies, _fp_payout_config),
     Case('apply_payout_ruling', 'apply_payout_ruling',
          _prepare_seed_policies, _fp_payout_config),
+    Case('apply_commission_ruling', 'apply_commission_ruling',
+         _prepare_commission_ruling, _fp_commission_rules),
     Case('seed_alert_thresholds', 'seed_alert_thresholds',
          _prepare_seed_thresholds, _fp_thresholds, needs_operator_to_prepare=True),
     Case('seed_us_test_city', 'seed_us_test_city',

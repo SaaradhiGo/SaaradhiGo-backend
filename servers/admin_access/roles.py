@@ -125,6 +125,9 @@ ROLE_TEMPLATES = [
             'trip.read', 'trip.write', 'rider.read', 'driver.read',
             'driver.write', 'support.read', 'report.read', 'zone.read',
             'zone.write', 'promo.write', 'pii.view',
+            # Drafts and submits commission and fare-card changes; a different
+            # admin must approve (pricing.change is always a checker).
+            'pricing.write',
             'rider.note', 'rider.flag', 'rider.signout', 'rider.block',
             # Read-only Safety queue within scope; no write, no reveal.
             'safety.read',

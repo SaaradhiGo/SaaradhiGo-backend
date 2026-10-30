@@ -45,7 +45,7 @@ from servers.admin_audit.services import record_admin_action
 from servers.driver.models import Driver, WithdrawalRequest
 from servers.ride.models import TripMoneyAction
 
-from . import ledger
+from . import ledger, payout_rails
 from .finance_common import (
     BadParam, FinancePagination, city_day_q, csv_safe, day_bounds, group_by_timezone,
     mask_tail, money, node_timezones, parse_currency, parse_int, parse_range,
@@ -305,6 +305,10 @@ def payout_row(w, approvals=None, now=None, blocked=None):
         'investigation_note': w.investigation_note,
         'investigation_since': w.investigation_since,
         'retryable': w.status == 'failed' and not w.payout_reference_id,
+        # Approved in a currency with no payout rail: held, nothing sent.
+        'awaiting_rail': w.payout_status == 'awaiting_rail',
+        'rail_note': payout_rails.rail_note(w.currency)
+        if w.payout_status == 'awaiting_rail' else None,
     }
     if blocked is not None:
         country = payout_country(w)
@@ -569,6 +573,10 @@ def finance_payouts(request):
     data = paginator.get_paginated_response(
         [payout_row(w, approvals, now, blocked) for w in page]).data
     data['tabs'] = [tabs[s] for s in PAYOUT_TAB_ORDER]
+    # Currencies in this list with no payout rail: the console says approved payouts wait.
+    data['rail_notices'] = [
+        {'currency': c, 'note': payout_rails.rail_note(c)}
+        for c in sorted({w.currency for w in page}) if not payout_rails.has_rail(c)]
     return success_response(data, status.HTTP_200_OK)
 
 
@@ -933,6 +941,7 @@ def finance_payout_config(request):
         runs = [{'id': r.id, 'week_start': r.week_start, 'withdrawal_count': r.withdrawal_count,
                  'amount_minor': r.amount_minor, 'currency': r.currency, 'outcome': r.outcome,
                  'approval_request_id': r.approval_request_id, 'truncated': r.truncated,
+                 'skipped': r.skipped, 'skipped_count': len(r.skipped or []),
                  'created_at': r.created_at}
                 for r in PayoutRun.objects.filter(country=code).order_by('-week_start')[:8]]
         can_edit = code in editable_in and cfg is not None

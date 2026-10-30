@@ -31,6 +31,14 @@ class Trip(CurrencyStampedModel, models.Model):
     requested_vehicle_type=models.ForeignKey(VehicleType,on_delete=models.SET_NULL,null=True,blank=True,related_name='requested_trips')
     status_id=models.ForeignKey(TripStatus,on_delete=models.DO_NOTHING,related_name='trips',default=get_default_trip_status)
     requested_at=models.DateTimeField(auto_now_add=True)
+    # THE COMMISSION SNAPSHOT (module 8, AUDIT 27.36): written once at booking from
+    # the layered CommissionRule model and never recomputed, so a later rule change
+    # cannot reach this trip. NULL on a trip that predates the module (or one booked
+    # where no rule existed): settlement then resolves the rule effective at
+    # `requested_at`. Ids and versions, not an FK: a rule's history is its own.
+    commission_percent_snapshot=models.DecimalField(max_digits=5,decimal_places=2,null=True,blank=True)
+    commission_rule_id=models.BigIntegerField(null=True,blank=True)
+    commission_rule_version=models.PositiveIntegerField(null=True,blank=True)
     accepted_at=models.DateTimeField(blank=True,null=True)
     # The route the driver was expected to drive (pickup to drop), fetched
     # AFTER the accept commits (`ride.store_planned_route`). An encoded

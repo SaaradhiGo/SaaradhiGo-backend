@@ -65,6 +65,9 @@ SCOPE_PATHS = {
     # A rate card belongs to its zone.
     'pricing.RateCard': 'zone__geo_node__path',
 
+    # A commission rule is anchored at the country or city node it applies to.
+    'pricing.CommissionRule': 'geo_node__path',
+
     # ANCHORED AT SOS TIME (owner's ruling, 2026-10-28)
     # ----------------------------------------------
     # `SOSEvent.anchor_node` is resolved when the row is created: the

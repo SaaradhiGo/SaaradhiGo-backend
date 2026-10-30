@@ -64,7 +64,8 @@ class PlatformSettings(models.Model):
         max_length=256,
         unique=True,
         db_index=True,
-        help_text='Stable setting key, e.g. "PLATFORM_COMMISSION_PERCENT".',
+        help_text='Stable setting key, e.g. "SOME_FLAG". (PLATFORM_COMMISSION_PERCENT is '
+                  'deprecated: commission comes from CommissionRule.)',
     )
     value = models.TextField(help_text='Serialized value; typed by setting_type.')
     setting_type = models.CharField(max_length=20, choices=SETTING_TYPES, default='string')
@@ -125,7 +126,9 @@ class ServiceZone(models.Model):
         help_text='Stable identifier, e.g. "IN-TG-HYD" or "IN-TG-HYD-AIRPORT".',
     )
     name = models.CharField(max_length=128)
-    country = models.CharField(max_length=2, default='IN')
+    # No default: a zone is always in a country somebody chose. `default='IN'`
+    # silently put every zone created without one into India (AUDIT 27.37 B).
+    country = models.CharField(max_length=2)
     state_code = models.CharField(
         max_length=8,
         blank=True,
@@ -288,6 +291,9 @@ class ServiceZone(models.Model):
         self.currency = str(self.currency).upper().strip()
 
     def save(self, *args, **kwargs):
+        if not str(self.country or '').strip():
+            from django.core.exceptions import ValidationError
+            raise ValidationError({'country': 'A service zone needs a country.'})
         self.apply_country_defaults()
         super().save(*args, **kwargs)
 
@@ -367,10 +373,13 @@ class RateCard(models.Model):
         max_digits=4, decimal_places=2, default=Decimal('1.50'),
     )
 
-    # Driver commission percentage taken by SaaradhiGo (informational;
-    # actual driver payout computed in payments service).
+    # DEPRECATED (module 8, AUDIT 27.36). Nothing reads this column any more:
+    # the commission comes from `CommissionRule` (servers/pricing/commission.py)
+    # and each trip snapshots what it was charged. The column stays so old rows
+    # and migrations keep their shape; a guard test fails if code reads it.
     commission_percent = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal('18.00'),
+        help_text='DEPRECATED: not read by any code. See CommissionRule.',
     )
 
     # The zone's tax rate: GST in India, sales tax in the US. Configurable
@@ -657,3 +666,9 @@ class TripFareShadow(CurrencyStampedModel, models.Model):
         if self.shadow_estimate is None or self.quoted_fare is None:
             return None
         return self.shadow_estimate - self.quoted_fare
+
+
+# Commission models live in their own module and are imported here so Django finds them.
+from servers.pricing.commission_models import (  # noqa: E402,F401
+    CommissionCountryConfig, CommissionRule, DriverNotice,
+)

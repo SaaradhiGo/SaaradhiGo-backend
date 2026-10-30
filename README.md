@@ -118,7 +118,6 @@ Settings load environment variables via `python-dotenv` (see [base/settings.py](
 | `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_WEBHOOK_SECRET`, `CASHFREE_ENVIRONMENT`, `CASHFREE_PG_BASE_URL`, `CASHFREE_API_VERSION` | Cashfree gateway |
 | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Razorpay (legacy)                       |
 | `PAYMENT_GATEWAY`, `PAYOUT_GATEWAY` | Active gateways (default `cashfree`)                   |
-| `PLATFORM_COMMISSION_PERCENT`  | Trip commission                                             |
 | `TRIP_ACCEPT_TIMEOUT_SECONDS`  | Driver accept window (default `600`)                        |
 | `GOOGLE_MAPS_API_KEY`          | Maps API key                                                |
 

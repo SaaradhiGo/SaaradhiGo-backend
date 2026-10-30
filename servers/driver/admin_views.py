@@ -13,7 +13,7 @@ from servers.admin_access.bridge import ScopedPermission, in_scope
 from servers.admin_access.scoping import (
     ScopeNotHeld, scoped, scoped_or_none, scoped_to_request,
 )
-from servers.driver.models import Driver,Vehicle
+from servers.driver.models import Driver, DriverSuspension, Vehicle
 from servers.driver.serializers import DriverAdminListSerializer, DriverAdminDetailSerializer, KYCApprovalSerializer, VehicleSerializer
 from rest_framework.pagination import PageNumberPagination
 
@@ -29,7 +29,11 @@ logger = logging.getLogger(__name__)
 # with approved documents is an operations matter, not a KYC one.
 from django.db.models import Q
 
-IN_KYC = Q(approved=False) | ~Q(doc_status='approved')
+# A SUSPENDED driver is not in KYC: suspension is an operations decision
+# (driver.write), and a KYC-only operator approving them would be a
+# reinstatement by the back door. The subquery is lazy, evaluated per use.
+IN_KYC = (Q(approved=False) | ~Q(doc_status='approved')) & ~Q(
+    id__in=DriverSuspension.objects.filter(lifted_at__isnull=True).values('driver_id'))
 
 
 def kyc_only(user):
@@ -76,31 +80,12 @@ def list_drivers_admin(request):
             status=status.HTTP_403_FORBIDDEN,
         )
     
-    # Filter configuration
-    approved = request.query_params.get('approved')
-    driver_status = request.query_params.get('status')
-    
-    if approved is not None:
-        approved_bool = approved.lower() in ['true', '1', 't', 'y', 'yes']
-        drivers = drivers.filter(approved=approved_bool)
-        
-    if driver_status:
-        drivers = drivers.filter(status=driver_status)
-
-    paginator = PageNumberPagination()
-    paginator.page_size = 10
-    paginator.page_size_query_param = 'page_size'
-    paginator.max_page_size = 50
-    page = paginator.paginate_queryset(drivers, request)
-    
-    serializer = DriverAdminListSerializer(page, many=True)
-    # Masked on the way OUT, by the renderer (admin_access.rendering), not
-    # in the console: no operator is SENT the number, so there is nothing
-    # in the payload, the network tab or a captured body to reveal. The
-    # reveal endpoint is the way to it, and is logged.
-    return success_response(
-        paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK,
-    )
+    # Filters, sort and pages: the Drivers module (admin_drivers). The rows
+    # are masked on the way OUT, by the renderer (admin_access.rendering),
+    # not in the console: no operator is SENT the number. The reveal
+    # endpoint is the way to it, and is logged.
+    from servers.driver.admin_drivers import list_response
+    return list_response(request, drivers)
 
 
 @api_view(['GET'])
@@ -451,6 +436,11 @@ def driver_full_detail_admin(request, driver_id):
         'doc_status': driver.doc_status,
         'doc_rejection_reason': driver.doc_rejection_reason or '',
     }
+    # The Drivers module's sections: per-document review, approval blockers,
+    # ratings, SOS / ticket counts, suspension, history, notes, audit trail
+    # and the caller's actions. Added keys only; nothing above changes.
+    from servers.driver.admin_drivers import detail_extras
+    payload.update(detail_extras(request, driver))
     # This payload carries the person at several depths -- the driver, the
     # user, the documents, the recent trips' addresses -- which is why the
     # renderer's masker recurses rather than masking only the top level.
@@ -475,6 +465,14 @@ def update_kyc_status_admin(request, driver_id):
 
         serializer = KYCApprovalSerializer(driver, data=request.data, partial=True)
         if serializer.is_valid():
+            if serializer.validated_data.get('approved') is True and (
+                    DriverSuspension.objects.filter(driver=driver, lifted_at__isnull=True)
+                    .exists()):
+                # Approval would lift a suspension that only driver.write may lift.
+                return error_response(
+                    code='DRIVER_SUSPENDED', message='Suspended: reinstate before approving.',
+                    field='approved', issue='driver is suspended',
+                    status=status.HTTP_409_CONFLICT)
             serializer.save()
 
             # THE REVIEW OUTCOME, WHERE THE DRIVER CAN READ IT.
@@ -533,32 +531,18 @@ def update_kyc_status_admin(request, driver_id):
 @permission_classes([IsAuthenticated, ScopedPermission('driver.deactivate')])
 def delete_driver_admin(request, driver_id):
     """
-    Delete a driver profile and their associated objects.
-    """
-    from servers.admin_audit.services import record_admin_action
+    Permanently DEACTIVATE a driver (the route keeps its old name).
 
-    try:
-        driver = scoped_or_none(request.user, Driver.objects.all(), id=driver_id)
-        if driver is None:
-            raise Driver.DoesNotExist
-        snapshot = {
-            'approved': driver.approved,
-            'status': driver.status,
-            'phone': getattr(driver.user_id, 'phone_number', None),
-            'full_name': getattr(driver.user_id, 'full_name', None),
-        }
-        driver.delete()
-        record_admin_action(
-            request,
-            action='driver_deleted',
-            target_type='driver',
-            target_id=driver_id,
-            before=snapshot,
-            after={'deleted': True},
-            reason=request.data.get('reason', '') if hasattr(request, 'data') else '',
-        )
-        return success_response({"message": "Driver deleted successfully"}, status.HTTP_200_OK)
-    except Driver.DoesNotExist:
+    This used to be `driver.delete()`: a hard delete that cascaded through
+    the driver's vehicles, sessions and withdrawals and orphaned their trips
+    and audit history, by one operator with no second pair of eyes. It now
+    raises a `driver.deactivate` request (always a checker, AUDIT section 10);
+    on approval the account is locked and the driver suspended for good,
+    and every row is kept. Scoped: `scoped_or_none` inside the helper.
+    """
+    from servers.driver.admin_drivers import deactivate_response
+
+    if scoped_or_none(request.user, Driver.objects.all(), id=driver_id) is None:
         return error_response(
             code="NOT_FOUND",
             message="Driver not found",
@@ -566,6 +550,9 @@ def delete_driver_admin(request, driver_id):
             issue=f"No driver matches id {driver_id}",
             status=status.HTTP_404_NOT_FOUND
         )
+    return deactivate_response(request, driver_id)
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def get_vehicle_details(request, driver_id):

@@ -135,6 +135,18 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
     'PAGE_SIZE': 20,
+    # THE PII MASK IS A RENDERER, so no operator endpoint can forget it.
+    # `MaskingJSONRenderer` is DRF's JSON renderer plus one step: a response
+    # produced under the operator namespace (`/api/v1/**/admin/**`,
+    # `/api/v1/admin-access/**`, or any ScopedPermission-gated view) has its
+    # personal fields masked by name before serialization, unless the view
+    # is a reveal and has written its audit row (`masking.mark_revealed`).
+    # Rider and driver endpoints never match, so their contracts are
+    # untouched. See servers/admin_access/rendering.py.
+    'DEFAULT_RENDERER_CLASSES': [
+        'servers.admin_access.rendering.MaskingJSONRenderer',
+        'rest_framework.renderers.BrowsableAPIRenderer',
+    ],
     # Rates are defined here; the actual throttle classes are wired per-view
     # (see base/throttles.py + decorators on auth endpoints) so we don't
     # accidentally rate-limit unrelated endpoints.
@@ -193,6 +205,11 @@ REST_FRAMEWORK = {
         # lookups, not an unbounded number.
         'guest_fare_global': '400/hour',
         'guest_route_global': '400/hour',
+        # Unmasking personal data, per operator. Sixty a minute is more than
+        # a person working a queue needs and far less than a script walking
+        # the driver table; every one of them is also an audit row, and the
+        # count in the window is written on it. See admin_access/reveal.py.
+        'pii_reveal': '60/min',
     },
 }
 # --- Email delivery ----------------------------------------------------------

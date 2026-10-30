@@ -10,6 +10,16 @@ and nowhere else -- the number is still in the network tab, in any log
 that captures a body, and on every machine the response crossed.
 
 So the tests serialize the whole response and search it for the digits.
+
+MASKED BY DEFAULT FOR EVERY OPERATOR (Phase 1(e))
+-------------------------------------------------
+`pii.view` no longer unmasks a list. It is the capability to REVEAL one
+record through `/admin-access/reveal/`, logged per call. What it changes
+in a list is the name (full, rather than first name + initial), the
+coordinate precision and whether document links are served. The phone and
+the email are masked for the KYC Verifier exactly as for the Analyst. The
+exhaustive sweep lives in `test_pii_masking_everywhere.py`; this file keeps
+the driver-list story readable.
 """
 
 import json
@@ -142,13 +152,19 @@ class TestTheDriverList:
         # But the first name survives, or the list is unusable.
         assert 'Ravi' in body
 
-    def test_a_role_with_pii_view_still_gets_the_real_values(
+    def test_a_role_with_pii_view_gets_the_full_name_and_still_no_phone(
         self, with_pii, driver,
     ):
-        """Masking everybody would make the console useless for KYC."""
+        """`pii.view` is the reveal capability, not a plaintext list.
+
+        The KYC Verifier recognises the person (full name) and reveals the
+        number one record at a time, logged; the list itself never carries
+        it. Masking the NAME for them too would make the queue unusable.
+        """
         body = body_of(with_pii.get('/api/v1/driver/admin/'))
 
-        assert DRIVER_PHONE in body
+        assert DRIVER_PHONE not in body
+        assert '9876543210' not in body
         assert DRIVER_NAME in body
 
     def test_the_row_is_still_listed(self, without_pii, driver):
@@ -179,10 +195,27 @@ class TestTheDetailEndpoints:
         assert DRIVER_PHONE not in body_of(response)
         assert DRIVER_EMAIL not in body_of(response)
 
-    def test_the_full_detail_view_is_unmasked_for_kyc(self, with_pii, driver):
+    def test_the_full_detail_view_is_masked_for_kyc_too(self, with_pii, driver):
+        """The document links are served (that is the job); the number is not."""
         response = with_pii.get(f'/api/v1/driver/admin/{driver.id}/full/')
 
-        assert DRIVER_PHONE in body_of(response)
+        assert response.status_code == 200
+        assert DRIVER_PHONE not in body_of(response)
+        assert DRIVER_NAME in body_of(response)
+
+    def test_kyc_reveals_the_number_through_the_reveal_endpoint(self, with_pii, driver):
+        from servers.admin_audit.models import AdminAuditLog
+
+        response = with_pii.post('/api/v1/admin-access/reveal/', {
+            'target_type': 'driver', 'target_id': driver.id,
+            'fields': ['phone_number'], 'reason': 'KYC call-back',
+        }, format='json')
+
+        assert response.status_code == 200, response.content
+        assert response.json()['data']['fields']['phone_number'] == DRIVER_PHONE
+        row = AdminAuditLog.objects.filter(action='pii_revealed').order_by('-id').first()
+        assert row is not None and row.after['fields'] == ['phone_number']
+        assert DRIVER_PHONE not in json.dumps(row.after)
 
 
 # ---------------------------------------------------------------------------
@@ -205,15 +238,19 @@ class TestPiiViewIsScoped:
         # stronger answer than masking.
         assert response.status_code == 404
 
-    def test_a_country_scoped_verifier_sees_the_real_values(self, geo, driver):
-        """The control for the test above: same role, scope that covers."""
+    def test_a_country_scoped_verifier_reaches_the_record(self, geo, driver):
+        """The control for the test above: same role, scope that covers.
+
+        Reached, named in full -- and still masked, like every list.
+        """
         india = client_for('kyc_verifier', geo['IN'],
                            'in.kyc@saaradhigo.test', '+918811000004')
 
         response = india.get(f'/api/v1/driver/admin/{driver.id}/')
 
         assert response.status_code == 200
-        assert DRIVER_PHONE in body_of(response)
+        assert DRIVER_NAME in body_of(response)
+        assert DRIVER_PHONE not in body_of(response)
 
 
 # ---------------------------------------------------------------------------
@@ -221,14 +258,15 @@ class TestPiiViewIsScoped:
 # ---------------------------------------------------------------------------
 
 class TestUnmigratedAccounts:
-    def test_an_unmigrated_operator_still_sees_the_real_values(
+    def test_an_unmigrated_operator_is_masked_like_everybody_else(
         self, driver, geo, settings,
     ):
-        settings.ADMIN_ACCESS_STRICT = False
-        """Masking an unmigrated account would change what today's console
-        shows before anybody has been migrated. Tightening happens when the
-        account is assigned a role, not before -- the same rule as scope.
+        """Masking is not a migration question (owner's rule: masked by
+        default for EVERY operator). What the bridge still decides for an
+        unmigrated account is the trusted policy -- full names, exact
+        coordinates, documents -- never the phone or the email.
         """
+        settings.ADMIN_ACCESS_STRICT = False
         user = User.objects.create_user(
             phone_number='+918811000009', username='+918811000009',
             email='legacy@saaradhigo.test', role='admin', is_staff=True,
@@ -237,4 +275,7 @@ class TestUnmigratedAccounts:
         client.credentials(
             HTTP_AUTHORIZATION=f'Bearer {AccessToken.for_user(user)}')
 
-        assert DRIVER_PHONE in body_of(client.get('/api/v1/driver/admin/'))
+        body = body_of(client.get('/api/v1/driver/admin/'))
+
+        assert DRIVER_PHONE not in body
+        assert DRIVER_NAME in body

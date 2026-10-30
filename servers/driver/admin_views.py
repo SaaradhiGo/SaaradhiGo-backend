@@ -10,7 +10,6 @@ from base.permissions import (
     CAP_DRIVER_KYC, CAP_FINANCE_PAYOUT, IsAdmin, RequiresCapability,
 )
 from servers.admin_access.bridge import ScopedPermission, in_scope
-from servers.admin_access.masking import mask_for
 from servers.admin_access.scoping import (
     ScopeNotHeld, scoped, scoped_or_none, scoped_to_request,
 )
@@ -95,14 +94,13 @@ def list_drivers_admin(request):
     page = paginator.paginate_queryset(drivers, request)
     
     serializer = DriverAdminListSerializer(page, many=True)
-    # Masked on the way OUT, not in the console: an operator without
-    # `pii.view` is never SENT the number, so there is nothing in the
-    # payload, the network tab or a captured response body to reveal.
-    body = mask_for(
-        request.user,
-        paginator.get_paginated_response(serializer.data).data,
+    # Masked on the way OUT, by the renderer (admin_access.rendering), not
+    # in the console: no operator is SENT the number, so there is nothing
+    # in the payload, the network tab or a captured body to reveal. The
+    # reveal endpoint is the way to it, and is logged.
+    return success_response(
+        paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK,
     )
-    return success_response(body, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -132,10 +130,7 @@ def retrieve_driver_admin(request, driver_id):
             status=status.HTTP_404_NOT_FOUND
         )
     serializer = DriverAdminDetailSerializer(driver)
-    return success_response(
-        mask_for(request.user, serializer.data, driver.home_city),
-        status.HTTP_200_OK,
-    )
+    return success_response(serializer.data, status.HTTP_200_OK)
 
 
 def _compliance_payload(driver):
@@ -457,11 +452,9 @@ def driver_full_detail_admin(request, driver_id):
         'doc_rejection_reason': driver.doc_rejection_reason or '',
     }
     # This payload carries the person at several depths -- the driver, the
-    # user, emergency contacts -- which is why `mask_people` recurses
-    # rather than masking only the top level.
-    return success_response(
-        mask_for(request.user, payload, driver.home_city), status.HTTP_200_OK,
-    )
+    # user, the documents, the recent trips' addresses -- which is why the
+    # renderer's masker recurses rather than masking only the top level.
+    return success_response(payload, status.HTTP_200_OK)
 
 @api_view(['PATCH'])
 @permission_classes([IsAuthenticated, ScopedPermission('driver.kyc')])
@@ -660,13 +653,12 @@ def list_withdrawals_admin(request):
     paginator.max_page_size = 50
     page = paginator.paginate_queryset(withdrawals, request)
     serializer = WithdrawalRequestSerializer(page, many=True)
-    # A payout queue names the person being paid. Finance holds `pii.view`;
-    # a role that does not must still be able to see the QUEUE.
-    body = mask_for(
-        request.user,
-        paginator.get_paginated_response(serializer.data).data,
+    # A payout queue names the person being paid. The renderer masks the
+    # phone and the UPI handle for everybody; Finance reveals one payee at
+    # a time through /admin-access/reveal/ when a payout needs checking.
+    return success_response(
+        paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK,
     )
-    return success_response(body, status.HTTP_200_OK)
 
 
 @api_view(['POST'])

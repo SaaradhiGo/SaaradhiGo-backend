@@ -7,17 +7,17 @@ row locks, writers are serialised by the database file itself.
 
 THE RULES
 ---------
-* ADMISSION: a NEW reservation needs the campaign `live` and the budget to allow it. With
-  `strict_cap` (the default) the whole amount must fit in what is left; without it any
-  positive remainder admits, and the reservation may cross the cap by less than one amount.
+* ADMISSION: a NEW reservation needs the campaign `live` and its WHOLE amount to fit in what is
+  left: a hard cap, with no lenient mode (owner ruling, AUDIT 27.51).
 * HONOUR: a reservation that exists is never refused later. `settle` and `release` work in any
   campaign state, including paused, exhausted, ended and cancelled.
-* OVERSHOOT: when `committed + spent` stands above the budget, `overshoot_minor` keeps the
-  peak and a `promotion.budget_overshoot` alert (warning, Finance) is raised, once per campaign
+* OVERSHOOT: the only way spend finishes above the cap is a trip that ALREADY holds a reservation
+  being honoured at a different amount (`adjust_reservation`, `settle` with an actual amount).
+  Then `overshoot_minor` keeps the peak and a `promotion.budget_overshoot` alert (warning, Finance) is raised, once per campaign
   while open.
 * EXHAUSTION: a live campaign whose remainder can no longer admit another application becomes
-  `exhausted` and raises `promotion.budget_exhausted` (info), once. For a strict campaign that is
-  a remainder below the smallest amount it could be asked for; for a loose one, nothing left.
+  `exhausted` and raises `promotion.budget_exhausted` (info), once: a remainder below the smallest
+  amount it could be asked for.
 
 Nothing here moves money in a wallet; it counts. The wallet movements live next to the thing
 they pay for (`rider_promos`, `incentives`, `referrals`).
@@ -64,9 +64,7 @@ def admits(campaign, amount_minor):
     if campaign.budget_minor is None:
         return True
     used = campaign.committed_minor + campaign.spent_minor
-    if campaign.strict_cap:
-        return used + amount_minor <= campaign.budget_minor
-    return used < campaign.budget_minor
+    return used + amount_minor <= campaign.budget_minor
 
 
 def _alert(campaign, kind, title, severity):
@@ -105,10 +103,8 @@ def _after_change(campaign):
             fields.append('overshoot_minor')
             raise_overshoot = True
     raise_exhausted = False
-    # A strict campaign can admit nothing once the remainder cannot fund the smallest amount it
-    # could be asked for; a loose one admits while anything is left.
-    floor = min_viable_minor(campaign) if campaign.strict_cap else 1
-    if campaign.state == LIVE and (campaign.budget_minor - used) < floor:
+    # Nothing more can be admitted once the remainder cannot fund the smallest amount asked for.
+    if campaign.state == LIVE and (campaign.budget_minor - used) < min_viable_minor(campaign):
         campaign.state = EXHAUSTED
         campaign.exhausted_at = timezone.now()
         fields += ['state', 'exhausted_at']
@@ -142,11 +138,22 @@ def reserve(campaign_id, amount_minor):
 
 
 @transaction.atomic
-def settle(campaign_id, amount_minor):
-    """The reserved amount became real spend. Works in any state (the trip is honoured)."""
+def settle(campaign_id, amount_minor, actual_minor=None):
+    """The reserved amount became real spend. Works in any state (the trip is honoured).
+    `actual_minor` is what was really spent when it differs from the reservation."""
     campaign = Campaign.objects.select_for_update().get(pk=campaign_id)
     campaign.committed_minor = max(0, campaign.committed_minor - amount_minor)
-    campaign.spent_minor += amount_minor
+    campaign.spent_minor += amount_minor if actual_minor is None else actual_minor
+    _after_change(campaign)
+    return campaign
+
+
+@transaction.atomic
+def adjust_reservation(campaign_id, old_minor, new_minor):
+    """A booked trip's discount is re-worked (an operator ended it on a capped fare). The trip is
+    honoured at the new amount whatever the campaign's state; a rise past the cap is recorded."""
+    campaign = Campaign.objects.select_for_update().get(pk=campaign_id)
+    campaign.committed_minor = max(0, campaign.committed_minor - old_minor + new_minor)
     _after_change(campaign)
     return campaign
 

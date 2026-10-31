@@ -210,6 +210,10 @@ class Plan:
     driver_earnings_minor: object
     funded_by: str
     metered: dict = field(default_factory=dict, repr=False)
+    #: A promo held on the trip (module 12): the discount it gives on the capped fare under the standard
+    #: rule, and what the rider then pays. 0 under the platform-funded rule (the rider pays 0 anyway).
+    promo_discount_minor: int = 0
+    rider_pays_after_promo_minor: int = 0
 
     def as_dict(self):
         """The preview payload and the audit figures. No coordinates, no contact detail."""
@@ -228,6 +232,8 @@ class Plan:
             'capped_fare_minor': self.capped_minor,
             'cap_applied': self.uncapped_minor > self.upfront_minor,
             'rider_pays_minor': self.rider_pays_minor,
+            'promo_discount_minor': self.promo_discount_minor,
+            'rider_pays_after_promo_minor': self.rider_pays_after_promo_minor,
             'commission_percent': (str(self.commission_percent)
                                    if self.commission_percent is not None else None),
             'commission_minor': self.commission_minor,
@@ -270,6 +276,10 @@ def build_plan(trip, reason_code):
             'No commission rule governs this trip, so the earnings the platform would pay '
             'cannot be worked out.')
     earnings = None if commission is None else capped - commission
+    promo = 0
+    if rule == STANDARD:
+        from servers.promotions.rider_promos import operator_end_discount_minor
+        promo = operator_end_discount_minor(trip, capped)
     return Plan(
         trip_id=trip.id, reason_code=reason_code, rule=rule, currency=currency,
         payment_method=trip.payment_method or 'deferred', last_activity_at=until,
@@ -278,7 +288,9 @@ def build_plan(trip, reason_code):
         capped_minor=capped, rider_pays_minor=0 if rule == PLATFORM_FUNDED else capped,
         commission_percent=percent, commission_minor=commission,
         driver_earnings_minor=earnings,
-        funded_by='platform' if rule == PLATFORM_FUNDED else 'rider', metered=metered)
+        funded_by='platform' if rule == PLATFORM_FUNDED else 'rider', metered=metered,
+        promo_discount_minor=promo,
+        rider_pays_after_promo_minor=0 if rule == PLATFORM_FUNDED else capped - promo)
 
 
 # ---------------------------------------------------------------------------
@@ -405,10 +417,12 @@ def apply_plan(trip, plan, *, actor):
         trip.platform_funded_minor = plan.driver_earnings_minor
         fields.append('platform_funded_minor')
     trip.save(update_fields=fields)
-    # The rider pays for the distance driven, with no promo (module 12): a discount reserved at
-    # booking goes back to its campaign's budget.
-    from servers.promotions.rider_promos import release_for_trip
-    release_for_trip(trip)
+    # Promotions (module 12). A promo applied to a booked trip is always honoured for that trip.
+    # PLATFORM-FUNDED: the rider pays 0, so the reservation goes back to its budget. STANDARD: the
+    # discount is re-worked on the capped fare under the promo's own terms and settles as a normal
+    # promo trip (driver earnings and commission on the full capped fare; the platform funds it).
+    from servers.promotions.rider_promos import apply_operator_end, payable_minor
+    apply_operator_end(trip, plan.capped_minor, plan.rule)
     if trip.driver_id_id is not None:
         Driver.objects.filter(id=trip.driver_id_id).update(total_trips=F('total_trips') + 1)
 
@@ -418,7 +432,7 @@ def apply_plan(trip, plan, *, actor):
         from servers.ride.utils import create_payment_on_complete
 
         create_payment_on_complete(trip)
-        refunded = _refund_prepaid(trip, plan, keep_minor=plan.capped_minor)
+        refunded = _refund_prepaid(trip, plan, keep_minor=payable_minor(trip))
         if not TripSettlement.objects.filter(trip=trip).exists() and (
                 trip.payment_method == 'cash' or refunded
                 or trip.payments.filter(status='completed').exists()):
@@ -456,7 +470,10 @@ def apply_plan(trip, plan, *, actor):
 # ---------------------------------------------------------------------------
 
 def _charge_text(plan):
-    if plan.rider_pays_minor <= 0:
+    if plan.promo_discount_minor and plan.rider_pays_after_promo_minor > 0:
+        return (f'You pay {format_money(from_minor(plan.rider_pays_after_promo_minor, plan.currency), plan.currency)}'
+                f' after your promo.')
+    if plan.rider_pays_minor <= 0 or (plan.promo_discount_minor and plan.rider_pays_after_promo_minor <= 0):
         return 'You have not been charged.'
     return f'You pay {format_money(from_minor(plan.rider_pays_minor, plan.currency), plan.currency)} ' \
            'for the distance driven.'

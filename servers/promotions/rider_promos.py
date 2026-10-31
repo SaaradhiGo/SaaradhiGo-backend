@@ -177,9 +177,10 @@ def _held(trip):
 
 
 def discount_minor(trip):
-    """The promo discount held on this trip, in minor units (0 if none, or if an operator ended
-    the trip: the rider then pays for the distance driven, with no promo)."""
-    if getattr(trip, 'end_rule', ''):
+    """The promo discount held on this trip, in minor units (0 if none). A trip an operator ended
+    under the PLATFORM-FUNDED rule charges the rider nothing, so there is nothing to discount; under
+    the standard rule the promo is honoured (re-worked on the capped fare, `apply_operator_end`)."""
+    if getattr(trip, 'end_rule', '') == 'platform_funded':
         return 0
     return sum(r.discount_amount_minor for r in _held(trip))
 
@@ -193,6 +194,53 @@ def payable_minor(trip):
     """What the RIDER is charged: the full fare less the promo discount, never below zero."""
     full = fare_minor(trip)
     return max(0, full - min(discount_minor(trip), full))
+
+
+def is_fully_covered(trip):
+    """A promo covered the whole fare: the rider is charged nothing, and there is a fare to cover."""
+    return bool(discount_minor(trip)) and fare_minor(trip) > 0 and payable_minor(trip) == 0
+
+
+def operator_end_discount_minor(trip, capped_minor):
+    """The discount a promo held on this trip gives on the CAPPED fare of an operator end, under the
+    promo's own terms (a percentage of the capped fare up to its maximum; a flat amount up to the
+    capped fare). 0 if the trip holds none."""
+    from base.money import from_minor as _fm, to_minor as _tm
+    from servers.ride.promos import _compute_discount
+
+    total = 0
+    for r in _held(trip):
+        promo = r.promo
+        fare = _fm(capped_minor, promo.currency)
+        total += _tm(_compute_discount(promo, fare), promo.currency)
+    return min(total, capped_minor)
+
+
+def apply_operator_end(trip, capped_minor, rule):
+    """Settle the promo of a trip an operator ended. PLATFORM-FUNDED: the rider pays 0, so the
+    reservation is released. STANDARD: the booked trip is honoured, the discount re-worked on the
+    capped fare and the reservation moved to that amount (settled later like any promo trip)."""
+    if rule == 'platform_funded':
+        return release_for_trip(trip)
+    from servers.ride.models import PromoRedemption
+
+    with transaction.atomic():
+        for r in PromoRedemption.objects.select_for_update().select_related('promo').filter(
+                trip=trip, state=PromoRedemption.STATE_COMMITTED):
+            new = min(operator_end_discount_minor_one(r, capped_minor), capped_minor)
+            if r.campaign_id is not None and new != r.discount_amount_minor:
+                budget.adjust_reservation(r.campaign_id, r.discount_amount_minor, new)
+            r.discount_amount_minor = new
+            r.save(update_fields=['discount_amount_minor'])
+    return discount_minor(trip)
+
+
+def operator_end_discount_minor_one(redemption, capped_minor):
+    from base.money import from_minor as _fm, to_minor as _tm
+    from servers.ride.promos import _compute_discount
+
+    promo = redemption.promo
+    return _tm(_compute_discount(promo, _fm(capped_minor, promo.currency)), promo.currency)
 
 
 def payable(trip):
@@ -270,7 +318,7 @@ def settle_trip(trip, driver_wallet, *, is_cash):
 
     redemptions = list(PromoRedemption.objects.select_for_update().filter(
         trip=trip, state=PromoRedemption.STATE_COMMITTED))
-    if not redemptions or getattr(trip, 'end_rule', ''):
+    if not redemptions or getattr(trip, 'end_rule', '') == 'platform_funded':
         return 0
     total = 0
     for redemption in redemptions:
@@ -327,7 +375,7 @@ def release_cancelled(limit=500):
     stale = (PromoRedemption.objects
              .filter(state=PromoRedemption.STATE_COMMITTED)
              .filter(Q(trip__status_id__status_code__in=('cancelled', 'canceled'))
-                     | ~Q(trip__end_rule=''))
+                     | Q(trip__end_rule='platform_funded'))
              .values_list('trip_id', flat=True).distinct()[:limit])
     for trip in Trip.objects.filter(pk__in=list(stale)):
         if release_for_trip(trip):

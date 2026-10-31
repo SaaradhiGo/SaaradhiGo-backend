@@ -367,7 +367,7 @@ def campaign_dict(c, *, detail=False):
             'spent_minor': c.spent_minor,
             'remaining_minor': c.remaining_minor, 'overshoot_minor': c.overshoot_minor,
             'used_percent': (min(100, round(used * 100 / budget)) if budget else None),
-            'strict_cap': c.strict_cap, 'currency': c.currency,
+            'currency': c.currency,
         },
         'starts_at': c.starts_at.isoformat() if c.starts_at else None,
         'ends_at': c.ends_at.isoformat() if c.ends_at else None,
@@ -428,11 +428,6 @@ def _apply_input(actor, campaign, data, *, creating):
         campaign.starts_at, campaign.ends_at = clean_window(
             data.get('starts_at', campaign.starts_at.isoformat() if campaign.starts_at else None),
             data.get('ends_at', campaign.ends_at.isoformat() if campaign.ends_at else None))
-    if 'strict_cap' in data:
-        if not isinstance(data['strict_cap'], bool):
-            raise InvalidRequest('strict_cap must be true or false.', code='INVALID_FIELD',
-                                 field='strict_cap')
-        campaign.strict_cap = data['strict_cap']
     if 'reason' in data:
         campaign.reason = str(data.get('reason') or '')[:2000]
     if kind == RIDER_PROMO and _code_taken(campaign.config, campaign.pk):
@@ -498,7 +493,7 @@ def propose_launch(actor, campaign, *, reason='', http_request=None):
         payload = {
             'campaign_id': locked.id, 'kind': locked.kind, 'name': locked.name,
             'scope': locked.geo_node.code, 'currency': locked.currency,
-            'budget_minor': locked.budget_minor, 'strict_cap': locked.strict_cap,
+            'budget_minor': locked.budget_minor,
             'starts_at': locked.starts_at.isoformat(), 'ends_at': locked.ends_at.isoformat(),
             'config': locked.config, 'projection': projection(locked)}
         outcome = require_approval_or_execute(

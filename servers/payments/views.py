@@ -134,6 +134,15 @@ def create_order(request):
             status=status.HTTP_409_CONFLICT
         )
 
+    from servers.promotions.rider_promos import is_fully_covered
+    if is_fully_covered(trip):
+        return error_response(
+            code='NOT_CHARGED',
+            message='A promotion covered this trip, so you were not charged.',
+            field='trip_id', issue='Fully covered by a promotion',
+            status=status.HTTP_409_CONFLICT
+        )
+
     # What the RIDER pays: the fare less any promo discount (platform-funded, module 12).
     # Settlement and driver earnings still read the full fare.
     from servers.promotions.rider_promos import payable_minor
@@ -1886,6 +1895,13 @@ def switch_payment_method(request):
         # Create new payment
         from servers.promotions.rider_promos import payable, payable_minor
         amount = payable(trip)
+        from servers.promotions.rider_promos import is_fully_covered
+        if actual_method == 'online' and is_fully_covered(trip):
+            return error_response(
+                code='NOT_CHARGED',
+                message='A promotion covered this trip, so you were not charged.',
+                field='trip_id', issue='Fully covered by a promotion',
+                status=status.HTTP_409_CONFLICT)
         
         if actual_method == 'online':
             # Use payment gateway abstraction
@@ -2032,6 +2048,15 @@ def retry_payment(request):
         }, status.HTTP_200_OK)
 
     # D-07: Manual retry - create new payment order
+    from servers.promotions.rider_promos import is_fully_covered
+    if is_fully_covered(trip):
+        return error_response(
+            code='NOT_CHARGED',
+            message='A promotion covered this trip, so you were not charged.',
+            field='trip_id', issue='Fully covered by a promotion',
+            status=status.HTTP_409_CONFLICT
+        )
+
     from servers.promotions.rider_promos import payable, payable_minor
     amount = payable(trip)
 

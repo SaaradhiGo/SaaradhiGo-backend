@@ -188,17 +188,16 @@ class TestWhatTheRiderPays:
         data = client_for(rider).get(f'/api/v1/ride/trip/{plain.id}/').json()['data']
         assert (data['promo_discount'], data['rider_payable']) == (None, None)
 
-    def test_a_promo_can_never_make_a_ride_free(self, world):
-        """A discount is capped so the rider pays at least the minimum charge (one unit)."""
+    def test_a_promo_may_cover_the_whole_fare(self, world):
         launch(world.mkt[0], promo_payload(
             budget_minor=500_000, config={'code': 'BIGONE', 'discount_type': 'flat',
                                           'discount_flat_minor': 90_000}))
         result = apply_promo('BIGONE', make_rider('R5', '91'), D('200.00'), zone=world.hyd)
-        assert result.ok and result.final_fare == D('1.00')
+        assert result.ok and result.discount_amount == D('200.00') and result.final_fare == D('0.00')
 
-    def test_an_operator_ended_trip_carries_no_promo(self, world, promo):
+    def test_a_platform_funded_end_carries_no_promo(self, world, promo):
         trip, _ = book(world, make_rider('R6', '91'), hyd_driver(world, 'R6'))
-        trip.end_rule = 'capped'
+        trip.end_rule = 'platform_funded'
         trip.save(update_fields=['end_rule'])
         assert rider_promos.discount_minor(trip) == 0
         assert rider_promos.release_for_trip(trip) == 5_000
@@ -297,33 +296,36 @@ class TestTheBudgetIsAHardCap:
         with pytest.raises(budget.Refused):
             budget.reserve(campaign.pk, 5_000)
 
-    def test_an_overshoot_is_honoured_recorded_and_alerted(self, world):
-        """Without the strict cap the last discount may cross the cap; the trip is honoured."""
-        from servers.command_centre.models import OperatorAlert
-
+    def test_a_new_application_that_does_not_fit_is_always_refused(self, world):
+        """There is no lenient mode: a remainder smaller than the discount admits nothing."""
         campaign = launch(world.mkt[0], promo_payload(
-            budget_minor=6_000, strict_cap=False,
-            config={'code': 'LOOSE', 'discount_type': 'flat', 'discount_flat_minor': 5_000,
-                    'max_per_user': 5}))
-        riders = [make_rider(f'O{i}', '91') for i in range(3)]
+            budget_minor=6_000, config={'code': 'LOOSE', 'discount_type': 'flat',
+                                        'discount_flat_minor': 5_000, 'max_per_user': 5}))
+        riders = [make_rider(f'O{i}', '91') for i in range(2)]
         driver = hyd_driver(world, 'OV')
         trips = [completed_trip(world, r, driver) for r in riders]
         assert redeem_promo('LOOSE', riders[0], trips[0], D('200.00'), zone=world.hyd).ok
-        assert redeem_promo('LOOSE', riders[1], trips[1], D('200.00'), zone=world.hyd).ok
-        refused = redeem_promo('LOOSE', riders[2], trips[2], D('200.00'), zone=world.hyd)
-        assert not refused.ok
+        assert not redeem_promo('LOOSE', riders[1], trips[1], D('200.00'), zone=world.hyd).ok
         campaign.refresh_from_db()
-        assert campaign.committed_minor == 10_000 and campaign.overshoot_minor == 4_000
+        assert campaign.committed_minor == 5_000 and campaign.overshoot_minor == 0
+        assert not hasattr(campaign, 'strict_cap')
+
+    def test_a_honoured_trip_may_finish_above_the_cap_and_is_recorded_and_alerted(self, world):
+        """The ONLY way spend passes the cap: a booked trip honoured at a larger amount."""
+        from servers.command_centre.models import OperatorAlert
+
+        campaign = launch(world.mkt[0], promo_payload(budget_minor=6_000))
+        budget.reserve(campaign.pk, 5_000)
+        budget.adjust_reservation(campaign.pk, 5_000, 7_000)       # the final discount differs
+        campaign.refresh_from_db()
+        assert campaign.committed_minor == 7_000 and campaign.overshoot_minor == 1_000
         assert campaign.state == 'exhausted'
         alert = OperatorAlert.objects.get(kind='promotion.budget_overshoot')
-        assert alert.severity == 'warning' and alert.payload['overshoot_minor'] == 4_000
-        # Both booked trips are honoured at settlement, whatever state the campaign is in.
-        for trip in trips[:2]:
-            settle(trip)
-            assert rider_promos.payable_minor(trip) == 15_000
+        assert alert.severity == 'warning' and alert.payload['overshoot_minor'] == 1_000
+        budget.settle(campaign.pk, 7_000)                          # honoured whatever the state
         campaign.refresh_from_db()
-        assert (campaign.committed_minor, campaign.spent_minor) == (0, 10_000)
-        assert campaign.overshoot_minor == 4_000
+        assert (campaign.committed_minor, campaign.spent_minor) == (0, 7_000)
+        assert campaign.overshoot_minor == 1_000
 
     def test_the_overshoot_alert_is_a_finance_alert_and_marketing_never_sees_it(self, world):
         from servers.command_centre.models import FINANCE_ALERT_KINDS, OperatorAlert
@@ -331,10 +333,10 @@ class TestTheBudgetIsAHardCap:
 
         assert 'promotion.budget_overshoot' in FINANCE_ALERT_KINDS
         assert 'promotion.budget_exhausted' not in FINANCE_ALERT_KINDS
-        campaign = launch(world.mkt[0], promo_payload(budget_minor=6_000, strict_cap=False))
+        campaign = launch(world.mkt[0], promo_payload(budget_minor=6_000))
         budget.reserve(campaign.pk, 5_000)
-        budget.reserve(campaign.pk, 5_000)
-        assert Campaign.objects.get(pk=campaign.pk).overshoot_minor == 4_000
+        budget.adjust_reservation(campaign.pk, 5_000, 7_000)
+        assert Campaign.objects.get(pk=campaign.pk).overshoot_minor == 1_000
         seen = lambda who: {a['kind'] for a in get(  # noqa: E731
             getattr(world, who)[0], '/api/v1/command-centre/admin/alerts/')['results']}
         assert 'promotion.budget_overshoot' in seen('finance')
@@ -345,9 +347,9 @@ class TestTheBudgetIsAHardCap:
     def test_the_right_people_can_acknowledge_each_alert(self, world):
         from servers.command_centre.models import OperatorAlert
 
-        campaign = launch(world.mkt[0], promo_payload(budget_minor=6_000, strict_cap=False))
+        campaign = launch(world.mkt[0], promo_payload(budget_minor=6_000))
         budget.reserve(campaign.pk, 5_000)
-        budget.reserve(campaign.pk, 5_000)
+        budget.adjust_reservation(campaign.pk, 5_000, 7_000)
         exhausted = OperatorAlert.objects.get(kind='promotion.budget_exhausted')
         overshoot = OperatorAlert.objects.get(kind='promotion.budget_overshoot')
         base = '/api/v1/command-centre/admin/alerts'

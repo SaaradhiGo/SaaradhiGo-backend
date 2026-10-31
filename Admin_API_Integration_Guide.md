@@ -263,7 +263,7 @@ All under `/promotions/admin/`; `promo.read` to look (Marketing, City Ops, Finan
 - **Campaigns:** `GET|POST /campaigns/` (`?kind=rider_promo|driver_incentive|referral&state=&audience=rider|driver&q=&scope=`), `GET|PATCH /campaigns/<id>/` (PATCH: drafts only), `POST /campaigns/<id>/submit/` (`{reason}`), `POST /campaigns/<id>/pause|resume|cancel/`, `POST /campaigns/<id>/budget-increase/` (`{budget_minor, reason}`)
 - **What it did:** `GET /campaigns/<id>/activity/` (redemptions | progress | referrals, people as masked references)
 - **Form options:** `GET /options/` (places the caller may write in, zones, vehicle classes)
-- **Budget:** every campaign carries `budget` (`budget_minor`, `committed_minor`, `spent_minor`, `remaining_minor`, `overshoot_minor`, `strict_cap`). Money is integer minor units of the campaign currency.
+- **Budget:** every campaign carries `budget` (`budget_minor`, `committed_minor`, `spent_minor`, `remaining_minor`, `overshoot_minor`; always a hard cap). Money is integer minor units of the campaign currency.
 - **Fraud flags (read-only, `fraud.read`):** `GET /fraud/admin/flags/?kind=&status=`. Evidence names the signals that matched (`same_device`, `same_phone`, `same_instrument`), never a value.
 
 ---

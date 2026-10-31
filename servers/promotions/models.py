@@ -68,10 +68,6 @@ class Campaign(models.Model):
     spent_minor = models.BigIntegerField(default=0)
     #: The most `committed + spent` has ever stood above `budget`; 0 while it never did.
     overshoot_minor = models.BigIntegerField(default=0)
-    #: True (the default): a new application is admitted only if its whole amount fits in what
-    #: is left (a hard cap). False: it is admitted while ANY budget is left, so the last
-    #: reservation may cross the cap by less than one discount (the overshoot is recorded).
-    strict_cap = models.BooleanField(default=True)
 
     starts_at = models.DateTimeField(null=True, blank=True)
     ends_at = models.DateTimeField(null=True, blank=True)

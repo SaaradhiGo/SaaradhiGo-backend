@@ -72,34 +72,17 @@ def _two(v: Decimal, currency) -> Decimal:
     return quantize(v, currency)
 
 
-def _ceiling(fare: Decimal, currency) -> Decimal:
-    """The most a promo may take off `fare`: everything except a minimum charge.
-
-    A discount used to be capped at the fare itself, which let a promo make a ride free. A free
-    ride has no payment to settle (nothing is charged, so the settlement that pays the driver is
-    never triggered) and no gateway accepts a zero order. The rider always pays at least
-    `PROMO_MIN_CHARGE_MINOR` (default 100: one rupee or one dollar); the platform still funds
-    the rest. Owner to confirm the figure (a question in the module 12 report).
-    """
-    from django.conf import settings
-
-    from base.money import from_minor
-
-    floor = from_minor(int(getattr(settings, 'PROMO_MIN_CHARGE_MINOR', 100)), currency)
-    return max(Decimal('0.00'), fare - floor)
-
-
 def _compute_discount(promo, fare: Decimal) -> Decimal:
-    ceiling = _ceiling(fare, promo.currency)
     if promo.discount_type == 'flat':
-        return min(promo.discount_value, ceiling)
+        return min(promo.discount_value, fare)
     # percent
     pct = promo.discount_value / Decimal('100.00')
     raw = quantize(fare * pct, promo.currency)
     if promo.max_discount_amount is not None:
         raw = min(raw, promo.max_discount_amount)
-    # Discount can never take the fare below the minimum charge.
-    return min(raw, ceiling)
+    # Discount can never exceed the fare itself. A discount that covers the whole fare leaves the
+    # rider paying 0: the trip then settles with no payment (`ride.utils.create_payment_on_complete`).
+    return min(raw, fare)
 
 
 def apply_promo(code: str, user, fare: Decimal, zone=None, at=None) -> PromoResult:

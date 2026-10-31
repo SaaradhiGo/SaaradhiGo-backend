@@ -38,6 +38,15 @@ pytestmark = [pytest.mark.postgres, pytest.mark.asyncio,
               pytest.mark.django_db(transaction=True)]
 
 
+@pytest.fixture(autouse=True)
+def _service_zone(db):
+    """A transactional test's flush removes the migration-seeded zones, and there is no legacy
+    polygon fallback any more (module 9): no active zone means no service. Draw one."""
+    from conftest import ensure_zone_covering
+
+    ensure_zone_covering(P_LAT, P_LNG)
+
+
 def _make_rider(suffix):
     return User.objects.create_user(phone_number=f'+9196000{suffix:05d}', role='rider')
 

@@ -65,7 +65,13 @@ def calculate_available_balance(driver):
     try:
         wallet = Wallet.objects.get(user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER)
         from decimal import Decimal
-        return wallet.balance if wallet.balance else Decimal('0.00')
+
+        from base.money import from_minor
+        from servers.fraud.money import held_minor
+
+        # A reward pending review is not available to withdraw (AUDIT 27.56).
+        free = max(0, wallet.balance_minor - held_minor(driver.user_id, wallet.currency))
+        return from_minor(free, wallet.currency) if free else Decimal('0.00')
     except Wallet.DoesNotExist:
         from decimal import Decimal
         return Decimal('0.00')

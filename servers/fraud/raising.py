@@ -100,6 +100,19 @@ def _evidence(hit, now, count, first_seen=None):
     }
 
 
+def hold_rewards(flag, now=None):
+    """Ruling (a): hold the unpaid reward linked to this ACTIVE flag. Never lets a hold problem
+    stop a flag from being raised: a failure is logged and the flag stands."""
+    from . import money
+
+    try:
+        with transaction.atomic():
+            return money.hold_for_flag(flag, now)
+    except Exception:  # noqa: BLE001
+        logger.exception('reward hold failed for flag %s', flag.pk)
+        return []
+
+
 def _create(rule, config, hit, key, now):
     flag = RiskFlag.objects.create(
         subject=hit.subject, kind=rule.key, rule_key=rule.key,
@@ -111,6 +124,7 @@ def _create(rule, config, hit, key, now):
                                    'score': hit.score, 'severity': hit.severity}, at=now)
     if flag.severity == HIGH:
         transaction.on_commit(lambda: alert_high(flag.pk))
+    hold_rewards(flag, now)
     return flag
 
 
@@ -142,6 +156,7 @@ def _append(flag, hit, new_refs, now):
                                    'severity': flag.severity}, at=now)
     if flag.severity == HIGH and not was_high:
         transaction.on_commit(lambda: alert_high(flag.pk))
+    hold_rewards(flag, now)
     return APPENDED
 
 

@@ -39,6 +39,9 @@ class Action:
     #: carrying it always needs a checker, whatever the policy's maker_limit says:
     #: the limit is for ONE target. Generic, so every country behaves the same.
     multi_target_key: str = ''
+    #: A payload key that, when truthy, makes THIS request always need a checker whatever the
+    #: policy's maker limit says (a fraud recovery under `finance.adjust`: owner ruling, AUDIT 27.56).
+    force_checker_key: str = ''
 
 
 SUPPORT_REFUND = 'support.refund'
@@ -59,12 +62,14 @@ NOTIFICATION_CAMPAIGN_SEND = 'notification.campaign_send'
 PROMOTION_LAUNCH = 'promotion.launch'
 PROMOTION_BUDGET_INCREASE = 'promotion.budget_increase'
 FRAUD_RULE_CHANGE = 'fraud.rule_change'
+FINANCE_PAYOUT_HOLD = 'finance.payout_hold'
 
 ACTIONS = {
     action.key: action for action in (
         Action(SUPPORT_REFUND, 'Refund issued by support on one trip', 'support.refund'),
         Action(FINANCE_REFUND, 'Refund issued by finance', 'support.refund'),
-        Action(FINANCE_ADJUST, 'Manual ledger adjustment', 'finance.adjust'),
+        Action(FINANCE_ADJUST, 'Manual ledger adjustment', 'finance.adjust',
+               force_checker_key='requires_checker'),
         Action(FINANCE_PAYOUT, 'Payout run: release withdrawals to drivers', 'finance.payout',
                multi_target_key='withdrawal_ids'),
         Action(PRICING_CHANGE, 'Change to fare cards, multipliers or commission', 'pricing.write'),
@@ -105,6 +110,10 @@ ACTIONS = {
         # Module 13: a detection rule's thresholds (or switching it off). Always a checker, in India
         # and the US. The checker must hold fraud.rules too, so it is a second Super Admin.
         Action(FRAUD_RULE_CHANGE, 'Change a fraud detection rule threshold', 'fraud.rules'),
+        # Fraud money actions (AUDIT 27.56): a full payout hold on a suspended driver, for serious
+        # fraud. Always a checker, India and US; the checker must be a second finance.payout holder.
+        Action(FINANCE_PAYOUT_HOLD, 'Hold a suspended driver\'s payouts (serious fraud)',
+               'finance.payout', always_checker=True),
     )
 }
 

@@ -16,9 +16,12 @@ needs a reason code and a note. A flag is never deleted.
 
 WHAT A FLAG NEVER DOES
 ----------------------
-A flag, its confirmation and its dismissal record a decision. They do not move money, change a
-fare, hold a payout or notify the subject. Confirming can hand off to actions that already exist in
-other modules (see `review.HANDOFFS`); it never performs them.
+A flag, its confirmation and its dismissal record a decision. They do not change a fare, hold a
+payout, take a reward back or notify the subject. The ONLY money effect of a flag is the reward hold
+(owner ruling a, AUDIT 27.56; see `money`): the unpaid reward linked to the flagged activity is
+reserved until the flag is decided or the hold runs out. Confirming can hand off to actions that
+already exist in other modules (see `review.HANDOFFS`); it never performs them. Clawback, a payout
+hold and online-only are separate, gated actions (see `money`).
 
 DEDUPE
 ------
@@ -256,3 +259,158 @@ class RiskRuleConfig(models.Model):
                            'email': self.created_by_email, 'role': self.created_by_role},
             'changed_via': self.changed_via_id,
         }
+
+
+# ---------------------------------------------------------------------------
+# Money actions (owner rulings 2026-10-31, AUDIT 27.56)
+# ---------------------------------------------------------------------------
+#
+# a. REWARD HOLD  -> RewardHold: only the unpaid incentive / referral reward linked to the flagged
+#    activity; never trip earnings. Auto-released after `reward_hold_days`.
+# b. RECOVERY     -> RecoveryDebt / RecoveryDeduction: a confirmed promo abuse / collusion flag can
+#    claw back linked rewards through a Finance adjustment request (maker-checker); never more than
+#    the reward; the weekly payout takes at most `recovery_max_percent` of one payout.
+# d. PAYOUT HOLD  -> PayoutHold: only with a suspension, a second admin, and a maximum duration.
+#
+# Nothing here is created by a flag, a confirmation or a dismissal on its own account except the
+# reward HOLD, which is exactly what ruling (a) asks for.
+
+class RewardHold(models.Model):
+    HELD, RELEASED, FORFEITED = 'held', 'released', 'forfeited'
+    STATUS_CHOICES = [(HELD, 'Held (pending review)'), (RELEASED, 'Released'),
+                      (FORFEITED, 'Forfeited')]
+    RELEASE_REASONS = {
+        'auto_expired': 'The hold ran out before the flag was decided',
+        'dismissed': 'The flag was dismissed',
+        'confirmed_no_recovery': 'The flag was confirmed for a reason that does not recover rewards',
+        'expired_after_confirm': 'The hold ran out after the flag was confirmed',
+        'reopened_refreshed': 'The flag was reopened',
+    }
+
+    flag = models.ForeignKey(RiskFlag, on_delete=models.CASCADE, related_name='reward_holds')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name='reward_holds')
+    #: `driver` (a credit on the settlement wallet) or `rider` (a wallet credit).
+    role = models.CharField(max_length=8)
+    ledger_entry = models.ForeignKey('promotions.LedgerEntry', on_delete=models.PROTECT,
+                                     related_name='+')
+    kind = models.CharField(max_length=40)           # incentive_reward | referral_reward
+    #: What is held: the part of the reward still unpaid (never more than the reward).
+    amount_minor = models.BigIntegerField()
+    reward_minor = models.BigIntegerField()
+    currency = models.CharField(max_length=3)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=HELD, db_index=True)
+    held_at = models.DateTimeField(default=timezone.now)
+    release_at = models.DateTimeField(db_index=True)
+    released_at = models.DateTimeField(null=True, blank=True)
+    release_reason = models.CharField(max_length=32, blank=True, default='')
+    #: The Finance adjustment that forfeited it.
+    forfeited_via = models.ForeignKey('approvals.ApprovalRequest', null=True, blank=True,
+                                      on_delete=models.PROTECT, related_name='+')
+
+    class Meta:
+        ordering = ['id']
+        constraints = [
+            models.UniqueConstraint(fields=['ledger_entry'], condition=Q(status='held'),
+                                    name='rewardhold_one_active_per_reward'),
+            models.CheckConstraint(condition=Q(amount_minor__gt=0),
+                                   name='rewardhold_amount_positive'),
+        ]
+
+    def __str__(self):
+        return f'RewardHold#{self.pk} {self.status} {self.amount_minor} {self.currency}'
+
+
+class RecoveryDebt(models.Model):
+    """What a person still owes back from a recovery Finance approved.
+
+    DRIVER: collected from weekly payouts (and driver-requested withdrawals), at most
+    `recovery_max_percent` of any one payout, the rest carrying over. RIDER: taken from the wallet
+    balance at once, never below zero; what the wallet could not cover stays here as
+    `uncollected` for Finance to see and nothing else is ever collected.
+    """
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name='recovery_debts')
+    role = models.CharField(max_length=8)
+    flag = models.ForeignKey(RiskFlag, on_delete=models.PROTECT, related_name='recovery_debts')
+    approval_request = models.OneToOneField('approvals.ApprovalRequest', on_delete=models.PROTECT,
+                                            related_name='+')
+    #: Total of the request, and how it was met: forfeited from held rewards, taken so far,
+    #: and (rider only) what the wallet could not cover.
+    requested_minor = models.BigIntegerField()
+    forfeited_minor = models.BigIntegerField(default=0)
+    amount_minor = models.BigIntegerField()              # the debt after forfeiting held rewards
+    recovered_minor = models.BigIntegerField(default=0)
+    uncollected_minor = models.BigIntegerField(default=0)
+    currency = models.CharField(max_length=3)
+    note = models.CharField(max_length=NOTE_MAX, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['id']
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(recovered_minor__gte=0) & Q(recovered_minor__lte=models.F('amount_minor')),
+                name='recoverydebt_recovered_within_amount'),
+        ]
+
+    @property
+    def remaining_minor(self):
+        if self.closed_at is not None:
+            return 0
+        return max(0, self.amount_minor - self.recovered_minor - self.uncollected_minor)
+
+
+class RecoveryDeduction(models.Model):
+    """One weekly-payout (or withdrawal) deduction against a debt: its own line."""
+
+    debt = models.ForeignKey(RecoveryDebt, on_delete=models.PROTECT, related_name='deductions')
+    withdrawal_id = models.BigIntegerField(null=True, blank=True, db_index=True)
+    wallet_transaction = models.ForeignKey('rider.WalletTransaction', null=True, blank=True,
+                                           on_delete=models.PROTECT, related_name='+')
+    amount_minor = models.BigIntegerField()
+    currency = models.CharField(max_length=3, default='INR')
+    payout_gross_minor = models.BigIntegerField(default=0)
+    percent_cap = models.PositiveSmallIntegerField(default=50)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['id']
+
+
+class PayoutHold(models.Model):
+    """A full payout hold on a SUSPENDED driver, for serious fraud, approved by a second admin.
+
+    Active while `status == 'active'` and `expires_at` is in the future. At `expires_at` it lapses
+    (the driver is paid again) unless renewed; renewing is another checker request. Releasing early
+    needs no checker (it only pays out).
+    """
+
+    ACTIVE, RELEASED, LAPSED = 'active', 'released', 'lapsed'
+    STATUS_CHOICES = [(ACTIVE, 'Active'), (RELEASED, 'Released'), (LAPSED, 'Lapsed')]
+
+    driver = models.ForeignKey('driver.Driver', on_delete=models.CASCADE,
+                               related_name='payout_holds')
+    flag = models.ForeignKey(RiskFlag, on_delete=models.PROTECT, related_name='payout_holds')
+    approval_request = models.OneToOneField('approvals.ApprovalRequest', on_delete=models.PROTECT,
+                                            related_name='+')
+    status = models.CharField(max_length=8, choices=STATUS_CHOICES, default=ACTIVE, db_index=True)
+    starts_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField(db_index=True)
+    max_days = models.PositiveSmallIntegerField(default=14)
+    renewal_of = models.ForeignKey('self', null=True, blank=True, on_delete=models.PROTECT,
+                                   related_name='renewals')
+    note = models.CharField(max_length=NOTE_MAX, blank=True, default='')
+    released_at = models.DateTimeField(null=True, blank=True)
+    released_by_id = models.BigIntegerField(null=True, blank=True)
+    release_note = models.CharField(max_length=NOTE_MAX, blank=True, default='')
+    expiry_alerted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-id']
+        constraints = [
+            models.UniqueConstraint(fields=['driver'], condition=Q(status='active'),
+                                    name='payouthold_one_active_per_driver'),
+        ]

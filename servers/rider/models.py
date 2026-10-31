@@ -374,3 +374,53 @@ class RiderNote(models.Model):
 
     def __str__(self):
         return f'RiderNote rider={self.rider_id}'
+
+
+class RiderRestriction(models.Model):
+    """A narrow operator restriction on a rider that is NOT a block.
+
+    `cash_disabled` (owner ruling 2026-10-31, AUDIT 27.56): the rider may still request rides but
+    may not choose CASH (the booking, or switching to cash at completion, is refused with the
+    stable code `CASH_NOT_AVAILABLE`). Set from a confirmed payment-abuse flag by a fraud
+    reviewer, shown and cleared on the Riders page. Active while `cleared_at` is NULL. Blocking
+    stays the separate `RiderBlock`, for repeat or severe cases.
+    """
+
+    CASH_DISABLED = 'cash_disabled'
+    KIND_CHOICES = [(CASH_DISABLED, 'Online payment only (no cash)')]
+
+    rider = models.ForeignKey(Rider, on_delete=models.CASCADE, related_name='restrictions')
+    kind = models.CharField(max_length=24, choices=KIND_CHOICES, default=CASH_DISABLED)
+    reason = models.TextField(blank=True, default='')
+    set_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                               related_name='+')
+    set_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    #: The fraud flag it was set from (an id, not a FK: the restriction outlives any queue change).
+    flag_id = models.BigIntegerField(null=True, blank=True)
+    cleared_at = models.DateTimeField(null=True, blank=True)
+    cleared_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='+')
+    clear_note = models.TextField(blank=True, default='')
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['rider', 'kind'],
+                                    condition=models.Q(cleared_at__isnull=True),
+                                    name='rider_one_active_restriction_per_kind'),
+        ]
+
+    def __str__(self):
+        return f'RiderRestriction rider={self.rider_id} {self.kind}'
+
+
+def cash_disabled_for(user):
+    """Is cash switched off for this rider (an active `cash_disabled` restriction)?"""
+    if user is None or not getattr(user, 'pk', None):
+        return False
+    return RiderRestriction.objects.filter(
+        rider__user_id_id=user.pk, kind=RiderRestriction.CASH_DISABLED,
+        cleared_at__isnull=True).exists()
+
+
+CASH_NOT_AVAILABLE = 'CASH_NOT_AVAILABLE'
+CASH_NOT_AVAILABLE_MESSAGE = "Cash isn't available for your account. Please pay online."

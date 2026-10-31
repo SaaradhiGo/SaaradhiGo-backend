@@ -25,6 +25,16 @@ Fare             The trip's OWN quoted fare card (the rate card in force when it
                  capped at the upfront price. Never above the quote.
 Commission       The trip's booking-time snapshot, exactly as a normal settlement.
 
+US EARLY-ENDED TRIPS, TAX AND FEE (owner ruling 2026-10-31, AUDIT 27.56)
+In an ADDITIVE-tax market (the US) the tax and the per-trip fee are worked out on the amount actually
+charged, within the upfront cap: the pre-tax fare first, then tax on it and the fee, the TOTAL never
+above the quote. If the cap binds, the total is held at the cap and the base is backed out of it
+(`tax_on_charged`). When the rider is charged 0 (safety incident or platform fault) NO tax or fee is
+charged to the rider, and the per-trip regulatory fee the platform owes is booked as a platform expense
+(`payments.PlatformExpense`), on no wallet. A promo applies as before, on the fare as quoted and charged.
+No rate is decided here: the zone's and the card's own configured values are used. US ACCOUNTANT TO
+CONFIRM (go-live blocker #15). India (inclusive tax) is unchanged.
+
 NOTHING NEW IS CHARGED. A normal completion charges `final_fare or estimated_fare`
 and adds no fee, tip or toll; neither does this. No fare-card, surge, fee or
 commission value is changed anywhere.
@@ -173,8 +183,12 @@ def metered_fare(trip, distance_km, minutes):
     if subtotal < card.min_fare:
         subtotal, min_applied = card.min_fare, True
     total = quantize(subtotal, currency)
+    pretax = total
     zone = getattr(trip, 'zone', None)
-    if (getattr(zone, 'tax_mode', '') or 'inclusive') == 'additive':
+    additive = (getattr(zone, 'tax_mode', '') or 'inclusive') == 'additive'
+    tax_percent = Decimal('0')
+    fee = Decimal('0')
+    if additive:
         tax_percent = Decimal(str(getattr(card, 'gst_percent', 0) or 0))
         fee = quantize(Decimal(str(getattr(zone, 'per_trip_fee', None) or '0')), currency)
         total = total + quantize(total * tax_percent / Decimal('100'), currency) + fee
@@ -182,7 +196,30 @@ def metered_fare(trip, distance_km, minutes):
         'base': quantize(base, currency), 'distance_fare': quantize(distance_fare, currency),
         'time_fare': quantize(time_fare, currency), 'surge_multiplier': surge,
         'min_fare_applied': min_applied, 'total': total, 'card': card,
+        'pretax': pretax, 'additive': additive, 'tax_percent': tax_percent, 'fee': fee,
     }
+
+
+def tax_on_charged(pretax, tax_percent, fee, cap, currency):
+    """Tax and per-trip fee on what is actually charged, within the upfront cap (additive markets).
+
+    US ACCOUNTANT TO CONFIRM (go-live blocker #15): no rate is decided here; `tax_percent` and
+    `fee` are the zone's own configured values. THE RULE
+        charge = base + tax(base) + fee, never above `cap`
+    where `base` is the metered fare before tax. If the charge fits the cap it is exactly that. If
+    it would pass the cap, the TOTAL is held at the cap and the base is backed out of it:
+        base' = (cap - fee) / (1 + tax_percent / 100)      tax' = cap - fee - base'
+    (so base' + tax' + fee = cap exactly; the tax takes the rounding cent). If the cap is smaller
+    than the fee, the fee is cut to the cap and base and tax are 0: the rider never pays above the
+    upfront price. All values are Decimals in major units; returns `(base, tax, fee, total)`.
+    """
+    tax = quantize(pretax * tax_percent / Decimal('100'), currency)
+    if pretax + tax + fee <= cap:
+        return pretax, tax, fee, pretax + tax + fee
+    fee_c = min(fee, cap)
+    base = quantize((cap - fee_c) / (Decimal('1') + tax_percent / Decimal('100')), currency)
+    base = min(base, cap - fee_c)
+    return base, cap - fee_c - base, fee_c, cap
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +251,15 @@ class Plan:
     #: rule, and what the rider then pays. 0 under the platform-funded rule (the rider pays 0 anyway).
     promo_discount_minor: int = 0
     rider_pays_after_promo_minor: int = 0
+    #: Additive-tax markets only (None in an inclusive-tax market such as India, where nothing
+    #: changes). The charged fare split into base, tax and per-trip fee; all 0 when the rider is
+    #: charged 0. US ACCOUNTANT TO CONFIRM (go-live blocker #15).
+    pretax_minor: object = None
+    tax_minor: object = None
+    fee_minor: object = None
+    #: The per-trip regulatory fee the platform owes when the rider is charged 0 (platform-funded
+    #: rule): booked as a platform expense, never charged to the rider.
+    regulatory_fee_expense_minor: int = 0
 
     def as_dict(self):
         """The preview payload and the audit figures. No coordinates, no contact detail."""
@@ -240,6 +286,12 @@ class Plan:
             'driver_earnings_minor': self.driver_earnings_minor,
             'funded_by': self.funded_by,
             'driver_collects_cash': (self.rule == STANDARD and self.payment_method == 'cash'),
+            'pretax_fare_minor': self.pretax_minor,
+            'tax_minor': self.tax_minor,
+            'per_trip_fee_minor': self.fee_minor,
+            'regulatory_fee_expense_minor': self.regulatory_fee_expense_minor,
+            'tax_note': ('US accountant to confirm (go-live blocker #15)'
+                         if self.tax_minor is not None else None),
         }
 
 
@@ -264,6 +316,21 @@ def build_plan(trip, reason_code):
     uncapped = to_minor(metered['total'], currency)
     upfront = int(trip.estimated_fare_minor)
     capped = min(uncapped, upfront)
+    pretax_minor = tax_minor = fee_minor = None
+    expense_minor = 0
+    if metered['additive']:
+        if rule == PLATFORM_FUNDED:
+            # The rider is charged 0: no tax and no fee on the rider. The per-trip regulatory fee
+            # the platform owes for the trip is the platform's expense. (US accountant to confirm,
+            # go-live blocker #15.)
+            pretax_minor = tax_minor = fee_minor = 0
+            expense_minor = to_minor(metered['fee'], currency)
+        else:
+            base_d, tax_d, fee_d, _total = tax_on_charged(
+                metered['pretax'], metered['tax_percent'], metered['fee'],
+                from_minor(capped, currency), currency)
+            pretax_minor, tax_minor, fee_minor = (
+                to_minor(base_d, currency), to_minor(tax_d, currency), to_minor(fee_d, currency))
 
     try:
         percent = commission_percent_for_trip(trip)
@@ -290,7 +357,9 @@ def build_plan(trip, reason_code):
         driver_earnings_minor=earnings,
         funded_by='platform' if rule == PLATFORM_FUNDED else 'rider', metered=metered,
         promo_discount_minor=promo,
-        rider_pays_after_promo_minor=0 if rule == PLATFORM_FUNDED else capped - promo)
+        rider_pays_after_promo_minor=0 if rule == PLATFORM_FUNDED else capped - promo,
+        pretax_minor=pretax_minor, tax_minor=tax_minor, fee_minor=fee_minor,
+        regulatory_fee_expense_minor=expense_minor)
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +388,9 @@ def _snapshot(trip, plan):
         vehicle_type=getattr(trip.requested_vehicle_type, 'type', '') or '',
         pricing_source='db', trail_points=plan.trail_points,
         gross_fare_minor=plan.capped_minor, discount_amount_minor=0,
-        rider_payable_minor=plan.rider_pays_minor)
+        rider_payable_minor=plan.rider_pays_minor,
+        pretax_fare_minor=plan.pretax_minor, tax_minor=plan.tax_minor,
+        per_trip_fee_minor=plan.fee_minor)
 
 
 def _refund_prepaid(trip, plan, keep_minor):
@@ -387,6 +458,25 @@ def _credit_driver(trip, plan):
     return txn
 
 
+def _book_regulatory_fee(trip, plan):
+    """Record the per-trip regulatory fee the platform owes on a trip the rider was not charged
+    for, as a PLATFORM EXPENSE (`payments.PlatformExpense`): on no driver and no rider wallet.
+    Idempotent per trip. US accountant to confirm (go-live blocker #15)."""
+    from servers.payments.models import PlatformExpense
+
+    if plan.regulatory_fee_expense_minor <= 0:
+        return None
+    row, _ = PlatformExpense.objects.get_or_create(
+        idempotency_key=f'TRIP_{trip.id}_REGULATORY_FEE',
+        defaults={'kind': PlatformExpense.REGULATORY_FEE, 'trip_id': trip.id,
+                  'amount_minor': plan.regulatory_fee_expense_minor,
+                  'currency': plan.currency,
+                  'zone_code': getattr(getattr(trip, 'zone', None), 'code', '') or '',
+                  'note': 'Per-trip regulatory fee on a trip ended by SaaradhiGo; the rider was '
+                          'not charged (US accountant to confirm, go-live blocker 15).'})
+    return row.id
+
+
 def apply_plan(trip, plan, *, actor):
     """End the trip and move the money. Call inside `transaction.atomic()` with the trip
     row locked. Returns a dict of what was done (for the audit row and the response)."""
@@ -447,6 +537,7 @@ def apply_plan(trip, plan, *, actor):
             trip.payment_status = 'waived'
             trip.save(update_fields=['payment_status'])
         txn = _credit_driver(trip, plan)
+        done['regulatory_fee_expense_id'] = _book_regulatory_fee(trip, plan)
         city = city_node_of(trip)
         raise_alert(
             FINANCE_PLATFORM_FUNDED_END, severity=WARNING,

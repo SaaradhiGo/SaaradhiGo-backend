@@ -5,7 +5,8 @@ from .views import (
 )
 from .admin_views import admin_list_transactions
 from .admin_actions import (
-    driver_adjust, payout_approve, payout_bulk, payout_config_propose, payout_investigation,
+    driver_adjust, payout_approve, payout_bulk, payout_config_propose, payout_hold_release,
+    payout_investigation,
     payout_reject, payout_retry, rider_wallet_credit,
 )
 from .admin_finance import (
@@ -44,6 +45,7 @@ urlpatterns = [
     path('admin/drivers/<int:driver_id>/adjust/', driver_adjust),
     path('admin/riders/<int:rider_id>/wallet-credit/', rider_wallet_credit),
     path('admin/payout-config/<str:country>/', payout_config_propose),
+    path('admin/payout-holds/<int:hold_id>/release/', payout_hold_release),
     path('admin/drivers/<int:driver_id>/ledger/', finance_driver_ledger),
     path('admin/overview/', finance_overview),
     path('admin/unsettled/<int:trip_id>/retry/', finance_unsettled_retry),

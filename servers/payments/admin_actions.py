@@ -368,6 +368,46 @@ def rider_wallet_credit(request, rider_id):
 
 
 # ---------------------------------------------------------------------------
+# Payout hold: release early (fraud money actions, AUDIT 27.56)
+# ---------------------------------------------------------------------------
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.payout')])
+def payout_hold_release(request, hold_id):
+    """POST /payments/admin/payout-holds/<id>/release/  {note}
+
+    Releases a payout hold on a suspended driver early. No checker: it only lets the driver be
+    paid. The hold is found through the driver's home city (the Finance rule); out of scope is a
+    404, a missing capability there a 403. Audited."""
+    def core(request, hold_id):
+        from servers.fraud import money
+        from servers.fraud.models import PayoutHold
+
+        hold = PayoutHold.objects.select_related('driver').filter(pk=hold_id).first()
+        driver = None
+        if hold is not None:
+            driver, refusal = fetch_one(request.user, Driver, 'finance.payout',
+                                        pk=hold.driver_id,
+                                        queryset=Driver.objects.select_related('home_city'))
+            if refusal == 'not_found':
+                driver = None
+            elif refusal:
+                raise ActionError('PERMISSION_DENIED',
+                                  'You do not have permission to do that here.',
+                                  field='permission', http=status.HTTP_403_FORBIDDEN)
+        if hold is None or driver is None:
+            raise ActionError('NOT_FOUND', 'Payout hold not found', field='hold_id',
+                              http=status.HTTP_404_NOT_FOUND)
+        try:
+            hold = money.release_payout_hold(request.user, hold, request.data.get('note'),
+                                             http_request=request)
+        except money.MoneyError as exc:
+            raise ActionError(exc.code, exc.message, field=exc.field, http=exc.status)
+        return success_response(money.hold_dict(hold), status.HTTP_200_OK)
+    return _guard(core)(request, hold_id)
+
+
+# ---------------------------------------------------------------------------
 # Payout configuration: propose a change (finance.payout_config_change)
 # ---------------------------------------------------------------------------
 
@@ -379,7 +419,18 @@ def _config_values(data, current):
         'stuck_payout_hours': current.stuck_payout_hours,
         'payout_schedule': current.payout_schedule,
         'payout_weekday': current.payout_weekday,
+        'reward_hold_days': current.reward_hold_days,
+        'recovery_max_percent': current.recovery_max_percent,
+        'payout_hold_max_days': current.payout_hold_max_days,
     }
+    for key, (low, high) in {'reward_hold_days': (1, 90), 'recovery_max_percent': (1, 100),
+                             'payout_hold_max_days': (1, 90)}.items():
+        if key in data:
+            number = _minor_amount(data[key], key)
+            if number < low or number > high:
+                raise BadInput('INVALID_' + key.upper(),
+                               f'{key} must be between {low} and {high}.', key)
+            values[key] = number
     if 'fee_percent' in data:
         try:
             fee = Decimal(str(data['fee_percent']))

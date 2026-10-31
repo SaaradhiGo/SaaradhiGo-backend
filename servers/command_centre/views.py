@@ -219,16 +219,33 @@ def _visible_fraud_alerts(user, everything):
     in their scope. An alert with no city is for unrestricted callers only."""
     from servers.admin_access.access import scope_paths as _paths
 
+    from servers.payments.scope import paths_for
+
+    from .models import FRAUD_PAYOUT_HOLD_EXPIRED
+
     qs = everything.filter(kind__in=FRAUD_ALERT_KINDS)
-    if not granted(user, 'fraud.read')[0]:
-        return qs.none()
-    paths = _paths(user)
-    if paths is None:
-        return qs
-    covered = Q(pk__in=[])
-    for path in paths:
-        covered |= Q(city__path__startswith=path)
-    return qs.filter(covered)
+    out = qs.none()
+    if granted(user, 'fraud.read')[0]:
+        paths = _paths(user)
+        if paths is None:
+            out = qs
+        else:
+            covered = Q(pk__in=[])
+            for path in paths:
+                covered |= Q(city__path__startswith=path)
+            out = qs.filter(covered)
+    # A payout hold that ran out is also Finance's: finance.read, in the cities where it is held.
+    if granted(user, 'finance.read')[0]:
+        hold = everything.filter(kind=FRAUD_PAYOUT_HOLD_EXPIRED)
+        fpaths = paths_for(user, 'finance.read')
+        if fpaths is None:
+            out = out | hold
+        else:
+            covered = Q(pk__in=[])
+            for path in fpaths:
+                covered |= Q(city__path__startswith=path)
+            out = out | hold.filter(covered)
+    return out
 
 
 def _visible_finance_alerts(user, everything):

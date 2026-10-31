@@ -9,6 +9,10 @@
   POST /fraud/admin/flags/<id>/dismiss/            fraud.review  {reason_code, note}
   POST /fraud/admin/flags/<id>/reopen/             fraud.review  {reason_code, note}
   POST /fraud/admin/flags/<id>/handoff/            fraud.review  {kind}  records a chosen hand-off
+  POST /fraud/admin/flags/<id>/recover/            fraud.review + finance.adjust  {amount_minor, note}
+  POST /fraud/admin/flags/<id>/payout-hold/        fraud.review  {note, days?, renew?}  (checker)
+  POST /fraud/admin/payout-holds/<id>/release/     fraud.review  {note}  (Finance: payments/admin/payout-holds/<id>/release/)
+  POST /fraud/admin/flags/<id>/restrict-cash/      fraud.review  {note}  online payment only
   GET  /fraud/admin/flags/<id>/reviewers/          fraud.review  who the flag can be assigned to
   GET  /fraud/admin/rules/                         fraud.read    per-country rules, versions, pending changes
   PUT  /fraud/admin/rules/<country>/<rule>/        fraud.rules   thresholds -> a maker-checker request (202)
@@ -39,7 +43,7 @@ from servers.admin_access.scoping import ScopeNotHeld, scoped, scoped_to_request
 from servers.approvals import service as approvals
 
 from . import config as rule_config
-from . import review
+from . import money, review
 from .linked import linked_accounts
 from .models import (
     ACTIVE_STATUSES, CONFIRM_REASONS, CONFIRMED, DISMISS_REASONS, DISMISSED, EV_HANDOFF,
@@ -261,6 +265,7 @@ def flag_detail(request, flag_id):
         'timeline': _timeline(flag),
         'handoffs': _handoff_options(flag, request.user),
         'handoffs_taken': flag.handoffs or [],
+        'money': _money_detail(flag, request.user),
     }, status.HTTP_200_OK)
 
 
@@ -477,3 +482,181 @@ def rule_update(request, country, rule_key):
     body['state'] = row.status
     body['result'] = row.result
     return success_response(body, status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# Money actions (owner rulings 2026-10-31, AUDIT 27.56)
+# ---------------------------------------------------------------------------
+
+def _money_detail(flag, caller):
+    """What the flag detail shows about money: linked rewards (held / paid / recoverable), the
+    Recover offer, the online-payment-only offer and the payout-hold conditions."""
+    from servers.rider.models import RiderRestriction
+
+    summary = money.reward_summary(flag)
+    may_adjust = granted(caller, 'finance.adjust', flag.anchor_node)[0]
+    may_review = granted(caller, 'fraud.review', flag.anchor_node)[0]
+    cash = None
+    if flag.subject.role == 'rider':
+        restriction = RiderRestriction.objects.filter(
+            rider__user_id=flag.subject, kind=RiderRestriction.CASH_DISABLED,
+            cleared_at__isnull=True).first()
+        cash = {
+            'offered': flag.status == CONFIRMED and flag.decision_reason == 'payment_abuse',
+            'active': restriction is not None,
+            'set_at': _iso(restriction.set_at) if restriction else None,
+            'may_set': may_review,
+            'note': 'Blocking stays the separate Suspend the rider action, for repeat or '
+                    'severe cases only.',
+            'block_href': f'/riders/{flag.subject_id}',
+        }
+    hold = money.payout_hold_state(flag)
+    return {
+        **summary,
+        'recover': {'applies': money.recovery_applies(flag), 'may_request': may_adjust and may_review,
+                    'max_minor': summary['recoverable_minor'],
+                    'reason_code': money.RECOVERY_REASON_CODE},
+        'cash': cash,
+        'payout_hold': {**hold, 'may_request': may_review,
+                        'eligible': not hold['blockers']},
+    }
+
+
+def _money_refuse(exc):
+    return error_response(code=exc.code, message=exc.message, field=exc.field,
+                          issue=exc.message, status=exc.status)
+
+
+def _money_flag(request, flag_id):
+    flag = _flag_for(request, flag_id)
+    if flag is None:
+        return None, _not_found(flag_id)
+    if not granted(request.user, 'fraud.review', flag.anchor_node)[0]:
+        return None, error_response(
+            code='PERMISSION_DENIED', message='You do not hold fraud.review here.',
+            field='flag_id', issue='fraud.review', status=status.HTTP_403_FORBIDDEN)
+    return flag, None
+
+
+def _key(request):
+    return str(request.headers.get('Idempotency-Key') or request.data.get('idempotency_key')
+               or '').strip()[:120]
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, REVIEW])
+def flag_recover(request, flag_id):
+    """POST /fraud/admin/flags/<id>/recover/ {amount_minor, note, idempotency_key}
+
+    Raises a Finance adjustment request (`finance.adjust`, target `fraud_recovery`, ALWAYS a
+    checker). Server-enforced: never more than the linked rewards. Nothing moves until a different
+    finance admin approves; then held rewards are forfeited first and the rest becomes a recovery
+    debt taken from payouts within the country's per-payout cap (drivers) or from the wallet,
+    never below zero (riders).
+    """
+    flag, refusal = _money_flag(request, flag_id)
+    if refusal:
+        return refusal
+    key = _key(request)
+    if not key:
+        return error_response(code='IDEMPOTENCY_KEY_REQUIRED',
+                              message='idempotency_key is required.', field='idempotency_key',
+                              issue='idempotency_key', status=status.HTTP_400_BAD_REQUEST)
+    try:
+        outcome = money.request_recovery(request.user, flag, request.data.get('amount_minor'),
+                                         request.data.get('note'), key, http_request=request)
+    except money.MoneyError as exc:
+        return _money_refuse(exc)
+    except approvals.ApprovalError as exc:
+        return exc.response()
+    return _approval_reply(outcome)
+
+
+def _approval_reply(outcome):
+    row = outcome.request
+    body = {'approval_request': row.as_dict(), 'duplicate': outcome.duplicate}
+    if row.status == 'requested':
+        body['state'] = 'pending_approval'
+        return success_response(body, status.HTTP_202_ACCEPTED)
+    if row.status == 'failed':
+        return error_response(code=row.error_code or 'EXECUTION_FAILED',
+                              message=row.error or 'The action could not be carried out.',
+                              field='general', issue=row.error or row.error_code,
+                              status=status.HTTP_409_CONFLICT)
+    body['state'] = row.status
+    body['result'] = row.result
+    return success_response(body, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, REVIEW])
+def flag_payout_hold(request, flag_id):
+    """POST /fraud/admin/flags/<id>/payout-hold/ {note, days?, renew?, idempotency_key}
+
+    Raises `finance.payout_hold` (ALWAYS a checker, India and US). Allowed only on a CONFIRMED
+    serious-fraud flag whose driver is SUSPENDED; `days` is at most the country's
+    `payout_hold_max_days`. Renewal is another request.
+    """
+    flag, refusal = _money_flag(request, flag_id)
+    if refusal:
+        return refusal
+    key = _key(request)
+    if not key:
+        return error_response(code='IDEMPOTENCY_KEY_REQUIRED',
+                              message='idempotency_key is required.', field='idempotency_key',
+                              issue='idempotency_key', status=status.HTTP_400_BAD_REQUEST)
+    try:
+        outcome = money.request_payout_hold(
+            request.user, flag, request.data.get('note'), request.data.get('days'), key,
+            renew=request.data.get('renew') is True, http_request=request)
+    except money.MoneyError as exc:
+        return _money_refuse(exc)
+    except approvals.ApprovalError as exc:
+        return exc.response()
+    return _approval_reply(outcome)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, REVIEW])
+def payout_hold_release(request, hold_id):
+    """POST /fraud/admin/payout-holds/<id>/release/ {note}
+
+    Releases a hold early; no checker (it only pays out). Needs `fraud.review` at the flag's place
+    (Finance releases through `/payments/admin/payout-holds/<id>/release/`). Out of scope is a 404."""
+    from .models import PayoutHold
+
+    hold = PayoutHold.objects.select_related('flag').filter(pk=hold_id).first()
+    flag = _flag_for(request, hold.flag_id) if hold else None
+    if flag is None:
+        return error_response(code='NOT_FOUND', message='Payout hold not found.',
+                              field='hold_id', issue=str(hold_id),
+                              status=status.HTTP_404_NOT_FOUND)
+    if not granted(request.user, 'fraud.review', flag.anchor_node)[0]:
+        return error_response(code='PERMISSION_DENIED', message='You do not hold fraud.review here.',
+                              field='hold_id', issue='fraud.review',
+                              status=status.HTTP_403_FORBIDDEN)
+    try:
+        hold = money.release_payout_hold(request.user, hold, request.data.get('note'),
+                                         http_request=request)
+    except money.MoneyError as exc:
+        return _money_refuse(exc)
+    return success_response(money.hold_dict(hold), status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, REVIEW])
+def flag_restrict_cash(request, flag_id):
+    """POST /fraud/admin/flags/<id>/restrict-cash/ {note}
+
+    Sets the rider to ONLINE PAYMENT ONLY from a flag confirmed as payment abuse (`fraud.review`).
+    The Riders page shows and clears it (`rider.block`). Blocking is the existing block action."""
+    flag, refusal = _money_flag(request, flag_id)
+    if refusal:
+        return refusal
+    try:
+        row, created = money.restrict_cash(request.user, flag, request.data.get('note'),
+                                           http_request=request)
+    except money.MoneyError as exc:
+        return _money_refuse(exc)
+    return success_response({'restriction_id': row.pk, 'kind': row.kind, 'created': created},
+                            status.HTTP_201_CREATED if created else status.HTTP_200_OK)

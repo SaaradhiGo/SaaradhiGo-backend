@@ -480,6 +480,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'fraud.run_rules',
         'schedule': _crontab(minute='*/15'),
     },
+    'fraud-release-holds-hourly': {
+        # Fraud money actions (AUDIT 27.56): a reward held pending review is released after the
+        # country's `reward_hold_days` if its flag is not decided; a payout hold lapses at its
+        # maximum duration (Finance and the reviewers are alerted). Releases only, never takes.
+        'task': 'fraud.release_holds',
+        'schedule': _crontab(minute=20),
+    },
     'payments-retry-unsettled-trips-hourly': {
         # Trips left unsettled because no commission rule governed them (module 8 path
         # that logs and defers). Retries each once an hour and clears its critical

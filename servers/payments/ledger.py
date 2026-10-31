@@ -15,6 +15,8 @@ The driver's settlement balance (`Wallet`, scope driver) moves only through
   * `incentive_reward` credit   a driver incentive reward: no commission, paid out with the next
                       weekly payout, its own line (tax: not configured, go-live blocker 15)
   * `referral_reward` credit    a driver referral reward: same treatment
+  * `reward_recovery` debit     an approved recovery of a reward (Finance adjustment, maker-checker),
+                      taken from a payout within the country's per-payout cap; its own line
   * `withdrawal`     debit    a payout request (taken at request time)
   * `refund_rejected_withdrawal` / `refund_failed_withdrawal`  credit   money
     returned because the payout was rejected, or failed at the gateway
@@ -76,6 +78,7 @@ ENTRY_KINDS = {
     'promo_discount_platform_funded': 'promo_discount_platform_funded',
     'incentive_reward': 'incentive_reward',
     'referral_reward': 'referral_reward',
+    'reward_recovery': 'reward_recovery',
     'withdrawal': 'withdrawal_requested',
     'refund_rejected_withdrawal': 'withdrawal_rejected',
     'refund_failed_withdrawal': 'withdrawal_returned',
@@ -91,6 +94,7 @@ ENTRY_LABELS = {
     'promo_discount_platform_funded': PROMO_PAID_LABEL,
     'incentive_reward': 'Incentive reward',
     'referral_reward': 'Referral reward',
+    'reward_recovery': 'Recovery of reward (reviewed)',
     'withdrawal': 'Withdrawal requested',
     'refund_rejected_withdrawal': 'Withdrawal rejected (returned)',
     'refund_failed_withdrawal': 'Payout failed (returned)',

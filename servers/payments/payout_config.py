@@ -49,6 +49,10 @@ INDIA_SEED = {
     'stuck_payout_hours': 24,
     'payout_schedule': 'on_request',
     'payout_weekday': None,
+    # Fraud money actions (AUDIT 27.56): reward hold days, recovery cap %, payout hold max days.
+    'reward_hold_days': 7,
+    'recovery_max_percent': 50,
+    'payout_hold_max_days': 14,
 }
 US_SEED = {
     'country': 'US',
@@ -57,6 +61,9 @@ US_SEED = {
     'stuck_payout_hours': 72,
     'payout_schedule': 'weekly',
     'payout_weekday': 0,
+    'reward_hold_days': 7,
+    'recovery_max_percent': 50,
+    'payout_hold_max_days': 14,
 }
 OWNER_RULING = (INDIA_SEED, US_SEED)
 RULING_REASON = 'Owner ruling, AUDIT 27.43'

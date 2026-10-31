@@ -8,7 +8,7 @@ from .views import (
 from .admin_riders import (
     admin_block_rider, admin_bulk_riders, admin_flag_rider, admin_list_riders,
     admin_note_rider, admin_rider_detail, admin_sign_out_rider, admin_unblock_rider,
-    admin_unflag_rider,
+    admin_unflag_rider, admin_clear_restriction,
 )
 
 urlpatterns=[
@@ -37,4 +37,5 @@ urlpatterns=[
     path('admin/<int:rider_id>/flag/', admin_flag_rider),
     path('admin/<int:rider_id>/unflag/', admin_unflag_rider),
     path('admin/<int:rider_id>/sign-out/', admin_sign_out_rider),
+    path('admin/<int:rider_id>/restriction/clear/', admin_clear_restriction),
 ]

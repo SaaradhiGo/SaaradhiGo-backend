@@ -137,8 +137,18 @@ def _reason(data):
 
 
 def _locked(trip_id):
-    return (Trip.objects.select_for_update(of=('self',))
-            .select_related('status_id', 'driver_id').filter(id=trip_id).first())
+    """The trip row under lock, with its status and driver read AFTER the lock.
+
+    No JOIN in the locking query on purpose: a second operator waiting on the lock
+    re-checks the row once the first commits, and a joined status row created in that
+    first transaction (the first ever 'cancelled') is invisible to the waiter's
+    snapshot, so the row would vanish from the result and the answer would be a 404.
+    """
+    trip = Trip.objects.select_for_update().filter(id=trip_id).first()
+    if trip is not None:
+        trip.status_id  # noqa: B018 - load now, inside the lock
+        trip.driver_id  # noqa: B018
+    return trip
 
 
 def _refuse(request, trip, *, action, code, message, case=None, extra=None):

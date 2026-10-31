@@ -68,6 +68,9 @@ SCOPE_PATHS = {
     # A zone revision belongs to its zone (module 9).
     'pricing.ServiceZoneRevision': 'zone__geo_node__path',
 
+    # A supply sample belongs to the city its drivers were in (module 10).
+    'live_ops.SupplySample': 'city__path',
+
     # A commission rule is anchored at the country or city node it applies to.
     'pricing.CommissionRule': 'geo_node__path',
 

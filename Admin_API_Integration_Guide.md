@@ -244,6 +244,7 @@ Below are the specific endpoints you will use for the Admin interface.
 ### D. Rides & Monitoring
 - **List Trips:** `GET /ride/admin/trips/`
 - **Live Locations:** `GET /ride/admin/live-locations/`
+- **Live Ops map (module 10):** `GET /live-ops/admin/snapshot/?city=`, `GET /live-ops/admin/heatmap/?city=&window=15|60|1440`, `POST /live-ops/admin/ws-ticket/` (single-use ticket for `ws/admin/live-locations/`; the JWT in the URL is no longer accepted there)
 
 ### E. Payments & Transactions
 - **List Payments:** `GET /payments/admin/payments/`

@@ -291,6 +291,8 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             data = json.loads(text_data)
             lng = data.get('lng')
             lat = data.get('lat')
+            # Optional compass bearing; shown on the Live Ops map when an app sends it.
+            heading = data.get('heading')
 
             if lng is None or lat is None:
                 await self.send(text_data=json.dumps({
@@ -300,7 +302,7 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 return
 
             # Update location in Redis Geo (using the "smart" checker)
-            result = await self._add_driver_location(lng, lat)
+            result = await self._add_driver_location(lng, lat, heading)
 
             if result.get('ineligible'):
                 # Suspended (or otherwise no longer dispatchable) between the
@@ -339,6 +341,7 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     'lng': lng,
                     'status': 'busy' if active_trip_id else 'online',
                     'active_trip_id': active_trip_id,
+                    'heading': heading,
                 })
                 await self.channel_layer.group_send('admin_dashboard', driver_details)
 
@@ -530,7 +533,7 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         from servers.redis_client import remove_driver
         return remove_driver(self.driver_id)
     @database_sync_to_async
-    def _add_driver_location(self, lng, lat):
+    def _add_driver_location(self, lng, lat, heading=None):
         from servers.driver.models import Driver
         from servers.redis_client import add_driver_location, remove_driver
         # Fresh read, not the instance loaded at connect: a suspension after
@@ -540,7 +543,7 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             remove_driver(self.driver_id)
             return {'success': False, 'ineligible': True,
                     'error': 'Driver is not eligible to operate'}
-        return add_driver_location(self.driver_id, lng=lng, lat=lat)
+        return add_driver_location(self.driver_id, lng=lng, lat=lat, heading=heading)
 
     @database_sync_to_async
     def _record_trip_liveness(self, trip_id):
@@ -2461,66 +2464,7 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         return process_refund_on_cancel(trip)
 
 
-class AdminDashboardConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
-    """
-    WebSocket consumer for Admin Dashboard real-time driver locations.
-    
-    Connect: ws://host/ws/admin/live-locations/?token=<jwt>
-    """
-    
-    async def connect(self):
-        self.user = self.scope.get('user')
-
-        if isinstance(self.user, AnonymousUser) or not self.user.is_authenticated:
-            logger.info("WS reject 4001: unauthenticated socket")
-            await self.close(code=4001)
-            return
-
-        if not (self.user.is_staff or self.user.is_superuser):
-            logger.info("WS reject 4003: user is not an admin")
-            await self.close(code=4003)
-            return
-
-        # Accept the connection
-        await self.accept()
-        
-        # Add to the admin_dashboard group
-        self.admin_group = 'admin_dashboard'
-        await self.channel_layer.group_add(self.admin_group, self.channel_name)
-
-        # Send initial snapshot of all drivers
-        from servers.redis_client import get_all_active_drivers
-        drivers = await database_sync_to_async(get_all_active_drivers)()
-        
-        await self.send(text_data=json.dumps({
-            'type': 'initial_drivers',
-            'drivers': drivers
-        }))
-        await self._start_location_pump()
-
-    async def disconnect(self, close_code):
-        await self._stop_location_pump()
-        if hasattr(self, 'admin_group'):
-            await self.channel_layer.group_discard(self.admin_group, self.channel_name)
-
-    async def receive(self, text_data):
-        # Admin doesn't send data in this MVP
-        pass
-
-    async def driver_location_update(self, event):
-        """
-        Forward driver location updates to the admin client.
-
-        A fleet monitor watching every driver is the heaviest consumer of
-        location frames on the platform; it must not be able to apply
-        backpressure to the loop that carries its other events too.
-        """
-        self._queue_location_frame(event)
-
-    async def driver_status_update(self, event):
-        """
-        Forward driver status updates (e.g. offline) to the admin client.
-        """
-        await self.send(text_data=json.dumps(event))
-
-
+# The admin live-map socket lives with the rest of the Live Ops map
+# (`servers/live_ops`): scoped, capability-gated, ticket-authenticated. Kept
+# importable from here because `servers/routing.py` mounts it from this module.
+from servers.live_ops.consumer import AdminDashboardConsumer  # noqa: E402,F401

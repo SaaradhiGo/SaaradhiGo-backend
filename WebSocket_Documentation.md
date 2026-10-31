@@ -235,41 +235,39 @@ Emitted to all participants inside the `trip_id` socket group successfully evalu
 
 ---
 
-## 4. Admin Dashboard Consumer (`AdminDashboardConsumer`)
-This consumer provides the admin operations dashboard with a live feed of all driver locations without needing to poll the REST API.
+## 4. Admin Live Map Consumer (`AdminDashboardConsumer`)
+The Live Ops map's feed (console module 10). Scoped to what the signed-in operator may see,
+authenticated by a single-use ticket instead of the JWT.
 
-**Endpoint:** `ws://<host>/ws/admin/live-locations/?token=<JWT>`
-**Role:** Admin Only (`is_staff` or `is_superuser`)
+**Endpoints:** `ws://<host>/ws/admin/live-locations/?ticket=<ticket>` (and the alias
+`/ws/admin/dashboard/`)
+**Role:** an operator holding `liveops.read` (driver dots) or `liveops.aggregate` (counts only)
 
-### Connection Flow
-1. Connect with Admin JWT Token.
-2. **Response on Success (Initial Snapshot):**
-   Immediately upon connection, the server pushes the current cached snapshot of all online drivers.
-   ```json
-   {
-       "type": "initial_locations",
-       "drivers": [
-           {
-               "driver_id": "15",
-               "vehicle_type": "sedan",
-               "lng": 78.4867,
-               "lat": 17.3850
-           }
-       ]
-   }
-   ```
+### Getting a ticket
+`POST /api/v1/live-ops/admin/ws-ticket/` (normal `Authorization: Bearer` header, no body) returns
+`{"ticket": "...", "expires_in": 30, "path": "/ws/admin/live-locations/", "mode": "full|aggregate"}`.
+The ticket works for ONE connection within 30 seconds (stored hashed, consumed with GETDEL,
+bound to the user). **`?token=<JWT>` is no longer accepted on this socket.**
 
-### Server -> Client Broadcasts
-**Event: Real-time Location Update**
-When any driver updates their location, a broadcast is immediately sent to all connected admins.
-```json
-{
-    "type": "driver_location_update",
-    "lng": 78.4870,
-    "lat": 17.3855,
-    "driver_id": 15
-}
-```
+### Close codes
+| Code | Meaning |
+|------|---------|
+| 4001 | no ticket, or it is unknown, expired or already used (or the account is inactive) |
+| 4003 | signed in but holds neither capability, or access was revoked while connected |
+| 1013 | the ticket store is unavailable, try again |
+
+The refusal is sent after the socket is accepted so a browser can read the code.
+
+### Frames (server to client)
+* `hello` : `{mode, session, recheck_seconds, frame_interval_seconds, cities}`
+* `initial_drivers` : `{drivers: [dot], truncated}` (mode `full` only)
+* `driver_location_update` : a dot plus `type`; at most one per driver per second
+* `driver_status_update` : `{driver_id, status: "offline"}`, a removal (offline, or moved out of scope)
+* `city_status` : `{cities: [{code, network_status, online_drivers, on_trip_drivers, unassigned_trips, ...}]}` every 30 s
+
+A dot is `{driver_id, status (online|on_trip|offline), vehicle_class, lat, lng (5 dp), heading, updated_at, trip_id, city}`.
+It never carries a name, phone, plate or rider data. A driver outside the operator's scope is never
+sent, and is not counted. Capabilities and scope are re-read every 60 seconds.
 
 ---
 

@@ -506,6 +506,11 @@ INVENTORY = {
     'api/v1/pricing/admin/zones/pending/': False,
     'api/v1/pricing/admin/zones/cities/': False,
     'api/v1/pricing/admin/zones/(?P<pk>[^/.]+)/history/': False,
+    # Live Ops map (module 10): dots, trips and alert pins are built from whitelists
+    # (`live_ops.dots`), so no name, phone, plate or rider appears at all; the heatmap is
+    # integer cells. `tests/test_live_ops.py` sweeps them with its own fleet as well.
+    'api/v1/live-ops/admin/snapshot/': False,
+    'api/v1/live-ops/admin/heatmap/': False,
 }
 
 #: GET routes in the namespace that are deliberately not swept. The DRF

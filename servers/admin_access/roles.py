@@ -37,6 +37,13 @@ PERMISSIONS = {
     # geofences (`zone.write`). A City Ops Manager, Finance and an Analyst
     # need the card that produced a quote; Support and KYC do not.
     'zone.read': 'View service zones and rate cards',
+    # The Live Ops map (module 10). Two capabilities because they answer two
+    # different questions: `liveops.read` shows WHERE individual drivers and
+    # active trips are right now (a location, so sensitive; every session is
+    # audited), `liveops.aggregate` shows only demand and supply per ~1 km
+    # cell with small cells suppressed, never a position.
+    'liveops.read': 'View individual driver positions and active trips on the live map',
+    'liveops.aggregate': 'View the demand and supply heatmap (aggregates only, no positions)',
 
     # Personal data. Held separately from every read above, so a role can
     # see the work without seeing the person.
@@ -135,6 +142,8 @@ ROLE_TEMPLATES = [
             'support.sla', 'support.dashboard',
             # Aggregate money on the Command Centre, no individual earnings.
             'finance.aggregate',
+            # The live map: drivers, trips and alerts in their own scope.
+            'liveops.read',
         ],
     },
     {
@@ -172,6 +181,8 @@ ROLE_TEMPLATES = [
             'rider.note', 'rider.flag', 'rider.signout', 'rider.block',
             # The one role that must be able to reach a person immediately.
             'pii.view',
+            # Sees where the drivers and trips around an incident are.
+            'liveops.read',
         ],
     },
     {
@@ -208,6 +219,8 @@ ROLE_TEMPLATES = [
                        'communications. No access to individuals.',
         'permissions': [
             'promo.write', 'notify.send', 'report.read',
+            # Demand and supply cells only; never an individual position.
+            'liveops.aggregate',
         ],
     },
     {
@@ -221,6 +234,8 @@ ROLE_TEMPLATES = [
             'zone.read',
             # Aggregate money only; never an individual's earnings.
             'finance.aggregate',
+            # Demand and supply cells only; never an individual position.
+            'liveops.aggregate',
         ],
     },
 ]

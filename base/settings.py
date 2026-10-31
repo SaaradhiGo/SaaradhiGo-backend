@@ -77,6 +77,8 @@ INSTALLED_APPS = [
     # module). First producer: an SOS that could not be anchored to a city.
     'servers.command_centre',
     'servers.safety',
+    # Live Ops map (module 10): scoped driver dots, active trips, demand and supply.
+    'servers.live_ops',
     # Console search: trip id, phone, plate, name -- indexed and scoped.
     'servers.search',
     # Operator MFA. django-otp is the established Django implementation: TOTP
@@ -543,6 +545,12 @@ CELERY_BEAT_SCHEDULE = {
         # per city; idempotent.
         'task': 'safety.coverage_sweep',
         'schedule': 300.0,
+    },
+    'live-ops-supply-sample-every-minute': {
+        # Live Ops map: count idle online drivers per ~1 km cell (never ids), for
+        # the demand and supply heatmap; prunes samples older than a day.
+        'task': 'live_ops.sample_supply',
+        'schedule': 60.0,
     },
     'safety-signal-sweep-every-minute': {
         # Safety: detect long stops and ETA overruns on in-progress trips.

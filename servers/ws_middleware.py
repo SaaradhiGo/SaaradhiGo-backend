@@ -8,6 +8,9 @@ from django.contrib.auth import get_user_model
 
 logger = logging.getLogger(__name__)
 
+#: Sockets that authenticate with a ticket instead of `?token=`.
+ADMIN_WS_PREFIX = '/ws/admin/'
+
 
 @database_sync_to_async
 def get_user_from_token(token_str):
@@ -38,6 +41,13 @@ class JWTAuthMiddleware(BaseMiddleware):
     """
 
     async def __call__(self, scope, receive, send):
+        # The admin live-map socket does not take a JWT in the URL: it takes a
+        # single-use ticket (`servers.live_ops.tickets`) and authenticates in the
+        # consumer. Leave it anonymous here, whatever `?token=` says.
+        if scope.get('path', '').startswith(ADMIN_WS_PREFIX):
+            scope['user'] = AnonymousUser()
+            return await super().__call__(scope, receive, send)
+
         # Parse token from query string
         query_string = scope.get('query_string', b'').decode('utf-8')
         query_params = parse_qs(query_string)

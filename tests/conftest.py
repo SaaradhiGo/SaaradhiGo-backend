@@ -51,7 +51,9 @@ def clear_driver_redis_state():
             return
         for pattern in ('driver:active_trip:*', 'driver:heartbeat:*',
                         'drivers:geo:*', 'driver:vehicle_type:*',
-                        'trip:offered:*', 'active_rider:*'):
+                        'trip:offered:*', 'active_rider:*',
+                        # Live Ops map (module 10): last positions and socket tickets.
+                        'driver:livepos:*', 'liveops:*'):
             try:
                 keys = list(redis_client.scan_iter(match=pattern, count=500))
                 if keys:

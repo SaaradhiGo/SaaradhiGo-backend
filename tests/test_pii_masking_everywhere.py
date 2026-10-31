@@ -431,7 +431,6 @@ INVENTORY = {
     'api/v1/rider/admin/<int:rider_id>/': True,
     'api/v1/ride/admin/trips/': True,
     'api/v1/ride/admin/trips/<int:trip_id>/': True,
-    'api/v1/ride/admin/live-locations/': False,
     'api/v1/ride/admin/dashboard/': False,
     'api/v1/payments/admin/payments/': True,
     'api/v1/payments/admin/transactions/': True,

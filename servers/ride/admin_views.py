@@ -9,7 +9,6 @@ from servers.admin_access.scoping import (
 )
 from servers.ride.models import Trip, Receipt, ChatMessage, PromoRedemption, FarePricing, Rating
 from servers.ride.admin_trips import detail_extras
-from servers.redis_client import get_all_active_drivers, get_all_active_riders
 from base.money import format_totals, sum_by_currency
 from servers.command_centre.services import open_alert_count
 
@@ -46,30 +45,6 @@ def admin_list_trips(request):
             issue='Requested scope is outside your assignments',
             status=status.HTTP_403_FORBIDDEN,
         )
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated, ScopedPermission('trip.read')])
-def admin_live_locations(request):
-    """
-    Admin view to get all active riders and drivers from Redis.
-    """
-    try:
-        drivers = get_all_active_drivers()
-        riders = get_all_active_riders()
-        
-        return success_response({
-            "drivers": drivers,
-            "riders": riders
-        }, status.HTTP_200_OK)
-    except Exception as e:
-        return error_response(
-            code='INTERNAL_ERROR',
-            message='An unexpected error occurred fetching live locations',
-            field='general',
-            issue=str(e),
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, ScopedPermission('trip.read')])

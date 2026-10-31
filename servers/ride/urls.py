@@ -6,7 +6,7 @@ from .views import (
     driver_cancel_trip, rider_cancel_trip, resend_receipt, receipt_pdf,
     apply_promo_endpoint, trip_chat_history,
 )
-from .admin_views import admin_list_trips, admin_live_locations, admin_dashboard, admin_trip_detail
+from .admin_views import admin_list_trips, admin_dashboard, admin_trip_detail
 from .admin_trips import (
     admin_adjust_fare, admin_bulk_trips, admin_cancel_trip, admin_flag_trip,
     admin_note_trip, admin_refund_trip, admin_unflag_trip,
@@ -45,6 +45,5 @@ urlpatterns = [
     path('admin/trips/<int:trip_id>/flag/', admin_flag_trip),
     path('admin/trips/<int:trip_id>/unflag/', admin_unflag_trip),
     path('admin/trips/<int:trip_id>/note/', admin_note_trip),
-    path('admin/live-locations/', admin_live_locations),
     path('admin/dashboard/', admin_dashboard),
 ]

@@ -48,6 +48,14 @@ def weekly_payout_run():
     return run_weekly_payouts()
 
 
+@shared_task(name='payments.release_awaiting_rail')
+def release_awaiting_rail():
+    """Send approved payouts that were held for want of a payout rail, once one exists."""
+    from servers.payments.payout_rails import release_awaiting_rail as release
+
+    return {'released': release()}
+
+
 @shared_task(name='payments.reconcile_stuck_payments')
 def reconcile_stuck_payments():
     """Find local payments that are stuck mid-flight and converge state.

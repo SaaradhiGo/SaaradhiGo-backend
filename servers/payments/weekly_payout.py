@@ -7,6 +7,13 @@ PayoutCountryConfig is weekly, it acts only when "now" in the country's own
 time zone falls on the configured weekday. Then, once for that country and
 week:
 
+  0. a driver with NO PAYOUT HANDLE (no UPI contact with a fund account, no bank
+     account) is skipped when the country's currency has a payout rail: nothing
+     could be sent to them. They are listed in the run summary (`PayoutRun.skipped`)
+     and every finance holder in scope gets an operator inbox item. Their balance
+     is untouched and they are picked up the week they add a handle. A currency
+     with no rail yet (USD) skips nobody: the withdrawals are created and held
+     `awaiting_rail` once approved (payments.payout_rails);
   1. every driver in the country with a balance at or above the minimum and no
      open withdrawal gets a WithdrawalRequest (system actor, origin
      'scheduled', reason "scheduled weekly payout", fee from withdrawal_fee),
@@ -53,6 +60,8 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_LABEL = 'system:weekly_payout'
 REASON = 'scheduled weekly payout'
+SKIPPED_KIND = 'payout_run_skipped'
+SKIP_NO_HANDLE = 'no_payout_handle'
 MAX_DRIVERS_PER_RUN = 2000
 OPEN_STATUSES = ('pending', 'approved', 'processed', 'unresolved')
 
@@ -78,6 +87,70 @@ def _candidates(config):
             .exclude(Exists(open_withdrawal))
             .select_related('user_id', 'home_city')
             .order_by('id')[:MAX_DRIVERS_PER_RUN + 1])
+
+
+def has_payout_handle(driver):
+    """Could a payout be sent to this driver? A UPI contact with something to send
+    to, or a bank account."""
+    from servers.driver.models import DriverBankAccount, DriverUPIContact
+
+    upi = DriverUPIContact.objects.filter(driver=driver, is_active=True).first()
+    if upi is not None and (upi.upi_id or upi.gateway_fund_account_id):
+        return True
+    return DriverBankAccount.objects.filter(driver=driver).exists()
+
+
+def finance_holders(country, nodes=()):
+    """Active operators holding finance.payout whose scope covers `nodes` (the
+    skipped drivers' home cities), else the country itself."""
+    from servers.admin_access.models import AdminAssignment, GeoNode
+
+    targets = [n for n in nodes if n is not None]
+    if not targets:
+        node = GeoNode.objects.filter(kind='country', code=country).first()
+        targets = [node] if node is not None else []
+    out = {}
+    for a in (AdminAssignment.objects.filter(is_active=True, role__is_active=True,
+                                             admin__is_active=True)
+              .select_related('role', 'scope', 'admin')):
+        if 'finance.payout' not in (a.role.permissions or []):
+            continue
+        if a.scope.kind == 'global' or any(a.scope.covers(t) for t in targets):
+            out[a.admin_id] = a.admin
+    return list(out.values())
+
+
+def deliver_payout_notice(notice):
+    """STUB: nobody is notified (Notifications module). The row stays queued."""
+    logger.warning('payout_notice_queued_not_sent', extra={
+        'event': 'payout_notice_queued_not_sent', 'notice_id': notice.id,
+        'driver_id': notice.driver_id})
+    return False
+
+
+def _queue_driver_notices(run, drivers):
+    """One outbox row per skipped driver per run. Idempotent: (run, driver) is unique."""
+    from .models import DriverPayoutNotice
+
+    for d in drivers:
+        notice, created = DriverPayoutNotice.objects.get_or_create(run=run, driver=d)
+        if created:
+            deliver_payout_notice(notice)
+
+
+def _notify_skipped(run, config, skipped, drivers):
+    """One inbox item per finance holder in scope: who was skipped and why."""
+    from servers.support.models import OperatorNotification
+
+    text = (f'Weekly payout run {config.country} (week of {run.week_start}): '
+            f'{len(skipped)} driver(s) skipped because they have no payout handle '
+            f'(no UPI or bank account). Driver ids: '
+            f'{", ".join(str(s["driver_id"]) for s in skipped[:20])}'
+            f'{" and more" if len(skipped) > 20 else ""}.')
+    for user in finance_holders(config.country, [d.home_city for d in drivers]):
+        OperatorNotification.objects.get_or_create(
+            recipient=user, kind=SKIPPED_KIND, approval_request_id=None,
+            text=text[:2000])
 
 
 def _create_one(driver, config):
@@ -147,7 +220,20 @@ def run_country(config, now=None):
             run = PayoutRun.objects.create(
                 country=country, currency=config.currency, week_start=week,
                 truncated=truncated, outcome='nothing_to_pay')
-            created = [w for w in (_create_one(d, config) for d in candidates) if w is not None]
+            from . import payout_rails
+
+            needs_handle = payout_rails.has_rail(config.currency)
+            skipped = []
+            skipped_drivers = []
+            payable = []
+            for d in candidates:
+                if needs_handle and not has_payout_handle(d):
+                    skipped.append({'driver_id': d.id, 'reason': SKIP_NO_HANDLE})
+                    skipped_drivers.append(d)
+                else:
+                    payable.append(d)
+            created = [w for w in (_create_one(d, config) for d in payable) if w is not None]
+            run.skipped = skipped
             run.withdrawal_count = len(created)
             run.amount_minor = sum(w.amount_minor for w in created)
             if created:
@@ -174,14 +260,18 @@ def run_country(config, now=None):
                 after={'country': country, 'week_start': str(week), 'withdrawals': len(created),
                        'amount_minor': run.amount_minor, 'currency': config.currency,
                        'approval_request_id': run.approval_request_id, 'outcome': run.outcome,
-                       'truncated': truncated},
+                       'truncated': truncated, 'skipped_no_handle': len(skipped)},
                 reason=REASON)
+            if skipped:
+                _notify_skipped(run, config, skipped, skipped_drivers)
+                _queue_driver_notices(run, skipped_drivers)
     except IntegrityError:
         # Another worker created this week's run between our check and our insert.
         return {'country': country, 'ran': False, 'why': 'already_ran', 'week_start': str(week)}
     return {'country': country, 'ran': True, 'week_start': str(week),
             'withdrawals': run.withdrawal_count, 'outcome': run.outcome,
-            'approval_request_id': run.approval_request_id}
+            'approval_request_id': run.approval_request_id,
+            'skipped_no_handle': [s['driver_id'] for s in run.skipped]}
 
 
 def run_weekly_payouts(now=None):

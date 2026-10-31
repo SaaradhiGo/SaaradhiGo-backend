@@ -21,6 +21,7 @@
           "today_earned": "0.00",
           "today_trips": 0,
           "commission_percent": "0.00",
+          "commission_percent_mixed": false,
           "wallet_balance": "0",
           "total_net": "0.00",
           "today_net": "0.00",

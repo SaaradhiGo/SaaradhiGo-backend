@@ -447,6 +447,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'payments.weekly_payout_run',
         'schedule': _crontab(minute=5),
     },
+    'payments-release-awaiting-rail': {
+        # Approved payouts in a currency with no payout rail wait as
+        # payout_status=awaiting_rail; once a rail is registered in
+        # payments.payout_rails.RAILS they leave on the next run. A no-op until then.
+        'task': 'payments.release_awaiting_rail',
+        'schedule': _crontab(minute=20),
+    },
     'payments-reconcile-daily': {
         # Local-data reconciliation: payments vs webhooks, trips vs
         # settlements, payouts vs payout webhooks and stuck payouts. Writes
@@ -1064,11 +1071,10 @@ PAYMENT_GATEWAY=os.environ.get("PAYMENT_GATEWAY", "cashfree")
 PAYOUT_GATEWAY=os.environ.get("PAYOUT_GATEWAY", "cashfree")
 
 # --- Platform / dispatch settings -------------------------------------------
-# PLATFORM_COMMISSION_PERCENT is now only the LAST-RESORT fallback. The
-# authoritative rate is RateCard.commission_percent for the trip's zone
-# (see servers/pricing/services.commission_for_trip). Kept as a Decimal —
-# a float here silently produced binary-rounded commission on every trip.
-PLATFORM_COMMISSION_PERCENT=_Decimal(os.environ.get("PLATFORM_COMMISSION_PERCENT", "18"))
+# The platform commission is NOT a setting. It is the layered, versioned
+# CommissionRule model (servers/pricing/commission.py, module 8, AUDIT 27.36);
+# each trip snapshots its rate at booking. The old PLATFORM_COMMISSION_PERCENT
+# setting (default 18) is removed so there is exactly one source.
 
 # How long a rider's request stays open before auto-cancel. 600s meant a
 # rider stared at "finding a driver" for ten minutes; the rolling fanout

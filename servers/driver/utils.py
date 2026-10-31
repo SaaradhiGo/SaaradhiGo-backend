@@ -47,6 +47,28 @@ def update_driver_location(driver_id, lng, lat):
         status_code=status.HTTP_200_OK
     )
 
+def settle_or_defer(trip):
+    """Settle a completed trip, but never let a missing commission rule strand the ride.
+
+    `credit_driver_wallet` raises `CommissionNotConfigured` when no rule governs the trip
+    (module 8: there is no default rate). Completing a trip, and telling the rider and
+    driver it is done, must not depend on that: the failure is logged loudly and the trip
+    stays completed but UNSETTLED. Nothing is written, so settling it later (once a rule
+    exists) is the normal idempotent call, and the daily reconciliation's trips-vs-
+    settlements check lists it. Returns True when settled, False when deferred.
+    """
+    from servers.pricing.commission import CommissionNotConfigured
+
+    try:
+        credit_driver_wallet(trip)
+        return True
+    except CommissionNotConfigured as exc:
+        logger.error('settlement_deferred_no_commission_rule', extra={
+            'event': 'settlement_deferred_no_commission_rule', 'trip_id': trip.id,
+            'detail': str(exc)})
+        return False
+
+
 def credit_driver_wallet(trip):
     """Settle a completed trip against the driver's settlement balance."""
     from servers.payments.models import TransactionHistory, TripSettlement

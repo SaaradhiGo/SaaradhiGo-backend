@@ -983,8 +983,13 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             # per-city report read this instead of re-running a
             # point-in-polygon lookup against a zone table that may have
             # changed since the ride happened.
+            from servers.pricing.commission import snapshot_for_booking
             from servers.pricing.services import find_zone_for_point
             pickup_zone = find_zone_for_point(pickup_lat, pickup_lng)
+            # The commission this trip will be settled at, fixed NOW (module 8,
+            # AUDIT 27.36): percent, rule id and rule version. Never recomputed.
+            commission_snapshot = snapshot_for_booking(
+                pickup_zone, requested_vt.id if requested_vt else None)
 
             with transaction.atomic():
                 trip = Trip.objects.create(
@@ -1003,6 +1008,7 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     surge_multiplier=fare['surge_multiplier'],
                     requested_vehicle_type=requested_vt,
                     payment_method=payment_method,
+                    **commission_snapshot,
                 )
 
                 FarePricing.objects.create(
@@ -2073,8 +2079,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 # credit_driver_wallet is idempotent on
                 # WalletTransaction.idempotency_key, so calling it again is a
                 # no-op if the trip was already settled.
-                from servers.driver.utils import credit_driver_wallet
-                credit_driver_wallet(trip)
+                from servers.driver.utils import settle_or_defer
+                settle_or_defer(trip)
 
             return {'success': True, 'message': 'Cash payment confirmed', 'rider_id': trip.user_id_id}
         except Trip.DoesNotExist:
@@ -2389,8 +2395,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             # inline meant every cash trip was counted twice in GMV and in
             # the commission report — and a third time if the driver later
             # tapped "confirm cash".
-            from servers.driver.utils import credit_driver_wallet
-            credit_driver_wallet(trip)
+            from servers.driver.utils import settle_or_defer
+            settle_or_defer(trip)
         elif payment_method == 'wallet':
             from base.utils import wallet_payment
             
@@ -2424,8 +2430,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         status='completed',
                     )
                 
-                from servers.driver.utils import credit_driver_wallet
-                credit_driver_wallet(trip)
+                from servers.driver.utils import settle_or_defer
+                settle_or_defer(trip)
             else:
                 logger.error(f"Wallet payment failed for trip {trip.id}: {wallet_result.get('error')}")
                 trip.payment_status = 'failed'

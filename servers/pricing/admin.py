@@ -112,7 +112,7 @@ class RateCardAdmin(admin.ModelAdmin):
             ),
         }),
         ('Commercials', {
-            'fields': ('commission_percent', 'gst_percent'),
+            'fields': ('gst_percent',),
             'description': (
                 'gst_percent is the tax RATE for this zone whatever the market '
                 'calls it — GST in India, sales tax in the US. Whether it is '

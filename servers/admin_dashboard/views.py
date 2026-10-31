@@ -21,6 +21,7 @@ from servers.ride.models import (
     PromoCode,
     PromoRedemption,
 )
+from servers.pricing.commission import CommissionNotConfigured
 from servers.pricing.services import commission_percent_for_trip
 from servers.pricing.models import ServiceZone, RateCard
 from servers.admin_access import breakglass
@@ -2937,8 +2938,13 @@ def executive_revenue(request: HttpRequest) -> HttpResponse:
     for item in trip_revenues:
         trip = item["trip"]
         fare = item["fare"]
-    # Get commission rate from the trip's RateCard
-        commission_rate = commission_percent_for_trip(trip)
+    # The trip's commission (its snapshot, else the rule effective when it was
+    # requested). A trip in a market with no rule is left out of this revenue
+    # figure rather than guessed at (module 8: no default commission).
+        try:
+            commission_rate = commission_percent_for_trip(trip)
+        except CommissionNotConfigured:
+            continue
         commission_rate = Decimal(
             str(commission_rate or "0.00"))
     # Calculate platform commission for this trip
@@ -4522,7 +4528,10 @@ def ride_detail(request: HttpRequest, trip_id: int) -> HttpResponse:
     )
     receipts = Receipt.objects.filter(trip_id=trip).order_by("-version")
     latest_receipt = receipts.first()
-    commission_rate = commission_percent_for_trip(trip)
+    try:
+        commission_rate = commission_percent_for_trip(trip)
+    except CommissionNotConfigured:
+        commission_rate = None  # no rule for this market: shown as 0, never a guessed rate
     fare_total = fare.total_fare if fare else (trip.final_fare or trip.estimated_fare or Decimal("0"))
     # Rounded by the money helper, as the settlement rounds it.
     commission_amount = quantize(

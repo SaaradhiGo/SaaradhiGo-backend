@@ -56,7 +56,7 @@ def _zone(code, name='A zone'):
     zone = ServiceZone.objects.filter(code=code).first()
     if zone is None:
         zone = ServiceZone.objects.create(
-            code=code, name=name, zone_type='city', city=name,
+            code=code, name=name, zone_type='city', city=name, country='IN',
             polygon_geojson=POLYGON, priority=10, is_active=True,
         )
     return zone

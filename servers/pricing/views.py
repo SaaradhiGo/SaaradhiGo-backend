@@ -9,9 +9,9 @@ The admin surface is capability-checked AND scoped:
   * reads (`GET` list / retrieve / `effective`) need `zone.read`, which
     City Ops Manager, Finance, Analyst and Super Admin hold, and return
     only the zones (and the cards of the zones) under the caller's scope;
-  * writes need `pricing.write`, which no role template grants, so until
-    the maker-checker draft -> approval flow exists a pricing change is
-    Super Admin only. Every write is audited by `_AuditedPricingMixin`.
+  * writes need `pricing.write` (Super Admin and City Ops). Zone writes are
+    direct; RATE CARD writes go through maker-checker (`pricing.change`, always a
+    checker) since module 8. Every write is audited by `_AuditedPricingMixin`.
 
 A zone outside the caller's scope answers 404 from `get_object()`, the
 same as one that does not exist.
@@ -28,6 +28,7 @@ from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission
 from servers.admin_access.scoping import scoped, scoped_or_none
 from servers.admin_audit.services import record_admin_action
+from servers.pricing import fare_card_workflow as fare_cards
 from servers.pricing.models import RateCard, ServiceZone
 from servers.pricing.serializers import RateCardSerializer, ServiceZoneSerializer
 from servers.pricing.services import (
@@ -149,35 +150,114 @@ class ServiceZoneViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.Mod
 
 
 class RateCardViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.ModelViewSet):
+    """Fare cards. Reads are direct; every change goes through maker-checker.
+
+    Module 8 (AUDIT 27.44): creating a card or a new version, retiring a card and
+    changing a surge cap or night multiplier all raise a `pricing.change` request
+    (always a checker) and answer **202** with the request. Nothing changes until a
+    different holder of `approval.check` + `pricing.write` approves. URLs are
+    unchanged.
+
+      POST   /rate-cards/        a new card, or a new version if one is live  -> 202
+      PATCH  /rate-cards/<id>/   pricing fields -> a NEW VERSION request       -> 202
+                                 `is_active=false` / `effective_to` -> retire  -> 202
+                                 `notes` only -> direct, audited               -> 200
+      DELETE /rate-cards/<id>/   retire request (a card is never deleted)      -> 202
+    """
     audit_target_type = 'rate_card'
     queryset = RateCard.objects.select_related('zone', 'vehicle_type', 'zone__geo_node').all()
     serializer_class = RateCardSerializer
 
-    def update(self, request, *args, **kwargs):
-        """Refuse an in-place pricing edit; direct the caller to versioning.
+    @staticmethod
+    def _pending(outcome):
+        row = outcome.request
+        return success_response(
+            {'state': 'pending_approval' if row.status == 'requested' else row.status,
+             'approval_request': row.as_dict(), 'duplicate': outcome.duplicate},
+            status_code=status.HTTP_202_ACCEPTED)
 
-        RateCard.save() would raise ValidationError anyway -- this turns that into
-        a clear 409 with the reason, rather than a 500 or an opaque validation
-        error. Lifecycle-only edits (is_active, effective_to, notes) still pass
-        straight through, because retiring a card must stay possible.
-        """
-        pricing = set(RateCard.PRICING_FIELDS) & set(request.data.keys())
-        if pricing:
-            return Response(
-                {
-                    'detail': (
-                        'RateCard pricing is immutable. Create a new version '
-                        'instead of editing this one.'
-                    ),
-                    'immutable_fields': sorted(pricing),
-                    'how_to_change_pricing': (
-                        'POST a new RateCard for this zone + vehicle type, or use '
-                        'the fare form which now supersedes automatically.'
-                    ),
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
+    def create(self, request, *args, **kwargs):
+        from servers.approvals.service import ApprovalError
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        zone, vt = data['zone'], data['vehicle_type']
+        # Scope: the zone must be one the caller can reach (404 otherwise) and
+        # pricing.write must be held over it.
+        if scoped_or_none(request.user, ServiceZone.objects.all(), pk=zone.pk) is None:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        base = fare_cards.current_card(zone, vt)
+        # What the maker left out comes from the live card, else from the model's own
+        # default (night multiplier 1.00, hours 23-5, surge cap 1.50, tax 5%). The four
+        # fares have no default and are required for a first card.
+        values = {}
+        for f in fare_cards.VALUE_FIELDS:
+            if f in data:
+                values[f] = data[f]
+            elif base is not None:
+                values[f] = getattr(base, f)
+            elif RateCard._meta.get_field(f).has_default():
+                values[f] = RateCard._meta.get_field(f).get_default()
+        missing = [f for f in fare_cards.VALUE_FIELDS if f not in values]
+        if missing:
+            return Response({'detail': 'A new card needs: ' + ', '.join(missing) + '.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            outcome = fare_cards.propose_new_version(
+                request.user, zone=zone, vehicle_type=vt, values=values, base_card=base,
+                effective_from=data.get('effective_from'), notes=data.get('notes', ''),
+                reason=str(request.data.get('reason') or ''), http_request=request)
+        except ApprovalError as exc:
+            return exc.response()
+        return self._pending(outcome)
+
+    def update(self, request, *args, **kwargs):
+        from servers.approvals.service import ApprovalError
+
+        card = self.get_object()
+        keys = set(request.data.keys())
+        pricing = (set(fare_cards.VALUE_FIELDS) | {'commission_percent'}) & keys
+        retire = keys & {'is_active', 'effective_to'}
+        reason = str(request.data.get('reason') or '')
+        if pricing and retire:
+            return Response({'detail': 'Change the price or retire the card, not both.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            if retire:
+                if request.data.get('is_active') in (True, 'true', 'True', 1, '1'):
+                    return Response(
+                        {'detail': 'A retired card cannot be reactivated; create a new version.'},
+                        status=status.HTTP_409_CONFLICT)
+                return self._pending(fare_cards.propose_retire(
+                    request.user, card=card, reason=reason, http_request=request))
+            if pricing:
+                serializer = self.get_serializer(card, data=request.data, partial=True)
+                serializer.is_valid(raise_exception=True)
+                merged = fare_cards.card_values(card)
+                merged.update({k: v for k, v in serializer.validated_data.items()
+                               if k in fare_cards.VALUE_FIELDS})
+                return self._pending(fare_cards.propose_new_version(
+                    request.user, zone=card.zone, vehicle_type=card.vehicle_type, values=merged,
+                    base_card=card, effective_from=serializer.validated_data.get('effective_from'),
+                    notes=serializer.validated_data.get('notes', card.notes), reason=reason,
+                    http_request=request))
+        except ApprovalError as exc:
+            return exc.response()
+        # Notes only: lifecycle, direct, and audited by the mixin.
+        kwargs['partial'] = True
         return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        from servers.approvals.service import ApprovalError
+
+        card = self.get_object()
+        try:
+            return self._pending(fare_cards.propose_retire(
+                request.user, card=card, reason=str(request.data.get('reason') or ''),
+                http_request=request))
+        except ApprovalError as exc:
+            return exc.response()
 
     def get_queryset(self):
         qs = super().get_queryset()

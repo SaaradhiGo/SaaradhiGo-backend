@@ -89,7 +89,7 @@ _POLYGON = {
 
 def _zone_payload(code, name='Audit Test Zone'):
     return {
-        'code': code, 'name': name, 'zone_type': 'city', 'city': 'Hyderabad',
+        'code': code, 'name': name, 'zone_type': 'city', 'city': 'Hyderabad', 'country': 'IN',
         'polygon_geojson': _POLYGON, 'is_active': True, 'priority': 10,
     }
 
@@ -464,7 +464,7 @@ def test_a_pricing_update_records_before_and_after():
 
     admin = _operator(OPS_ADMIN)
     zone = ServiceZone.objects.create(
-        code='DIFFZONE', name='Before Name', zone_type='city', city='Hyderabad',
+        code='DIFFZONE', name='Before Name', zone_type='city', city='Hyderabad', country='IN',
         polygon_geojson=_POLYGON, is_active=True)
 
     resp = _client(admin).patch(

@@ -55,6 +55,8 @@ def _make_settled_trip(suffix, payment_method='cash', fare='200.00'):
         phone_number=f'+9197700{suffix:05d}', role='rider')
 
     st, _ = TripStatus.objects.get_or_create(status_code='completed')
+    from conftest import ensure_zone_covering
+    ensure_zone_covering(LAT, LNG)
     trip = Trip.objects.create(
         user_id=rider, driver_id=driver, status_id=st,
         pickup_lat=Decimal(str(LAT)), pickup_long=Decimal(str(LNG)),
@@ -270,9 +272,9 @@ def test_a_correction_is_a_new_version_not_an_edit():
             trip=trip, driver=trip.driver_id,
             wallet_transaction=original.wallet_transaction,
             gross_fare=original.gross_fare,
-            commission_percent=Decimal('15.00'),
-            commission_amount=Decimal('30.00'),
-            driver_net=original.gross_fare - Decimal('30.00'),
+            commission_percent=Decimal('12.00'),
+            commission_amount=Decimal('24.00'),
+            driver_net=original.gross_fare - Decimal('24.00'),
             payment_method='cash', settled_at=timezone.now(),
             version=2,
             provenance_note='Commission rate misapplied at settlement time.',

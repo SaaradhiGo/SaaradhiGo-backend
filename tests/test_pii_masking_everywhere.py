@@ -308,7 +308,14 @@ def world(geo):
     )
     approval.set_maker(maker)
     approval.save()
+    from servers.pricing.commission_models import ACTIVE as _RULE_ACTIVE
+    from servers.pricing.commission_models import CommissionRule
+    rule = CommissionRule.objects.create(
+        country='IN', geo_node=geo['IN-TG-HYD'], percent=14, status=_RULE_ACTIVE, version=7,
+        created_by_label='Maker Operator', created_by_email='maker.hyd@saaradhigo.test',
+        reason='Hyderabad review of the commission')
     return {
+        'rule': rule,
         'rider_user': rider_user, 'driver_user': driver_user, 'driver': driver,
         'vehicle': vehicle, 'trip': trip, 'payment': payment, 'withdrawal': withdrawal,
         'ticket': ticket, 'macro': macro, 'sos': sos, 'alert': alert, 'aus_driver': aus_driver,
@@ -401,6 +408,7 @@ def _ids(world):
         'alert_id': world['alert'].id, 'withdrawal_id': world['withdrawal'].id,
         'incident_id': world['sos'].incident_id, 'signal_id': world['signal'].id,
         'pk': world['hyd_zone'].id, 'request_id': world['approval'].id,
+        'rule_id': world['rule'].id,
         'payment_id': world['payment'].id, 'payout_id': world['withdrawal'].id,
         'kind': 'payouts',
     }
@@ -485,6 +493,14 @@ INVENTORY = {
     'api/v1/pricing/admin/rate-cards/': False,
     'api/v1/pricing/admin/rate-cards/(?P<pk>[^/.]+)/': False,
     'api/v1/pricing/admin/rate-cards/effective/': False,
+    # Pricing and fares (module 8): rates, rules, settings and fare cards name no person
+    # beyond the staff attribution block the renderer leaves alone.
+    'api/v1/pricing/admin/commission/matrix/': False,
+    'api/v1/pricing/admin/commission/rules/': False,
+    'api/v1/pricing/admin/commission/rules/<int:rule_id>/': False,
+    'api/v1/pricing/admin/commission/rules/<int:rule_id>/preview/': False,
+    'api/v1/pricing/admin/commission/config/': False,
+    'api/v1/pricing/admin/fare-cards/overview/': False,
 }
 
 #: GET routes in the namespace that are deliberately not swept. The DRF

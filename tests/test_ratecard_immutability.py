@@ -31,7 +31,7 @@ def zone(db):
     z, _ = ServiceZone.objects.get_or_create(
         code='IMMUT-TEST',
         defaults={
-            'name': 'Immutability test', 'zone_type': 'city',
+            'name': 'Immutability test', 'zone_type': 'city', 'country': 'IN',
             'state_code': 'TS', 'city': 'Hyderabad',
             'polygon_geojson': {
                 'type': 'Polygon',
@@ -264,13 +264,26 @@ def test_the_guard_re_arms_after_a_correction(card):
 # The write paths that used to allow an in-place edit
 # ---------------------------------------------------------------------------
 
+def _with_policies():
+    """pricing.change needs its per-country policy (always a checker); a country with
+    none is BLOCKED, so the request path is only reachable once the seed has run."""
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    from conftest import seed_actor
+    call_command('seed_approval_policies', actor_email=seed_actor().email, stdout=StringIO())
+
+
 @pytest.mark.django_db
-def test_the_admin_api_refuses_a_pricing_edit_with_a_useful_error(card, db):
-    """RateCard.save() would raise anyway; the ViewSet turns that into a 409 that
-    says what to do instead."""
+def test_the_admin_api_turns_a_pricing_edit_into_a_new_version_request(card, db):
+    """RateCard.save() still refuses an in-place edit. Since module 8 the ViewSet does not
+    answer 409: a pricing edit becomes a REQUEST for a new version (202, `pricing.change`,
+    always a checker). The card in force is untouched until a checker approves."""
     from django.contrib.auth import get_user_model
     from rest_framework.test import APIClient
 
+    _with_policies()
     User = get_user_model()
     admin = User.objects.create_user(phone_number='+919700000902', role='admin')
     admin.is_staff = True
@@ -279,21 +292,23 @@ def test_the_admin_api_refuses_a_pricing_edit_with_a_useful_error(card, db):
     api = APIClient()
     api.force_authenticate(user=admin)
     resp = api.patch(f'/api/v1/pricing/admin/rate-cards/{card.pk}/',
-                     {'per_km_fare': '14.00'}, format='json')
+                     {'per_km_fare': '14.00', 'reason': 'Annual review'}, format='json')
 
-    assert resp.status_code == 409, resp.content
-    body = resp.json()
-    assert 'per_km_fare' in body['immutable_fields']
+    assert resp.status_code == 202, resp.content
+    assert resp.json()['data']['state'] == 'pending_approval'
     card.refresh_from_db()
     assert card.per_km_fare == Decimal('12.00')
+    assert RateCard.objects.filter(zone=card.zone, vehicle_type=card.vehicle_type).count() == 1
 
 
 @pytest.mark.django_db
-def test_the_admin_api_still_allows_retiring_a_card(card):
-    """Lifecycle edits must pass straight through."""
+def test_the_admin_api_retires_a_card_only_through_a_request_with_a_reason(card):
+    """Retiring a card is no longer a direct lifecycle edit: it needs a reason and a
+    checker (`pricing.change`). Editing notes alone still passes straight through."""
     from django.contrib.auth import get_user_model
     from rest_framework.test import APIClient
 
+    _with_policies()
     User = get_user_model()
     admin = User.objects.create_user(phone_number='+919700000903', role='admin')
     admin.is_staff = True
@@ -301,12 +316,20 @@ def test_the_admin_api_still_allows_retiring_a_card(card):
 
     api = APIClient()
     api.force_authenticate(user=admin)
-    resp = api.patch(f'/api/v1/pricing/admin/rate-cards/{card.pk}/',
-                     {'is_active': False}, format='json')
+    url = f'/api/v1/pricing/admin/rate-cards/{card.pk}/'
+    resp = api.patch(url, {'is_active': False}, format='json')
+    assert resp.status_code == 400 and resp.json()['error']['code'] == 'REASON_REQUIRED'
 
+    resp = api.patch(url, {'is_active': False, 'reason': 'Superseded by the new city card'},
+                     format='json')
+    assert resp.status_code == 202, resp.content
+    card.refresh_from_db()
+    assert card.is_active is True                   # nothing changes until a checker approves
+
+    resp = api.patch(url, {'notes': 'checked'}, format='json')
     assert resp.status_code == 200, resp.content
     card.refresh_from_db()
-    assert card.is_active is False
+    assert card.notes == 'checked'
 
 
 @pytest.mark.django_db

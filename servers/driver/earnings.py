@@ -74,6 +74,10 @@ class EarningRow:
     rider_name: str
     # True when the driver physically holds the fare and owes the commission.
     driver_holds_cash: bool
+    # The percent the settlement APPLIED (TripSettlement.commission_percent: the
+    # trip's booking-time snapshot). None only for a ledger row with no settlement
+    # row. The fee rule (AUDIT 27.43): what is shown is what was charged.
+    commission_percent: Optional[Decimal] = None
 
     def to_api(self):
         """The shape the driver app already parses, with nothing removed."""
@@ -89,6 +93,7 @@ class EarningRow:
             'method': self.method,
             'user_name': self.rider_name,
             'cash_in_hand': self.driver_holds_cash,
+            'commission_percent': _s(self.commission_percent),
         }
 
 
@@ -145,12 +150,23 @@ def settlement_rows(driver, since=None, until=None, limit=None):
         .filter(id__in=trip_ids)
         .select_related('user_id')
     }
+    # The percent each settlement applied: the highest version per trip is the
+    # current one. One query, however many trips.
+    from servers.payments.models import TripSettlement
+
+    percents = {}
+    for trip_pk, _version, pct in (TripSettlement.objects.filter(trip_id__in=trip_ids)
+                                  .order_by('trip_id', 'version')
+                                  .values_list('trip_id', 'version', 'commission_percent')):
+        percents[trip_pk] = pct
 
     rows = []
     for entry in ledger:
         trip_id = _trip_id_from_reference(entry.reference_id)
         trip = trips.get(trip_id)
-        rows.append(_row_for(entry, trip, trip_id))
+        row = _row_for(entry, trip, trip_id)
+        row.commission_percent = percents.get(trip_id)
+        rows.append(row)
     return rows
 
 
@@ -240,4 +256,9 @@ def summarise(rows):
         # No gross means no rate to report. Zero is the honest answer here
         # precisely because a hardcoded 20 was the old bug.
         totals['effective_commission_percent'] = Decimal('0.00')
+    # The percent the settlements applied, when they all applied the same one;
+    # None when they differ (a rule changed between trips) or none is known.
+    applied = {r.commission_percent for r in rows if r.commission_percent is not None}
+    totals['settled_commission_percent'] = applied.pop() if len(applied) == 1 else None
+    totals['settled_commission_percents'] = sorted(applied) if len(applied) > 1 else None
     return totals

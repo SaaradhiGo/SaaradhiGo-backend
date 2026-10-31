@@ -242,7 +242,14 @@ def driver_earnings_summary(request):
         'total_trips': totals['total_trips'],
         'today_earned': str(today['total_gross']),
         'today_trips': today['total_trips'],
-        'commission_percent': str(totals['effective_commission_percent']),
+        # THE FEE RULE (AUDIT 27.43): the percent the settlements applied, from the
+        # settlement rows themselves. When trips were settled at different rates it
+        # is the effective rate and `commission_percent_mixed` says so.
+        'commission_percent': str(
+            totals['settled_commission_percent']
+            if totals['settled_commission_percent'] is not None
+            else totals['effective_commission_percent']),
+        'commission_percent_mixed': totals['settled_commission_percents'] is not None,
         'wallet_balance': str(wallet_balance),
         # Additions. `cash_collected` is the number a driver reconciles against
         # at the end of a shift; the wallet balance goes negative by the

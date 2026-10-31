@@ -101,7 +101,7 @@ class Command(BaseCommand):
             zone, _ = ServiceZone.objects.get_or_create(
                 code='IN-TG-HYD-LOAD',
                 defaults={
-                    'name': 'Hyderabad load', 'zone_type': 'city',
+                    'name': 'Hyderabad load', 'zone_type': 'city', 'country': 'IN',
                     'city': 'Hyderabad', 'polygon_geojson': POLYGON,
                     'priority': 10, 'is_active': True,
                 },
@@ -111,9 +111,15 @@ class Command(BaseCommand):
                 defaults={
                     'base_fare': Decimal('30'), 'per_km_fare': Decimal('12'),
                     'per_min_fare': Decimal('2'), 'min_fare': Decimal('50'),
-                    'commission_percent': Decimal('20.00'),
                 },
             )
+            # Trips here are settled, and settlement needs a commission rule (module 8:
+            # no default). Create-if-missing, country level, the owner's 15%.
+            from servers.pricing.commission_models import ACTIVE, CommissionRule
+            if not CommissionRule.objects.filter(country='IN', status=ACTIVE).exists():
+                CommissionRule.objects.create(
+                    country='IN', percent=Decimal('15.00'), status=ACTIVE,
+                    reason='load fixtures: owner 15% default')
 
             riders = []
             for i in range(n_riders):

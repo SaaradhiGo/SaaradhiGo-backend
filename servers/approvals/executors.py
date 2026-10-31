@@ -122,11 +122,16 @@ def execute_payout(request):
         )
 
     # Outside every lock, exactly as the endpoint did before.
-    triggered, failed = [], []
+    triggered, failed, held = [], [], []
     for withdrawal in approved:
         try:
             trigger_payout_creation(withdrawal)
-            triggered.append(withdrawal.id)
+            # No rail for the currency: the trigger parked it (payout_status
+            # awaiting_rail) without a gateway call. Held, not failed.
+            if withdrawal.payout_status == 'awaiting_rail':
+                held.append(withdrawal.id)
+            else:
+                triggered.append(withdrawal.id)
         except Exception as exc:  # noqa: BLE001 - the gateway hook owns retries
             logger.error('approvals: trigger_payout_creation failed for withdrawal %s: %s',
                          withdrawal.id, exc)
@@ -137,6 +142,7 @@ def execute_payout(request):
         'skipped_ids': skipped,
         'payout_triggered_ids': triggered,
         'payout_trigger_failed_ids': failed,
+        'payout_held_awaiting_rail_ids': held,
     }
 
 

@@ -596,6 +596,29 @@ class ReconciliationItem(models.Model):
         return f'ReconciliationItem {self.kind} {self.dedupe_key}'
 
 
+class DriverPayoutNotice(models.Model):
+    """OUTBOX: ask a driver to add payout details (the weekly run skipped them).
+
+    The Notifications module does not exist yet, so the row is real and the SEND is a
+    stub (`weekly_payout.deliver_payout_notice` logs and leaves it `queued`). Unique per
+    (run, driver): running the same week twice never queues a second notice.
+    """
+
+    run = models.ForeignKey('payments.PayoutRun', on_delete=models.CASCADE, related_name='notices')
+    driver = models.ForeignKey('driver.Driver', on_delete=models.CASCADE, related_name='payout_notices')
+    kind = models.CharField(max_length=32, default='add_payout_details')
+    status = models.CharField(max_length=10, default='queued', db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['run', 'driver'],
+                                               name='payout_notice_one_per_run_driver')]
+
+    def __str__(self):
+        return f'PayoutNotice run={self.run_id} driver={self.driver_id} {self.status}'
+
+
 class PayoutRun(models.Model):
     """One scheduled weekly payout run for a country: the idempotency record.
 
@@ -616,6 +639,9 @@ class PayoutRun(models.Model):
     outcome = models.CharField(max_length=24, default='opened')
     #: True when the per-run cap cut the list short (the rest waits a week).
     truncated = models.BooleanField(default=False)
+    #: Drivers the run SKIPPED, with why: `[{driver_id, reason, balance_minor}]`.
+    #: Today the only reason is `no_payout_handle` (no UPI / bank fund account).
+    skipped = models.JSONField(default=list, blank=True)
 
     class Meta:
         ordering = ['-week_start', 'country']

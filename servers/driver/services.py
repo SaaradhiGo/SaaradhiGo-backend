@@ -1368,6 +1368,18 @@ def trigger_payout_creation(withdrawal):
             return False
 
         # ---------------------------------------------------------
+        # NO RAIL FOR THIS CURRENCY: HOLD, DO NOT FAIL
+        # ---------------------------------------------------------
+        # A currency with no payout rail (there is no US rail yet) is not a failed
+        # payout and must not be refunded or sent: it waits as `awaiting_rail`
+        # and `payout_rails.release_awaiting_rail` sends it once a rail exists.
+        from servers.payments import payout_rails
+
+        if not payout_rails.has_rail(withdrawal.currency):
+            payout_rails.hold(withdrawal)
+            return False
+
+        # ---------------------------------------------------------
         # BANK PAYOUT SAFETY
         # ---------------------------------------------------------
         # Bank payout integration is not currently wired to Cashfree.

@@ -406,7 +406,7 @@ def test_reported_commission_does_not_follow_a_later_rate_card_change(rider, dri
 
     zone, _ = ServiceZone.objects.get_or_create(
         code='EARN-TEST',
-        defaults={'name': 'Earnings test', 'zone_type': 'city',
+        defaults={'name': 'Earnings test', 'zone_type': 'city', 'country': 'IN',
                   'state_code': 'TS', 'city': 'Hyderabad',
                   'polygon_geojson': {
                       'type': 'Polygon',
@@ -421,6 +421,10 @@ def test_reported_commission_does_not_follow_a_later_rate_card_change(rider, dri
         per_min_fare=Decimal('1.00'), min_fare=Decimal('1.00'),
         commission_percent=Decimal('91.00'), version=99, is_active=True,
     )
+    # ... and a new, absurd commission rule (module 8) taking over from now on.
+    from servers.pricing.commission_models import ACTIVE, CommissionRule
+    CommissionRule.objects.create(country='IN', geo_node=None, vehicle_type=None, version=2,
+                                  percent=Decimal('91.00'), status=ACTIVE, reason='absurd, after')
 
     after = summarise(settlement_rows(driver))
     assert after['total_commission'] == settled_commission, \

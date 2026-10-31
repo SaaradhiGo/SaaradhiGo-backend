@@ -54,7 +54,7 @@ def vehicle_type(db):
 @pytest.fixture
 def zone_with_card(db, vehicle_type):
     zone = ServiceZone.objects.create(
-        code='IN-TG-HYD-TEST', name='Hyderabad test', zone_type='city',
+        code='IN-TG-HYD-TEST', name='Hyderabad test', zone_type='city', country='IN',
         city='Hyderabad', polygon_geojson=HYD_POLYGON, priority=10,
     )
     RateCard.objects.create(
@@ -98,37 +98,36 @@ def completed_trip(db, auth_client_rider, auth_client_driver, zone_with_card, ve
 # ---------------------------------------------------------------------------
 
 @pytest.mark.django_db
-def test_commission_uses_zone_rate_card_not_settings(completed_trip, settings):
-    """The zone card says 22%; the global setting says something else.
+def test_commission_uses_the_commission_rule_not_the_rate_card(completed_trip):
+    """The zone's rate card still says 22%, but the commission is the rule (module 8).
 
-    Before the fix, `credit_driver_wallet` read
-    settings.PLATFORM_COMMISSION_PERCENT, which shipped defaulting to "0" —
-    so an unset env var meant the platform earned nothing on every ride and
-    the per-city commission on each RateCard was decorative.
+    Before module 8 `credit_driver_wallet` read RateCard.commission_percent, then a
+    PlatformSettings key, then an environment setting, then a literal 18. Now only the
+    layered CommissionRule model is read (the autouse default is the owner's 15%), so
+    the deprecated 22% on the card changes nothing.
     """
     from servers.driver.utils import credit_driver_wallet
 
-    settings.PLATFORM_COMMISSION_PERCENT = Decimal('5')  # deliberately wrong
     trip, _, driver = completed_trip
 
     credit_driver_wallet(trip)
 
     wallet = get_wallet(driver.user_id, Wallet.SCOPE_DRIVER)
     # Cash trip: the driver holds the fare, so they owe us the commission.
-    # 22% of 200.00 = 44.00 -> balance goes negative by the commission.
-    assert wallet.balance == Decimal('-44.00'), (
-        f'expected 22% zone commission (-44.00), got {wallet.balance}'
+    # 15% of 200.00 = 30.00 -> balance goes negative by the commission.
+    assert wallet.balance == Decimal('-30.00'), (
+        f'expected the 15% commission rule (-30.00), got {wallet.balance}'
     )
 
 
 @pytest.mark.django_db
-def test_commission_falls_back_to_settings_without_a_zone(
-    db, auth_client_rider, auth_client_driver, settings,
+def test_a_trip_with_no_zone_has_no_commission_rule_and_does_not_settle_at_a_guess(
+    db, auth_client_rider, auth_client_driver,
 ):
-    """A legacy trip with no zone still settles, at the configured rate."""
+    """No zone means no country, so no rule: the settlement raises, it never defaults."""
     from servers.driver.utils import credit_driver_wallet
+    from servers.pricing.commission import CommissionNotConfigured
 
-    settings.PLATFORM_COMMISSION_PERCENT = Decimal('10')
     _, rider_user = auth_client_rider
     _, driver_user = auth_client_driver
     status_obj, _ = TripStatus.objects.get_or_create(status_code='completed')
@@ -139,10 +138,11 @@ def test_commission_falls_back_to_settings_without_a_zone(
         final_fare=Decimal('100.00'), status_id=status_obj, payment_method='online',
     )
 
-    credit_driver_wallet(trip)
+    with pytest.raises(CommissionNotConfigured):
+        credit_driver_wallet(trip)
 
     wallet = get_wallet(driver_user.driver.user_id, Wallet.SCOPE_DRIVER)
-    assert wallet.balance == Decimal('90.00')  # 100 - 10%
+    assert wallet.balance == Decimal('0.00')
 
 
 # ---------------------------------------------------------------------------

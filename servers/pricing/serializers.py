@@ -70,7 +70,7 @@ class RateCardSerializer(serializers.ModelSerializer):
             'base_fare', 'per_km_fare', 'per_min_fare', 'min_fare',
             'night_surge_multiplier',
             'night_surge_start_hour', 'night_surge_end_hour',
-            'surge_cap_multiplier', 'commission_percent', 'gst_percent',
+            'surge_cap_multiplier', 'gst_percent',
             'effective_from', 'effective_to', 'version',
             'is_active', 'notes', 'created_at', 'updated_at',
         )

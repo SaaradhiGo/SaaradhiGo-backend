@@ -169,6 +169,13 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # transaction, and it opens a request a checker must approve; it
         # dispatches nothing itself.
         'payments.weekly_payout_run',
+        # Releases approved payouts held for want of a payout rail (module 8). Trigger:
+        # beat, hourly; a no-op while no currency that has held payouts has a rail.
+        # acks_late is safe: it selects approved rows marked awaiting_rail and hands each
+        # to trigger_payout_creation, which owns idempotency (a row with a gateway
+        # reference is never sent twice); the marker is not cleared first, so a worker
+        # lost mid-run leaves the row selectable and nothing is orphaned.
+        'payments.release_awaiting_rail',
         'pricing.fare_shadow_sweep',
         # No explicit name= on the decorator, unlike its siblings in the same
         # module, so Celery registers the full dotted path. Nothing references

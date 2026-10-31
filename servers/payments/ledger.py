@@ -81,6 +81,22 @@ ENTRY_KINDS = {
     'refund_failed_withdrawal': 'withdrawal_returned',
 }
 
+#: What a statement line is called, by wallet purpose. The console and the driver app show this text
+#: as-is, so a platform-funded line is never shown as a raw purpose code.
+PROMO_PAID_LABEL = 'Promo paid by SaaradhiGo'
+ENTRY_LABELS = {
+    'trip_earnings': 'Trip earnings (online trip)',
+    'trip_commission': 'Commission on a cash trip',
+    'platform_funded_trip_end': 'Trip ended by SaaradhiGo: earnings paid by SaaradhiGo',
+    'promo_discount_platform_funded': PROMO_PAID_LABEL,
+    'incentive_reward': 'Incentive reward',
+    'referral_reward': 'Referral reward',
+    'withdrawal': 'Withdrawal requested',
+    'refund_rejected_withdrawal': 'Withdrawal rejected (returned)',
+    'refund_failed_withdrawal': 'Payout failed (returned)',
+    'adjustment': 'Balance adjustment',
+}
+
 
 def counted(queryset):
     """Only the rows that are part of the balance."""
@@ -174,6 +190,7 @@ def entry_dicts(driver, in_range_rows, opening_minor, offset, limit):
             'at': txn.created_at,
             'kind': ENTRY_KINDS.get(txn.purpose, txn.purpose),
             'purpose': txn.purpose,
+            'label': ENTRY_LABELS.get(txn.purpose, txn.purpose),
             'direction': txn.txn_type,
             'amount_minor': signed,
             'currency': txn.currency,
@@ -188,7 +205,9 @@ def entry_dicts(driver, in_range_rows, opening_minor, offset, limit):
         if ref.startswith('TRIP_') and ref[5:].isdigit():
             entry['trip_id'] = int(ref[5:])
             s = settlements.get(entry['trip_id'])
-            if s is not None:
+            # Only the settlement line carries the fare breakdown; a promo or platform-funded
+            # credit on the same trip is its own line.
+            if s is not None and txn.purpose in ('trip_earnings', 'trip_commission'):
                 entry['settlement'] = {
                     'gross_fare_minor': s.gross_fare_minor,
                     'commission_percent': str(s.commission_percent),
@@ -197,6 +216,8 @@ def entry_dicts(driver, in_range_rows, opening_minor, offset, limit):
                     'payment_method': s.payment_method,
                     'version': s.version,
                 }
+        if txn.purpose in ('promo_discount_platform_funded', 'platform_funded_trip_end'):
+            entry['funded_by'] = 'platform'
         if txn.purpose in ('incentive_reward', 'referral_reward'):
             # Paid in the weekly payout, no commission; tax is go-live blocker 15, so nothing is
             # computed or withheld here and the line says so.

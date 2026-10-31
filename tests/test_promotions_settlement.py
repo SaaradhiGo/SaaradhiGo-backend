@@ -421,3 +421,57 @@ class TestAutoAppliedPromos:
         launch(world.mkt[0], promo_payload())
         result = apply_promo('WELCOME50', make_rider('A6', '91'), D('200.00'), zone=world.aus)
         assert not result.ok and result.reason == 'PROMO_WRONG_ZONE'
+
+
+class TestTheCashPromoIsItsOwnLine:
+    """Owner check (2026-10-31): on a cash trip the driver collects the discounted amount, SaaradhiGo
+    credits the discount, and both the ledger and the earnings screen show it as "Promo paid by
+    SaaradhiGo", separate from the trip's commission line."""
+
+    def test_the_statement_has_a_labelled_platform_funded_credit_next_to_the_commission(
+            self, world, promo):
+        driver = hyd_driver(world, 'L1')
+        trip, _ = book(world, make_rider('L1', '91'), driver, method='cash')
+        settle(trip)
+        maker, _ = world.finance
+        statement = get(maker, f'/api/v1/payments/admin/drivers/{driver.id}/ledger/')
+        rows = [e for e in statement['entries']['results'] if e['trip_id'] == trip.id]
+        by_purpose = {e['purpose']: e for e in rows}
+        assert set(by_purpose) == {'trip_commission', 'promo_discount_platform_funded'}
+        commission, promo_line = by_purpose['trip_commission'], by_purpose['promo_discount_platform_funded']
+        assert (commission['amount_minor'], commission['label']) == (-3_000, 'Commission on a cash trip')
+        assert (promo_line['amount_minor'], promo_line['label'], promo_line['funded_by']) == (
+            5_000, 'Promo paid by SaaradhiGo', 'platform')
+        assert 'settlement' in commission and 'settlement' not in promo_line
+        assert statement['unexplained_minor'] == 0
+
+    def test_the_driver_earnings_row_and_summary_name_the_promo(self, world, promo):
+        from rest_framework.test import APIClient
+
+        driver = hyd_driver(world, 'L2')
+        trip, _ = book(world, make_rider('L2', '91'), driver, method='cash')
+        settle(trip)
+        api = APIClient()
+        api.force_authenticate(user=driver.user_id)
+
+        row = api.get('/api/v1/driver/earnings/').json()['data']['results'][0]
+        assert (row['amount'], row['commission'], row['net_amount']) == ('200.00', '30.00', '170.00')
+        assert (row['cash_to_collect'], row['promo_paid_by_platform'], row['promo_paid_label'],
+                row['promo_credited_to_wallet']) == ('150.00', '50.00', 'Promo paid by SaaradhiGo', True)
+
+        summary = api.get('/api/v1/driver/earnings/summary/').json()['data']
+        assert (summary['total_earned'], summary['total_commission'], summary['total_net']) == (
+            '200.00', '30.00', '170.00')
+        assert (summary['cash_collected'], summary['promo_paid_by_platform']) == ('150.00', '50.00')
+        assert summary['promo_paid_label'] == 'Promo paid by SaaradhiGo'
+
+    def test_a_trip_without_a_promo_has_no_promo_line(self, world):
+        from rest_framework.test import APIClient
+
+        driver = hyd_driver(world, 'L3')
+        settle(completed_trip(world, make_rider('L3', '91'), driver, method='cash'))
+        api = APIClient()
+        api.force_authenticate(user=driver.user_id)
+        row = api.get('/api/v1/driver/earnings/').json()['data']['results'][0]
+        assert (row['promo_paid_by_platform'], row['promo_paid_label'],
+                row['promo_credited_to_wallet']) == (None, None, False)

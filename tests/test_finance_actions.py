@@ -1232,6 +1232,7 @@ US_ROWS = {
     'notification.campaign_send': ('always', '', None),
     'promotion.launch': ('always', '', None),
     'promotion.budget_increase': ('always', '', None),
+    'fraud.rule_change': ('always', '', None),
 }
 
 

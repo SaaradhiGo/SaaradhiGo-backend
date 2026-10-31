@@ -214,6 +214,14 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # left unpaid for want of budget. Every step is a conditional update or keyed by a unique
         # ledger key, so a redelivered run converges. No retry needed: the next run is the retry.
         'promotions.sweep',
+        # Fraud & Risk (module 13). Beat, every 15 minutes: evaluates the enabled detection rules
+        # over their bounded recent windows and raises or extends flags. acks_late is safe: a hit
+        # that adds no new trip, campaign or account id changes nothing (the flag already carries
+        # it), a database constraint allows one active flag per (rule, subject), and the high-flag
+        # alert is rate-limited per city, so a redelivered or doubled run converges. Writes flags,
+        # their timeline lines and Command Centre alerts only; no trip, fare, money, account
+        # status or notification. No retry needed: the next run is the retry.
+        'fraud.run_rules',
         'pricing.fare_shadow_sweep',
         # No explicit name= on the decorator, unlike its siblings in the same
         # module, so Celery registers the full dotted path. Nothing references

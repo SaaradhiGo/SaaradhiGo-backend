@@ -92,8 +92,12 @@ PERMISSIONS = {
     'promo.read': 'View promotion, incentive and referral campaigns, budgets and redemptions',
     'promo.write': 'Draft and submit rider promos and rider referral campaigns',
     'incentive.write': 'Draft and submit driver incentives and driver referral campaigns',
-    # Fraud & Risk (module 13 extends this): the read-only flag list the Promotions screen shows.
-    'fraud.read': 'View fraud flags (read-only)',
+    # Fraud & Risk (module 13). Read is the queue, the evidence and the rules (Marketing and City
+    # Ops; Finance and Analyst do not hold it). Review assigns, notes, dismisses and confirms a
+    # flag within scope (City Ops and Super Admin; Marketing stays read-only). Rules changes the
+    # detection thresholds, always through a checker (Super Admin only).
+    'fraud.read': 'View fraud flags and detection rules (read-only)',
+    'fraud.rules': 'Change fraud detection rule thresholds (through a checker)',
     'notify.send': 'Send campaigns to riders or drivers',
     # Notifications (module 11). Read is the delivery log and the templates (Support uses it to
     # answer "did the rider get the message?"); template and campaign are the two ways to
@@ -109,7 +113,7 @@ PERMISSIONS = {
     # Super Admin only by default: the timers, thresholds and emergency
     # numbers that decide when an SOS escalates and what detection raises.
     'safety.config': 'Change the per-country safety timers, thresholds and numbers',
-    'fraud.review': 'Review and action fraud flags',
+    'fraud.review': 'Assign, note, dismiss and confirm fraud flags',
 
     # Running the platform itself
     'admin.manage': 'Create admins, roles and assignments',
@@ -150,7 +154,7 @@ ROLE_TEMPLATES = [
             'driver.write', 'support.read', 'report.read', 'zone.read',
             'zone.write', 'pii.view',
             # Driver incentives and driver referrals (module 12); rider promos are Marketing's.
-            'promo.read', 'incentive.write', 'fraud.read',
+            'promo.read', 'incentive.write', 'fraud.read', 'fraud.review',
             # Drafts and submits commission and fare-card changes; a different
             # admin must approve (pricing.change is always a checker).
             'pricing.write',

@@ -239,6 +239,10 @@ class TestBlocks:
         flag = RiskFlag.objects.get(kind='referral_abuse', source_ref=f'referral:{referral.pk}')
         assert flag.status == 'open' and flag.subject_id == referrer.id
         assert flag.evidence['signals'] == [signal]
+        # Module 13: the flag carries its rule, a severity and a score, and a timeline line.
+        assert flag.rule_key == 'referral_abuse' and flag.score > 0
+        assert flag.severity == ('medium' if signal == 'same_phone' else 'high')
+        assert flag.events.filter(action='raised').count() == 1
         assert flag.anchor_node is not None
 
     def test_the_same_phone_number(self, world, campaign):

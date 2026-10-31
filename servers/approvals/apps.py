@@ -17,3 +17,4 @@ class ApprovalsConfig(AppConfig):
         from servers.pricing import commission_workflow  # noqa: F401  (pricing.change)
         from servers.pricing import zone_workflow  # noqa: F401  (zone.change)
         from servers.notifications import campaign_workflow, template_workflow  # noqa: F401,E501  (module 11)
+        from servers.fraud import config as fraud_config  # noqa: F401  (fraud.rule_change)

@@ -100,6 +100,13 @@ FINANCE_ALERT_KINDS = frozenset({SETTLEMENT_NO_COMMISSION_RULE, FINANCE_PLATFORM
 #: is to say holders of `platform.settings`. It clears itself when the rate recovers, and can
 #: also be acknowledged by the same holders.
 NOTIFY_PROVIDER_FAILING = 'notify.provider_failing'
+#: Module 13 (Fraud & Risk): a new high-severity flag (warning, rate-limited to one per city per
+#: half hour) and open flags older than 48 hours piling up in a city (info). Seen by `fraud.read`
+#: holders in scope (and Super Admin) only, so Finance and Analyst never see them; taken by
+#: `fraud.review`. They carry a count and a city, never a person.
+FRAUD_FLAG_HIGH = 'fraud.flag_high'
+FRAUD_QUEUE_AGING = 'fraud.queue_aging'
+FRAUD_ALERT_KINDS = frozenset({FRAUD_FLAG_HIGH, FRAUD_QUEUE_AGING})
 #: Capabilities, besides `ACK_PERMISSION`'s, that may also acknowledge a kind.
 ACK_ALSO = {PROMOTION_BUDGET_EXHAUSTED: ('incentive.write',)}
 #: Kinds only Super Admin (`platform.settings`) sees.
@@ -108,6 +115,8 @@ ACK_PERMISSION = {
     NOTIFY_PROVIDER_FAILING: 'platform.settings',
     FINANCE_PLATFORM_FUNDED_END: 'finance.read',
     PROMOTION_BUDGET_OVERSHOOT: 'finance.read',
+    FRAUD_FLAG_HIGH: 'fraud.review',
+    FRAUD_QUEUE_AGING: 'fraud.review',
     # A budget alert is taken by whoever OWNS the campaign (Marketing: promo.write; City Ops:
     # incentive.write, see ACK_ALSO). promo.read would let a read-only Analyst take it.
     PROMOTION_BUDGET_EXHAUSTED: 'promo.write',

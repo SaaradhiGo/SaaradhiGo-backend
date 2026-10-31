@@ -312,6 +312,9 @@ def raise_fraud_flag(referral, signals):
                                        'severity': flag.severity})
         if flag.severity == 'high':
             transaction.on_commit(lambda: alert_high(flag.pk))
+        from servers.fraud.raising import hold_rewards
+
+        hold_rewards(flag)
     if _role(referral.referrer) == 'rider':
         from servers.rider.models import Rider, RiderFlag
 
@@ -454,6 +457,11 @@ def mine(user):
                 from_minor(int(cfg.get('referee_reward_minor') or 0), campaign.currency),
                 campaign.currency),
         }
+    from servers.fraud.models import RewardHold
+
+    held_keys = set(RewardHold.objects.filter(
+        user=user, status=RewardHold.HELD, kind=REFERRAL_REWARD).values_list(
+        'ledger_entry__idempotency_key', flat=True))
     for r in (Referral.objects.filter(referrer=user).select_related('referee', 'campaign')
               .order_by('-created_at')[:100]):
         required = int((r.campaign.config or {}).get('required_trips') or 0)
@@ -463,6 +471,9 @@ def mine(user):
             'reward_minor': r.referrer_reward_minor, 'currency': r.campaign.currency,
             # A blocked reward says only that it is under review, never why.
             'note': 'under review' if r.status == BLOCKED else '',
+            # A reward held for review reads "pending review", never why (additive).
+            'reward_status': ('pending_review' if f'referral:{r.pk}:referrer' in held_keys
+                              else None),
             'joined_at': r.created_at.isoformat()})
     attached = Referral.objects.filter(referee=user).select_related('campaign').first()
     if attached is not None:

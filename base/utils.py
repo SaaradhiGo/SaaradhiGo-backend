@@ -287,7 +287,10 @@ def wallet_payment(user, amount, purpose='Trip payment', reference_id=None, idem
             
             from base.money import to_minor
             amount_minor = to_minor(amount_val, wallet.currency)
-            if wallet.balance_minor < amount_minor:
+            from servers.fraud.money import held_minor
+
+            # A reward pending review (AUDIT 27.56) is in the wallet but not spendable.
+            if wallet.balance_minor - held_minor(user, wallet.currency) < amount_minor:
                 return {'success': False, 'error': 'Insufficient wallet balance'}
             
             wallet.balance_minor = wallet.balance_minor - amount_minor

@@ -664,10 +664,13 @@ def finance_driver_ledger(request, driver_id):
     entries = ledger.entry_dicts(driver, rows, statement['opening_minor'], (page - 1) * size, size)
     memo = ledger.memo_lines(driver, statement['currency'], start, end)[:200]
     base.update(statement)
+    from servers.fraud.money import ledger_extras
+
     base.update({
         'has_wallet': True,
         'entries': {'count': count, 'page': page, 'page_size': size, 'results': entries},
         'memo': memo,
+        **ledger_extras(driver),
     })
     return success_response(base, status.HTTP_200_OK)
 
@@ -751,8 +754,29 @@ def platform_funded_ends(user, node, limit=100):
             'driver_earnings_minor': trip.platform_funded_minor or 0,
             'currency': trip.currency or '',
         })
+    # The per-trip regulatory fee the platform owes on these trips (the rider was charged 0): a
+    # platform expense on no wallet. US accountant to confirm (go-live blocker #15).
+    from .models import PlatformExpense
+
+    from collections import defaultdict as _dd
+
+    trip_ids = list(qs.order_by().values_list('id', flat=True))
+    fee_rows = list(PlatformExpense.objects.filter(
+        kind=PlatformExpense.REGULATORY_FEE, trip_id__in=trip_ids).order_by('-created_at', '-id'))
+    fee_totals = _dd(lambda: {'count': 0, 'amount_minor': 0})
+    for e in fee_rows:
+        fee_totals[e.currency]['count'] += 1
+        fee_totals[e.currency]['amount_minor'] += e.amount_minor
+    regulatory = {
+        'kind': PlatformExpense.REGULATORY_FEE,
+        'totals': [{'currency': c, **v} for c, v in sorted(fee_totals.items())],
+        'rows': [{'trip_id': e.trip_id, 'amount_minor': e.amount_minor, 'currency': e.currency}
+                 for e in fee_rows[:limit]],
+        'note': 'Booked as a platform expense; none of it is charged to the rider or taken '
+                'from a wallet. US accountant to confirm (go-live blocker 15).',
+    }
     return {'week_start': monday, 'count': sum(t['count'] for t in totals),
-            'totals': totals, 'rows': rows}
+            'totals': totals, 'rows': rows, 'regulatory_fee_expenses': regulatory}
 
 
 def skipped_in_latest_runs(user, node):
@@ -773,7 +797,11 @@ def skipped_in_latest_runs(user, node):
         visible = money_visible_to(user, Driver, node, queryset=Driver.objects.filter(id__in=ids))
         count = visible.count()
         if count:
-            out.append({'country': run.country, 'week_start': run.week_start, 'count': count})
+            visible_ids = set(visible.values_list('id', flat=True))
+            held = sum(1 for s in (run.skipped or [])
+                       if s.get('reason') == 'held' and s['driver_id'] in visible_ids)
+            out.append({'country': run.country, 'week_start': run.week_start, 'count': count,
+                        'held_count': held, 'no_handle_count': count - held})
     return sorted(out, key=lambda r: r['country'])
 
 

@@ -1808,6 +1808,18 @@ def switch_payment_method(request):
             status=status.HTTP_400_BAD_REQUEST
         )
     
+    # Online payment only (a rider restricted after a payment-abuse review).
+    if new_method == 'cash':
+        from servers.rider.models import (
+            CASH_NOT_AVAILABLE, CASH_NOT_AVAILABLE_MESSAGE, cash_disabled_for,
+        )
+
+        if cash_disabled_for(request.user):
+            return error_response(
+                code=CASH_NOT_AVAILABLE, message=CASH_NOT_AVAILABLE_MESSAGE,
+                field='new_method', issue='Cash is not available for this account',
+                status=status.HTTP_400_BAD_REQUEST)
+
     # Map UPI/wallet to online for backend
     if new_method in ('upi', 'wallet', 'online'):
         actual_method = 'online'

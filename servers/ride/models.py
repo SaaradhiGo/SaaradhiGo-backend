@@ -399,6 +399,13 @@ class FarePricing(CurrencyStampedModel, models.Model):
     gross_fare = MinorUnitsAmount('gross_fare_minor')
     discount_amount = MinorUnitsAmount('discount_amount_minor')
     rider_payable = MinorUnitsAmount('rider_payable_minor')
+    # An operator-end row in an ADDITIVE-tax market (the US): the charged fare split into the fare
+    # before tax, the tax, and the per-trip fee (all 0 when the rider was charged 0). NULL in an
+    # inclusive-tax market (India) and on every other snapshot. US accountant to confirm
+    # (go-live blocker #15).
+    pretax_fare_minor = models.BigIntegerField(null=True, blank=True)
+    tax_minor = models.BigIntegerField(null=True, blank=True)
+    per_trip_fee_minor = models.BigIntegerField(null=True, blank=True)
     promo = models.ForeignKey(
         'ride.PromoCode', on_delete=models.PROTECT, null=True, blank=True,
         related_name='fare_snapshots',

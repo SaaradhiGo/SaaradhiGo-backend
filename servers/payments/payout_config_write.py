@@ -13,7 +13,14 @@ from servers.payments.models import PayoutCountryConfig
 CONFIG_FIELDS = (
     'fee_percent', 'minimum_withdrawal_minor', 'stuck_payout_hours',
     'payout_schedule', 'payout_weekday',
+    # Fraud money actions (AUDIT 27.56): changed through the same finance.payout_config_change
+    # checker as every other payout setting.
+    'reward_hold_days', 'recovery_max_percent', 'payout_hold_max_days',
 )
+
+#: Defaults when a value is not sent (an older pending request, a seed that predates the fields).
+FRAUD_MONEY_DEFAULTS = {'reward_hold_days': 7, 'recovery_max_percent': 50,
+                        'payout_hold_max_days': 14}
 
 
 def values_of(config):
@@ -24,6 +31,9 @@ def values_of(config):
         'stuck_payout_hours': config.stuck_payout_hours,
         'payout_schedule': config.payout_schedule,
         'payout_weekday': config.payout_weekday,
+        'reward_hold_days': config.reward_hold_days,
+        'recovery_max_percent': config.recovery_max_percent,
+        'payout_hold_max_days': config.payout_hold_max_days,
     }
 
 
@@ -46,6 +56,9 @@ def write_config_version(country, values, *, reason, snapshot):
         previous.save(update_fields=['is_active', 'valid_to'])
         carry = {'instant_cashout_enabled': previous.instant_cashout_enabled,
                  'instant_cashout_fee_flat_minor': previous.instant_cashout_fee_flat_minor}
+        values = {**{k: getattr(previous, k) for k in FRAUD_MONEY_DEFAULTS}, **values}
+    else:
+        values = {**FRAUD_MONEY_DEFAULTS, **values}
     row = PayoutCountryConfig.objects.create(
         country=country, version=version, reason=(reason or '')[:10000],
         created_by_id=snapshot.get('actor_id'), created_by_label=snapshot.get('actor_label', ''),

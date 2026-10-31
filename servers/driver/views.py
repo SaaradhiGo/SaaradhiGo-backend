@@ -345,6 +345,17 @@ def driver_withdrawal_request(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    # A full payout hold (a suspended driver, serious fraud, a second admin, a maximum length):
+    # nothing is paid out meanwhile. Neutral wording: nothing about why.
+    from servers.fraud import money as fraud_money
+
+    if fraud_money.active_payout_hold(driver) is not None:
+        return error_response(
+            code='PAYOUT_ON_HOLD',
+            message='Your payouts are on hold right now. Please contact support.',
+            field='withdrawal', issue='Payouts on hold',
+            status=status.HTTP_400_BAD_REQUEST)
+
     # Validate block period
     if is_withdrawal_blocked(driver):
         from .services import get_withdrawal_block_remaining, format_block_remaining
@@ -393,8 +404,12 @@ def driver_withdrawal_request(request):
         # The locked balance is passed in rather than re-read: this
         # transaction holds SELECT FOR UPDATE on the wallet row, and the
         # amount validated must be the amount about to be debited.
+        # A reward pending review is part of the wallet but not of what can be withdrawn.
+        from base.money import from_minor as _from_minor
+        free_minor = max(0, wallet.balance_minor
+                         - fraud_money.held_minor(driver.user_id, wallet.currency))
         ok, reason = validate_withdrawal_amount(
-            driver, amount, available=wallet.balance,
+            driver, amount, available=_from_minor(free_minor, wallet.currency),
         )
         if not ok:
             return error_response(
@@ -412,6 +427,15 @@ def driver_withdrawal_request(request):
             amount=amount,
             status='pending',
         )
+        # A recovery Finance approved comes off this payout: at most `recovery_max_percent` of it,
+        # never below the country's minimum; the rest carries to the next payout.
+        gross_minor = withdrawal.amount_minor
+        deduct_minor, deduct_plan = fraud_money.plan_deduction(
+            driver, gross_minor, payout_config.minimum_withdrawal_minor,
+            payout_config.recovery_max_percent)
+        if deduct_minor:
+            withdrawal.amount_minor = gross_minor - deduct_minor
+            withdrawal.save(update_fields=['amount_minor'])
         fee_minor = withdrawal_fee(payout_config, withdrawal.amount_minor)
         if fee_minor >= withdrawal.amount_minor:
             transaction.set_rollback(True)
@@ -428,15 +452,18 @@ def driver_withdrawal_request(request):
         idempotency_key = f"withdrawal_{withdrawal.id}_{uuid.uuid4().hex[:16]}"
         WalletTransaction.objects.create(
             user_id=driver.user_id,
-            amount=amount,
+            amount_minor=withdrawal.amount_minor,
             txn_type='debit',
             status='pending',
             purpose='withdrawal',
             reference_id=f"withdrawal_{withdrawal.id}",
             idempotency_key=idempotency_key
         )
-        wallet.balance -= amount
+        wallet.balance_minor -= gross_minor
         wallet.save(update_fields=['balance_minor'])
+        if deduct_plan:
+            fraud_money.apply_deduction(driver, deduct_plan, withdrawal, gross_minor,
+                                        payout_config.recovery_max_percent)
 
     # Return created withdrawal
     from .serializers import WithdrawalRequestSerializer

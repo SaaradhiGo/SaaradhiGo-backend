@@ -106,9 +106,14 @@ NOTIFY_PROVIDER_FAILING = 'notify.provider_failing'
 #: `fraud.review`. They carry a count and a city, never a person.
 FRAUD_FLAG_HIGH = 'fraud.flag_high'
 FRAUD_QUEUE_AGING = 'fraud.queue_aging'
-FRAUD_ALERT_KINDS = frozenset({FRAUD_FLAG_HIGH, FRAUD_QUEUE_AGING})
+#: Fraud money actions (AUDIT 27.56): a payout hold reached its maximum duration and lapsed
+#: (warning). Seen by Finance (`finance.read`) AND the flag's reviewers (`fraud.read`), to renew it
+#: or leave the payout released. A city, never a person.
+FRAUD_PAYOUT_HOLD_EXPIRED = 'fraud.payout_hold_expired'
+FRAUD_ALERT_KINDS = frozenset({FRAUD_FLAG_HIGH, FRAUD_QUEUE_AGING, FRAUD_PAYOUT_HOLD_EXPIRED})
 #: Capabilities, besides `ACK_PERMISSION`'s, that may also acknowledge a kind.
-ACK_ALSO = {PROMOTION_BUDGET_EXHAUSTED: ('incentive.write',)}
+ACK_ALSO = {PROMOTION_BUDGET_EXHAUSTED: ('incentive.write',),
+            FRAUD_PAYOUT_HOLD_EXPIRED: ('finance.payout',)}
 #: Kinds only Super Admin (`platform.settings`) sees.
 PLATFORM_ALERT_KINDS = frozenset({NOTIFY_PROVIDER_FAILING})
 ACK_PERMISSION = {
@@ -117,6 +122,7 @@ ACK_PERMISSION = {
     PROMOTION_BUDGET_OVERSHOOT: 'finance.read',
     FRAUD_FLAG_HIGH: 'fraud.review',
     FRAUD_QUEUE_AGING: 'fraud.review',
+    FRAUD_PAYOUT_HOLD_EXPIRED: 'fraud.review',
     # A budget alert is taken by whoever OWNS the campaign (Marketing: promo.write; City Ops:
     # incentive.write, see ACK_ALSO). promo.read would let a read-only Analyst take it.
     PROMOTION_BUDGET_EXHAUSTED: 'promo.write',

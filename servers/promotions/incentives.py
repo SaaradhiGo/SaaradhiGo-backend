@@ -203,6 +203,9 @@ def _money(minor, currency):
 # What the driver app reads
 # ---------------------------------------------------------------------------
 
+INCENTIVE_REWARD_KIND = 'incentive_reward'
+
+
 def driver_view(driver, now=None):
     """Live (and the driver's recently completed) incentives with this driver's progress."""
     now = now or timezone.now()
@@ -211,6 +214,11 @@ def driver_view(driver, now=None):
                  .filter(state__in=(LIVE, 'exhausted', 'paused'))
                  .select_related('geo_node'))
     mine = {p.campaign_id: p for p in IncentiveProgress.objects.filter(driver=driver)}
+    from servers.fraud.models import RewardHold
+
+    held_campaigns = set(RewardHold.objects.filter(
+        user=driver.user_id, status=RewardHold.HELD, kind=INCENTIVE_REWARD_KIND).values_list(
+        'ledger_entry__campaign_id', flat=True))
     for campaign in campaigns:
         if not driver_in_place(campaign, driver):
             continue
@@ -230,6 +238,9 @@ def driver_view(driver, now=None):
             'filters': {k: cfg.get(k) for k in ('zone_code', 'hour_from', 'hour_to',
                                                 'vehicle_type') if cfg.get(k) not in (None, '')},
             'budget_used_up': status == UNFUNDED or campaign.state == 'exhausted',
+            # A reward held for review reads "pending review", never why (additive).
+            'reward_status': 'pending_review' if campaign.pk in held_campaigns else None,
+            'reward_status_label': 'Pending review' if campaign.pk in held_campaigns else None,
             'commission': 'none', 'tax': 'not configured',
         })
     return rows
@@ -253,4 +264,8 @@ def incentive_lines(driver):
     for row in rows:
         key = 'incentive_rewards' if row['purpose'] == 'incentive_reward' else 'referral_rewards'
         out[key] = str(from_minor(row['total'] or 0, row['currency']))
+    # AUDIT 27.56: a reward pending review, and a recovery of a reward, each its own neutral line.
+    from servers.fraud import money as fraud_money
+
+    out.update(fraud_money.driver_money_lines(driver))
     return out

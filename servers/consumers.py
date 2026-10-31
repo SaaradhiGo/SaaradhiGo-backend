@@ -654,6 +654,15 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             duration_min = data.get('duration_min')
             vehicle_type = data.get('vehicle_type')
             payment_method = data.get('payment_method', 'deferred')
+            # Online payment only (a rider restricted after a payment-abuse review): a booking
+            # that names cash is refused with a stable code and a neutral message.
+            if str(payment_method or '').lower() == 'cash' and await self._cash_disabled():
+                from servers.rider.models import CASH_NOT_AVAILABLE, CASH_NOT_AVAILABLE_MESSAGE
+                await self.send(text_data=json.dumps({
+                    'type': 'error', 'code': CASH_NOT_AVAILABLE,
+                    'message': CASH_NOT_AVAILABLE_MESSAGE,
+                }))
+                return
             # Idempotency key for this booking. Optional, so older clients are
             # unaffected; length-bounded because it reaches a CharField(64).
             client_request_id = data.get('client_request_id')
@@ -817,6 +826,11 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     def _may_request_rides(self):
         from servers.rider.eligibility import may_request_rides
         return may_request_rides(self.user)
+
+    @database_sync_to_async
+    def _cash_disabled(self):
+        from servers.rider.models import cash_disabled_for
+        return cash_disabled_for(self.user)
 
     @database_sync_to_async
     def _start_dispatch(self, trip_id, radius=None, reason='initial'):

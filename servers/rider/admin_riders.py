@@ -92,7 +92,7 @@ DEFAULT_SORT = '-id'
 #: Audit actions that change a rider's standing, shown as status history.
 STATUS_ACTIONS = (
     'rider_blocked', 'rider_unblocked', 'rider_flagged', 'rider_unflagged',
-    'rider_signed_out',
+    'rider_signed_out', 'rider_cash_disabled', 'rider_cash_enabled',
 )
 
 
@@ -502,6 +502,16 @@ def _flags(rider):
             .select_related('created_by').order_by('-created_at')]
 
 
+def _restrictions(rider):
+    """Active operator restrictions (today: online payment only), with who set it and when."""
+    from .models import RiderRestriction
+
+    return [{'id': r.id, 'kind': r.kind, 'label': r.get_kind_display(), 'reason': r.reason,
+             'set_at': _iso(r.set_at), 'set_by': _staff(r.set_by), 'flag_id': r.flag_id}
+            for r in RiderRestriction.objects.filter(rider=rider, cleared_at__isnull=True)
+            .select_related('set_by').order_by('-set_at')]
+
+
 def _audit_rows(rider, actions=None):
     from servers.admin_audit.models import AdminAuditLog
 
@@ -513,6 +523,12 @@ def _audit_rows(rider, actions=None):
         'reason': row.reason, 'after': row.after if actions else None,
         'created_by': {'id': row.actor_id, 'label': row.actor_label, 'role': row.actor_role},
     } for row in rows.order_by('-created_at', '-id')[:100]]
+
+
+def _has_restriction(rider):
+    from .models import RiderRestriction
+
+    return RiderRestriction.objects.filter(rider=rider, cleared_at__isnull=True).exists()
 
 
 def allowed_actions(user, rider, node):
@@ -531,6 +547,8 @@ def allowed_actions(user, rider, node):
         'flag': may_flag,
         'unflag': may_flag and RiderFlag.objects.filter(
             rider=rider, cleared_at__isnull=True).exists(),
+        # Clear the online-payment-only restriction (set from a payment-abuse review).
+        'clear_restriction': may_block and _has_restriction(rider),
         'sign_out': may('rider.signout'),
         # Closed-loop wallet credit through a checker (Finance module, Part B).
         'wallet_credit': may('finance.adjust'),
@@ -565,6 +583,7 @@ def admin_rider_detail(request, rider_id):
         'flagged': bool(rider.is_flagged),
         'block': _block(rider),
         'flags': _flags(rider),
+        'restrictions': _restrictions(rider),
         'wallet': _wallet(user),
         'trips': _trips(user),
         'tickets': _tickets(user),
@@ -929,3 +948,35 @@ def admin_bulk_riders(request):
     except approvals.ApprovalError as exc:
         return exc.response()
     return _approval_answer(outcome, {'count': len(ordered)})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('rider.block')])
+def admin_clear_restriction(request, rider_id):
+    """POST /rider/admin/<id>/restriction/clear/  {note}
+
+    Clears the online-payment-only restriction (`cash_disabled`). `rider.block` is the capability
+    that sets and clears every restriction on this page."""
+    from .models import RiderRestriction
+
+    rider, _node, refusal = _rider_for(request, rider_id, 'rider.block')
+    if refusal:
+        return refusal
+    try:
+        note = _text(request.data, 'note', required=True, limit=2000)
+    except BadInput as exc:
+        return exc.response()
+    with transaction.atomic():
+        _locked(rider.id)
+        rows = list(RiderRestriction.objects.select_for_update().filter(
+            rider=rider, kind=RiderRestriction.CASH_DISABLED, cleared_at__isnull=True))
+        for row in rows:
+            row.cleared_at, row.cleared_by, row.clear_note = timezone.now(), request.user, note
+            row.save(update_fields=['cleared_at', 'cleared_by', 'clear_note'])
+        if rows:
+            record_admin_action(request, action='rider_cash_enabled', target_type=TARGET,
+                                target_id=rider.user_id_id,
+                                before={'cash_disabled': True}, after={'cash_disabled': False},
+                                reason=note)
+    return success_response({'rider_id': rider.user_id_id, 'cleared': len(rows)},
+                            status.HTTP_200_OK)

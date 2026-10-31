@@ -340,6 +340,9 @@ def require_approval_or_execute(
     multi_key = action_for(action_key).multi_target_key
     if multi_key and (payload or {}).get(multi_key) is not None:
         needs_checker = True
+    force_key = action_for(action_key).force_checker_key
+    if force_key and (payload or {}).get(force_key):
+        needs_checker = True
     country = _check_country(country)
     if currency:
         currency = str(currency).upper().strip()

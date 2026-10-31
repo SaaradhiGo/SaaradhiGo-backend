@@ -9,10 +9,12 @@ finds the flag already decided and gets `409 ALREADY_DECIDED`.
 WHAT CONFIRMING DOES, AND DOES NOT
 ----------------------------------
 Confirming records the decision, and for a rider flag raised by a promotion rule keeps the Riders
-page in step (`RiderFlag('promo_abuse')` set or cleared with the same note). Nothing else. It does
-not suspend, hold, claw back, adjust or notify. The hand-offs below are LINKS to actions that
-already exist in other modules, each behind its own capability, scope and maker-checker; taking one
-only records that the reviewer chose it.
+page in step (`RiderFlag('promo_abuse')` set or cleared with the same note). It does not suspend,
+claw back, adjust, hold a payout or notify. The only money it touches is a REWARD HOLD (owner
+ruling a, AUDIT 27.56): a dismissal releases it, a confirmation keeps it for Finance's recovery
+only for promo abuse, collusion and multiple accounts (see `money.on_decision`). The hand-offs below
+are LINKS to actions that already exist in other modules, each behind its own capability, scope and
+maker-checker; taking one only records that the reviewer chose it.
 """
 
 from django.db import transaction
@@ -181,8 +183,14 @@ def decide(flag_id, actor, decision, reason_code, note, request=None):
         _event(flag, EV_CONFIRMED if decision == CONFIRMED else EV_DISMISSED, actor,
                from_status=was, to_status=decision, reason=reason_code, note=note)
         synced = sync_rider_flag(flag, actor, decision, note)
+        # Ruling (a): a dismissal releases the held reward at once; a confirmation keeps it for
+        # Finance only under a reason that recovers rewards, else releases it. Nothing is
+        # forfeited, held back from trip earnings, or paid here.
+        from . import money
+
+        rewards = money.on_decision(flag, decision)
         _audit(request, f'fraud_flag_{decision}', flag, before,
-               {**_state(flag), 'rider_flag': synced}, reason=note)
+               {**_state(flag), 'rider_flag': synced, 'reward_holds': rewards}, reason=note)
     return flag
 
 
@@ -211,6 +219,9 @@ def reopen(flag_id, actor, reason_code, note, request=None):
         _event(flag, EV_REOPENED, actor, from_status=was, to_status=OPEN, reason=reason_code,
                note=note)
         _audit(request, 'fraud_flag_reopened', flag, before, _state(flag), reason=note)
+        from .raising import hold_rewards
+
+        hold_rewards(flag)
     return flag
 
 

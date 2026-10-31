@@ -59,6 +59,9 @@ DRIVER_LEDGER_PURPOSES = (
     # discount the rider did not hand over; a driver incentive reward; a driver referral reward.
     # All credits, none carrying commission; each is its own line in the statement.
     'promo_discount_platform_funded', 'incentive_reward', 'referral_reward',
+    # Fraud money actions (AUDIT 27.56): a debit taking back an approved reward recovery. Named
+    # for what it is to the driver ("Recovery of reward (reviewed)"), never with a fraud word.
+    'reward_recovery',
 )
 
 #: `model label -> ORM lookup(s) reaching GeoNode.path`. One table, so a view

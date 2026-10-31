@@ -337,7 +337,11 @@ def get_wallet_balance(request):
     
     try:
         wallet = Wallet.objects.get(user_id=request.user, scope=Wallet.SCOPE_RIDER)
-        return success_response({'balance': str(wallet.balance)}, status.HTTP_200_OK)
+        from servers.fraud.money import pending_review_lines
+
+        # Additive: a reward pending review is in the balance but not spendable yet.
+        return success_response({'balance': str(wallet.balance),
+                                 **pending_review_lines(request.user)}, status.HTTP_200_OK)
     except Wallet.DoesNotExist:
         # Create wallet if not exists
         wallet = Wallet.objects.create(
@@ -437,7 +441,10 @@ def wallet_payment(request):
             # Check balance with lock
             from base.money import to_minor
             amount_minor = to_minor(amount_val, wallet.currency)
-            if wallet.balance_minor < amount_minor:
+            from servers.fraud.money import held_minor
+
+            # A reward pending review (AUDIT 27.56) is in the wallet but not spendable.
+            if wallet.balance_minor - held_minor(request.user, wallet.currency) < amount_minor:
                 return error_response(
                     code='INSUFFICIENT_BALANCE',
                     message='Insufficient wallet balance',

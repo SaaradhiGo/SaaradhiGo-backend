@@ -62,6 +62,9 @@ SYSTEM_LABEL = 'system:weekly_payout'
 REASON = 'scheduled weekly payout'
 SKIPPED_KIND = 'payout_run_skipped'
 SKIP_NO_HANDLE = 'no_payout_handle'
+#: A suspended driver whose payouts are on hold (serious fraud, a second admin approved, a maximum
+#: duration): skipped and listed for Finance. AUDIT 27.56.
+SKIP_HELD = 'held'
 MAX_DRIVERS_PER_RUN = 2000
 OPEN_STATUSES = ('pending', 'approved', 'processed', 'unresolved')
 
@@ -168,17 +171,30 @@ def _create_one(driver, config):
 
     from .payout_config import driver_payout_country, withdrawal_fee
 
+    from servers.fraud import money as fraud_money
+
+    floor = max(1, config.minimum_withdrawal_minor)
     with transaction.atomic():
         wallet = (Wallet.objects.select_for_update()
                   .filter(user_id=driver.user_id_id, scope=Wallet.SCOPE_DRIVER,
                           currency=config.currency).first())
-        if wallet is None or wallet.balance_minor < max(1, config.minimum_withdrawal_minor):
+        if wallet is None or wallet.balance_minor < floor:
             return None
         if driver_payout_country(driver) != config.country:
             return None
         if WithdrawalRequest.objects.filter(driver=driver, status__in=OPEN_STATUSES).exists():
             return None
-        amount = wallet.balance_minor
+        if fraud_money.active_payout_hold(driver) is not None:
+            return None
+        # A reward pending review stays in the wallet: it is not part of this payout.
+        gross = wallet.balance_minor - fraud_money.held_minor(driver.user_id, config.currency)
+        if gross < floor:
+            return None
+        # A recovery Finance approved comes off this payout, at most `recovery_max_percent` of it,
+        # never so much that the payout falls below the minimum; the rest carries over.
+        percent = config.recovery_max_percent
+        deduct, plan = fraud_money.plan_deduction(driver, gross, floor, percent)
+        amount = gross - deduct
         fee = withdrawal_fee(config, amount)
         if fee >= amount:
             return None
@@ -190,13 +206,16 @@ def _create_one(driver, config):
             txn_type='debit', status='pending', purpose='withdrawal',
             reference_id=f'withdrawal_{withdrawal.id}',
             idempotency_key=f'withdrawal_{withdrawal.id}_{uuid.uuid4().hex[:16]}')
-        wallet.balance_minor -= amount
+        wallet.balance_minor -= gross
         wallet.save(update_fields=['balance_minor'])
+        if plan:
+            fraud_money.apply_deduction(driver, plan, withdrawal, gross, percent)
         record_admin_action(
             None, action='withdrawal_scheduled_created', target_type='withdrawal_request',
             target_id=withdrawal.id,
             after={'amount_minor': amount, 'currency': config.currency, 'fee_minor': fee,
-                   'driver_id': driver.id, 'origin': 'scheduled'},
+                   'driver_id': driver.id, 'origin': 'scheduled',
+                   'recovery_deducted_minor': deduct, 'payout_gross_minor': gross},
             reason=REASON)
     return withdrawal
 
@@ -234,7 +253,12 @@ def run_country(config, now=None):
             skipped = []
             skipped_drivers = []
             payable = []
+            from servers.fraud import money as fraud_money
+
             for d in candidates:
+                if fraud_money.active_payout_hold(d, now) is not None:
+                    skipped.append({'driver_id': d.id, 'reason': SKIP_HELD})
+                    continue
                 if needs_handle and not has_payout_handle(d):
                     skipped.append({'driver_id': d.id, 'reason': SKIP_NO_HANDLE})
                     skipped_drivers.append(d)
@@ -268,10 +292,12 @@ def run_country(config, now=None):
                 after={'country': country, 'week_start': str(week), 'withdrawals': len(created),
                        'amount_minor': run.amount_minor, 'currency': config.currency,
                        'approval_request_id': run.approval_request_id, 'outcome': run.outcome,
-                       'truncated': truncated, 'skipped_no_handle': len(skipped)},
+                       'truncated': truncated, 'skipped_no_handle': len(skipped_drivers),
+                       'skipped_held': len(skipped) - len(skipped_drivers)},
                 reason=REASON)
-            if skipped:
-                _notify_skipped(run, config, skipped, skipped_drivers)
+            if skipped_drivers:
+                _notify_skipped(run, config, [s for s in skipped if s['reason'] == SKIP_NO_HANDLE],
+                                skipped_drivers)
                 _queue_driver_notices(run, skipped_drivers)
     except IntegrityError:
         # Another worker created this week's run between our check and our insert.
@@ -279,7 +305,10 @@ def run_country(config, now=None):
     return {'country': country, 'ran': True, 'week_start': str(week),
             'withdrawals': run.withdrawal_count, 'outcome': run.outcome,
             'approval_request_id': run.approval_request_id,
-            'skipped_no_handle': [s['driver_id'] for s in run.skipped]}
+            'skipped_no_handle': [s['driver_id'] for s in run.skipped
+                                  if s.get('reason') == SKIP_NO_HANDLE],
+            'skipped_held': [s['driver_id'] for s in run.skipped
+                             if s.get('reason') == SKIP_HELD]}
 
 
 def run_weekly_payouts(now=None):

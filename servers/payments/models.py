@@ -413,6 +413,14 @@ class PayoutCountryConfig(models.Model):
     instant_cashout_enabled = models.BooleanField(default=False)
     instant_cashout_fee_flat_minor = models.BigIntegerField(null=True, blank=True)
 
+    # --- fraud money actions (owner rulings 2026-10-31, AUDIT 27.56) ---------
+    #: Days an unpaid reward linked to an undecided fraud flag stays "pending review".
+    reward_hold_days = models.PositiveSmallIntegerField(default=7)
+    #: The most one single payout is reduced by a recovery of an approved reward clawback.
+    recovery_max_percent = models.PositiveSmallIntegerField(default=50)
+    #: The longest a full payout hold (with a suspension) lasts before it must be renewed.
+    payout_hold_max_days = models.PositiveSmallIntegerField(default=14)
+
     is_active = models.BooleanField(default=True)
     version = models.PositiveIntegerField(default=1)
     valid_from = models.DateTimeField(default=timezone.now, editable=False)
@@ -476,6 +484,9 @@ class PayoutCountryConfig(models.Model):
             'stuck_payout_hours': self.stuck_payout_hours,
             'payout_schedule': self.payout_schedule,
             'payout_weekday': self.payout_weekday,
+            'reward_hold_days': self.reward_hold_days,
+            'recovery_max_percent': self.recovery_max_percent,
+            'payout_hold_max_days': self.payout_hold_max_days,
             'instant_cashout_enabled': self.instant_cashout_enabled,
             'instant_cashout_fee_flat_minor': self.instant_cashout_fee_flat_minor,
             'is_active': self.is_active,
@@ -652,3 +663,33 @@ class PayoutRun(models.Model):
 
     def __str__(self):
         return f'PayoutRun {self.country} {self.week_start}'
+
+
+class PlatformExpense(models.Model):
+    """Money the PLATFORM owes that belongs on no driver and no rider wallet.
+
+    Today one kind: `platform_regulatory_fee_expense`, the per-trip regulatory fee on a trip an
+    operator ended under the platform-funded rule (the rider was charged 0, so none of it is
+    charged to the rider). Shown in the Finance overview's platform-funded section. One row per
+    (kind, trip). US accountant to confirm (go-live blocker #15).
+    """
+
+    REGULATORY_FEE = 'platform_regulatory_fee_expense'
+    KIND_CHOICES = [(REGULATORY_FEE, 'Per-trip regulatory fee (platform expense)')]
+
+    kind = models.CharField(max_length=40, choices=KIND_CHOICES, db_index=True)
+    trip_id = models.BigIntegerField(null=True, blank=True, db_index=True)
+    amount_minor = models.BigIntegerField()
+    currency = models.CharField(max_length=3, db_index=True)
+    zone_code = models.CharField(max_length=64, blank=True, default='')
+    note = models.CharField(max_length=300, blank=True, default='')
+    idempotency_key = models.CharField(max_length=100, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [models.CheckConstraint(condition=models.Q(amount_minor__gt=0),
+                                              name='platformexpense_amount_positive')]
+
+    def __str__(self):
+        return f'{self.kind} {self.amount_minor} {self.currency} trip={self.trip_id}'

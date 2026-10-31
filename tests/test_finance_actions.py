@@ -1228,6 +1228,8 @@ US_ROWS = {
     'pricing.change': ('always', '', None), 'driver.deactivate': ('always', '', None),
     'support.sla_change': ('always', '', None), 'finance.payout_config_change': ('always', '', None),
     'zone.change': ('always', '', None),
+    'notification.template_change': ('always', '', None),
+    'notification.campaign_send': ('always', '', None),
 }
 
 

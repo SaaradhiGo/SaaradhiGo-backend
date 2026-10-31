@@ -71,6 +71,15 @@ SCOPE_PATHS = {
     # A supply sample belongs to the city its drivers were in (module 10).
     'live_ops.SupplySample': 'city__path',
 
+    # Notifications (module 11). A delivery-log row is anchored at the RECIPIENT's city (a
+    # driver's home city; a rider's home or last-trip city; else their country), stamped when
+    # the message is queued. A template belongs to its country node (a blank node is an
+    # all-countries template, visible to every holder). A campaign is anchored at the single
+    # city its audience names, else the country.
+    'notifications.NotificationMessage': 'city__path',
+    'notifications.NotificationTemplate': 'geo_node__path',
+    'notifications.Campaign': 'geo_node__path',
+
     # A commission rule is anchored at the country or city node it applies to.
     'pricing.CommissionRule': 'geo_node__path',
 
@@ -127,6 +136,8 @@ GLOBAL_BY_DESIGN = {
 #: Officer rather than only Global, or it reaches nobody on shift.
 UNSCOPED_UNION = {
     'sos.SOSEvent': Q(anchor_source='unanchored'),
+    # A template with no country node is the all-countries copy: every holder may read it.
+    'notifications.NotificationTemplate': Q(geo_node__isnull=True),
 }
 
 

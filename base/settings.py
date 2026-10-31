@@ -79,6 +79,8 @@ INSTALLED_APPS = [
     'servers.safety',
     # Live Ops map (module 10): scoped driver dots, active trips, demand and supply.
     'servers.live_ops',
+    # Notifications (module 11): templates, outbox dispatcher, provider adapters, campaigns.
+    'servers.notifications',
     # Console search: trip id, phone, plate, name -- indexed and scoped.
     'servers.search',
     # Operator MFA. django-otp is the established Django implementation: TOTP
@@ -448,6 +450,18 @@ CELERY_BEAT_SCHEDULE = {
         # request. Idempotent per country per week; a no-op for every other hour.
         'task': 'payments.weekly_payout_run',
         'schedule': _crontab(minute=5),
+    },
+    'notifications-dispatch-queued-every-minute': {
+        # Backstop for the outbox: sends queued rows whose hold (quiet hours, backoff)
+        # has passed, requeues rows stuck mid-send, drains DriverNotice / DriverPayoutNotice
+        # outboxes and starts due campaigns. A no-op with nothing queued.
+        'task': 'notifications.dispatch_queued',
+        'schedule': _crontab(minute='*'),
+    },
+    'notifications-provider-health-every-5-min': {
+        # Raises (and clears) the Super Admin-only `notify.provider_failing` alert.
+        'task': 'notifications.check_provider_health',
+        'schedule': _crontab(minute='*/5'),
     },
     'payments-retry-unsettled-trips-hourly': {
         # Trips left unsettled because no commission rule governed them (module 8 path
@@ -1422,3 +1436,64 @@ if SENTRY_DSN:
 
     if original_live_receivers:
         Signal._live_receivers = original_live_receivers
+
+
+# ---------------------------------------------------------------------------
+# Notifications (module 11)
+# ---------------------------------------------------------------------------
+# NOTIFY_LIVE_SEND is the master switch. False (the default, everywhere) forces EVERY
+# external channel to the stub provider, which records the message and sends nothing. Even
+# when True, a non-production ENVIRONMENT sends only to recipients on NOTIFY_TEST_RECIPIENTS
+# (phones in E.164 and emails, comma separated, from the environment and never from the
+# repo); everyone else is recorded as `suppressed: not on test allowlist`.
+NOTIFY_LIVE_SEND = os.environ.get('NOTIFY_LIVE_SEND', 'false').strip().lower() in {'1', 'true', 'yes'}
+NOTIFY_TEST_RECIPIENTS = [
+    entry.strip() for entry in os.environ.get('NOTIFY_TEST_RECIPIENTS', '').split(',')
+    if entry.strip()
+]
+# Provider per channel x country. A channel/country with no entry has no provider and its
+# messages are suppressed (`no provider configured`), never sent by a guess.
+NOTIFY_PROVIDERS = {
+    'sms': {'IN': 'msg91', 'US': 'twilio'},
+    'whatsapp': {'IN': 'msg91'},
+    'email': {'IN': 'ses', 'US': 'ses'},
+    'push': {'IN': 'fcm', 'US': 'fcm'},
+    'in_app': {'IN': 'in_app', 'US': 'in_app'},
+}
+# Promotional quiet hours, recipient-local, per country (start hour inclusive, end hour
+# exclusive). GO-LIVE LEGAL ITEM: the exact TRAI (India) and TCPA (US) windows need legal
+# confirmation before any live promotional send.
+NOTIFY_QUIET_HOURS = {'IN': (21, 10), 'US': (21, 10)}
+NOTIFY_QUIET_HOURS_DEFAULT = (21, 10)
+NOTIFY_MAX_ATTEMPTS = int(os.environ.get('NOTIFY_MAX_ATTEMPTS', '5'))
+NOTIFY_BACKOFF_BASE_SECONDS = int(os.environ.get('NOTIFY_BACKOFF_BASE_SECONDS', '30'))
+# Sends per provider per minute (0 or missing = unlimited).
+NOTIFY_RATE_LIMITS = {'msg91': 600, 'twilio': 600, 'ses': 600, 'fcm': 3000}
+# `notify.provider_failing`: failed / (sent + delivered + failed) over the window.
+NOTIFY_FAILURE_WINDOW_MINUTES = 15
+NOTIFY_FAILURE_RATE_THRESHOLD = float(os.environ.get('NOTIFY_FAILURE_RATE_THRESHOLD', '0.3'))
+NOTIFY_FAILURE_MIN_SAMPLE = int(os.environ.get('NOTIFY_FAILURE_MIN_SAMPLE', '10'))
+# Credentials: environment variable NAMES only. Values are set by the owner on the service
+# once the provider accounts are confirmed; this repo and the tests never hold one.
+#   MSG91_AUTH_KEY, MSG91_WHATSAPP_NUMBER, MSG91_WEBHOOK_SECRET
+#   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_MESSAGING_SERVICE_SID (or TWILIO_FROM_NUMBER)
+#   SES_AWS_ACCESS_KEY_ID, SES_AWS_SECRET_ACCESS_KEY, SES_AWS_REGION, SES_FROM_EMAIL,
+#   SES_CONFIGURATION_SET (optional), SES_SNS_TOPIC_ARNS (comma separated allowlist)
+#   FIREBASE_CREDENTIALS_JSON (existing; push)
+MSG91_AUTH_KEY = os.environ.get('MSG91_AUTH_KEY', '')
+MSG91_WHATSAPP_NUMBER = os.environ.get('MSG91_WHATSAPP_NUMBER', '')
+MSG91_WEBHOOK_SECRET = os.environ.get('MSG91_WEBHOOK_SECRET', '')
+TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID', '')
+TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', '')
+TWILIO_MESSAGING_SERVICE_SID = os.environ.get('TWILIO_MESSAGING_SERVICE_SID', '')
+TWILIO_FROM_NUMBER = os.environ.get('TWILIO_FROM_NUMBER', '')
+SES_AWS_ACCESS_KEY_ID = os.environ.get('SES_AWS_ACCESS_KEY_ID', '')
+SES_AWS_SECRET_ACCESS_KEY = os.environ.get('SES_AWS_SECRET_ACCESS_KEY', '')
+SES_AWS_REGION = os.environ.get('SES_AWS_REGION', '')
+SES_FROM_EMAIL = os.environ.get('SES_FROM_EMAIL', '')
+SES_CONFIGURATION_SET = os.environ.get('SES_CONFIGURATION_SET', '')
+SES_SNS_TOPIC_ARNS = [
+    arn.strip() for arn in os.environ.get('SES_SNS_TOPIC_ARNS', '').split(',') if arn.strip()
+]
+# The public base URL Twilio signs against (the URL it was configured with).
+NOTIFY_WEBHOOK_BASE_URL = os.environ.get('NOTIFY_WEBHOOK_BASE_URL', '')

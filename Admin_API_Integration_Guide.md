@@ -249,5 +249,14 @@ Below are the specific endpoints you will use for the Admin interface.
 - **List Payments:** `GET /payments/admin/payments/`
 - **List Transactions:** `GET /payments/admin/transactions/`
 
+### F. Notifications (module 11)
+All under `/notifications/admin/`; `notify.read` to look, `notify.template` / `notify.campaign` to draft and submit. Activating a template and sending a campaign are maker-checker requests (`notification.template_change`, `notification.campaign_send`) and answer **202**.
+- **Templates:** `GET|POST /templates/`, `GET|PATCH /templates/<id>/`, `PUT /templates/<id>/registrations/` (DLT / sender / WhatsApp rows), `POST /templates/<id>/preview/`, `POST /templates/preview/` (unsaved editor state), `POST /templates/<id>/submit/`, `POST /templates/<id>/archive/`
+- **Campaigns:** `GET|POST /campaigns/`, `GET|PATCH /campaigns/<id>/`, `POST /campaigns/audience-preview/`, `POST /campaigns/<id>/submit/`, `POST /campaigns/<id>/cancel/`, `GET /cities/`
+- **Delivery log:** `GET /messages/?status=&channel=&provider=&template=&user_id=&campaign=` and `GET /messages/<id>/` (status timeline). Scoped by the recipient's city; recipients are masked.
+- **Providers:** `GET /providers/` (configured provider, live vs stub, credentials present yes/no, allowlist size; never a value)
+- **A user's preferences:** `GET|PUT /users/<id>/preferences/` (an admin may only opt a user OUT)
+- **App:** `GET|PUT /notifications/preferences/` (the signed-in rider or driver). Webhooks: `POST /notifications/webhooks/<twilio|ses|msg91>/` (signature or secret verified; 403 otherwise).
+
 ---
 *Note: Make sure to handle session expiration gracefully. If any API returns a 401 Unauthorized, redirect the user to the admin login page and clear `request.session['access_token']`.*

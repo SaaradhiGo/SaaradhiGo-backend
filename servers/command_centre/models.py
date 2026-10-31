@@ -82,7 +82,15 @@ SAFETY_COVERAGE_GAP = 'safety_coverage_gap'
 SETTLEMENT_NO_COMMISSION_RULE = 'settlement.no_commission_rule'
 #: Kinds that are money, not operations: `_visible_alerts` shows them by `finance.read`.
 FINANCE_ALERT_KINDS = frozenset({SETTLEMENT_NO_COMMISSION_RULE})
+#: Module 11: a notification provider's failure rate over the last 15 minutes is above its
+#: threshold (warning). Platform health, not operations: visible to Super Admin only, which
+#: is to say holders of `platform.settings`. It clears itself when the rate recovers, and can
+#: also be acknowledged by the same holders.
+NOTIFY_PROVIDER_FAILING = 'notify.provider_failing'
+#: Kinds only Super Admin (`platform.settings`) sees.
+PLATFORM_ALERT_KINDS = frozenset({NOTIFY_PROVIDER_FAILING})
 ACK_PERMISSION = {
+    NOTIFY_PROVIDER_FAILING: 'platform.settings',
     SOS_UNANCHORED: 'safety.respond',
     SAFETY_SOS_ESCALATED: 'safety.respond',
     SAFETY_INCIDENT_UNASSIGNED: 'safety.respond',

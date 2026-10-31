@@ -4,7 +4,7 @@ import logging
 
 from django.utils import timezone
 
-from .models import WARNING, OperatorAlert
+from .models import PLATFORM_ALERT_KINDS, WARNING, OperatorAlert
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,9 @@ def open_alert_count():
     """For the dashboard tile. Cheap, and never raises: a dashboard that
     fails because the alert table is unreachable hides every other tile."""
     try:
-        return open_alerts().count()
+        # The shared dashboard tile is for every operator: platform-health alerts (Super
+        # Admin only) are not in it.
+        return open_alerts().exclude(kind__in=PLATFORM_ALERT_KINDS).count()
     except Exception:  # noqa: BLE001 - a tile, not a control
         logger.exception('open_alert_count failed')
         return 0

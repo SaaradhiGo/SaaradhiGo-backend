@@ -15,6 +15,7 @@ WHAT IT SEEDS (owner rulings, AUDIT.md §10 / §22, INR in paise)
     finance.payout_config_change  always a checker
     finance.wallet_credit         always a checker
     zone.change         always a checker (module 9)
+    notification.template_change, notification.campaign_send  always a checker (module 11)
 
 Nothing is written for the United States. That is the ruling, not an
 omission: a US action that needs a threshold is refused with
@@ -49,7 +50,8 @@ from servers.admin_audit.services import record_admin_action
 from servers.approvals.actions import (
     BULK_ACTION, DRIVER_DEACTIVATE, FINANCE_ADJUST, FINANCE_PAYOUT,
     FINANCE_PAYOUT_CONFIG, FINANCE_REFUND, FINANCE_WALLET_CREDIT, PRICING_CHANGE,
-    SUPPORT_REFUND, SUPPORT_SLA_CHANGE, ZONE_CHANGE,
+    NOTIFICATION_CAMPAIGN_SEND, NOTIFICATION_TEMPLATE_CHANGE, SUPPORT_REFUND, SUPPORT_SLA_CHANGE,
+    ZONE_CHANGE,
 )
 from servers.approvals.models import ALWAYS, COUNT, MONEY
 from servers.approvals.service import active_policy, write_policy_version
@@ -74,6 +76,9 @@ INDIA_DEFAULTS = [
     ('IN', FINANCE_WALLET_CREDIT, ALWAYS, '', None),
     # Module 9: a zone or geofence change always needs a checker.
     ('IN', ZONE_CHANGE, ALWAYS, '', None),
+    # Module 11: a template going live and a campaign send always need a checker.
+    ('IN', NOTIFICATION_TEMPLATE_CHANGE, ALWAYS, '', None),
+    ('IN', NOTIFICATION_CAMPAIGN_SEND, ALWAYS, '', None),
 ]
 
 #: The United States (owner rulings, AUDIT 27.44), USD minor units.
@@ -91,6 +96,8 @@ US_DEFAULTS = [
     ('US', SUPPORT_SLA_CHANGE, ALWAYS, '', None),
     ('US', FINANCE_PAYOUT_CONFIG, ALWAYS, '', None),
     ('US', ZONE_CHANGE, ALWAYS, '', None),
+    ('US', NOTIFICATION_TEMPLATE_CHANGE, ALWAYS, '', None),
+    ('US', NOTIFICATION_CAMPAIGN_SEND, ALWAYS, '', None),
 ]
 
 SEED_REASON = 'Seed: maker-checker defaults (AUDIT.md §10/§22 India; §27.44 United States).'

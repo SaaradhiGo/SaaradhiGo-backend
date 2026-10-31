@@ -297,7 +297,7 @@ class TestNotice:
         rule = body_of(draft(maker, percent='18', expect=201))
         assert datetime.fromisoformat(rule['effective_from']) < timezone.now() + timedelta(minutes=5)
 
-    def test_the_driver_notice_send_is_a_stub_that_leaves_it_queued(self, world):
+    def test_the_driver_notice_is_handed_to_the_outbox_and_stays_queued_until_drained(self, world):
         from servers.pricing.driver_notices import deliver
 
         make_rule('IN', '15.00', node=world.geo['IN'])
@@ -1223,7 +1223,7 @@ class TestSkippedDriverNoticeAndOverview(TestWeeklyRunSkipsDriversWithNoHandle):
         run_weekly_payouts(self.MONDAY)
         notice = DriverPayoutNotice.objects.get()
         assert (notice.driver_id, notice.status, notice.kind) == (skipped.id, 'queued', 'add_payout_details')
-        assert notice.sent_at is None                      # the send is a stub
+        assert notice.sent_at is None             # no active template in this world: nothing to send
         run_weekly_payouts(self.MONDAY)                    # same week again: nothing new
         _queue_driver_notices(PayoutRun.objects.get(), [skipped])
         assert DriverPayoutNotice.objects.count() == 1

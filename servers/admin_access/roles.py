@@ -84,6 +84,12 @@ PERMISSIONS = {
     'zone.write': 'Draw and publish zones and geofences',
     'promo.write': 'Create and amend promotions and incentives',
     'notify.send': 'Send campaigns to riders or drivers',
+    # Notifications (module 11). Read is the delivery log and the templates (Support uses it to
+    # answer "did the rider get the message?"); template and campaign are the two ways to
+    # change what is said and to whom, each through a checker.
+    'notify.read': 'View notification delivery logs, templates, campaigns and providers',
+    'notify.template': 'Draft and submit notification templates (activation needs a checker)',
+    'notify.campaign': 'Draft and submit promotional campaigns (sending needs a checker)',
     # Read-only door to the Safety queue (owner ruling, AUDIT 27.40): City Ops
     # may look at their own scope's incidents and signals; every write, the
     # assignee list and the SOS contact reveal stay `safety.respond`.
@@ -144,6 +150,8 @@ ROLE_TEMPLATES = [
             'finance.aggregate',
             # The live map: drivers, trips and alerts in their own scope.
             'liveops.read',
+            # Delivery logs and templates in their own scope, read-only (module 11).
+            'notify.read',
         ],
     },
     {
@@ -155,6 +163,8 @@ ROLE_TEMPLATES = [
             'trip.read', 'rider.read', 'driver.read',
             'support.read', 'support.reply', 'support.refund',
             'rider.note', 'rider.flag', 'rider.signout',
+            # "Did the rider get the message?" (module 11): read-only delivery log.
+            'notify.read',
         ],
     },
     {
@@ -168,6 +178,7 @@ ROLE_TEMPLATES = [
             'support.read', 'support.reply', 'support.refund',
             'support.macro', 'support.dashboard',
             'rider.note', 'rider.flag', 'rider.signout',
+            'notify.read',
         ],
     },
     {
@@ -221,6 +232,8 @@ ROLE_TEMPLATES = [
             'promo.write', 'notify.send', 'report.read',
             # Demand and supply cells only; never an individual position.
             'liveops.aggregate',
+            # Templates and campaigns, each through a checker (module 11).
+            'notify.read', 'notify.template', 'notify.campaign',
         ],
     },
     {

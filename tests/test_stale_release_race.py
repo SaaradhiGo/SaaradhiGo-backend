@@ -48,7 +48,7 @@ def test_two_simultaneous_releases_cancel_the_trip_once(geo):
             response = client.post(
                 f'/api/v1/ride/admin/trips/{trip.id}/stale/release-driver/',
                 {'reason': 'Driver is unreachable, ghost trip'}, format='json')
-            statuses.append(response.status_code)
+            statuses.append((response.status_code, response.content[:300]))
         finally:
             connections.close_all()
 
@@ -58,7 +58,7 @@ def test_two_simultaneous_releases_cancel_the_trip_once(geo):
     for t in threads:
         t.join(timeout=60)
 
-    assert sorted(statuses) == [200, 409], statuses
+    assert sorted(code for code, _ in statuses) == [200, 409], statuses
     trip = Trip.objects.get(id=trip.id)
     assert trip.status_id.status_code == 'cancelled'
     assert AdminAuditLog.objects.filter(action='trip_cancelled', target_id=str(trip.id)).count() == 1

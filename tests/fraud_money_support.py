@@ -90,6 +90,9 @@ def paid_out(driver, minor, *, at=None, status='completed'):
     """A payout that took money after `at`: any non-rejected withdrawal made later counts a reward
     credited before it as paid."""
     w = WithdrawalRequest.objects.create(driver=driver, amount_minor=minor, status=status)
+    wallet = get_wallet(driver.user_id, Wallet.SCOPE_DRIVER, lock=True)
+    wallet.balance_minor = max(0, wallet.balance_minor - minor)      # the money left the wallet
+    wallet.save()
     if at is not None:
         WithdrawalRequest.objects.filter(pk=w.pk).update(requested_at=at)
     return w

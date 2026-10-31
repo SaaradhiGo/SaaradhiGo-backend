@@ -25,6 +25,16 @@ Fare             The trip's OWN quoted fare card (the rate card in force when it
                  capped at the upfront price. Never above the quote.
 Commission       The trip's booking-time snapshot, exactly as a normal settlement.
 
+US EARLY-ENDED TRIPS, TAX AND FEE (owner ruling 2026-10-31, AUDIT 27.56)
+In an ADDITIVE-tax market (the US) the tax and the per-trip fee are worked out on the amount actually
+charged, within the upfront cap: the pre-tax fare first, then tax on it and the fee, the TOTAL never
+above the quote. If the cap binds, the total is held at the cap and the base is backed out of it
+(`tax_on_charged`). When the rider is charged 0 (safety incident or platform fault) NO tax or fee is
+charged to the rider, and the per-trip regulatory fee the platform owes is booked as a platform expense
+(`payments.PlatformExpense`), on no wallet. A promo applies as before, on the fare as quoted and charged.
+No rate is decided here: the zone's and the card's own configured values are used. US ACCOUNTANT TO
+CONFIRM (go-live blocker #15). India (inclusive tax) is unchanged.
+
 NOTHING NEW IS CHARGED. A normal completion charges `final_fare or estimated_fare`
 and adds no fee, tip or toll; neither does this. No fare-card, surge, fee or
 commission value is changed anywhere.

@@ -16,9 +16,12 @@ needs a reason code and a note. A flag is never deleted.
 
 WHAT A FLAG NEVER DOES
 ----------------------
-A flag, its confirmation and its dismissal record a decision. They do not move money, change a
-fare, hold a payout or notify the subject. Confirming can hand off to actions that already exist in
-other modules (see `review.HANDOFFS`); it never performs them.
+A flag, its confirmation and its dismissal record a decision. They do not change a fare, hold a
+payout, take a reward back or notify the subject. The ONLY money effect of a flag is the reward hold
+(owner ruling a, AUDIT 27.56; see `money`): the unpaid reward linked to the flagged activity is
+reserved until the flag is decided or the hold runs out. Confirming can hand off to actions that
+already exist in other modules (see `review.HANDOFFS`); it never performs them. Clawback, a payout
+hold and online-only are separate, gated actions (see `money`).
 
 DEDUPE
 ------

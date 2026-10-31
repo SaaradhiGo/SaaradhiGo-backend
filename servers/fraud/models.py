@@ -371,6 +371,7 @@ class RecoveryDeduction(models.Model):
     wallet_transaction = models.ForeignKey('rider.WalletTransaction', null=True, blank=True,
                                            on_delete=models.PROTECT, related_name='+')
     amount_minor = models.BigIntegerField()
+    currency = models.CharField(max_length=3, default='INR')
     payout_gross_minor = models.BigIntegerField(default=0)
     percent_cap = models.PositiveSmallIntegerField(default=50)
     created_at = models.DateTimeField(auto_now_add=True)

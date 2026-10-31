@@ -222,6 +222,12 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # their timeline lines and Command Centre alerts only; no trip, fare, money, account
         # status or notification. No retry needed: the next run is the retry.
         'fraud.run_rules',
+        # Fraud money actions (AUDIT 27.56). Beat, hourly: releases reward holds whose time is up
+        # and lapses payout holds past their maximum duration (with a Command Centre alert). Each
+        # step is a conditional status change under a row lock, so a redelivered or doubled run
+        # converges. It only RELEASES money (never takes or pays any); no retry needed, the next
+        # run is the retry.
+        'fraud.release_holds',
         'pricing.fare_shadow_sweep',
         # No explicit name= on the decorator, unlike its siblings in the same
         # module, so Celery registers the full dotted path. Nothing references

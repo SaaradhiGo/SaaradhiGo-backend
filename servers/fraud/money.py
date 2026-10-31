@@ -604,7 +604,7 @@ def apply_deduction(driver, plan, withdrawal, payout_gross_minor, percent):
             idempotency_key=f'recovery_{debt.pk}_w{withdrawal.pk}')
         RecoveryDeduction.objects.create(
             debt=debt, withdrawal_id=withdrawal.pk, wallet_transaction=txn, amount_minor=amount,
-            payout_gross_minor=payout_gross_minor, percent_cap=int(percent))
+            currency=debt.currency, payout_gross_minor=payout_gross_minor, percent_cap=int(percent))
         debt.recovered_minor += amount
         if debt.remaining_minor <= 0:
             debt.closed_at = timezone.now()

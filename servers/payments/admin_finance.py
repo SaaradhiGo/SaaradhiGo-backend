@@ -800,8 +800,10 @@ def skipped_in_latest_runs(user, node):
             visible_ids = set(visible.values_list('id', flat=True))
             held = sum(1 for s in (run.skipped or [])
                        if s.get('reason') == 'held' and s['driver_id'] in visible_ids)
-            out.append({'country': run.country, 'week_start': run.week_start, 'count': count,
-                        'held_count': held, 'no_handle_count': count - held})
+            row = {'country': run.country, 'week_start': run.week_start, 'count': count}
+            if held:
+                row.update(held_count=held, no_handle_count=count - held)
+            out.append(row)
     return sorted(out, key=lambda r: r['country'])
 
 

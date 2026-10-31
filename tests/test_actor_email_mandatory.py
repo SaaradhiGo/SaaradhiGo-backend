@@ -77,9 +77,11 @@ WRITING_COMMANDS = [
     'record_retroactive_linking_audit',
     'recompute_driver_trip_counts',
     'reset_operator_mfa',
+    'send_queued_notices',
     'seed_admin_access',
     'seed_alert_thresholds',
     'seed_approval_policies',
+    'seed_notification_templates',
     'seed_payout_config',
     'seed_safety_config',
     'seed_support_sla',
@@ -411,6 +413,49 @@ def _prepare_bootstrap_accounts(settings, monkeypatch):
     return [], {}
 
 
+def _prepare_seed_notification_templates(settings, monkeypatch):
+    seed_admin_access()    # the country nodes the templates hang off
+    return [], {}
+
+
+def _fp_notification_templates():
+    from servers.notifications.models import NotificationTemplate
+
+    return tuple(sorted(NotificationTemplate.objects.values_list(
+        'key', 'channel', 'country', 'version', 'status')))
+
+
+def _prepare_send_queued_notices(settings, monkeypatch):
+    from datetime import datetime, timezone as dt_utc
+    from decimal import Decimal
+
+    from servers.pricing.commission_models import CommissionRule, DriverNotice
+
+    seed_admin_access()
+    call_command('seed_notification_templates', '--actor-email', SEED_ACTOR_EMAIL,
+                 stdout=StringIO())
+    hyd = GeoNode.objects.get(code='IN-TG-HYD')
+    user = _user('+917770002001', 'queued.driver@saaradhigo.test', role='driver')
+    Driver.objects.create(user_id=user, home_city=hyd, approved=True)
+    rule = CommissionRule.objects.create(
+        country='IN', geo_node=GeoNode.objects.get(code='IN'), percent=Decimal('18.00'),
+        status='active', version=1, effective_from=datetime(2026, 1, 1, tzinfo=dt_utc.utc),
+        reason='test')
+    DriverNotice.objects.create(
+        rule=rule, country='IN', geo_node=GeoNode.objects.get(code='IN'),
+        old_percent=Decimal('15.00'), new_percent=Decimal('18.00'),
+        effective_from=datetime(2026, 11, 12, tzinfo=dt_utc.utc))
+    return [], {}
+
+
+def _fp_queued_notices():
+    from servers.notifications.models import NotificationMessage
+    from servers.pricing.commission_models import DriverNotice
+
+    return (NotificationMessage.objects.count(),
+            tuple(DriverNotice.objects.values_list('pk', 'status')))
+
+
 CASES = [
     Case('migrate_operators --apply', 'migrate_operators',
          _prepare_migrate, _fp_migrate, dry_run=(['--plan', 'qa'], {}),
@@ -453,6 +498,12 @@ CASES = [
          _prepare_commission_ruling, _fp_commission_rules),
     Case('seed_alert_thresholds', 'seed_alert_thresholds',
          _prepare_seed_thresholds, _fp_thresholds, needs_operator_to_prepare=True),
+    Case('seed_notification_templates', 'seed_notification_templates',
+         _prepare_seed_notification_templates, _fp_notification_templates,
+         needs_operator_to_prepare=True),
+    Case('send_queued_notices', 'send_queued_notices',
+         _prepare_send_queued_notices, _fp_queued_notices, dry_run=(['--dry-run'], {}),
+         needs_operator_to_prepare=True),
     Case('seed_us_test_city', 'seed_us_test_city',
          _prepare_us_seed, _fp_us_seed, needs_operator_to_prepare=True),
     Case('seed_us_test_city --remove', 'seed_us_test_city',

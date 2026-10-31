@@ -115,6 +115,12 @@ Settings load environment variables via `python-dotenv` (see [base/settings.py](
 | `FRONTEND_URL`, `BACKEND_URL`  | App URLs used in emails / links                             |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_SNS_SENDER_ID` | AWS creds (SNS for OTP) |
 | `AWS_S3_BUCKET_NAME`, `AWS_S3_REGION`, `AWS_QUERYSTRING_EXPIRE` | S3 media storage              |
+| `NOTIFY_LIVE_SEND` (default `false`), `NOTIFY_TEST_RECIPIENTS` | Notifications master switch: off forces every channel to the stub; on outside production sends only to the comma-separated phones/emails listed (module 11) |
+| `MSG91_AUTH_KEY`, `MSG91_WHATSAPP_NUMBER`, `MSG91_WEBHOOK_SECRET` | MSG91 (India SMS and WhatsApp) |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_MESSAGING_SERVICE_SID` or `TWILIO_FROM_NUMBER` | Twilio (US SMS) |
+| `SES_AWS_ACCESS_KEY_ID`, `SES_AWS_SECRET_ACCESS_KEY`, `SES_AWS_REGION`, `SES_FROM_EMAIL`, `SES_CONFIGURATION_SET`, `SES_SNS_TOPIC_ARNS` | AWS SES email and its SNS delivery topic (separate from the S3/SNS-OTP credentials) |
+| `NOTIFY_WEBHOOK_BASE_URL` | Public base URL Twilio signs against (behind a proxy) |
+| `NOTIFY_MAX_ATTEMPTS`, `NOTIFY_BACKOFF_BASE_SECONDS`, `NOTIFY_FAILURE_RATE_THRESHOLD`, `NOTIFY_FAILURE_MIN_SAMPLE` | Dispatcher retry and provider-health tuning |
 | `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_WEBHOOK_SECRET`, `CASHFREE_ENVIRONMENT`, `CASHFREE_PG_BASE_URL`, `CASHFREE_API_VERSION` | Cashfree gateway |
 | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Razorpay (legacy)                       |
 | `PAYMENT_GATEWAY`, `PAYOUT_GATEWAY` | Active gateways (default `cashfree`)                   |

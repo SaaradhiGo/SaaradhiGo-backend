@@ -186,6 +186,22 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # a redelivered run writes the same rows once. Reads Redis, writes counts per cell
         # only (no driver id); no trip, money or driver status.
         'live_ops.sample_supply',
+        # Notifications outbox (module 11). send_message: acks_late is safe because the row is
+        # claimed with a conditional UPDATE (queued -> sending), so a redelivered or doubled run
+        # sends nothing twice; retries are the task's own bounded rescheduling and the limit
+        # dead-letters as `failed`. It sends a message and writes the delivery log only; no
+        # money, trip or driver status. With NOTIFY_LIVE_SEND off (the default) it only records.
+        'notifications.send_message',
+        # Beat, every minute: the backstop that sends due rows, requeues rows stuck `sending`,
+        # drains the DriverNotice / DriverPayoutNotice outboxes (idempotent keys per driver) and
+        # starts due campaigns. Every step converges on a re-run.
+        'notifications.dispatch_queued',
+        # Expands a scheduled, checker-approved campaign into outbox rows, idempotent per
+        # (campaign, user), so a resumed or doubled run writes the same rows once.
+        'notifications.run_campaign',
+        # Beat, every 5 minutes: raises / clears the Super Admin-only notify.provider_failing
+        # alert, one per (provider, channel) while open. Reads message counts, writes alerts.
+        'notifications.check_provider_health',
         'pricing.fare_shadow_sweep',
         # No explicit name= on the decorator, unlike its siblings in the same
         # module, so Celery registers the full dotted path. Nothing references

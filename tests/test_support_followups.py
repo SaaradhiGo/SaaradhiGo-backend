@@ -430,7 +430,7 @@ class TestSupportLeadRole:
     EXPECTED = {
         'trip.read', 'rider.read', 'driver.read', 'support.read', 'support.reply',
         'support.refund', 'support.macro', 'support.dashboard', 'rider.note', 'rider.flag',
-        'rider.signout',
+        'rider.signout', 'notify.read',
     }
 
     def test_the_template_holds_exactly_the_agreed_capabilities(self):

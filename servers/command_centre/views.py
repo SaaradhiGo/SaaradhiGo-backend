@@ -50,7 +50,7 @@ from servers.admin_audit.services import record_admin_action
 from servers.approvals.service import ApprovalError
 
 from .metrics import METRICS, OVERVIEW_WINDOWS, describe
-from .models import ACK_PERMISSION, FINANCE_ALERT_KINDS, OperatorAlert
+from .models import ACK_PERMISSION, FINANCE_ALERT_KINDS, PLATFORM_ALERT_KINDS, OperatorAlert
 from .overview import build_overview, has_data
 from .services import acknowledge
 from .thresholds import active_thresholds, propose_threshold_change
@@ -194,6 +194,8 @@ def _visible_alerts(user):
 
     everything = OperatorAlert.objects.select_related('city')
     qs = everything.exclude(kind__in=FINANCE_ALERT_KINDS)
+    if not granted(user, 'platform.settings')[0]:
+        qs = qs.exclude(kind__in=PLATFORM_ALERT_KINDS)
     if not sees_live_sos(user):
         qs = qs.exclude(kind__in=SOS_ALERT_KINDS)
     finance = _visible_finance_alerts(user, everything)

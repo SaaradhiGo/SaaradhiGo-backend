@@ -314,7 +314,29 @@ def world(geo):
         country='IN', geo_node=geo['IN-TG-HYD'], percent=14, status=_RULE_ACTIVE, version=7,
         created_by_label='Maker Operator', created_by_email='maker.hyd@saaradhigo.test',
         reason='Hyderabad review of the commission')
+    # Notifications (module 11): a template, a draft campaign and a delivery-log row for the
+    # driver and the rider. The message stores only a MASKED recipient; the template and the
+    # campaign name no person.
+    from servers.notifications import recipients as _recipients
+    from servers.notifications.models import Campaign, NotificationMessage, NotificationTemplate
+    notify_template = NotificationTemplate.objects.create(
+        key='promo.sweep', channel='push', country='IN', geo_node=geo['IN'], category='promotional',
+        title='Weekend', body='Earn more {bonus}', variables=['bonus'], sample_values={'bonus': '10%'},
+        status='active')
+    notify_campaign = Campaign.objects.create(
+        name='Sweep campaign', country='IN', template=notify_template, geo_node=geo['IN-TG-HYD'],
+        audience={'role': 'drivers', 'cities': ['IN-TG-HYD']}, template_values={'bonus': '10%'})
+    notify_message = NotificationMessage.objects.create(
+        template=notify_template, template_key='promo.sweep', template_version=1, channel='sms',
+        country='IN', city=geo['IN-TG-HYD'], recipient_user_id=driver_user.pk,
+        recipient_masked=_recipients.masked_for(driver_user, 'sms'), provider='msg91',
+        provider_message_id='req-sweep', status='delivered', idempotency_key='sweep:driver:sms',
+        body='Earn more 10%')
+    notify_message.events.create(status='queued')
+    notify_message.events.create(status='delivered', source='webhook:msg91')
     return {
+        'notify_template': notify_template, 'notify_campaign': notify_campaign,
+        'notify_message': notify_message,
         'rule': rule,
         'rider_user': rider_user, 'driver_user': driver_user, 'driver': driver,
         'vehicle': vehicle, 'trip': trip, 'payment': payment, 'withdrawal': withdrawal,
@@ -409,6 +431,8 @@ def _ids(world):
         'incident_id': world['sos'].incident_id, 'signal_id': world['signal'].id,
         'pk': world['hyd_zone'].id, 'request_id': world['approval'].id,
         'rule_id': world['rule'].id,
+        'template_id': world['notify_template'].id, 'campaign_id': world['notify_campaign'].id,
+        'message_id': world['notify_message'].id, 'user_id': world['driver_user'].id,
         'payment_id': world['payment'].id, 'payout_id': world['withdrawal'].id,
         'kind': 'payouts',
     }
@@ -510,6 +534,18 @@ INVENTORY = {
     # integer cells. `tests/test_live_ops.py` sweeps them with its own fleet as well.
     'api/v1/live-ops/admin/snapshot/': False,
     'api/v1/live-ops/admin/heatmap/': False,
+    # Notifications (module 11): templates and campaigns name no person; the delivery log carries
+    # a MASKED recipient (+91••••••0002) and the user id, never a raw contact; the providers page
+    # shows credential PRESENCE only; a user's preferences are channel flags.
+    'api/v1/notifications/admin/templates/': False,
+    'api/v1/notifications/admin/templates/<int:template_id>/': False,
+    'api/v1/notifications/admin/campaigns/': False,
+    'api/v1/notifications/admin/campaigns/<int:campaign_id>/': False,
+    'api/v1/notifications/admin/cities/': False,
+    'api/v1/notifications/admin/messages/': False,
+    'api/v1/notifications/admin/messages/<int:message_id>/': False,
+    'api/v1/notifications/admin/providers/': False,
+    'api/v1/notifications/admin/users/<int:user_id>/preferences/': False,
 }
 
 #: GET routes in the namespace that are deliberately not swept. The DRF

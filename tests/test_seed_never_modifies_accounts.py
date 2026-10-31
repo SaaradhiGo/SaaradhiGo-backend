@@ -210,6 +210,7 @@ REGISTRY = {
     'seed_safety_config': {},
     'seed_approval_policies': {},
     'seed_alert_thresholds': {},
+    'seed_notification_templates': {},
     'seed_support_sla': {},
     'seed_payout_config': {},
     'seed_load_fixtures': {'riders': 3, 'drivers': 3},
@@ -218,7 +219,7 @@ REGISTRY = {
 }
 #: Run order: the geo tree first, the rest after it.
 ORDER = ['seed_admin_access', 'seed_us_test_city', 'seed_safety_config', 'seed_approval_policies',
-         'seed_alert_thresholds', 'seed_support_sla', 'seed_payout_config', 'seed_load_fixtures',
+         'seed_alert_thresholds', 'seed_notification_templates', 'seed_support_sla', 'seed_payout_config', 'seed_load_fixtures',
          'bootstrap_qa_accounts', 'bootstrap_qa_operator']
 
 

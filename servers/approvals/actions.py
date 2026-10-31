@@ -54,6 +54,8 @@ SUPPORT_SLA_CHANGE = 'support.sla_change'
 FINANCE_PAYOUT_CONFIG = 'finance.payout_config_change'
 FINANCE_WALLET_CREDIT = 'finance.wallet_credit'
 ZONE_CHANGE = 'zone.change'
+NOTIFICATION_TEMPLATE_CHANGE = 'notification.template_change'
+NOTIFICATION_CAMPAIGN_SEND = 'notification.campaign_send'
 
 ACTIONS = {
     action.key: action for action in (
@@ -83,6 +85,11 @@ ACTIONS = {
         # A service zone or geofence: create, change polygon or settings, deactivate,
         # reactivate or restore a revision. Always a checker (module 9).
         Action(ZONE_CHANGE, 'Change to a service zone or geofence', 'zone.write'),
+        # Module 11: a message template going live (or retired), and a promotional broadcast
+        # being sent. Both always need a checker, in India and the US.
+        Action(NOTIFICATION_TEMPLATE_CHANGE, 'Activate or retire a notification template',
+               'notify.template'),
+        Action(NOTIFICATION_CAMPAIGN_SEND, 'Send a promotional campaign', 'notify.campaign'),
     )
 }
 

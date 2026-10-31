@@ -121,11 +121,19 @@ def finance_holders(country, nodes=()):
 
 
 def deliver_payout_notice(notice):
-    """STUB: nobody is notified (Notifications module). The row stays queued."""
-    logger.warning('payout_notice_queued_not_sent', extra={
-        'event': 'payout_notice_queued_not_sent', 'notice_id': notice.id,
-        'driver_id': notice.driver_id})
-    return False
+    """Hand the notice to the notifications outbox (template `payout.missing_details`).
+
+    One driver, so it is queued inline; a failure here must never fail the payout run, and the
+    beat sweep (`notifications.dispatch_queued`) drains any row left `queued`."""
+    from django.db import transaction
+
+    try:
+        from servers.notifications.events import queue_payout_notice
+        with transaction.atomic():   # a savepoint: a failure must not poison the run's transaction
+            return bool(queue_payout_notice(notice)['messages'])
+    except Exception:  # noqa: BLE001
+        logger.exception('payout_notice_handoff_failed notice_id=%s', notice.id)
+        return False
 
 
 def _queue_driver_notices(run, drivers):

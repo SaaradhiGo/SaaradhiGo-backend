@@ -1510,8 +1510,10 @@ Driver cancels a trip AFTER accepting it (before the trip starts).
 
 **Sample Response**: Paginated TripList payloads.
 
-### 4.10 Admin: Live Locations
-- **URL**: `/ride/admin/live-locations/`
+### 4.10 Admin: Live Locations (RETIRED)
+> Removed after module 10. Use `GET /live-ops/admin/snapshot/` (scoped, `liveops.read`, masked). The section below is kept for history only.
+
+- **URL**: `/ride/admin/live-locations/` (no longer routed)
 - **Method**: `GET`
 - **Auth Required**: Yes (IsAdmin)
 

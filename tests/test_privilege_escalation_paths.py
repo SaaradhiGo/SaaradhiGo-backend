@@ -58,7 +58,7 @@ PRIVILEGED = [
     ('driver KYC queue', 'get', '/api/v1/driver/admin/'),
     ('payout queue', 'get', '/api/v1/driver/admin/withdrawals/'),
     ('all trips', 'get', '/api/v1/ride/admin/trips/'),
-    ('live driver locations', 'get', '/api/v1/ride/admin/live-locations/'),
+    ('live driver locations', 'get', '/api/v1/live-ops/admin/snapshot/'),
     ('operations dashboard', 'get', '/api/v1/ride/admin/dashboard/'),
     ('all users', 'get', '/api/v1/auth/admin/users/'),
 ]

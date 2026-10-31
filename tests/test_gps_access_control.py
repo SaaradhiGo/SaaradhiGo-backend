@@ -11,9 +11,9 @@ They fail the moment somebody adds a read path, which is exactly when a human
 should look at it and decide deliberately -- the alternative is a trail quietly
 appearing in a `fields = '__all__'` serializer one day.
 
-`admin_live_locations` is the one endpoint that returns coordinates at all. It
-serves live fleet positions from Redis, not the durable trail, and it is gated on
-`IsAuthenticated, IsAdmin`; both facts are asserted below.
+Live fleet positions are served only by the Live Ops snapshot and socket
+(module 10): scoped, capability-gated and masked, and never the durable trail.
+The old `admin_live_locations` endpoint is retired; both facts are asserted below.
 """
 
 from conftest import grant_legacy_equivalent
@@ -209,39 +209,39 @@ def test_an_anonymous_caller_gets_nothing(ride):
 
 
 # ---------------------------------------------------------------------------
-# The one endpoint that does return coordinates
+# The retired fleet-positions endpoint
 # ---------------------------------------------------------------------------
 
-def test_live_locations_require_admin(ride):
-    """`admin_live_locations` serves live fleet positions from Redis.
-
-    Deliberate, and admin-only. A rider or driver reaching it would be able to see
-    where every driver on the platform currently is.
-    """
-    for label, user in (('rider', ride['rider']),
-                        ('driver', ride['driver_user']),
-                        ('anonymous', None)):
-        resp = _api(user).get('/api/v1/ride/admin/live-locations/')
-        assert resp.status_code in (401, 403), (
-            f'{label} reached admin live locations: HTTP {resp.status_code}')
-
-
-def test_live_locations_serve_redis_not_the_durable_trail(ride, db):
-    """An admin sees current positions, not ride history.
-
-    The distinction matters: live positions are operational and transient, while a
-    trail is a permanent record of a named person's movements.
+def test_the_retired_live_locations_endpoint_is_gone(ride, db):
+    """`/ride/admin/live-locations/` returned every active driver's AND rider's live
+    position, unscoped, with names and phones. The Live Ops map (module 10)
+    replaced it with a scoped, capability-gated, masked snapshot
+    (`/live-ops/admin/snapshot/`), so the old route is removed, not gated: no
+    caller, however privileged, gets an answer from it.
     """
     admin = User.objects.create_user(phone_number='+919851000099', role='admin')
     admin.is_staff = True
     admin.save()
-    # Works under both access models; see `grant_legacy_equivalent`.
     grant_legacy_equivalent(admin)
 
-    resp = _api(admin).get('/api/v1/ride/admin/live-locations/')
-    assert resp.status_code == 200, resp.content
-    body = resp.json()
-    assert not _leaks_a_trail(body), (
-        f'live locations now include durable trail rows: {json.dumps(body)[:400]}')
-    data = body.get('data', body)
-    assert set(data.keys()) <= {'drivers', 'riders'}, data.keys()
+    for label, user in (('admin', admin), ('rider', ride['rider']),
+                        ('driver', ride['driver_user']), ('anonymous', None)):
+        resp = _api(user).get('/api/v1/ride/admin/live-locations/')
+        assert resp.status_code in (401, 403, 404), (
+            f'{label} reached the retired live locations: HTTP {resp.status_code}')
+        assert resp.status_code != 200
+
+
+def test_the_live_ops_snapshot_never_serves_the_durable_trail(ride, db):
+    """Its replacement serves current positions, never ride history."""
+    admin = User.objects.create_user(phone_number='+919851000098', role='admin')
+    admin.is_staff = True
+    admin.save()
+    grant_legacy_equivalent(admin)
+
+    resp = _api(admin).get('/api/v1/live-ops/admin/snapshot/')
+    assert resp.status_code in (200, 403), resp.content
+    if resp.status_code == 200:
+        body = resp.json()
+        assert not _leaks_a_trail(body), (
+            f'the live snapshot includes durable trail rows: {json.dumps(body)[:400]}')

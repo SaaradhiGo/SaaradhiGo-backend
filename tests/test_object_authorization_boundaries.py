@@ -268,7 +268,7 @@ class TestAdminSurfacesAreClosedToUsers:
         '/api/v1/driver/admin/',
         '/api/v1/driver/admin/withdrawals/',
         '/api/v1/ride/admin/trips/',
-        '/api/v1/ride/admin/live-locations/',
+        '/api/v1/live-ops/admin/snapshot/',
         '/api/v1/ride/admin/dashboard/',
         '/api/v1/support/admin/tickets/',
     ])
@@ -279,7 +279,7 @@ class TestAdminSurfacesAreClosedToUsers:
 
     @pytest.mark.parametrize('path', [
         '/api/v1/driver/admin/',
-        '/api/v1/ride/admin/live-locations/',
+        '/api/v1/live-ops/admin/snapshot/',
         '/api/v1/ride/admin/dashboard/',
     ])
     def test_a_driver_is_refused(self, two_of_everything, path):

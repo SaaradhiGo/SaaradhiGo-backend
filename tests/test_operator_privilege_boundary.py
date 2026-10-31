@@ -13,7 +13,7 @@ Measured before the fix, on a fresh phone number, with one OTP:
       /api/v1/driver/admin/                    -> HTTP 200   KYC queue
       /api/v1/driver/admin/withdrawals/        -> HTTP 200   payout queue
       /api/v1/ride/admin/trips/                -> HTTP 200   every trip
-      /api/v1/ride/admin/live-locations/       -> HTTP 200   live driver positions
+      /api/v1/live-ops/admin/snapshot/       -> HTTP 200   live driver positions
       /api/v1/ride/admin/dashboard/            -> HTTP 200   operations dashboard
 
 Anyone who could receive an SMS could approve driver KYC and read the payout
@@ -61,7 +61,7 @@ OPERATOR_READ_ENDPOINTS = [
     ('driver KYC queue', '/api/v1/driver/admin/'),
     ('payout queue', '/api/v1/driver/admin/withdrawals/'),
     ('all trips', '/api/v1/ride/admin/trips/'),
-    ('live driver locations', '/api/v1/ride/admin/live-locations/'),
+    ('live driver locations', '/api/v1/live-ops/admin/snapshot/'),
     ('operations dashboard', '/api/v1/ride/admin/dashboard/'),
 ]
 

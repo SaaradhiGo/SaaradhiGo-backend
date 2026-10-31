@@ -52,6 +52,9 @@ DRIVER_LEDGER_PURPOSES = (
     'refund_failed_withdrawal', 'refund_rejected_withdrawal',
     # A manual correction on the driver's balance (Part B).
     'adjustment',
+    # The platform paid the driver for a started trip an operator ended as a safety
+    # incident or platform fault (the rider paid nothing). Earnings, no commission.
+    'platform_funded_trip_end',
 )
 
 #: `model label -> ORM lookup(s) reaching GeoNode.path`. One table, so a view

@@ -7,7 +7,9 @@ from .views import (
     apply_promo_endpoint, trip_chat_history,
 )
 from .admin_views import admin_list_trips, admin_dashboard, admin_trip_detail
-from .admin_stale import admin_stale_mark_reviewed, admin_stale_release_driver
+from .admin_stale import (
+    admin_stale_mark_reviewed, admin_stale_release_driver, admin_stale_release_preview,
+)
 from .admin_trips import (
     admin_adjust_fare, admin_bulk_trips, admin_cancel_trip, admin_flag_trip,
     admin_note_trip, admin_refund_trip, admin_unflag_trip,
@@ -48,5 +50,6 @@ urlpatterns = [
     path('admin/trips/<int:trip_id>/note/', admin_note_trip),
     path('admin/trips/<int:trip_id>/stale/mark-reviewed/', admin_stale_mark_reviewed),
     path('admin/trips/<int:trip_id>/stale/release-driver/', admin_stale_release_driver),
+    path('admin/trips/<int:trip_id>/stale/release-preview/', admin_stale_release_preview),
     path('admin/dashboard/', admin_dashboard),
 ]

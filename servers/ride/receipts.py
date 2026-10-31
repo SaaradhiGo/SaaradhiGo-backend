@@ -68,6 +68,26 @@ def _legal_entity():
     return getattr(settings, 'PLATFORM_LEGAL_ENTITY', 'SaaradhiGo Mobility')
 
 
+def _total_fare(trip):
+    """What the receipt charges. A platform-funded operator end charged 0, which the usual
+    `final_fare or estimated_fare` would read as "no final fare" and show the quote."""
+    if getattr(trip, 'end_rule', '') == 'platform_funded':
+        return Decimal('0.00')
+    return trip.final_fare or trip.estimated_fare or Decimal('0.00')
+
+
+def operator_end_note(trip):
+    """The extra receipt line for a trip an operator ended, or ''."""
+    from servers.ride.operator_end import PLATFORM_FUNDED, RECEIPT_NOT_CHARGED_LINE
+
+    rule = getattr(trip, 'end_rule', '')
+    if rule == PLATFORM_FUNDED:
+        return RECEIPT_NOT_CHARGED_LINE
+    if rule:
+        return 'Ended by SaaradhiGo support: the fare is for the distance driven.'
+    return ''
+
+
 _RECEIPT_TEMPLATE = """\
 <html>
 <body style="font-family: Arial, sans-serif; color: #1f2937; max-width: 640px;">
@@ -93,6 +113,7 @@ _RECEIPT_TEMPLATE = """\
     <tr><td>Time fare</td><td style="text-align:right;">{time_fare}</td></tr>
     <tr><td>Surge multiplier</td><td style="text-align:right;">x {surge}</td></tr>
     <tr><td>{tax_label} ({gst_rate}%)</td><td style="text-align:right;">{gst_amount}</td></tr>
+    {note_row}
     <tr style="background: #f9fafb;"><td><b>Total fare</b></td><td style="text-align:right;"><b>{total_fare}</b></td></tr>
   </table>
 
@@ -227,8 +248,10 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
         distance_fare = fare_pricing.distance_fare or Decimal('0.00')
         time_fare = fare_pricing.time_fare or Decimal('0.00')
         surge = fare_pricing.surge_multiplier or surge
+    if getattr(trip, 'end_rule', '') == 'platform_funded':
+        base_fare = distance_fare = time_fare = Decimal('0.00')
 
-    total = trip.final_fare or trip.estimated_fare or Decimal('0.00')
+    total = _total_fare(trip)
     date_str = (trip.completed_at or timezone.now()).strftime('%d %b %Y, %H:%M')
 
     return _RECEIPT_TEMPLATE.format(
@@ -253,6 +276,8 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
         gst_rate=str(gst_rate),
         gst_amount=format_money(gst_amount, currency),
         total_fare=format_money(total, currency),
+        note_row=(f'<tr><td colspan="2"><b>{escape(operator_end_note(trip))}</b></td></tr>'
+                  if operator_end_note(trip) else ''),
         tax_label=escape(str(tax_label)),
         payment_method=escape(str(trip.payment_method or '—')),
         payment_status=escape(str(trip.payment_status or '—')),
@@ -343,6 +368,8 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     distance_fare = (fp.distance_fare if fp else None) or 0
     time_fare = (fp.time_fare if fp else None) or 0
     surge = (fp.surge_multiplier if fp else None) or 1
+    if getattr(trip, 'end_rule', '') == 'platform_funded':
+        base_fare = distance_fare = time_fare = 0
 
     # Currency and tax label come from the receipt row and its trip's zone, not
     # from a constant. This table said "Amount (Rs.)" and "GST" for every market.
@@ -357,6 +384,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         ['Time fare', format_money(time_fare, _currency, with_symbol=False)],
         ['Surge multiplier', f'x {surge}'],
         [_tax_label, format_money(receipt.gst_amount, _currency, with_symbol=False)],
+        *([[operator_end_note(trip), '']] if operator_end_note(trip) else []),
         ['Total fare', format_money(receipt.total_fare, _currency, with_symbol=False)],
     ]
     fare_table = Table(fare_rows, colWidths=[110 * mm, 55 * mm])
@@ -583,7 +611,7 @@ def issue_receipt(trip, force_resend: bool = False):
 
     gst_rate = _resolve_tax_rate(trip)
     fare_pricing = FarePricing.objects.filter(trip_id=trip).order_by('-id').first()
-    total = trip.final_fare or trip.estimated_fare or Decimal('0.00')
+    total = _total_fare(trip)
 
     tax = _receipt_tax(trip, total, gst_rate)
     gst_amount, tax_mode = tax['amount'], tax['mode']
@@ -635,7 +663,7 @@ def reissue_receipt(trip):
     gst_rate = _resolve_tax_rate(trip)
     from servers.ride.models import FarePricing
     fare_pricing = FarePricing.objects.filter(trip_id=trip).order_by('-id').first()
-    total = trip.final_fare or trip.estimated_fare or Decimal('0.00')
+    total = _total_fare(trip)
     tax = _receipt_tax(trip, total, gst_rate)
     gst_amount = tax['amount']
     receipt_number = f"SG-{(trip.completed_at or timezone.now()).strftime('%Y%m')}-{trip.id}-v{new_version}"

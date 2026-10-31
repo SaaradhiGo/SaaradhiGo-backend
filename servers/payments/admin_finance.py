@@ -25,7 +25,7 @@ THE RULES EVERY ENDPOINT FOLLOWS
 import csv
 import io
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.conf import settings
 from django.db.models import Count, Q, Sum
@@ -714,6 +714,47 @@ def overview_rows(user, node, d_from, d_to, permission=READ):
     return out
 
 
+def platform_funded_ends(user, node, limit=100):
+    """Trips an operator ended under the platform-funded rule (safety incident, platform or
+    app fault) THIS WEEK (Monday on, in the server's time zone): the rider paid nothing and
+    the platform paid the driver. Scoped by `money_visible_to`; trip id, city, reason code
+    and amount only, nothing about the rider or the driver.
+
+    Returns `{week_start, count, totals: [{currency, count, driver_earnings_minor}], rows}`.
+    Totals are per currency, never a cross sum."""
+    from zoneinfo import ZoneInfo
+
+
+    from servers.ride.models import Trip
+
+    from .unsettled import city_node_of
+    from .weekly_payout import week_start_of
+
+    tz = ZoneInfo(settings.TIME_ZONE)
+    monday = week_start_of(timezone.now(), tz)
+    start = datetime.combine(monday, datetime.min.time(), tzinfo=tz)
+    qs = money_visible_to(
+        user, Trip, node, permission=READ,
+        queryset=Trip.objects.filter(end_rule='platform_funded', completed_at__gte=start))
+    totals = [{'currency': r['currency'], 'count': r['count'],
+               'driver_earnings_minor': r['earnings'] or 0}
+              for r in (qs.order_by().values('currency')
+                        .annotate(count=Count('id'), earnings=Sum('platform_funded_minor'))
+                        .order_by('currency'))]
+    rows = []
+    for trip in (qs.select_related('zone', 'zone__geo_node')
+                 .order_by('-completed_at', '-id')[:limit]):
+        city = city_node_of(trip)
+        rows.append({
+            'trip_id': trip.id, 'city': _city(city), 'completed_at': trip.completed_at,
+            'reason_code': trip.end_reason_code,
+            'driver_earnings_minor': trip.platform_funded_minor or 0,
+            'currency': trip.currency or '',
+        })
+    return {'week_start': monday, 'count': sum(t['count'] for t in totals),
+            'totals': totals, 'rows': rows}
+
+
 def skipped_in_latest_runs(user, node):
     """Per country: how many drivers the LATEST weekly run skipped (no payout handle),
     counting only drivers inside the viewer's scope (money_visible_to on the driver's
@@ -761,6 +802,7 @@ def finance_overview(request):
     out = overview_rows(request.user, node, d_from, d_to)
     skipped = skipped_in_latest_runs(request.user, node)
     unsettled, unsettled_count = unsettled_rows(request.user, node)
+    platform_funded = platform_funded_ends(request.user, node)
     names = {n.id: n for n in GeoNode.objects.filter(id__in={k[0] for k in out if k[0]})}
     columns = ['gross_minor', 'commission_minor', 'driver_net_minor', 'refunds_minor',
                'payouts_paid_minor', 'payouts_pending_minor', 'payouts_failed_minor']
@@ -790,6 +832,9 @@ def finance_overview(request):
         # (module 9 owner item). Scoped by money_visible_to; no rider or driver detail.
         'unsettled_trips': unsettled,
         'unsettled_trips_count': unsettled_count,
+        # Started trips an operator ended as a safety incident or platform fault this week:
+        # the rider paid 0 and the platform paid the driver. Scoped; no rider or driver detail.
+        'platform_funded_trip_ends': platform_funded,
         'note': 'Totals are grouped by currency. Nothing is summed across currencies.',
     }, status.HTTP_200_OK)
 

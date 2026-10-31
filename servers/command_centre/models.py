@@ -81,7 +81,12 @@ SAFETY_COVERAGE_GAP = 'safety_coverage_gap'
 #: (`payments.unsettled`).
 SETTLEMENT_NO_COMMISSION_RULE = 'settlement.no_commission_rule'
 #: Kinds that are money, not operations: `_visible_alerts` shows them by `finance.read`.
-FINANCE_ALERT_KINDS = frozenset({SETTLEMENT_NO_COMMISSION_RULE})
+#: An operator ended a STARTED stale trip under the platform-funded rule (safety incident or
+#: platform/app fault): the rider paid 0 and the platform paid the driver. Warning, one per
+#: trip, anchored to the trip's city, Finance (`finance.read` in scope) and Super Admin. It
+#: is acknowledged by Finance once seen (`ACK_PERMISSION`).
+FINANCE_PLATFORM_FUNDED_END = 'finance.platform_funded_trip_end'
+FINANCE_ALERT_KINDS = frozenset({SETTLEMENT_NO_COMMISSION_RULE, FINANCE_PLATFORM_FUNDED_END})
 #: Module 11: a notification provider's failure rate over the last 15 minutes is above its
 #: threshold (warning). Platform health, not operations: visible to Super Admin only, which
 #: is to say holders of `platform.settings`. It clears itself when the rate recovers, and can
@@ -91,6 +96,7 @@ NOTIFY_PROVIDER_FAILING = 'notify.provider_failing'
 PLATFORM_ALERT_KINDS = frozenset({NOTIFY_PROVIDER_FAILING})
 ACK_PERMISSION = {
     NOTIFY_PROVIDER_FAILING: 'platform.settings',
+    FINANCE_PLATFORM_FUNDED_END: 'finance.read',
     SOS_UNANCHORED: 'safety.respond',
     SAFETY_SOS_ESCALATED: 'safety.respond',
     SAFETY_INCIDENT_UNASSIGNED: 'safety.respond',

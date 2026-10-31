@@ -7,6 +7,9 @@ The driver's settlement balance (`Wallet`, scope driver) moves only through
 
   * `trip_earnings`  credit   an online or wallet trip: the platform owes the net fare
   * `trip_commission` debit   a cash trip: the driver owes the commission
+  * `platform_funded_trip_end`  credit   an operator ended a started trip as a safety incident
+                      or platform fault: the rider paid nothing and the platform pays the
+                      driver the earnings (fare minus the commission that would have applied)
   * `withdrawal`     debit    a payout request (taken at request time)
   * `refund_rejected_withdrawal` / `refund_failed_withdrawal`  credit   money
     returned because the payout was rejected, or failed at the gateway
@@ -64,6 +67,7 @@ ENTRY_KINDS = {
     'adjustment': 'adjustment',
     'trip_earnings': 'settlement',
     'trip_commission': 'settlement',
+    'platform_funded_trip_end': 'platform_funded_trip_end',
     'withdrawal': 'withdrawal_requested',
     'refund_rejected_withdrawal': 'withdrawal_rejected',
     'refund_failed_withdrawal': 'withdrawal_returned',

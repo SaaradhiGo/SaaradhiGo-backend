@@ -455,6 +455,8 @@ INVENTORY = {
     'api/v1/rider/admin/<int:rider_id>/': True,
     'api/v1/ride/admin/trips/': True,
     'api/v1/ride/admin/trips/<int:trip_id>/': True,
+    # Figures and codes only; answers 400 for a trip that is not a stale started one.
+    'api/v1/ride/admin/trips/<int:trip_id>/stale/release-preview/': False,
     'api/v1/ride/admin/dashboard/': False,
     'api/v1/payments/admin/payments/': True,
     'api/v1/payments/admin/transactions/': True,
@@ -564,6 +566,7 @@ SEARCH_TERMS = {
     'api/v1/search/admin/drivers/': lambda ids: '?q=Suresh',
     'api/v1/search/admin/riders/': lambda ids: '?q=Ravi',
     'api/v1/search/admin/vehicles/': lambda ids: '?q=TS09AB1234',
+    'api/v1/ride/admin/trips/<int:trip_id>/stale/release-preview/': lambda ids: '?reason_code=other',
     'api/v1/support/admin/macros/<int:macro_id>/preview/': lambda ids: f'?ticket={ids["ticket_id"]}',
 }
 

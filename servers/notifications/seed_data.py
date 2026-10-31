@@ -3,6 +3,8 @@
     commission.increase_notice   a commission increase is coming (drains DriverNotice)
     payout.missing_details       the weekly payout skipped you: add payout details
     trips.operator_cancelled     support cancelled a stale trip the driver never reached (rider)
+    trips.operator_ended_rider   support ended a stale STARTED trip: what the rider pays (rider)
+    trips.operator_ended_driver  support ended a stale STARTED trip: what the driver earns (driver)
 
 The first two are TRANSACTIONAL, for India and the United States, on in_app + push + sms +
 email. The rider cancellation notice is on in_app + push only (no SMS, no email).
@@ -20,6 +22,8 @@ from . import templating
 COMMISSION = 'commission.increase_notice'
 PAYOUT = 'payout.missing_details'
 OPERATOR_CANCELLED = 'trips.operator_cancelled'
+OPERATOR_ENDED_RIDER = 'trips.operator_ended_rider'
+OPERATOR_ENDED_DRIVER = 'trips.operator_ended_driver'
 
 _COMMISSION_VARS = ['effective_date', 'scope', 'old_rate', 'new_rate']
 _COMMISSION_SAMPLE = {'effective_date': '12 November 2026', 'scope': 'Sedan in Hyderabad',
@@ -76,10 +80,34 @@ COPY = {
         title='Your ride was cancelled',
         body='Trip #{trip_id} was cancelled by support. You have not been charged.',
         variables=['trip_id'], sample={'trip_id': '1042'}),
+
+    (OPERATOR_ENDED_RIDER, 'in_app'): dict(
+        title='Your ride was ended',
+        body='Trip #{trip_id} was ended by SaaradhiGo support. {charge_text}',
+        variables=['trip_id', 'charge_text'],
+        sample={'trip_id': '1042', 'charge_text': 'You have not been charged.'}),
+    (OPERATOR_ENDED_RIDER, 'push'): dict(
+        title='Your ride was ended',
+        body='Trip #{trip_id} was ended by SaaradhiGo. {charge_text}',
+        variables=['trip_id', 'charge_text'],
+        sample={'trip_id': '1042', 'charge_text': 'You have not been charged.'}),
+    (OPERATOR_ENDED_DRIVER, 'in_app'): dict(
+        title='Your trip was ended',
+        body='Trip #{trip_id} was ended by SaaradhiGo support. {earnings_text} You are free '
+             'to take new trips.',
+        variables=['trip_id', 'earnings_text'],
+        sample={'trip_id': '1042', 'earnings_text': 'You earn Rs. 120.00 for the distance driven.'}),
+    (OPERATOR_ENDED_DRIVER, 'push'): dict(
+        title='Your trip was ended',
+        body='Trip #{trip_id} was ended by SaaradhiGo. {earnings_text}',
+        variables=['trip_id', 'earnings_text'],
+        sample={'trip_id': '1042', 'earnings_text': 'You earn Rs. 120.00 for the distance driven.'}),
 }
 
 #: Channels each key is seeded on. Anything not listed uses all of CHANNELS.
-KEY_CHANNELS = {OPERATOR_CANCELLED: ('in_app', 'push')}
+KEY_CHANNELS = {OPERATOR_CANCELLED: ('in_app', 'push'),
+                OPERATOR_ENDED_RIDER: ('in_app', 'push'),
+                OPERATOR_ENDED_DRIVER: ('in_app', 'push')}
 
 COUNTRIES = ('IN', 'US')
 CHANNELS = ('in_app', 'push', 'sms', 'email')
@@ -93,7 +121,8 @@ def dlt_text(body):
 def seed_rows():
     """`[(key, channel, country, fields, active)]` in a stable order."""
     rows = []
-    for key in (COMMISSION, PAYOUT, OPERATOR_CANCELLED):
+    for key in (COMMISSION, PAYOUT, OPERATOR_CANCELLED, OPERATOR_ENDED_RIDER,
+                OPERATOR_ENDED_DRIVER):
         for country in COUNTRIES:
             for channel in KEY_CHANNELS.get(key, CHANNELS):
                 copy = dict(COPY[(key, channel)])

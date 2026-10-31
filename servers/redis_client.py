@@ -576,7 +576,32 @@ def _validate_coordinates(lng, lat):
     return True, None
 
 
-def add_driver_location(driver_id, lng, lat):
+def _record_live_position(driver_id, lat, lng, heading):
+    """Last known position of every live driver, on a trip or not (Live Ops map).
+
+    The geo index drops a driver who is on a trip, so it cannot answer "where is
+    everybody". One short-lived key per driver can. Best effort: the map losing
+    a dot must never cost a driver a location ping.
+    """
+    try:
+        import json
+        import time
+
+        from servers.live_ops.config import LIVEPOS_PREFIX, LIVEPOS_TTL_SECONDS
+
+        try:
+            heading = round(float(heading), 1) if heading is not None else None
+        except (TypeError, ValueError):
+            heading = None
+        redis_client.setex(
+            f'{LIVEPOS_PREFIX}{driver_id}', LIVEPOS_TTL_SECONDS,
+            json.dumps([lat, lng, heading, round(time.time(), 1)], separators=(',', ':')),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug('live position not recorded for driver %s: %s', driver_id, exc)
+
+
+def add_driver_location(driver_id, lng, lat, heading=None):
     """
     Add or update driver location in Redis geospatial index.
     
@@ -584,6 +609,7 @@ def add_driver_location(driver_id, lng, lat):
         driver_id: Unique driver identifier
         lng: Longitude coordinate
         lat: Latitude coordinate
+        heading: Optional compass bearing, only for the Live Ops map
 
     Returns:
         dict: Status and message
@@ -619,6 +645,7 @@ def add_driver_location(driver_id, lng, lat):
         # Refresh the presence heartbeat on every ping. The geo entry is
         # only trusted while this key is alive (see sweep_stale_drivers).
         redis_client.setex(f'{HEARTBEAT_PREFIX}{driver_id}', HEARTBEAT_TTL_SECONDS, '1')
+        _record_live_position(driver_id, lat, lng, heading)
 
         update_driver_location(driver_id=driver_id, lat=lat, lng=lng)
 
@@ -799,6 +826,12 @@ def remove_driver(driver_id):
                 removed += redis_client.zrem(GEO_KEY, member)
 
         redis_client.delete(f'{HEARTBEAT_PREFIX}{driver_id}')
+        try:
+            from servers.live_ops.config import LIVEPOS_PREFIX
+
+            redis_client.delete(f'{LIVEPOS_PREFIX}{driver_id}')
+        except Exception:  # noqa: BLE001 - the map's key is best effort
+            pass
 
         if removed > 0:
             logger.info(f"Driver {driver_id} removed from geo index")

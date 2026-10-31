@@ -181,6 +181,11 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # (a second run is refused at the unique key and writes nothing), the alert is one per
         # trip and clears itself, and it changes no rule, fare or approval.
         'payments.retry_unsettled_trips',
+        # Live Ops map supply sampler (module 10). Trigger: beat, every minute. acks_late is
+        # safe: a sample is keyed by (minute, city, cell) and written with ignore_conflicts, so
+        # a redelivered run writes the same rows once. Reads Redis, writes counts per cell
+        # only (no driver id); no trip, money or driver status.
+        'live_ops.sample_supply',
         'pricing.fare_shadow_sweep',
         # No explicit name= on the decorator, unlike its siblings in the same
         # module, so Celery registers the full dotted path. Nothing references

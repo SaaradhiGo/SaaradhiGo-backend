@@ -306,6 +306,9 @@ def _check_settlements(r, country, currency, start, end):
                        status_id__status_code='completed', driver_id__isnull=False,
                        currency=currency, zone__country=country)
                .exclude(Exists(settled))
+               # A platform-funded operator end has no settlement by design: the rider paid
+               # nothing and no commission was recorded (its driver credit is the ledger line).
+               .exclude(end_rule='platform_funded')
                .select_related('zone__geo_node')[:MAX_ITEMS_PER_CHECK])
     for trip in missing:
         r.raise_item(K.TRIP_NO_SETTLEMENT, f't{trip.id}', trip=trip,

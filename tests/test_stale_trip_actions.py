@@ -10,7 +10,8 @@ WHAT THESE PROVE
     the same silence is not flagged again (new silence after activity is);
   * release-driver, case by case: A (finished trip, driver still marked busy),
     B (ghost trip before pickup: operator cancellation, no fee, marker cleared,
-    rider told), C (started trip: refused, needs fare policy), D (not stale:
+    rider told), C (started trip: needs a reason code; the money is proved in
+    test_stale_started_release.py), D (not stale:
     refused, nothing changes);
   * no TripSettlement, wallet transaction, payment, transaction-history,
     withdrawal or payout-run row is created by either action in any case;
@@ -38,7 +39,6 @@ from servers.payments.models import (
 from servers.redis_client import (
     clear_driver_active_trip, get_driver_active_trip, set_driver_active_trip,
 )
-from servers.ride.admin_stale import STARTED_POLICY_MESSAGE
 from servers.ride.liveness import flag_stale_trips, record_driver_activity
 from servers.ride.models import Trip, driver_active_trip_ids
 from servers.rider.models import WalletTransaction
@@ -392,24 +392,21 @@ class TestCaseA:
 
 
 class TestCaseC:
-    def test_a_started_trip_is_refused_and_nothing_changes(self, geo, world):
+    def test_a_started_trip_without_a_reason_code_is_a_400_and_nothing_changes(
+            self, geo, world):
         trip = world['ghost'](status='in_progress')
         driver = world['driver']
         set_driver_active_trip(driver.id, trip.id)
         client, _ = operator('city_ops_manager', geo)
         before = money_rows()
         response = post(client, trip, 'release-driver')
-        assert response.status_code == 409
-        error = response.json()['error']
-        assert error['code'] == 'started_trip_needs_policy'
-        assert 'fare policy' in error['message']
+        assert response.status_code == 400
+        assert response.json()['error']['code'] == 'REASON_CODE_REQUIRED'
         trip.refresh_from_db()
         assert trip.status_id.status_code == 'in_progress' and trip.cancelled_by == ''
         assert trip.stale_flagged_at is not None
         assert str(get_driver_active_trip(driver.id)) == str(trip.id)
         assert money_rows() == before
-        refused = audit('trip_stale_driver_released_refused', trip).get()
-        assert refused.after['case'] == 'C' and refused.after['code'] == error['code']
         assert not audit('trip_stale_driver_released', trip).exists()
         assert not audit('trip_cancelled', trip).exists()
 
@@ -473,19 +470,22 @@ class TestDetailPayload:
         body = self.detail(client, trip)
         actions = body['stale_actions']
         assert actions['can_resolve'] and actions['mark_reviewed'] and actions['release_driver']
-        assert actions['release_case'] == 'B' and actions['refusal'] is None
+        assert actions['release_case'] == 'B' and actions['reason_codes'] == []
         assert body['stale_detail']['silent_seconds'] >= 1700
         assert body['stale_detail']['reviewed_at'] is None
 
-    def test_a_started_trip_offers_review_and_carries_the_policy_refusal(self, geo, world):
+    def test_a_started_trip_offers_review_and_the_release_with_its_reason_codes(
+            self, geo, world):
         trip = world['ghost'](status='in_progress')
         client, _ = operator('city_ops_manager', geo)
         actions = self.detail(client, trip)['stale_actions']
-        assert actions['mark_reviewed'] is True and actions['release_driver'] is False
+        assert actions['mark_reviewed'] is True and actions['release_driver'] is True
         assert actions['release_case'] == 'C'
-        assert actions['refusal'] == {'code': 'started_trip_needs_policy',
-                                      'message': STARTED_POLICY_MESSAGE}
-        assert actions['routes'] == ['safety', 'support']
+        assert [(c['code'], c['rule']) for c in actions['reason_codes']] == [
+            ('driver_unresponsive', 'standard'), ('trip_abandoned', 'standard'),
+            ('other', 'standard'), ('safety_incident', 'platform_funded'),
+            ('platform_fault', 'platform_funded')]
+        assert 'refusal' not in actions and 'routes' not in actions
 
     def test_a_trip_that_is_not_stale_offers_nothing(self, geo, world):
         trip = world['ghost'](stale_flagged_at=None, stale_reason='',
@@ -510,7 +510,7 @@ class TestDetailPayload:
         actions = self.detail(client, trip)['stale_actions']
         assert actions['can_resolve'] is False
         assert actions['mark_reviewed'] is False and actions['release_driver'] is False
-        assert actions['refusal'] is None
+        assert actions['reason_codes'] == []
 
     def test_the_new_blocks_carry_no_contact_detail_or_coordinates(self, geo, world):
         import json

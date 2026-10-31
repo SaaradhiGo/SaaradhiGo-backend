@@ -167,6 +167,17 @@ class Trip(CurrencyStampedModel, models.Model):
     )
     cancellation_fee=MinorUnitsAmount('cancellation_fee_minor')
 
+    # An operator ended this STARTED trip from the Stale trip panel (case C,
+    # `servers.ride.operator_end`). Blank on every other trip. `end_rule` says which
+    # of the two owner rules applied: 'standard' (rider pays the capped fare for the
+    # distance driven) or 'platform_funded' (rider pays 0, the platform pays the
+    # driver). `platform_funded_minor` is what the platform paid the driver.
+    end_reason_code=models.CharField(max_length=32, blank=True, default='', db_index=True)
+    end_rule=models.CharField(max_length=16, blank=True, default='', db_index=True)
+    ended_by=models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    platform_funded_minor=models.BigIntegerField(null=True, blank=True)
+
     # Zone the pickup fell in, resolved at booking time. Stamped on the row
     # so fare/commission/GST attribution and per-city reporting do not have
     # to re-run a point-in-polygon lookup against today's zone table.
@@ -268,9 +279,14 @@ class FarePricing(CurrencyStampedModel, models.Model):
 
     SNAPSHOT_QUOTE = 'quote'
     SNAPSHOT_FINAL = 'final'
+    #: An operator ended a started trip (`servers.ride.operator_end`): the distance
+    #: and elapsed time driven, the uncapped fare (`total_fare_minor`), the fare
+    #: after the cap (`gross_fare_minor`) and what the rider pays (`rider_payable_minor`).
+    SNAPSHOT_OPERATOR_END = 'ops_end'
     SNAPSHOT_CHOICES = [
         (SNAPSHOT_QUOTE, 'Quote at booking'),
         (SNAPSHOT_FINAL, 'Final at completion'),
+        (SNAPSHOT_OPERATOR_END, 'Ended by an operator'),
     ]
 
     # How the billable quantities were arrived at. `estimate_legacy` is what

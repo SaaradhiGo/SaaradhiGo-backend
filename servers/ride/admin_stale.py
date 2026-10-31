@@ -26,15 +26,17 @@ Four cases, decided under a row lock on the trip:
   B  a ghost trip BEFORE pickup (accepted / reached) that is stale: cancelled as
      an operator cancellation through `admin_trips.operator_cancel`, with no fee
      to the rider and nothing paid to the driver, and the marker cleared.
-  C  a STARTED trip (in_progress): refused, `started_trip_needs_policy`. Ending a
-     started ride decides what the rider owes and what the driver earns, and
-     nobody has decided that. This module does not terminate started trips.
+  C  a STARTED trip (in_progress): ended by the operator under the owner's ruling
+     (`servers.ride.operator_end`). A reason code is required and decides the rule:
+     the rider pays the fare for the distance driven, capped at the upfront price
+     (driver_unresponsive, trip_abandoned, other), or the rider pays 0 and the
+     platform pays the driver (safety_incident, platform_fault).
   D  not stale: refused, `trip_active`. Nothing changes.
 
-NOTHING HERE TOUCHES MONEY. No fare, wallet, settlement, commission, ledger or
-payout row is created or changed. (Case B's only money-adjacent step is the one
-every cancellation already takes: an online payment the rider had already made
-for a trip that will not happen goes back to the rider.)
+MONEY. Cases A and B move none (B's only money-adjacent step is the one every
+cancellation already takes: an online payment the rider had already made for a trip
+that will not happen goes back to the rider). Case C moves exactly the money the
+ruling names and nothing else; see `operator_end`.
 """
 
 import logging
@@ -52,6 +54,7 @@ from servers.admin_audit.services import record_admin_action
 from .admin_trips import (
     TARGET, BadInput, _iso, _text, _trip_for_write, operator_cancel, stale_reason,
 )
+from . import operator_end
 from .models import Trip
 
 logger = logging.getLogger(__name__)
@@ -62,12 +65,6 @@ PRE_PICKUP = ('accepted', 'reached')
 FINISHED = ('completed', 'cancelled')
 CANCEL_CODE = 'operator_released_stale'
 
-STARTED_POLICY_MESSAGE = (
-    'Ending a ride that has already started needs the fare policy: what the rider '
-    'owes and what the driver earns. That has not been decided, so it cannot be '
-    'done from here. Use the Safety or Support route for this trip.'
-)
-STARTED_ROUTES = ('safety', 'support')
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +88,7 @@ def stale_actions(user, trip, reason=None):
 
     Built so the console never offers a button that will fail: `mark_reviewed` and
     `release_driver` are true only when the call would be accepted. For a started
-    trip the policy refusal text and the support routes are carried instead.
+    trip (case C) the reason codes the release needs are carried as well.
     """
     allowed = granted(user, PERMISSION, node_of(trip))[0]
     stale = reason if reason is not None else stale_reason(trip)
@@ -101,8 +98,7 @@ def stale_actions(user, trip, reason=None):
         'mark_reviewed': False,
         'release_driver': False,
         'release_case': None,
-        'refusal': None,
-        'routes': [],
+        'reason_codes': [],
         'reason_min_length': REASON_MIN,
         'reason_max_length': REASON_MAX,
     }
@@ -117,10 +113,8 @@ def stale_actions(user, trip, reason=None):
         if code in PRE_PICKUP:
             out.update(release_driver=True, release_case='B')
         elif code == 'in_progress':
-            out.update(release_case='C',
-                       refusal={'code': 'started_trip_needs_policy',
-                                'message': STARTED_POLICY_MESSAGE},
-                       routes=list(STARTED_ROUTES))
+            out.update(release_driver=True, release_case='C',
+                       reason_codes=operator_end.reason_code_options())
     return out
 
 
@@ -242,6 +236,7 @@ def admin_stale_release_driver(request, trip_id):
 
     driver_id = None
     cancelled = False
+    ended = None
     with transaction.atomic():
         trip = _locked(trip.id)
         if trip is None:
@@ -256,6 +251,13 @@ def admin_stale_release_driver(request, trip_id):
             return _refuse(request, trip, action=RELEASE_ACTION, code='no_driver_assigned',
                            message='No driver is assigned to this trip, so there is no '
                                    'driver to release.')
+
+        if trip.end_rule:
+            return _refuse(request, trip, action=RELEASE_ACTION, case='C',
+                           code='already_ended',
+                           message='An operator already ended this trip. Nothing more to do.',
+                           extra={'end_rule': trip.end_rule,
+                                  'reason_code': trip.end_reason_code})
 
         if code in FINISHED:
             # Case A: the database is the truth, the Redis marker is what changes.
@@ -280,33 +282,44 @@ def admin_stale_release_driver(request, trip_id):
                                    'cannot be released from it.')
 
         if code == 'in_progress':
-            # Case C: refused until the fare policy exists.
-            return _refuse(request, trip, action=RELEASE_ACTION, case='C',
-                           code='started_trip_needs_policy', message=STARTED_POLICY_MESSAGE,
-                           extra={'routes': list(STARTED_ROUTES)})
-
-        if code not in PRE_PICKUP:
+            # Case C: the operator ends the started trip (the reason code decides the rule).
+            refusal_response, plan, done = _end_started_trip(
+                request, trip, reason=reason, before=before)
+            if refusal_response is not None:
+                return refusal_response
+            ended = (plan, done)
+            cancelled = True
+        elif code not in PRE_PICKUP:
             return _refuse(request, trip, action=RELEASE_ACTION, code='not_releasable',
                            message=f'A {code} trip has no driver to release.')
 
-        # Case B: a ghost trip before pickup. The existing operator cancellation
-        # with the fee waived, then a note of exactly what happened.
-        result, trip = operator_cancel(
-            trip.id, reason_code=CANCEL_CODE, waive_fee=True, audit_reason=reason,
-            http_request=request, stale_release=True)
-        if result != 'cancelled':
-            return _refuse(request, trip, action=RELEASE_ACTION, case='B',
-                           code='not_releasable',
-                           message='The trip changed while you were looking at it. Reload it.')
-        Trip.objects.filter(id=trip.id).update(stale_flagged_at=None, stale_reason='')
-        cancelled = True
-        pending = {'case': 'B', 'before': before}
+        if ended is None:
+            # Case B: a ghost trip before pickup. The existing operator cancellation
+            # with the fee waived, then a note of exactly what happened.
+            result, trip = operator_cancel(
+                trip.id, reason_code=CANCEL_CODE, waive_fee=True, audit_reason=reason,
+                http_request=request, stale_release=True)
+            if result != 'cancelled':
+                return _refuse(request, trip, action=RELEASE_ACTION, case='B',
+                               code='not_releasable',
+                               message='The trip changed while you were looking at it. '
+                                       'Reload it.')
+            Trip.objects.filter(id=trip.id).update(stale_flagged_at=None, stale_reason='')
+            cancelled = True
+            pending = {'case': 'B', 'before': before}
 
     # Outside the lock: the cancel's after-commit work has run (marker cleared,
     # notices sent). Confirm that Redis really agrees, and repair if it did not.
     marker = reconcile_driver_active_trip(driver_id)
     extra = {'driver_marker': 'cleared' if marker in ('ok', 'repaired_cleared')
              else marker}
+    if ended is not None:
+        plan, done = ended
+        return success_response(
+            {'trip_id': trip.id, 'driver_id': driver_id, 'case': 'C',
+             'outcome': 'ended_by_operator', 'driver_released': True,
+             'trip_status': 'completed', **plan.as_dict(), **done, **extra},
+            status.HTTP_200_OK)
     record_admin_action(
         request, action=RELEASE_ACTION, target_type=TARGET, target_id=trip.id,
         before=pending['before'],
@@ -318,3 +331,72 @@ def admin_stale_release_driver(request, trip_id):
          'outcome': 'cancelled_and_released', 'driver_released': cancelled,
          'trip_status': 'cancelled', 'rider_charged_minor': 0, 'driver_fee_minor': 0, **extra},
         status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# Case C: end a started trip
+# ---------------------------------------------------------------------------
+
+def _reason_code(data):
+    """The release reason code for a started trip: required, one of the named constants."""
+    value = _text(data, 'reason_code', required=True, limit=32)
+    if value not in operator_end.REASON_CODES:
+        raise BadInput('INVALID_REASON_CODE',
+                       f'reason_code must be one of {", ".join(operator_end.REASON_CODES)}.',
+                       'reason_code')
+    return value
+
+
+def _end_started_trip(request, trip, *, reason, before):
+    """`(refusal_response, plan, done)`. Runs inside the caller's transaction, the trip
+    row locked and already known to be stale."""
+    try:
+        reason_code = _reason_code(request.data)
+    except BadInput as exc:
+        return exc.response(), None, None
+    try:
+        plan = operator_end.build_plan(trip, reason_code)
+    except operator_end.Unavailable as exc:
+        return (_refuse(request, trip, action=RELEASE_ACTION, case='C', code=exc.code,
+                        message=exc.message, extra={'reason_code': reason_code}), None, None)
+    done = operator_end.apply_plan(trip, plan, actor=request.user)
+    record_admin_action(
+        request, action=RELEASE_ACTION, target_type=TARGET, target_id=trip.id, before=before,
+        after={'case': 'C', 'outcome': 'ended_by_operator', 'driver_id': trip.driver_id_id,
+               'driver_released': True, **plan.as_dict(), **done}, reason=reason)
+    return None, plan, done
+
+
+def _preview_for(request, trip_id):
+    trip, refusal = _trip_for_write(request, trip_id, PERMISSION)
+    if refusal:
+        return None, refusal
+    code = trip.status_id.status_code if trip.status_id else ''
+    if code != 'in_progress' or not stale_reason(trip) or trip.driver_id_id is None:
+        return None, error_response(
+            code='not_a_stale_started_trip',
+            message='Only a started trip that is stale can be ended from here.',
+            field='trip_id', issue=code, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        reason_code = _reason_code(request.query_params)
+        return operator_end.build_plan(trip, reason_code), None
+    except BadInput as exc:
+        return None, exc.response()
+    except operator_end.Unavailable as exc:
+        return None, error_response(code=exc.code, message=exc.message, field='trip_id',
+                                    issue=exc.message, status=status.HTTP_409_CONFLICT)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, ScopedPermission(PERMISSION)])
+def admin_stale_release_preview(request, trip_id):
+    """GET /ride/admin/trips/<id>/stale/release-preview/?reason_code=
+
+    Exactly the figures the release would apply, from the same code, so the dialog
+    shows the server's numbers. Writes nothing."""
+    plan, refusal = _preview_for(request, trip_id)
+    if refusal:
+        return refusal
+    return success_response({**plan.as_dict(),
+                             'reason_codes': operator_end.reason_code_options()},
+                            status.HTTP_200_OK)

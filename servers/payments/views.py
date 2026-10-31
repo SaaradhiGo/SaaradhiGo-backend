@@ -116,6 +116,14 @@ def create_order(request):
         )
 
     # Check if payment already exists
+    if trip.end_rule == 'platform_funded':
+        return error_response(
+            code='NOT_CHARGED',
+            message='This trip was ended by SaaradhiGo and you were not charged.',
+            field='trip_id', issue='Platform-funded operator end',
+            status=status.HTTP_409_CONFLICT
+        )
+
     existing = Payment.objects.filter(trip_id=trip, status='completed').first()
     if existing:
         return error_response(

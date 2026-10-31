@@ -2079,8 +2079,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 # credit_driver_wallet is idempotent on
                 # WalletTransaction.idempotency_key, so calling it again is a
                 # no-op if the trip was already settled.
-                from servers.driver.utils import credit_driver_wallet
-                credit_driver_wallet(trip)
+                from servers.driver.utils import settle_or_defer
+                settle_or_defer(trip)
 
             return {'success': True, 'message': 'Cash payment confirmed', 'rider_id': trip.user_id_id}
         except Trip.DoesNotExist:
@@ -2395,8 +2395,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             # inline meant every cash trip was counted twice in GMV and in
             # the commission report — and a third time if the driver later
             # tapped "confirm cash".
-            from servers.driver.utils import credit_driver_wallet
-            credit_driver_wallet(trip)
+            from servers.driver.utils import settle_or_defer
+            settle_or_defer(trip)
         elif payment_method == 'wallet':
             from base.utils import wallet_payment
             
@@ -2430,8 +2430,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         status='completed',
                     )
                 
-                from servers.driver.utils import credit_driver_wallet
-                credit_driver_wallet(trip)
+                from servers.driver.utils import settle_or_defer
+                settle_or_defer(trip)
             else:
                 logger.error(f"Wallet payment failed for trip {trip.id}: {wallet_result.get('error')}")
                 trip.payment_status = 'failed'

@@ -201,6 +201,8 @@ def test_a_duplicate_driver_earning_is_logged_not_just_swallowed(caplog, db):
                            vehicle_number='TS09OB9999')
     rider = User.objects.create_user(phone_number='+919733000001', role='rider')
     st, _ = TripStatus.objects.get_or_create(status_code='completed')
+    from conftest import ensure_zone_covering
+    ensure_zone_covering(LAT, LNG)
     trip = Trip.objects.create(
         user_id=rider, driver_id=driver, status_id=st,
         pickup_lat=Decimal(str(LAT)), pickup_long=Decimal(str(LNG)),

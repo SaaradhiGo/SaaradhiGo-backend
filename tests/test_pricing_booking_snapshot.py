@@ -79,6 +79,20 @@ async def _book_one(rider):
 
 
 async def test_a_booking_snapshots_the_rule_and_a_later_change_never_reaches_it():
+    def _ready():
+        from conftest import ensure_zone_covering
+        from servers.driver.models import VehicleType
+        from servers.pricing.models import RateCard, ServiceZone
+
+        # Self-sufficient: a transactional flush removes the migration-seeded Hyderabad.
+        zone = ensure_zone_covering(P_LAT, P_LNG)
+        vt, _ = VehicleType.objects.get_or_create(type='sedan')
+        if not RateCard.objects.filter(zone=zone, vehicle_type=vt).exists():
+            RateCard.objects.create(zone=zone, vehicle_type=vt, base_fare=30, per_km_fare=12,
+                                    per_min_fare=2, min_fare=50)
+        assert ServiceZone.objects.filter(pk=zone.pk).exists()
+
+    await asyncio.to_thread(_ready)
     rider = await asyncio.to_thread(
         User.objects.create_user, phone_number='+919600099001', role='rider')
     rule = await asyncio.to_thread(

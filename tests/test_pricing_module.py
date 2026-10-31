@@ -1388,3 +1388,18 @@ class TestStructure:
 
         with pytest.raises(ExecutionRefused):
             execute_pricing_change(SimpleNamespace(payload={'kind': 'nonsense'}))
+
+
+class TestACompletedTripIsNeverStrandedByAMissingRule:
+    def test_settle_or_defer_leaves_the_trip_unsettled_and_writes_nothing(self, world):
+        from servers.driver.utils import settle_or_defer
+
+        driver = make_driver(world.geo, 'IN-TG-HYD', 'X1', currency='INR', calling='91')
+        trip = make_trip(world.hyd, make_rider('X1', '91'), driver, fare='1000.00')
+        assert settle_or_defer(trip) is False
+        assert not TripSettlement.objects.filter(trip=trip).exists()
+        make_rule('IN', '15.00', node=world.geo['IN'])
+        assert settle_or_defer(trip) is True                      # once a rule exists it settles
+        assert TripSettlement.objects.filter(trip=trip).count() == 1
+        assert settle_or_defer(trip) is True                      # and stays idempotent
+        assert TripSettlement.objects.filter(trip=trip).count() == 1

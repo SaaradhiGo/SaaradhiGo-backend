@@ -64,6 +64,27 @@ def clear_driver_redis_state():
     _clear()
 
 
+def ensure_zone_covering(lat, lng, country='IN'):
+    """An active service zone around (lat, lng), so a trip booked there resolves a country.
+
+    Commission needs a country (module 8) and a country needs a zone. The migrations seed
+    Hyderabad, but a transactional test's flush removes the seed rows, so a test that
+    settles a coordinate-only trip calls this first. Idempotent.
+    """
+    from servers.pricing.models import ServiceZone
+
+    code = f'TEST-COVER-{country}'
+    zone = ServiceZone.objects.filter(code=code).first()
+    if zone is None:
+        la, lo = float(lat), float(lng)
+        ring = [[lo - 0.5, la - 0.5], [lo + 0.5, la - 0.5], [lo + 0.5, la + 0.5],
+                [lo - 0.5, la + 0.5], [lo - 0.5, la - 0.5]]
+        zone = ServiceZone.objects.create(
+            code=code, name=f'Test cover {country}', zone_type='city', country=country,
+            polygon_geojson={'type': 'Polygon', 'coordinates': [ring]}, priority=1, is_active=True)
+    return zone
+
+
 @pytest.fixture(autouse=True)
 def default_commission_rules(request):
     """An active country-level 15% commission rule for IN and US in every DB test.

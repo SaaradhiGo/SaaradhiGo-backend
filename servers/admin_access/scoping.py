@@ -65,6 +65,9 @@ SCOPE_PATHS = {
     # A rate card belongs to its zone.
     'pricing.RateCard': 'zone__geo_node__path',
 
+    # A zone revision belongs to its zone (module 9).
+    'pricing.ServiceZoneRevision': 'zone__geo_node__path',
+
     # A commission rule is anchored at the country or city node it applies to.
     'pricing.CommissionRule': 'geo_node__path',
 

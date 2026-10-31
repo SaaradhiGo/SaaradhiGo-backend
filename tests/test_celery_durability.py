@@ -176,6 +176,11 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # reference is never sent twice); the marker is not cleared first, so a worker
         # lost mid-run leaves the row selectable and nothing is orphaned.
         'payments.release_awaiting_rail',
+        # Retries trips left unsettled because no commission rule governed them (module 9).
+        # Trigger: beat, hourly. acks_late is safe: settlement is keyed by TRIP_<id>_EARNING
+        # (a second run is refused at the unique key and writes nothing), the alert is one per
+        # trip and clears itself, and it changes no rule, fare or approval.
+        'payments.retry_unsettled_trips',
         'pricing.fare_shadow_sweep',
         # No explicit name= on the decorator, unlike its siblings in the same
         # module, so Celery registers the full dotted path. Nothing references

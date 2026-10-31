@@ -501,6 +501,11 @@ INVENTORY = {
     'api/v1/pricing/admin/commission/rules/<int:rule_id>/preview/': False,
     'api/v1/pricing/admin/commission/config/': False,
     'api/v1/pricing/admin/fare-cards/overview/': False,
+    # Zones and geofences (module 9): shapes, revisions and pending requests name no person
+    # beyond the staff attribution block the renderer leaves alone.
+    'api/v1/pricing/admin/zones/pending/': False,
+    'api/v1/pricing/admin/zones/cities/': False,
+    'api/v1/pricing/admin/zones/(?P<pk>[^/.]+)/history/': False,
 }
 
 #: GET routes in the namespace that are deliberately not swept. The DRF

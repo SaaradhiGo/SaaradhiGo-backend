@@ -74,6 +74,14 @@ SAFETY_SIGNAL = 'safety_signal'
 #: when the gap is fixed. Being absent from `SOS_ALERT_KINDS` it is visible to
 #: whoever sees the city's other alerts.
 SAFETY_COVERAGE_GAP = 'safety_coverage_gap'
+#: Module 9 (owner item): a completed trip that could not be settled because no commission
+#: rule governs it. Critical, one per trip, anchored to the trip's city, visible only to
+#: `finance.read` holders in scope (and Super Admin); City Ops, Marketing and Analyst never
+#: see it. Not in `ACK_PERMISSION` on purpose: it clears itself when the trip settles
+#: (`payments.unsettled`).
+SETTLEMENT_NO_COMMISSION_RULE = 'settlement.no_commission_rule'
+#: Kinds that are money, not operations: `_visible_alerts` shows them by `finance.read`.
+FINANCE_ALERT_KINDS = frozenset({SETTLEMENT_NO_COMMISSION_RULE})
 ACK_PERMISSION = {
     SOS_UNANCHORED: 'safety.respond',
     SAFETY_SOS_ESCALATED: 'safety.respond',

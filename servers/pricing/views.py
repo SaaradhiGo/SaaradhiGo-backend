@@ -9,9 +9,10 @@ The admin surface is capability-checked AND scoped:
   * reads (`GET` list / retrieve / `effective`) need `zone.read`, which
     City Ops Manager, Finance, Analyst and Super Admin hold, and return
     only the zones (and the cards of the zones) under the caller's scope;
-  * writes need `pricing.write` (Super Admin and City Ops). Zone writes are
-    direct; RATE CARD writes go through maker-checker (`pricing.change`, always a
-    checker) since module 8. Every write is audited by `_AuditedPricingMixin`.
+  * RATE CARD writes need `pricing.write` and ZONE writes need `zone.write` (Super
+    Admin and City Ops). Both go through maker-checker (`pricing.change` since module
+    8, `zone.change` since module 9; always a checker). Applied changes are audited
+    by their executors.
 
 A zone outside the caller's scope answers 404 from `get_object()`, the
 same as one that does not exist.
@@ -19,6 +20,7 @@ same as one that does not exist.
 
 import logging
 
+from django.db.models import Max
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import SAFE_METHODS, AllowAny, IsAuthenticated
@@ -28,7 +30,13 @@ from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission
 from servers.admin_access.scoping import scoped, scoped_or_none
 from servers.admin_audit.services import record_admin_action
+from servers.approvals import scope as approval_scope
+from servers.approvals.models import REQUESTED, ApprovalRequest
+from servers.approvals.service import ApprovalError, NotInScope
+from servers.admin_access.models import GeoNode
 from servers.pricing import fare_card_workflow as fare_cards
+from servers.pricing import zone_impact
+from servers.pricing import zone_workflow as zone_flow
 from servers.pricing.models import RateCard, ServiceZone
 from servers.pricing.serializers import RateCardSerializer, ServiceZoneSerializer
 from servers.pricing.services import (
@@ -142,11 +150,225 @@ class _ScopedPricingMixin:
         return scoped(self.request.user, super().get_queryset())
 
 
+ZONE_WRITE = ScopedPermission('zone.write')
+
+
+def _zone_pending(outcome):
+    row = outcome.request
+    return success_response(
+        {'state': 'pending_approval' if row.status == 'requested' else row.status,
+         'approval_request': row.as_dict(), 'duplicate': outcome.duplicate},
+        status_code=status.HTTP_202_ACCEPTED)
+
+
+def _truthy(value):
+    return value in (True, 'true', 'True', 1, '1')
+
+
 class ServiceZoneViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.ModelViewSet):
+    """Service zones. Reads are direct; every change goes through maker-checker.
+
+    Module 9: creating a zone, changing its polygon or settings, deactivating,
+    reactivating and restoring a revision all raise a `zone.change` request (always a
+    checker) and answer **202** with the request. URLs are unchanged.
+
+      POST   /zones/                    a new zone                       -> 202
+      PATCH  /zones/<id>/               polygon / settings change        -> 202
+                                        `is_active` alone                -> (de)activation 202
+      DELETE /zones/<id>/               deactivation request (never deleted) -> 202
+      POST   /zones/<id>/restore/       {version, reason}                -> 202
+      POST   /zones/<id>/deactivate/    {reason}                         -> 202
+      POST   /zones/<id>/reactivate/    {reason}                         -> 202
+      GET    /zones/<id>/history/       revisions and pending requests   zone.read
+      GET    /zones/pending/            pending zone.change requests     zone.read, scoped
+      GET    /zones/cities/             city nodes a zone may be drawn in  zone.read, scoped
+      POST   /zones/preview/            impact preview of a draft        zone.read
+      POST   /zones/point-test/         which zone / cards a point gets  zone.read
+
+    Writes need `zone.write` (City Ops and Super Admin), in the zone's scope: a zone
+    outside scope is 404, one in scope without the capability is 403.
+    """
     audit_target_type = 'service_zone'
-    queryset = ServiceZone.objects.all().order_by('-priority', 'code')
+    queryset = ServiceZone.objects.select_related('geo_node', 'parent').order_by(
+        '-priority', 'code')
     serializer_class = ServiceZoneSerializer
     lookup_field = 'pk'
+
+    def get_permissions(self):
+        read_only_posts = ('preview', 'point_test')
+        gate = (PRICING_READ if self.request.method in SAFE_METHODS
+                or getattr(self, 'action', None) in read_only_posts else ZONE_WRITE)
+        return [IsAuthenticated(), gate]
+
+    def get_queryset(self):
+        return super().get_queryset().annotate(_version=Max('revisions__version'))
+
+    def create(self, request, *args, **kwargs):
+        data = dict(request.data) if hasattr(request.data, 'keys') else {}
+        try:
+            return _zone_pending(zone_flow.propose_create(
+                request.user, data, reason=str(data.get('reason') or ''), http_request=request))
+        except ApprovalError as exc:
+            return exc.response()
+
+    def update(self, request, *args, **kwargs):
+        zone = self.get_object()
+        data = dict(request.data) if hasattr(request.data, 'keys') else {}
+        reason = str(data.get('reason') or '')
+        status_change = 'is_active' in data
+        fields = {k for k in data if k not in ('reason', 'is_active')}
+        try:
+            if status_change and fields:
+                return Response(
+                    {'detail': 'Change the zone or activate/deactivate it, not both.'},
+                    status=status.HTTP_400_BAD_REQUEST)
+            if status_change:
+                wanted = _truthy(data['is_active'])
+                if wanted == zone.is_active:
+                    return Response({'detail': 'The zone is already in that state.'},
+                                    status=status.HTTP_409_CONFLICT)
+                flow = zone_flow.propose_reactivate if wanted else zone_flow.propose_deactivate
+                return _zone_pending(flow(request.user, zone, reason=reason,
+                                          http_request=request))
+            return _zone_pending(zone_flow.propose_update(
+                request.user, zone, {k: data[k] for k in fields}, reason=reason,
+                http_request=request))
+        except ApprovalError as exc:
+            return exc.response()
+
+    def destroy(self, request, *args, **kwargs):
+        zone = self.get_object()
+        try:
+            return _zone_pending(zone_flow.propose_deactivate(
+                request.user, zone, reason=str(request.data.get('reason') or ''),
+                http_request=request))
+        except ApprovalError as exc:
+            return exc.response()
+
+    @action(detail=True, methods=['post'], url_path='deactivate')
+    def deactivate(self, request, pk=None):
+        zone = self.get_object()
+        try:
+            return _zone_pending(zone_flow.propose_deactivate(
+                request.user, zone, reason=str(request.data.get('reason') or ''),
+                http_request=request))
+        except ApprovalError as exc:
+            return exc.response()
+
+    @action(detail=True, methods=['post'], url_path='reactivate')
+    def reactivate(self, request, pk=None):
+        zone = self.get_object()
+        try:
+            return _zone_pending(zone_flow.propose_reactivate(
+                request.user, zone, reason=str(request.data.get('reason') or ''),
+                http_request=request))
+        except ApprovalError as exc:
+            return exc.response()
+
+    @action(detail=True, methods=['post'], url_path='restore')
+    def restore(self, request, pk=None):
+        zone = self.get_object()
+        try:
+            return _zone_pending(zone_flow.propose_restore(
+                request.user, zone, request.data.get('version'),
+                reason=str(request.data.get('reason') or ''), http_request=request))
+        except ApprovalError as exc:
+            return exc.response()
+
+    @action(detail=True, methods=['get'], url_path='history')
+    def history(self, request, pk=None):
+        zone = self.get_object()
+        with_polygon = request.query_params.get('polygons') in ('1', 'true')
+        revisions = zone.revisions.order_by('-version')[:100]
+        pending = ApprovalRequest.objects.filter(
+            action_key='zone.change', target_type='service_zone', target_id=str(zone.id),
+            status=REQUESTED).order_by('-requested_at')
+        return success_response({
+            'zone': zone.code,
+            'version': zone_flow.current_version(zone),
+            'revisions': [r.as_dict(with_polygon=with_polygon) for r in revisions],
+            'pending_requests': [r.as_dict() for r in pending[:20]],
+        }, status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='pending')
+    def pending(self, request):
+        rows = approval_scope.visible(request.user, ApprovalRequest.objects.filter(
+            action_key='zone.change', status=REQUESTED)).order_by('-requested_at')[:100]
+        return success_response({'results': [r.as_dict() for r in rows]}, status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='cities')
+    def cities(self, request):
+        """The city nodes the caller may draw a zone in (zone.read, scoped)."""
+        nodes = scoped(request.user, GeoNode.objects.filter(kind='city')).select_related(
+            'parent').order_by('path')
+        return success_response({'results': [
+            {'code': n.code, 'name': n.name, 'status': n.status,
+             'country': n.country.code if n.country is not None else None}
+            for n in nodes]}, status.HTTP_200_OK)
+
+    def _draft(self, request):
+        """`((zone or None, values, geometry, area), None)` from a preview / tester body,
+        or `(None, ApprovalError)`. A zone outside scope is 404; for a NEW zone the city
+        node must be one the caller may reach."""
+        d = request.data or {}
+        zone = None
+        try:
+            if d.get('zone') not in (None, ''):
+                zone = scoped_or_none(request.user, ServiceZone.objects.select_related(
+                    'geo_node', 'parent'), pk=d.get('zone'))
+                if zone is None:
+                    raise NotInScope('No such zone.', field='zone')
+            raw = dict(d.get('values') or {})
+            if zone is not None:
+                values, geom, area, _ = zone_flow.clean_values(
+                    {**raw, 'market_override_reason': 'preview'}, zone_flow.zone_values(zone))
+                values['is_active'] = _truthy(d.get('is_active', zone.is_active))
+                zone_flow.check_world(values, geom, zone)
+            else:
+                node = scoped_or_none(request.user, GeoNode.objects.all(),
+                                      code=str(raw.get('geo_node') or ''))
+                if node is None or node.kind != 'city':
+                    raise NotInScope('No such city.', field='geo_node')
+                values, geom, area, _ = zone_flow.clean_values(
+                    {**raw, 'market_override_reason': 'preview'}, None)
+                zone_flow.check_world(values, geom)
+        except ApprovalError as exc:
+            return None, exc
+        return (zone, values, geom, area), None
+
+    @action(detail=False, methods=['post'], url_path='preview')
+    def preview(self, request):
+        """Impact preview of a draft. A draft that fails validation answers 200 with
+        `valid: false` and the error, so the editor can show it as the maker draws."""
+        drafted, refusal = self._draft(request)
+        if refusal is not None:
+            if refusal.status == status.HTTP_404_NOT_FOUND:
+                return refusal.response()
+            return success_response({'valid': False, 'error': {
+                'code': refusal.code, 'message': refusal.message, 'field': refusal.field}},
+                status.HTTP_200_OK)
+        zone, values, geom, _area = drafted
+        return success_response({'valid': True, **zone_impact.impact(zone, values, geom)},
+                                status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], url_path='point-test')
+    def point_test(self, request):
+        """Which zone and which fare cards a point resolves to, now and (when a draft is
+        given) under the draft. Same resolution function quoting uses."""
+        d = request.data or {}
+        overlay = None
+        if d.get('values') or d.get('zone') not in (None, ''):
+            drafted, refusal = self._draft(request)
+            if refusal is not None:
+                return refusal.response()
+            zone, values, geom, _area = drafted
+            overlay = zone_impact.draft_overlay(zone, values, geom)
+        try:
+            result = zone_impact.point_test(d.get('lat'), d.get('lng'), overlay=overlay)
+        except ValueError as exc:
+            return error_response(code='INVALID_POINT', message=str(exc), field='lat',
+                                  issue=str(exc), status=status.HTTP_400_BAD_REQUEST)
+        return success_response(result, status.HTTP_200_OK)
 
 
 class RateCardViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.ModelViewSet):

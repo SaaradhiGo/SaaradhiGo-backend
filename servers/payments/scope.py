@@ -61,6 +61,8 @@ ANCHORS = {
     'payments.Payment': 'trip_id__zone__geo_node__path',
     'payments.TripSettlement': 'trip__zone__geo_node__path',
     'ride.TripMoneyAction': 'trip__zone__geo_node__path',
+    # The Finance overview's unsettled-trips list: the trip's own city.
+    'ride.Trip': 'zone__geo_node__path',
     # --- the driver's home city ---------------------------------------------
     'driver.WithdrawalRequest': 'driver__home_city__path',
     'driver.Driver': 'home_city__path',
@@ -215,6 +217,8 @@ def node_for(obj):
         trip = getattr(obj, 'trip_id', None)
         zone = getattr(trip, 'zone', None)
         return getattr(zone, 'geo_node', None)
+    if label == 'ride.Trip':
+        return getattr(getattr(obj, 'zone', None), 'geo_node', None)
     if label in ('payments.TripSettlement', 'ride.TripMoneyAction'):
         zone = getattr(obj.trip, 'zone', None)
         return getattr(zone, 'geo_node', None)

@@ -55,6 +55,7 @@ from .models import (
     TripSettlement, WebhookEvent,
 )
 from .reconciliation import STATEMENT_NOT_CONNECTED, get_statement_source, resolve_item
+from .unsettled import unsettled_rows
 from .scope import (
     country_codes_visible, fetch_one, money_visible_to, node_for, paths_for,
 )
@@ -759,6 +760,7 @@ def finance_overview(request):
         return _bad(BadParam('from', 'from and to are both required'))
     out = overview_rows(request.user, node, d_from, d_to)
     skipped = skipped_in_latest_runs(request.user, node)
+    unsettled, unsettled_count = unsettled_rows(request.user, node)
     names = {n.id: n for n in GeoNode.objects.filter(id__in={k[0] for k in out if k[0]})}
     columns = ['gross_minor', 'commission_minor', 'driver_net_minor', 'refunds_minor',
                'payouts_paid_minor', 'payouts_pending_minor', 'payouts_failed_minor']
@@ -784,8 +786,47 @@ def finance_overview(request):
         'totals': [{'currency': cur, **dict(vals)} for cur, vals in sorted(totals.items())],
         # A COUNT per country, in the viewer's scope: never a name or a phone number.
         'skipped_in_latest_run': skipped,
+        # Completed trips left unsettled because no commission rule governs them
+        # (module 9 owner item). Scoped by money_visible_to; no rider or driver detail.
+        'unsettled_trips': unsettled,
+        'unsettled_trips_count': unsettled_count,
         'note': 'Totals are grouped by currency. Nothing is summed across currencies.',
     }, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.adjust')])
+def finance_unsettled_retry(request, trip_id):
+    """POST /payments/admin/unsettled/<trip_id>/retry/ {note?}
+
+    "Retry now" for a trip left unsettled because no commission rule governed it. Needs
+    `finance.adjust` at the trip's city (the finance write capability: there is no
+    separate `finance.write`). It is NOT a money decision, so it needs no approval: it
+    applies the rule that governs the trip now (or its booking-time snapshot) through the
+    same idempotent settlement path, and it is audited either way. A trip outside the
+    caller's money scope is a 404.
+    """
+    from servers.ride.models import Trip
+
+    from .unsettled import REASON, open_alerts, retry_trip
+
+    trip, refusal = fetch_one(request.user, Trip, 'finance.adjust', pk=trip_id)
+    if refusal:
+        return _refusal(refusal, 'Trip')
+    if not open_alerts().filter(source_type='trip_settlement', source_id=str(trip.id)).exists():
+        return error_response(
+            code='NOT_UNSETTLED', message='That trip is not waiting on a commission rule.',
+            field='trip_id', issue='No open unsettled-trip alert',
+            status=status.HTTP_409_CONFLICT)
+    note = str((request.data or {}).get('note', '') if hasattr(request, 'data') else '')[:2000]
+    settled = retry_trip(trip)
+    record_admin_action(
+        request, action='unsettled_trip_retried', target_type='trip', target_id=trip.id,
+        before={'settled': False, 'reason': REASON},
+        after={'settled': settled}, reason=note or 'Retry now')
+    return success_response({'trip_id': trip.id, 'settled': settled,
+                             'still_unsettled_reason': None if settled else REASON},
+                            status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------

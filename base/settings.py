@@ -447,6 +447,13 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'payments.weekly_payout_run',
         'schedule': _crontab(minute=5),
     },
+    'payments-retry-unsettled-trips-hourly': {
+        # Trips left unsettled because no commission rule governed them (module 8 path
+        # that logs and defers). Retries each once an hour and clears its critical
+        # Command Centre alert when it settles. A no-op with no open alerts.
+        'task': 'payments.retry_unsettled_trips',
+        'schedule': _crontab(minute=40),
+    },
     'payments-release-awaiting-rail': {
         # Approved payouts in a currency with no payout rail wait as
         # payout_status=awaiting_rail; once a rail is registered in

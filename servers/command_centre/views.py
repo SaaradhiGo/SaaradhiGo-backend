@@ -36,6 +36,7 @@ import logging
 
 from django.conf import settings
 from django.core.cache import cache
+from django.db.models import Q
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -49,7 +50,7 @@ from servers.admin_audit.services import record_admin_action
 from servers.approvals.service import ApprovalError
 
 from .metrics import METRICS, OVERVIEW_WINDOWS, describe
-from .models import ACK_PERMISSION, OperatorAlert
+from .models import ACK_PERMISSION, FINANCE_ALERT_KINDS, OperatorAlert
 from .overview import build_overview, has_data
 from .services import acknowledge
 from .thresholds import active_thresholds, propose_threshold_change
@@ -191,15 +192,35 @@ def _visible_alerts(user):
 
     from servers.admin_access.bridge import is_migrated, strict_mode
 
-    qs = OperatorAlert.objects.select_related('city')
+    everything = OperatorAlert.objects.select_related('city')
+    qs = everything.exclude(kind__in=FINANCE_ALERT_KINDS)
     if not sees_live_sos(user):
         qs = qs.exclude(kind__in=SOS_ALERT_KINDS)
+    finance = _visible_finance_alerts(user, everything)
     if not strict_mode() and not is_migrated(user):
-        return qs  # unmigrated accounts are unscoped everywhere, until strict mode
+        return qs | finance  # unmigrated accounts are unscoped everywhere, until strict mode
     paths = scope_paths(user)
     if paths is None:
-        return qs
+        return qs | finance
     covered = Q(city__isnull=True)
+    for path in paths:
+        covered |= Q(city__path__startswith=path)
+    return qs.filter(covered) | finance
+
+
+def _visible_finance_alerts(user, everything):
+    """Money alerts (`FINANCE_ALERT_KINDS`): only holders of `finance.read`, and only for
+    the cities where THAT capability is held. An alert with no city is for unrestricted
+    callers only (the finance rule: what cannot be placed is not shown to a city)."""
+    from servers.payments.scope import paths_for
+
+    qs = everything.filter(kind__in=FINANCE_ALERT_KINDS)
+    if not granted(user, 'finance.read')[0]:
+        return qs.none()
+    paths = paths_for(user, 'finance.read')
+    if paths is None:
+        return qs
+    covered = Q(pk__in=[])
     for path in paths:
         covered |= Q(city__path__startswith=path)
     return qs.filter(covered)

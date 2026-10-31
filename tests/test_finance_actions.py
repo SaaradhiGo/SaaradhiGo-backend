@@ -1227,6 +1227,7 @@ US_ROWS = {
     'finance.payout': ('money', 'USD', 100_000), 'bulk.action': ('always', '', None),
     'pricing.change': ('always', '', None), 'driver.deactivate': ('always', '', None),
     'support.sla_change': ('always', '', None), 'finance.payout_config_change': ('always', '', None),
+    'zone.change': ('always', '', None),
 }
 
 

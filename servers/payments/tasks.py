@@ -48,6 +48,17 @@ def weekly_payout_run():
     return run_weekly_payouts()
 
 
+@shared_task(name='payments.retry_unsettled_trips')
+def retry_unsettled_trips():
+    """Retry settlement for completed trips left unsettled because no commission rule
+    governed them, and clear the alert of any that settled. Hourly; idempotent (the
+    settlement path refuses a duplicate), so a rule approved at 10:05 settles the trip by
+    11:40 without anyone touching it."""
+    from servers.payments.unsettled import retry_all
+
+    return retry_all()
+
+
 @shared_task(name='payments.release_awaiting_rail')
 def release_awaiting_rail():
     """Send approved payouts that were held for want of a payout rail, once one exists."""

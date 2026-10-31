@@ -10,6 +10,7 @@ from .admin_actions import (
 )
 from .admin_finance import (
     finance_driver_ledger, finance_export, finance_overview, finance_payment_detail,
+    finance_unsettled_retry,
     finance_payments, finance_payout_config, finance_payout_detail, finance_payouts,
     finance_reconciliation, finance_reconciliation_items, finance_reconciliation_resolve,
     finance_settlements,
@@ -45,6 +46,7 @@ urlpatterns = [
     path('admin/payout-config/<str:country>/', payout_config_propose),
     path('admin/drivers/<int:driver_id>/ledger/', finance_driver_ledger),
     path('admin/overview/', finance_overview),
+    path('admin/unsettled/<int:trip_id>/retry/', finance_unsettled_retry),
     path('admin/reconciliation/', finance_reconciliation),
     path('admin/reconciliation/items/', finance_reconciliation_items),
     path('admin/reconciliation/items/<int:item_id>/resolve/', finance_reconciliation_resolve),

@@ -5,15 +5,47 @@ from servers.pricing.models import RateCard, ServiceZone
 
 
 class ServiceZoneSerializer(serializers.ModelSerializer):
+    """Zone output. Writes do not go through this serializer since module 9: they are
+    `zone.change` requests validated by `zone_workflow.clean_values`."""
+
+    version = serializers.SerializerMethodField()
+    geo_node = serializers.SerializerMethodField()
+    parent_code = serializers.SerializerMethodField()
+    area_km2 = serializers.SerializerMethodField()
+
     class Meta:
         model = ServiceZone
         fields = (
             'id', 'code', 'name', 'country', 'state_code', 'city',
-            'zone_type', 'parent', 'polygon_geojson', 'priority',
-            'currency', 'timezone_name', 'is_active', 'metadata',
-            'created_at', 'updated_at',
+            'zone_type', 'parent', 'parent_code', 'polygon_geojson', 'priority',
+            'currency', 'timezone_name', 'distance_unit', 'tax_mode',
+            'per_trip_fee', 'per_trip_fee_label', 'geo_node', 'is_active', 'metadata',
+            'version', 'area_km2', 'created_at', 'updated_at',
         )
-        read_only_fields = ('id', 'created_at', 'updated_at')
+        read_only_fields = fields
+
+    def get_version(self, zone):
+        value = getattr(zone, '_version', None)
+        if value is None:
+            from django.db.models import Max
+
+            value = zone.revisions.aggregate(v=Max('version'))['v']
+        return value or 0
+
+    def get_geo_node(self, zone):
+        return zone.geo_node.code if zone.geo_node_id else None
+
+    def get_parent_code(self, zone):
+        return zone.parent.code if zone.parent_id else None
+
+    def get_area_km2(self, zone):
+        from servers.pricing import zone_geometry
+
+        try:
+            return round(zone_geometry.area_km2(
+                zone_geometry.to_geometry(zone.polygon_geojson)), 2)
+        except Exception:  # noqa: BLE001 - a legacy polygon must not break the list
+            return None
 
     def validate_polygon_geojson(self, value):
         # Accept either {"type":"Polygon","coordinates":[[...]]} or a raw

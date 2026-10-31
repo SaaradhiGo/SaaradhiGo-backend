@@ -315,7 +315,8 @@ def test_viewset_gates_are_read_per_method():
     gates = gates_for(routes['api/v1/pricing/admin/zones/'])
 
     assert {p.permission for p in gates['GET'] if _is_scoped_gate(p)} == {'zone.read'}
-    assert {p.permission for p in gates['POST'] if _is_scoped_gate(p)} == {'pricing.write'}
+    # Zone writes are zone.write (module 9); rate-card writes stay pricing.write.
+    assert {p.permission for p in gates['POST'] if _is_scoped_gate(p)} == {'zone.write'}
 
 
 # ---------------------------------------------------------------------------

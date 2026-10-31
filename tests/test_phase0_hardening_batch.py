@@ -93,7 +93,9 @@ def test_estimate_fare_rejects_outside_hyderabad(auth_client_rider):
     assert resp.json()['error']['code'] == 'OUT_OF_SERVICE_AREA'
 
 
+@pytest.mark.django_db
 def test_service_area_helper_polygon():
+    """The zone table is the authority (the legacy polygon fallback is gone, module 9)."""
     from base.service_area import is_inside_service_area, validate_service_area
     # Center of Hyderabad
     assert is_inside_service_area(17.385, 78.486) is True

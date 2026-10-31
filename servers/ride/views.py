@@ -129,13 +129,13 @@ def estimate_fare(request):
     # produce fares for any city. The zone table is the authority -- the
     # message no longer says "Hyderabad", because which cities are served is
     # now a row, not a constant.
-    from base.service_area import validate_service_area
-    area_ok, area_msg = validate_service_area(
+    from base.service_area import validate_service_area_detail
+    area_ok, area_code, area_msg = validate_service_area_detail(
         pickup_lat, pickup_long, destination_lat, destination_long,
     )
     if not area_ok:
         return error_response(
-            code='OUT_OF_SERVICE_AREA',
+            code=area_code,
             message=area_msg,
             field='pickup / destination',
             issue='Coordinates fall outside every active SaaradhiGo service zone',

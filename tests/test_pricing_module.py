@@ -1338,11 +1338,12 @@ class TestZoneNeedsACountry:
         polygon = {'type': 'Polygon', 'coordinates': [[[78.0, 17.0], [78.1, 17.0], [78.1, 17.1],
                                                        [78.0, 17.1], [78.0, 17.0]]]}
         body = {'code': 'IN-X-NEW', 'name': 'New', 'zone_type': 'city', 'polygon_geojson': polygon,
-                'priority': 10}
+                'priority': 10, 'geo_node': 'IN-TG-HYD', 'reason': 'A new zone'}
         r = swept(maker.post(f'{BASE}/zones/', body, format='json'))
         assert r.status_code == 400 and 'country' in str(r.json())
         r = swept(maker.post(f'{BASE}/zones/', {**body, 'country': 'IN'}, format='json'))
-        assert r.status_code == 201
+        assert r.status_code == 202                              # a request since module 9
+        approve_request(checker()[0], r.json()['data']['approval_request']['id'])
         assert ServiceZone.objects.get(code='IN-X-NEW').country == 'IN'
 
     def test_the_migration_changes_only_the_default(self):

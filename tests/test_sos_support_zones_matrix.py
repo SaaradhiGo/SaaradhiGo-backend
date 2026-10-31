@@ -631,33 +631,46 @@ class TestZoneMatrix:
 
     @pytest.mark.parametrize('role', ROLES)
     def test_zone_writes(self, geo, world, role):
-        client, user = operator(role, geo)
-        before = AdminAuditLog.objects.filter(target_type='service_zone').count()
+        from io import StringIO
 
+        from django.core.management import call_command
+
+        from conftest import seed_actor
+
+        call_command('seed_approval_policies', actor_email=seed_actor().email, stdout=StringIO())
+        client, user = operator(role, geo)
+        asked_before = AdminAuditLog.objects.filter(action='approval_requested',
+                                                    actor_id=user.id).count()
+
+        bengaluru = {'type': 'Polygon', 'coordinates': [[
+            [77.50, 12.90], [77.70, 12.90], [77.70, 13.05], [77.50, 13.05], [77.50, 12.90]]]}
         created = client.post('/api/v1/pricing/admin/zones/',
-                              _zone_payload(f'MATRIX-{role.upper()[:8]}'), format='json')
+                              {**_zone_payload(f'MATRIX-{role.upper()[:8]}'.replace('_', '-')), 'geo_node': 'IN-TG-HYD',
+                               'polygon_geojson': bengaluru, 'reason': 'Matrix test'}, format='json')
         patched = client.patch(f'/api/v1/pricing/admin/zones/{world["hyd_zone"].pk}/',
-                               {'name': f'renamed by {role}'}, format='json')
-        deleted = client.delete(f'/api/v1/pricing/admin/zones/{world["aus_zone"].pk}/')
+                               {'name': f'renamed by {role}', 'reason': 'Matrix test'}, format='json')
+        deleted = client.delete(f'/api/v1/pricing/admin/zones/{world["aus_zone"].pk}/',
+                                {'reason': 'Matrix test'}, format='json')
 
         if role in PRICING_WRITE_ROLES:
-            assert created.status_code == 201, created.content[:300]
-            assert patched.status_code == 200, patched.content[:300]
-            # Austin has a rate card and a trip (PROTECT) -- the write is
-            # authorised; the database refuses the delete. Either is fine
-            # here; what matters is that it was not a 403/404.
+            # Module 9: every zone write is a REQUEST (202); nothing is written until a
+            # different admin approves, and each request is audited under the maker.
+            assert created.status_code == 202, created.content[:300]
+            assert patched.status_code == 202, patched.content[:300]
             if role == SUPER_ADMIN:
+                # Authorised; the request may be refused on the merits (a live trip in
+                # Austin), but never as a 401/403/404.
                 assert deleted.status_code not in (401, 403, 404), deleted.status_code
             else:
                 assert deleted.status_code == 404      # Austin is outside a Hyderabad City Ops scope
-            rows = AdminAuditLog.objects.filter(target_type='service_zone').order_by('id')[before:]
-            actions = [r.action for r in rows]
-            assert 'service_zone_created' in actions and 'service_zone_updated' in actions
-            assert all(r.actor_id == user.id for r in rows)
+            assert not ServiceZone.objects.filter(code__startswith='MATRIX-').exists()
+            asked = AdminAuditLog.objects.filter(action='approval_requested', actor_id=user.id).count()
+            assert asked >= asked_before + 2
         else:
             assert (created.status_code, patched.status_code, deleted.status_code) == (403, 403, 403), role
             assert not ServiceZone.objects.filter(code__startswith='MATRIX-').exists()
-            assert AdminAuditLog.objects.filter(target_type='service_zone').count() == before
+            assert AdminAuditLog.objects.filter(action='approval_requested',
+                                                actor_id=user.id).count() == asked_before
 
     @pytest.mark.parametrize('role', ROLES)
     def test_rate_card_writes(self, geo, world, role):

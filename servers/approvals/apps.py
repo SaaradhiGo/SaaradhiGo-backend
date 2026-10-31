@@ -15,3 +15,4 @@ class ApprovalsConfig(AppConfig):
         from servers.payments import finance_executors  # noqa: F401  (Part B finance actions)
         from servers.support import sla_change  # noqa: F401  (support.sla_change)
         from servers.pricing import commission_workflow  # noqa: F401  (pricing.change)
+        from servers.pricing import zone_workflow  # noqa: F401  (zone.change)

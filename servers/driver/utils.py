@@ -66,6 +66,13 @@ def settle_or_defer(trip):
         logger.error('settlement_deferred_no_commission_rule', extra={
             'event': 'settlement_deferred_no_commission_rule', 'trip_id': trip.id,
             'detail': str(exc)})
+        # Logging is not enough: raise ONE critical Command Centre alert for finance
+        # (idempotent per trip). It must never fail the completion it is reporting on.
+        try:
+            from servers.payments.unsettled import raise_unsettled_alert
+            raise_unsettled_alert(trip, str(exc))
+        except Exception:  # noqa: BLE001
+            logger.exception('could not raise the unsettled-trip alert for trip %s', trip.id)
         return False
 
 

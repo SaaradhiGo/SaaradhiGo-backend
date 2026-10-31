@@ -51,10 +51,10 @@ class PricingUnavailable(Exception):
 # in-process; invalidate when a zone is updated. The cache key is
 # (zone_id, updated_at) so a CRUD edit transparently refreshes.
 
-_POLYGON_CACHE: dict[int, Tuple[float, Polygon]] = {}
+_POLYGON_CACHE: dict = {}
 
 
-def _polygon_for_zone(zone: ServiceZone) -> Optional[Polygon]:
+def _polygon_for_zone(zone: ServiceZone):
     """Return a cached Shapely Polygon for the zone, or None if invalid."""
     cached = _POLYGON_CACHE.get(zone.id)
     updated_ts = zone.updated_at.timestamp() if zone.updated_at else 0.0
@@ -65,7 +65,7 @@ def _polygon_for_zone(zone: ServiceZone) -> Optional[Polygon]:
         geo = zone.polygon_geojson
         if not geo or not isinstance(geo, dict):
             return None
-        if geo.get('type') == 'Polygon' and 'coordinates' in geo:
+        if geo.get('type') in ('Polygon', 'MultiPolygon') and 'coordinates' in geo:
             poly = shapely_shape(geo)
         else:
             # Tolerate a raw list of [lon, lat] pairs.
@@ -95,6 +95,71 @@ def invalidate_polygon_cache(zone_id: Optional[int] = None) -> None:
 # Zone lookup
 # ---------------------------------------------------------------------------
 
+class DraftZone:
+    """A zone as it WOULD be, for the draft preview and the point tester.
+
+    `zone_id` is the existing zone this replaces, or None for a zone that does not
+    exist yet. `polygon` is a Shapely geometry (None means the zone is drawn out of
+    the map, i.e. deactivated). `zone` is an unsaved or saved ServiceZone carrying the
+    draft's priority and parent; it is what a lookup returns for a point inside it.
+    """
+
+    def __init__(self, zone, polygon, *, zone_id=None, active=True):
+        self.zone = zone
+        self.polygon = polygon
+        self.zone_id = zone_id
+        self.active = active
+
+
+class ZoneIndex:
+    """The active zones, in resolution order, ready for point lookups.
+
+    THE ONE RESOLUTION FUNCTION. Quoting, SOS anchoring, the service-area check, the
+    point tester and the impact preview all resolve a point through here, so what the
+    console shows is what a rider's quote does. `overlay` (a `DraftZone`) swaps in or
+    adds a draft; with none, this is exactly the live lookup.
+
+    Order: highest `priority` first, ties broken by `code`, so the answer for a point
+    in two equal-priority zones is deterministic.
+    """
+
+    def __init__(self, entries):
+        # entries: list of (zone, polygon)
+        self._entries = entries
+
+    @classmethod
+    def load(cls, overlay: Optional[DraftZone] = None):
+        entries = []
+        for zone in ServiceZone.objects.filter(is_active=True).order_by('-priority', 'code'):
+            if overlay is not None and overlay.zone_id == zone.id:
+                continue
+            poly = _polygon_for_zone(zone)
+            if poly is not None:
+                entries.append((zone, poly))
+        if overlay is not None and overlay.active and overlay.polygon is not None:
+            entries.append((overlay.zone, overlay.polygon))
+        entries.sort(key=lambda e: (-(e[0].priority or 0), e[0].code or ''))
+        return cls(entries)
+
+    def containing(self, lat, lon):
+        """Every zone containing the point, most specific first."""
+        try:
+            lat_f, lon_f = float(lat), float(lon)
+        except (TypeError, ValueError):
+            return
+        if not (-90 <= lat_f <= 90 and -180 <= lon_f <= 180):
+            return
+        point = Point(lon_f, lat_f)  # NB: Shapely is (lon, lat)
+        for zone, poly in self._entries:
+            if poly.contains(point):
+                yield zone
+
+    def resolve(self, lat, lon):
+        for zone in self.containing(lat, lon):
+            return zone
+        return None
+
+
 def find_zone_for_point(lat, lon) -> Optional[ServiceZone]:
     """Return the most specific active ServiceZone containing (lat, lon).
 
@@ -107,17 +172,7 @@ def find_zone_for_point(lat, lon) -> Optional[ServiceZone]:
     Inputs may be Decimal, str, or float; unparsable inputs return None
     so callers treat 'could not validate' the same as 'out of service'.
     """
-    try:
-        lat_f = float(lat)
-        lon_f = float(lon)
-    except (TypeError, ValueError):
-        return None
-    if not (-90 <= lat_f <= 90 and -180 <= lon_f <= 180):
-        return None
-
-    for zone in zones_containing_point(lat_f, lon_f):
-        return zone
-    return None
+    return ZoneIndex.load().resolve(lat, lon)
 
 
 def zones_containing_point(lat, lon):
@@ -129,23 +184,7 @@ def zones_containing_point(lat, lon):
     sub-zone drawn before its node existed must not hide the city around
     it. Same ordering as `find_zone_for_point`: highest priority first.
     """
-    try:
-        lat_f = float(lat)
-        lon_f = float(lon)
-    except (TypeError, ValueError):
-        return
-    if not (-90 <= lat_f <= 90 and -180 <= lon_f <= 180):
-        return
-
-    point = Point(lon_f, lat_f)  # NB: Shapely is (lon, lat)
-    candidates = ServiceZone.objects.filter(is_active=True).order_by('-priority')
-
-    for zone in candidates:
-        poly = _polygon_for_zone(zone)
-        if poly is None:
-            continue
-        if poly.contains(point):
-            yield zone
+    yield from ZoneIndex.load().containing(lat, lon)
 
 
 def is_inside_service_area(lat, lon) -> bool:

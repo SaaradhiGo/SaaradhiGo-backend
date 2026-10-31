@@ -5,8 +5,9 @@ READINESS ITEMS
 `city_readiness(node)` returns a list of `{key, ok, detail}`. Items today:
 `safety_coverage` (enough Safety Officers for the country's configured
 minimum), `commission` (an active commission rule covers every vehicle class,
-module 8) and `fare_card` (an active card for every vehicle class in the
-city's zone, module 8). Module 15 adds zones and providers to the SAME list by
+module 8), `fare_card` (an active card for every vehicle class in the
+city's zone, module 8) and `zone` (the city has an active service zone with a
+valid polygon, module 9). Later modules add providers to the SAME list by
 appending items to `ITEMS`; nothing else in this file changes. An item that cannot be determined is NOT ok: a country
 with no safety config is "not configured", never a pass.
 
@@ -127,8 +128,36 @@ def _fare_card(node):
             'detail': f'Every vehicle class has an active fare card in {node.code}.'}
 
 
+def _zone(node):
+    """The city has at least one ACTIVE service zone with a usable polygon (module 9).
+
+    Without one no pickup in the city resolves to a zone, so nobody could be quoted:
+    a city cannot be live with no active zone."""
+    from servers.pricing import zone_geometry
+    from servers.pricing.models import ServiceZone
+
+    zones = list(ServiceZone.objects.filter(geo_node=node, is_active=True))
+    if not zones:
+        return {'key': 'zone', 'ok': False,
+                'detail': f'{node.code} has no active service zone. Draw and approve one '
+                          f'under Zones.'}
+    usable = []
+    for zone in zones:
+        try:
+            zone_geometry.validate(zone.polygon_geojson)
+            usable.append(zone.code)
+        except zone_geometry.GeometryError:
+            continue
+    if not usable:
+        return {'key': 'zone', 'ok': False,
+                'detail': f'No active zone of {node.code} has a valid polygon.'}
+    return {'key': 'zone', 'ok': True,
+            'detail': f'{node.code} has {len(usable)} active service zone(s): '
+                      f'{", ".join(sorted(usable))}.'}
+
+
 #: Append here. Each is `callable(node) -> {key, ok, detail}`.
-ITEMS = [_safety_coverage, _commission, _fare_card]
+ITEMS = [_safety_coverage, _commission, _fare_card, _zone]
 
 
 def city_readiness(node):

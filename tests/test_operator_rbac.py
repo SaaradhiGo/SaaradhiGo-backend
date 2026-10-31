@@ -426,58 +426,56 @@ def test_every_operator_can_still_do_their_job(ops_role, url, expected):
 # §7 — the privileged action that had no audit trail
 # ===========================================================================
 
-def test_a_pricing_change_is_audited():
+def _zone_change_world():
+    """An operator, a second admin to approve, and a Hyderabad zone."""
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    from conftest import seed_actor
+    from servers.admin_access.models import GeoNode
+    from servers.pricing.models import ServiceZone
+
+    maker = _operator(OPS_ADMIN)
+    checker = _operator(OPS_ADMIN)
+    call_command('seed_approval_policies', actor_email=seed_actor().email, stdout=StringIO())
+    zone = ServiceZone.objects.create(
+        code='DIFFZONE', name='Before Name', zone_type='subzone', city='Hyderabad', country='IN',
+        polygon_geojson=_POLYGON, is_active=True, geo_node=GeoNode.objects.get(code='IN-TG-HYD'))
+    return maker, checker, zone
+
+
+def _approve(checker, request_id):
+    return _client(checker).post(
+        f'/api/v1/approvals/admin/requests/{request_id}/approve/', {'reason': 'ok'}, format='json')
+
+
+def test_a_zone_change_is_audited_from_the_request_to_the_applied_change():
     """Pricing was the one privileged action with no audit trail at all.
 
-    KYC, payouts, driver deletion and DPDP erasure all recorded an
-    `AdminAuditLog` row; SOS transitions keep their own immutable
-    `SOSEventUpdate` trail. A rate-card change -- the only operator action that
-    alters what a rider is charged -- recorded nothing, so a fare dispute could
-    not be answered with who changed what and when.
+    Since module 9 a zone change is a request a second admin approves. The request is
+    audited under the maker; the applied change is audited under the checker, with the
+    zone as it was and as it became, so a fare dispute can still be answered with who
+    changed what and when.
     """
     from servers.admin_audit.models import AdminAuditLog
-    from servers.pricing.models import ServiceZone
 
-    admin = _operator(OPS_ADMIN)
-    before = AdminAuditLog.objects.count()
+    maker, checker, zone = _zone_change_world()
+    resp = _client(maker).patch(
+        f'/api/v1/pricing/admin/zones/{zone.pk}/', {'name': 'After Name', 'reason': 'Rename'},
+        format='json')
+    assert resp.status_code == 202, resp.content[:300]
+    requested = AdminAuditLog.objects.filter(action='approval_requested').latest('id')
+    assert requested.actor_id == maker.id and requested.actor_label
 
-    resp = _client(admin).post('/api/v1/pricing/admin/zones/',
-                               _zone_payload('AUDITZONE'), format='json')
-    assert resp.status_code in (200, 201), resp.content[:300]
-
-    rows = AdminAuditLog.objects.order_by('-id')
-    assert rows.count() == before + 1, 'no audit row was written for a zone create'
-    row = rows.first()
-    assert row.action == 'service_zone_created'
-    assert row.target_type == 'service_zone'
-    assert row.actor_id == admin.id, 'the audit row does not name the actor'
-    assert row.actor_label, 'the audit row has no actor label to survive deletion'
-    assert row.created_at is not None
-    assert row.after, 'the audit row carries no after-state to reconstruct the change'
-    assert ServiceZone.objects.filter(code='AUDITZONE').exists()
-
-
-def test_a_pricing_update_records_before_and_after():
-    """A dispute needs the card that WAS in force, not only the one that is."""
-    from servers.admin_audit.models import AdminAuditLog
-    from servers.pricing.models import ServiceZone
-
-    admin = _operator(OPS_ADMIN)
-    zone = ServiceZone.objects.create(
-        code='DIFFZONE', name='Before Name', zone_type='city', city='Hyderabad', country='IN',
-        polygon_geojson=_POLYGON, is_active=True)
-
-    resp = _client(admin).patch(
-        f'/api/v1/pricing/admin/zones/{zone.pk}/',
-        {'name': 'After Name'}, format='json')
-    assert resp.status_code in (200, 202), resp.content[:300]
-
-    row = AdminAuditLog.objects.filter(action='service_zone_updated').first()
-    assert row is not None, 'a pricing update wrote no audit row'
-    assert row.before.get('name') == 'Before Name', (
-        f'the before-state was not captured: {row.before}'
-    )
+    request_id = resp.json()['data']['approval_request']['id']
+    assert _approve(checker, request_id).status_code == 200
+    row = AdminAuditLog.objects.filter(action='service_zone_updated').latest('id')
+    assert row.target_type == 'service_zone' and row.target_id == str(zone.pk)
+    assert row.actor_id == checker.id, 'the applied change names the approving admin'
+    assert row.before.get('name') == 'Before Name', f'before-state not captured: {row.before}'
     assert row.after.get('name') == 'After Name'
+    assert row.created_at is not None
 
 
 def test_an_audit_failure_does_not_block_a_pricing_change():
@@ -488,16 +486,17 @@ def test_an_audit_failure_does_not_block_a_pricing_change():
     """
     from unittest import mock
 
-    from servers.pricing.models import ServiceZone
-
-    admin = _operator(OPS_ADMIN)
-    with mock.patch('servers.pricing.views.record_admin_action',
+    maker, checker, zone = _zone_change_world()
+    resp = _client(maker).patch(
+        f'/api/v1/pricing/admin/zones/{zone.pk}/', {'name': 'After Name', 'reason': 'Rename'},
+        format='json')
+    assert resp.status_code == 202
+    with mock.patch('servers.pricing.zone_workflow.record_admin_action',
                     side_effect=RuntimeError('audit table gone')):
-        resp = _client(admin).post('/api/v1/pricing/admin/zones/',
-                                   _zone_payload('NOAUDIT', 'No Audit'),
-                                   format='json')
+        approved = _approve(checker, resp.json()['data']['approval_request']['id'])
 
-    assert resp.status_code in (200, 201), (
-        f'an audit failure blocked the pricing change: HTTP {resp.status_code}'
+    assert approved.status_code == 200, (
+        f'an audit failure blocked the pricing change: HTTP {approved.status_code}'
     )
-    assert ServiceZone.objects.filter(code='NOAUDIT').exists()
+    zone.refresh_from_db()
+    assert zone.name == 'After Name'

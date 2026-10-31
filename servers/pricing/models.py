@@ -672,3 +672,4 @@ class TripFareShadow(CurrencyStampedModel, models.Model):
 from servers.pricing.commission_models import (  # noqa: E402,F401
     CommissionCountryConfig, CommissionRule, DriverNotice,
 )
+from servers.pricing.zone_models import ServiceZoneRevision  # noqa: E402,F401

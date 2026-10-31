@@ -53,6 +53,7 @@ THRESHOLD_CHANGE = 'command_centre.threshold_change'
 SUPPORT_SLA_CHANGE = 'support.sla_change'
 FINANCE_PAYOUT_CONFIG = 'finance.payout_config_change'
 FINANCE_WALLET_CREDIT = 'finance.wallet_credit'
+ZONE_CHANGE = 'zone.change'
 
 ACTIONS = {
     action.key: action for action in (
@@ -79,6 +80,9 @@ ACTIONS = {
         Action(FINANCE_PAYOUT_CONFIG, 'Change to a country payout setting', 'finance.config'),
         # A closed-loop credit added to a rider wallet by an operator.
         Action(FINANCE_WALLET_CREDIT, 'Credit added to a rider wallet', 'finance.adjust'),
+        # A service zone or geofence: create, change polygon or settings, deactivate,
+        # reactivate or restore a revision. Always a checker (module 9).
+        Action(ZONE_CHANGE, 'Change to a service zone or geofence', 'zone.write'),
     )
 }
 

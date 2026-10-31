@@ -162,19 +162,19 @@
       "body": {
         "status": "success",
         "data": {
-          "estimated_fare": "214.32",
+          "estimated_fare": "142.72",
           "currency": "INR",
           "distance_unit": "km",
           "fare_breakdown": {
-            "base_fare": "60.00",
-            "distance_fare": "114.07",
-            "time_fare": "40.25",
+            "base_fare": "30.00",
+            "distance_fare": "80.52",
+            "time_fare": "32.20",
             "surge_multiplier": "1.00",
             "min_fare_applied": false,
             "tax_mode": "inclusive",
             "tax_label": "GST",
             "tax_percent": "5.000",
-            "tax_amount": "10.21",
+            "tax_amount": "6.80",
             "per_trip_fee": "0.00"
           },
           "fare_adjustments": [],

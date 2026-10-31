@@ -86,17 +86,31 @@ SETTLEMENT_NO_COMMISSION_RULE = 'settlement.no_commission_rule'
 #: trip, anchored to the trip's city, Finance (`finance.read` in scope) and Super Admin. It
 #: is acknowledged by Finance once seen (`ACK_PERMISSION`).
 FINANCE_PLATFORM_FUNDED_END = 'finance.platform_funded_trip_end'
-FINANCE_ALERT_KINDS = frozenset({SETTLEMENT_NO_COMMISSION_RULE, FINANCE_PLATFORM_FUNDED_END})
+#: Module 12 (Promotions): a campaign used its whole budget and stopped (info). Anchored at the
+#: campaign's city or country, so it is seen by whoever sees that place (Marketing for a rider
+#: promo, City Ops for an incentive, Super Admin always) and acknowledged by the campaign's owner (`promo.write` or `incentive.write`).
+PROMOTION_BUDGET_EXHAUSTED = 'promotion.budget_exhausted'
+#: Module 12: trips that already held a discount were honoured past the campaign's budget
+#: (warning). Money, so Finance (`finance.read`) and Super Admin, like the other money alerts.
+PROMOTION_BUDGET_OVERSHOOT = 'promotion.budget_overshoot'
+FINANCE_ALERT_KINDS = frozenset({SETTLEMENT_NO_COMMISSION_RULE, FINANCE_PLATFORM_FUNDED_END,
+                                 PROMOTION_BUDGET_OVERSHOOT})
 #: Module 11: a notification provider's failure rate over the last 15 minutes is above its
 #: threshold (warning). Platform health, not operations: visible to Super Admin only, which
 #: is to say holders of `platform.settings`. It clears itself when the rate recovers, and can
 #: also be acknowledged by the same holders.
 NOTIFY_PROVIDER_FAILING = 'notify.provider_failing'
+#: Capabilities, besides `ACK_PERMISSION`'s, that may also acknowledge a kind.
+ACK_ALSO = {PROMOTION_BUDGET_EXHAUSTED: ('incentive.write',)}
 #: Kinds only Super Admin (`platform.settings`) sees.
 PLATFORM_ALERT_KINDS = frozenset({NOTIFY_PROVIDER_FAILING})
 ACK_PERMISSION = {
     NOTIFY_PROVIDER_FAILING: 'platform.settings',
     FINANCE_PLATFORM_FUNDED_END: 'finance.read',
+    PROMOTION_BUDGET_OVERSHOOT: 'finance.read',
+    # A budget alert is taken by whoever OWNS the campaign (Marketing: promo.write; City Ops:
+    # incentive.write, see ACK_ALSO). promo.read would let a read-only Analyst take it.
+    PROMOTION_BUDGET_EXHAUSTED: 'promo.write',
     SOS_UNANCHORED: 'safety.respond',
     SAFETY_SOS_ESCALATED: 'safety.respond',
     SAFETY_INCIDENT_UNASSIGNED: 'safety.respond',

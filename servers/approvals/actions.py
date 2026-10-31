@@ -56,6 +56,8 @@ FINANCE_WALLET_CREDIT = 'finance.wallet_credit'
 ZONE_CHANGE = 'zone.change'
 NOTIFICATION_TEMPLATE_CHANGE = 'notification.template_change'
 NOTIFICATION_CAMPAIGN_SEND = 'notification.campaign_send'
+PROMOTION_LAUNCH = 'promotion.launch'
+PROMOTION_BUDGET_INCREASE = 'promotion.budget_increase'
 
 ACTIONS = {
     action.key: action for action in (
@@ -90,6 +92,15 @@ ACTIONS = {
         Action(NOTIFICATION_TEMPLATE_CHANGE, 'Activate or retire a notification template',
                'notify.template'),
         Action(NOTIFICATION_CAMPAIGN_SEND, 'Send a promotional campaign', 'notify.campaign'),
+        # Module 12: a promotion, driver incentive or referral campaign going live (any kind), and
+        # a campaign budget being raised. Both always need a checker, in India and the US. The
+        # maker's own capability (promo.write for rider promos and rider referrals, incentive.write
+        # for driver incentives and driver referrals) is checked by the module, at the campaign's
+        # place, before the request is raised; the checker holds approval.check and can see the
+        # campaign and its budget (promo.read) in that scope.
+        Action(PROMOTION_LAUNCH, 'Launch a promotion, incentive or referral campaign',
+               'promo.read'),
+        Action(PROMOTION_BUDGET_INCREASE, 'Increase a campaign budget', 'promo.read'),
     )
 }
 

@@ -405,6 +405,10 @@ def apply_plan(trip, plan, *, actor):
         trip.platform_funded_minor = plan.driver_earnings_minor
         fields.append('platform_funded_minor')
     trip.save(update_fields=fields)
+    # The rider pays for the distance driven, with no promo (module 12): a discount reserved at
+    # booking goes back to its campaign's budget.
+    from servers.promotions.rider_promos import release_for_trip
+    release_for_trip(trip)
     if trip.driver_id_id is not None:
         Driver.objects.filter(id=trip.driver_id_id).update(total_trips=F('total_trips') + 1)
 

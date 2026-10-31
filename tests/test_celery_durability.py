@@ -202,6 +202,18 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # Beat, every 5 minutes: raises / clears the Super Admin-only notify.provider_failing
         # alert, one per (provider, channel) while open. Reads message counts, writes alerts.
         'notifications.check_provider_health',
+        # Promotions & Incentives (module 12). on_trip_completed: trigger is on_commit of a trip
+        # completing. acks_late is safe: (campaign, trip) and (referral, trip) are unique rows, the
+        # counts are recomputed from them, and every reward carries a unique idempotency key and a
+        # unique ledger row, so a redelivered or doubled run pays nothing twice. Retries 3 times at
+        # 60 s. Moves campaign counters and writes the campaign ledger and wallet credits for the
+        # reward only; no fare, commission, trip status or approval.
+        'promotions.on_trip_completed',
+        # Beat, every 5 minutes: starts scheduled campaigns, ends campaigns past their window,
+        # releases discount reservations held by cancelled trips and retries qualified referrals
+        # left unpaid for want of budget. Every step is a conditional update or keyed by a unique
+        # ledger key, so a redelivered run converges. No retry needed: the next run is the retry.
+        'promotions.sweep',
         'pricing.fare_shadow_sweep',
         # No explicit name= on the decorator, unlike its siblings in the same
         # module, so Celery registers the full dotted path. Nothing references

@@ -76,6 +76,27 @@ def _total_fare(trip):
     return trip.final_fare or trip.estimated_fare or Decimal('0.00')
 
 
+def promo_lines(trip):
+    """`[(label, discount, charged)]` for a trip that held a promo, else []. The receipt's total
+    stays the FULL fare (that is what the driver's earnings are computed on); the discount is
+    platform-funded and the rider is charged the fare less it (module 12)."""
+    try:
+        from servers.promotions import rider_promos
+        from servers.ride.models import PromoRedemption
+
+        discount = rider_promos.discount_minor(trip)
+        if not discount:
+            return []
+        redemption = (PromoRedemption.objects.filter(trip=trip).select_related('promo')
+                      .order_by('-id').first())
+        label = f'Promo discount ({redemption.promo.code})' if redemption else 'Promo discount'
+        return [(label, rider_promos.dec(discount, trip.currency),
+                 rider_promos.payable(trip))]
+    except Exception:  # noqa: BLE001 - a receipt must still render
+        logger.exception('promo receipt lines failed for trip=%s', getattr(trip, 'pk', None))
+        return []
+
+
 def operator_end_note(trip):
     """The extra receipt line for a trip an operator ended, or ''."""
     from servers.ride.operator_end import PLATFORM_FUNDED, RECEIPT_NOT_CHARGED_LINE
@@ -115,6 +136,7 @@ _RECEIPT_TEMPLATE = """\
     <tr><td>{tax_label} ({gst_rate}%)</td><td style="text-align:right;">{gst_amount}</td></tr>
     {note_row}
     <tr style="background: #f9fafb;"><td><b>Total fare</b></td><td style="text-align:right;"><b>{total_fare}</b></td></tr>
+    {promo_rows}
   </table>
 
   <p style="margin-top: 16px;"><b>Payment method:</b> {payment_method} &nbsp; <b>Status:</b> {payment_status}</p>
@@ -278,6 +300,12 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
         total_fare=format_money(total, currency),
         note_row=(f'<tr><td colspan="2"><b>{escape(operator_end_note(trip))}</b></td></tr>'
                   if operator_end_note(trip) else ''),
+        promo_rows=''.join(
+            f'<tr><td>{escape(label)}</td><td style="text-align:right;">'
+            f'-{format_money(discount, currency)}</td></tr>'
+            f'<tr style="background: #f9fafb;"><td><b>Amount charged</b></td>'
+            f'<td style="text-align:right;"><b>{format_money(charged, currency)}</b></td></tr>'
+            for label, discount, charged in promo_lines(trip)),
         tax_label=escape(str(tax_label)),
         payment_method=escape(str(trip.payment_method or '—')),
         payment_status=escape(str(trip.payment_status or '—')),
@@ -386,6 +414,9 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         [_tax_label, format_money(receipt.gst_amount, _currency, with_symbol=False)],
         *([[operator_end_note(trip), '']] if operator_end_note(trip) else []),
         ['Total fare', format_money(receipt.total_fare, _currency, with_symbol=False)],
+        *[row for label, discount, charged in promo_lines(trip) for row in (
+            [label, '-' + format_money(discount, _currency, with_symbol=False)],
+            ['Amount charged', format_money(charged, _currency, with_symbol=False)])],
     ]
     fare_table = Table(fare_rows, colWidths=[110 * mm, 55 * mm])
     fare_table.setStyle(TableStyle([

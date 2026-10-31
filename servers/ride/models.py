@@ -667,6 +667,28 @@ class PromoRedemption(CurrencyStampedModel, models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     # Free-form note (e.g. the fare-quote id the user saw when applying)
     notes = models.CharField(max_length=256, blank=True, default='')
+    # --- Promotions module (module 12) --------------------------------------
+    # The campaign whose budget this discount was reserved against (NULL on rows
+    # written before the module existed), and where the reservation stands:
+    #   committed  reserved at booking, the trip has not settled yet
+    #   settled    the trip settled; the discount moved from committed to spent
+    #   released   the trip was cancelled (or ended by an operator); the reservation
+    #              went back to the budget and no longer counts toward the rider's limit
+    #   legacy     written before budgets existed; never touched by the new engine
+    STATE_COMMITTED = 'committed'
+    STATE_SETTLED = 'settled'
+    STATE_RELEASED = 'released'
+    STATE_LEGACY = 'legacy'
+    STATE_CHOICES = [(STATE_COMMITTED, 'Committed'), (STATE_SETTLED, 'Settled'),
+                     (STATE_RELEASED, 'Released'), (STATE_LEGACY, 'Legacy')]
+    campaign = models.ForeignKey(
+        'promotions.Campaign', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='redemptions',
+    )
+    state = models.CharField(max_length=10, choices=STATE_CHOICES, default=STATE_LEGACY,
+                             db_index=True)
+    settled_at = models.DateTimeField(null=True, blank=True)
+    released_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']

@@ -513,7 +513,10 @@ def create_payment_on_complete(trip):
     if trip.payments.exists():
         return
 
-    amount = trip.final_fare or trip.estimated_fare
+    # What the RIDER pays: the fare less any promo discount. A promo is platform-funded
+    # (module 12), so settlement and driver earnings keep reading the full fare.
+    from servers.promotions.rider_promos import payable
+    amount = payable(trip)
     if not amount:
         logger.warning(f"No fare amount for trip {trip.id}, skipping payment creation")
         return

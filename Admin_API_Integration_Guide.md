@@ -258,5 +258,13 @@ All under `/notifications/admin/`; `notify.read` to look, `notify.template` / `n
 - **A user's preferences:** `GET|PUT /users/<id>/preferences/` (an admin may only opt a user OUT)
 - **App:** `GET|PUT /notifications/preferences/` (the signed-in rider or driver). Webhooks: `POST /notifications/webhooks/<twilio|ses|msg91>/` (signature or secret verified; 403 otherwise).
 
+### G. Promotions & Incentives (module 12)
+All under `/promotions/admin/`; `promo.read` to look (Marketing, City Ops, Finance, Analyst, Super Admin). `promo.write` (Marketing) drafts rider promos and rider referrals; `incentive.write` (City Ops Manager) drafts driver incentives and driver referrals. A campaign is anchored at a country or city node; out of scope is a 404, in scope without the capability a 403. Launching any campaign (`promotion.launch`) and raising a budget (`promotion.budget_increase`) are maker-checker requests and answer **202**; pausing, resuming and cancelling need no checker and are audited.
+- **Campaigns:** `GET|POST /campaigns/` (`?kind=rider_promo|driver_incentive|referral&state=&audience=rider|driver&q=&scope=`), `GET|PATCH /campaigns/<id>/` (PATCH: drafts only), `POST /campaigns/<id>/submit/` (`{reason}`), `POST /campaigns/<id>/pause|resume|cancel/`, `POST /campaigns/<id>/budget-increase/` (`{budget_minor, reason}`)
+- **What it did:** `GET /campaigns/<id>/activity/` (redemptions | progress | referrals, people as masked references)
+- **Form options:** `GET /options/` (places the caller may write in, zones, vehicle classes)
+- **Budget:** every campaign carries `budget` (`budget_minor`, `committed_minor`, `spent_minor`, `remaining_minor`, `overshoot_minor`, `strict_cap`). Money is integer minor units of the campaign currency.
+- **Fraud flags (read-only, `fraud.read`):** `GET /fraud/admin/flags/?kind=&status=`. Evidence names the signals that matched (`same_device`, `same_phone`, `same_instrument`), never a value.
+
 ---
 *Note: Make sure to handle session expiration gracefully. If any API returns a 401 Unauthorized, redirect the user to the admin login page and clear `request.session['access_token']`.*

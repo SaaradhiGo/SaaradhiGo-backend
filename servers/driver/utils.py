@@ -199,3 +199,17 @@ def credit_driver_wallet(trip):
             settled_at=timezone.now(),
             source=TripSettlement.SOURCE_NATIVE,
         )
+
+        # A rider promo is PLATFORM-FUNDED (owner ruling, AUDIT 27.51): everything above was
+        # computed on the FULL fare, so the driver's earnings and commission are what they would
+        # be without the promo. This only counts the discount against its campaign's budget,
+        # writes the platform-funded ledger entry and, on a cash trip, pays the driver the
+        # discount they did not collect. In its own savepoint: a promotions defect must never
+        # undo a settlement.
+        try:
+            with transaction.atomic():
+                from servers.promotions.rider_promos import settle_trip as _settle_trip_promo
+                _settle_trip_promo(trip, wallet, is_cash=(trip.payment_method == 'cash'))
+        except Exception:  # noqa: BLE001
+            logger.exception('promo_settlement_failed', extra={
+                'event': 'promo_settlement_failed', 'trip_id': trip.id})

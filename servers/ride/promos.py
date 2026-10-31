@@ -21,6 +21,16 @@ Validation rules (in this order; first failure wins):
   PROMO_MIN_FARE        -- quoted fare < promo.min_fare
   PROMO_USER_LIMIT      -- this user already used the code N times
   PROMO_LIMIT_REACHED   -- global cap hit
+  PROMO_BUDGET_EXHAUSTED -- the campaign behind the code has used its budget (module 12)
+
+MODULE 12 (PROMOTIONS)
+----------------------
+A code whose `PromoCode` has a `promotions.Campaign` is served only while that campaign is
+`live`, inside the campaign's place (a city campaign serves pickups in that city), and while
+its budget admits the discount. The discount is RESERVED against the budget at redemption
+(`committed`), honoured on that trip whatever happens to the campaign afterwards, and moved to
+`spent` when the trip settles. A promo is platform-funded: it lowers what the RIDER pays, never
+the fare the driver's earnings and commission are computed on (`promotions.rider_promos`).
 """
 from __future__ import annotations
 
@@ -62,16 +72,34 @@ def _two(v: Decimal, currency) -> Decimal:
     return quantize(v, currency)
 
 
+def _ceiling(fare: Decimal, currency) -> Decimal:
+    """The most a promo may take off `fare`: everything except a minimum charge.
+
+    A discount used to be capped at the fare itself, which let a promo make a ride free. A free
+    ride has no payment to settle (nothing is charged, so the settlement that pays the driver is
+    never triggered) and no gateway accepts a zero order. The rider always pays at least
+    `PROMO_MIN_CHARGE_MINOR` (default 100: one rupee or one dollar); the platform still funds
+    the rest. Owner to confirm the figure (a question in the module 12 report).
+    """
+    from django.conf import settings
+
+    from base.money import from_minor
+
+    floor = from_minor(int(getattr(settings, 'PROMO_MIN_CHARGE_MINOR', 100)), currency)
+    return max(Decimal('0.00'), fare - floor)
+
+
 def _compute_discount(promo, fare: Decimal) -> Decimal:
+    ceiling = _ceiling(fare, promo.currency)
     if promo.discount_type == 'flat':
-        return min(promo.discount_value, fare)
+        return min(promo.discount_value, ceiling)
     # percent
     pct = promo.discount_value / Decimal('100.00')
     raw = quantize(fare * pct, promo.currency)
     if promo.max_discount_amount is not None:
         raw = min(raw, promo.max_discount_amount)
-    # Discount can never exceed the fare itself.
-    return min(raw, fare)
+    # Discount can never take the fare below the minimum charge.
+    return min(raw, ceiling)
 
 
 def apply_promo(code: str, user, fare: Decimal, zone=None, at=None) -> PromoResult:
@@ -108,7 +136,8 @@ def apply_promo(code: str, user, fare: Decimal, zone=None, at=None) -> PromoResu
             description=f'Minimum fare Rs.{promo.min_fare} required.',
         )
 
-    user_count = PromoRedemption.objects.filter(promo=promo, user=user).count()
+    user_count = (PromoRedemption.objects.filter(promo=promo, user=user)
+                  .exclude(state=PromoRedemption.STATE_RELEASED).count())
     if user_count >= promo.max_per_user_redemptions:
         return PromoResult(ok=False, code=code, reason='PROMO_USER_LIMIT')
 
@@ -116,6 +145,12 @@ def apply_promo(code: str, user, fare: Decimal, zone=None, at=None) -> PromoResu
         return PromoResult(ok=False, code=code, reason='PROMO_LIMIT_REACHED')
 
     discount = _compute_discount(promo, fare)
+
+    from servers.promotions import rider_promos
+    refusal = rider_promos.preview_refusal(promo, user, discount, zone)
+    if refusal:
+        return PromoResult(ok=False, code=code, reason=refusal)
+
     final = max(Decimal('0.00'), _two(fare - discount, promo.currency))
     return PromoResult(
         ok=True, code=promo.code,
@@ -161,7 +196,8 @@ def redeem_promo(code: str, user, trip, fare: Decimal, zone=None, at=None) -> Pr
         if fare < promo.min_fare:
             return PromoResult(ok=False, code=code, reason='PROMO_MIN_FARE')
 
-        user_count = PromoRedemption.objects.filter(promo=promo, user=user).count()
+        user_count = (PromoRedemption.objects.filter(promo=promo, user=user)
+                      .exclude(state=PromoRedemption.STATE_RELEASED).count())
         if user_count >= promo.max_per_user_redemptions:
             return PromoResult(ok=False, code=code, reason='PROMO_USER_LIMIT')
 
@@ -174,9 +210,19 @@ def redeem_promo(code: str, user, trip, fare: Decimal, zone=None, at=None) -> Pr
         discount = _compute_discount(promo, fare)
         final = max(Decimal('0.00'), _two(fare - discount, promo.currency))
 
+        # Module 12: the campaign behind the code (state, place, budget). The reservation is
+        # atomic with the redemption row: both commit, or neither does.
+        from servers.promotions import rider_promos
+        campaign, refusal = rider_promos.reserve_for_redemption(promo, user, discount, zone)
+        if refusal:
+            return PromoResult(ok=False, code=code, reason=refusal)
+
         PromoRedemption.objects.create(
             promo=promo, user=user, trip=trip, currency=promo.currency,
             discount_amount=_two(discount, promo.currency),
+            campaign=campaign,
+            state=(PromoRedemption.STATE_COMMITTED if campaign is not None
+                   else PromoRedemption.STATE_LEGACY),
         )
         promo.redemption_count = F('redemption_count') + 1
         promo.save(update_fields=['redemption_count', 'updated_at'])

@@ -261,6 +261,7 @@ class TestSeed:
             ('IN', 'finance.payout_config_change'), ('IN', 'finance.wallet_credit'),
             ('IN', 'zone.change'),
             ('IN', 'notification.template_change'), ('IN', 'notification.campaign_send'),
+            ('IN', 'promotion.launch'), ('IN', 'promotion.budget_increase'),
         }
         assert {k for k in active if k[0] == 'US'} == {
             ('US', 'support.refund'), ('US', 'finance.refund'), ('US', 'finance.adjust'),
@@ -268,6 +269,7 @@ class TestSeed:
             ('US', 'pricing.change'), ('US', 'driver.deactivate'), ('US', 'support.sla_change'),
             ('US', 'finance.payout_config_change'), ('US', 'zone.change'),
             ('US', 'notification.template_change'), ('US', 'notification.campaign_send'),
+            ('US', 'promotion.launch'), ('US', 'promotion.budget_increase'),
         }
         assert (active['IN', 'support.refund'].maker_limit,
                 active['IN', 'support.refund'].currency) == (50_000, 'INR')
@@ -308,8 +310,8 @@ class TestSeed:
         row = AdminAuditLog.objects.get(action='approval_policies_seeded')
         assert row.actor_id == actor.pk
         assert row.actor_label == f'{actor.email} via seed_approval_policies'
-        assert len(row.after['created']) == 26
-        assert row.after['us_policies_written'] == 13
+        assert len(row.after['created']) == 30
+        assert row.after['us_policies_written'] == 15
 
     def test_every_catalogue_action_is_a_known_capability(self):
         from servers.admin_access.roles import ALL_PERMISSIONS
@@ -864,7 +866,7 @@ class TestPolicyChange:
         assign(analyst, 'analyst', geo['IN-TG-HYD'])
         resp = client(analyst).get(f'{API}/policies/?country=IN')
         assert resp.status_code == 200
-        assert len(resp.json()['data']['policies']) == 13
+        assert len(resp.json()['data']['policies']) == 15
         assert client(hyd_support).get(f'{API}/policies/').status_code == 403
 
 

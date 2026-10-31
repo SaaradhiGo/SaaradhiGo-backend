@@ -209,6 +209,7 @@ def driver_earnings_summary(request):
     from django.utils import timezone
 
     from servers.driver.earnings import settlement_rows, summarise
+    from servers.promotions.incentives import incentive_lines
     from servers.rider.models import Wallet
 
     driver = request.user.driver
@@ -258,6 +259,9 @@ def driver_earnings_summary(request):
         'today_net': str(today['total_net']),
         'cash_collected': str(totals['cash_collected']),
         'unresolved_trips': totals['unresolved_trips'],
+        # Module 12: incentive and referral rewards are their own lines. They are NOT in
+        # `total_earned` (that is trip fares) and carry no commission. Paid in the weekly payout.
+        **incentive_lines(driver),
     }, status.HTTP_200_OK)
 
 

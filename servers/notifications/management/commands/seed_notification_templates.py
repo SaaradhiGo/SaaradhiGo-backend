@@ -28,7 +28,8 @@ from servers.notifications.models import (
 )
 
 COMMAND = 'seed_notification_templates'
-SEED_REASON = 'Seed: English templates for the commission notice, the missing-payout notice and the operator trip cancellation.'
+SEED_REASON = ('Seed: English templates for the commission notice, the missing-payout notice, '
+               'the operator trip cancellation and the promotions messages.')
 AUDIT_ACTION = 'notification_templates_seeded'
 
 
@@ -56,7 +57,7 @@ class Command(BaseCommand):
                         continue
                     template = NotificationTemplate(
                         key=key, channel=channel, country=country, geo_node=node, locale='en',
-                        category='transactional', subject=copy.get('subject', ''),
+                        category=copy.get('category', 'transactional'), subject=copy.get('subject', ''),
                         title=copy.get('title', ''), body=copy['body'],
                         variables=copy['variables'], personal_variables=[],
                         sample_values=copy['sample'], version=1,

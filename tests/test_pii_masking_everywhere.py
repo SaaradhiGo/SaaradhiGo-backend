@@ -334,7 +334,38 @@ def world(geo):
         body='Earn more 10%')
     notify_message.events.create(status='queued')
     notify_message.events.create(status='delivered', source='webhook:msg91')
+    # Promotions (module 12): a live rider promo with a redemption by the rider, a blocked
+    # referral and the fraud flag it raised.
+    from servers.fraud.models import RiskFlag
+    from servers.promotions.models import Campaign, Referral
+    from servers.ride.models import PromoCode, PromoRedemption
+    promo_code = PromoCode.objects.create(
+        code='SWEEP50', discount_type='flat', discount_flat_minor=5000, currency='INR',
+        valid_from=_tz.now() - _tz.timedelta(days=1), valid_to=_tz.now() + _tz.timedelta(days=9))
+    promo_campaign = Campaign.objects.create(
+        kind='rider_promo', name='Sweep promo', state='live', country='IN',
+        geo_node=geo['IN-TG-HYD'], currency='INR', budget_minor=100000, committed_minor=5000,
+        starts_at=_tz.now() - _tz.timedelta(days=1), ends_at=_tz.now() + _tz.timedelta(days=9),
+        promo_code=promo_code, config={'code': 'SWEEP50', 'discount_type': 'flat',
+                                       'discount_flat_minor': 5000})
+    PromoRedemption.objects.create(
+        promo=promo_code, user=rider_user, trip=trip, currency='INR', discount_amount_minor=5000,
+        campaign=promo_campaign, state='committed')
+    referral_campaign = Campaign.objects.create(
+        kind='referral', name='Sweep referral', state='live', country='IN', geo_node=geo['IN'],
+        currency='INR', budget_minor=100000, config={
+            'audience': 'rider', 'required_trips': 2, 'referrer_reward_minor': 1000,
+            'referee_reward_minor': 500})
+    referee = User.objects.create_user(phone_number='+919000011111', role='rider')
+    referral = Referral.objects.create(
+        campaign=referral_campaign, referrer=rider_user, referee=referee, code_used='ABCD2345',
+        status='blocked', blocked_signals=['same_phone'], currency='INR')
+    RiskFlag.objects.create(
+        subject=rider_user, kind='referral_abuse', anchor_node=geo['IN-TG-HYD'],
+        source_ref=f'referral:{referral.pk}',
+        evidence={'referral_id': referral.pk, 'signals': ['same_phone']})
     return {
+        'promo_campaign': promo_campaign,
         'notify_template': notify_template, 'notify_campaign': notify_campaign,
         'notify_message': notify_message,
         'rule': rule,
@@ -434,7 +465,7 @@ def _ids(world):
         'template_id': world['notify_template'].id, 'campaign_id': world['notify_campaign'].id,
         'message_id': world['notify_message'].id, 'user_id': world['driver_user'].id,
         'payment_id': world['payment'].id, 'payout_id': world['withdrawal'].id,
-        'kind': 'payouts',
+        'kind': 'payouts', 'promotion_id': world['promo_campaign'].id,
     }
 
 
@@ -548,6 +579,14 @@ INVENTORY = {
     'api/v1/notifications/admin/messages/<int:message_id>/': False,
     'api/v1/notifications/admin/providers/': False,
     'api/v1/notifications/admin/users/<int:user_id>/preferences/': False,
+    # Promotions (module 12): campaigns, budgets and projections name no person; activity rows
+    # carry a masked reference (`rider #12`) and ids, never a name, phone or email. The fraud list
+    # shows a subject reference and signal names, never a value.
+    'api/v1/promotions/admin/campaigns/': False,
+    'api/v1/promotions/admin/campaigns/<int:promotion_id>/': False,
+    'api/v1/promotions/admin/campaigns/<int:promotion_id>/activity/': False,
+    'api/v1/promotions/admin/options/': False,
+    'api/v1/fraud/admin/flags/': False,
 }
 
 #: GET routes in the namespace that are deliberately not swept. The DRF

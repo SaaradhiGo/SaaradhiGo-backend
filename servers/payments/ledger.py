@@ -10,6 +10,11 @@ The driver's settlement balance (`Wallet`, scope driver) moves only through
   * `platform_funded_trip_end`  credit   an operator ended a started trip as a safety incident
                       or platform fault: the rider paid nothing and the platform pays the
                       driver the earnings (fare minus the commission that would have applied)
+  * `promo_discount_platform_funded`  credit   a CASH trip with a rider promo: the driver collected
+                      the fare less the discount, and the platform pays them the discount (module 12)
+  * `incentive_reward` credit   a driver incentive reward: no commission, paid out with the next
+                      weekly payout, its own line (tax: not configured, go-live blocker 15)
+  * `referral_reward` credit    a driver referral reward: same treatment
   * `withdrawal`     debit    a payout request (taken at request time)
   * `refund_rejected_withdrawal` / `refund_failed_withdrawal`  credit   money
     returned because the payout was rejected, or failed at the gateway
@@ -68,6 +73,9 @@ ENTRY_KINDS = {
     'trip_earnings': 'settlement',
     'trip_commission': 'settlement',
     'platform_funded_trip_end': 'platform_funded_trip_end',
+    'promo_discount_platform_funded': 'promo_discount_platform_funded',
+    'incentive_reward': 'incentive_reward',
+    'referral_reward': 'referral_reward',
     'withdrawal': 'withdrawal_requested',
     'refund_rejected_withdrawal': 'withdrawal_rejected',
     'refund_failed_withdrawal': 'withdrawal_returned',
@@ -189,6 +197,11 @@ def entry_dicts(driver, in_range_rows, opening_minor, offset, limit):
                     'payment_method': s.payment_method,
                     'version': s.version,
                 }
+        if txn.purpose in ('incentive_reward', 'referral_reward'):
+            # Paid in the weekly payout, no commission; tax is go-live blocker 15, so nothing is
+            # computed or withheld here and the line says so.
+            entry['commission'] = 'none'
+            entry['tax'] = 'not configured'
         match = WITHDRAWAL_REF.match(ref)
         if match:
             entry['withdrawal_id'] = int(match.group(1))

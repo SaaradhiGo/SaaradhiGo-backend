@@ -78,6 +78,10 @@ class EarningRow:
     # trip's booking-time snapshot). None only for a ledger row with no settlement
     # row. The fee rule (AUDIT 27.43): what is shown is what was charged.
     commission_percent: Optional[Decimal] = None
+    # A rider promo is platform-funded (module 12): `gross`, `commission` and `net` above are on
+    # the FULL fare and do not move. This is the discount the rider did not pay, so a cash driver
+    # can see how much less they collected; the platform paid it to them.
+    promo_discount: Optional[Decimal] = None
 
     def to_api(self):
         """The shape the driver app already parses, with nothing removed."""
@@ -94,6 +98,10 @@ class EarningRow:
             'user_name': self.rider_name,
             'cash_in_hand': self.driver_holds_cash,
             'commission_percent': _s(self.commission_percent),
+            # Additive (module 12).
+            'promo_discount': _s(self.promo_discount or Decimal('0.00')),
+            'cash_to_collect': (_s(self.gross - (self.promo_discount or Decimal('0.00')))
+                                if self.driver_holds_cash and self.gross is not None else None),
         }
 
 
@@ -160,12 +168,22 @@ def settlement_rows(driver, since=None, until=None, limit=None):
                                   .values_list('trip_id', 'version', 'commission_percent')):
         percents[trip_pk] = pct
 
+    from base.money import from_minor
+    from servers.promotions.models import DISCOUNT_FUNDED, LedgerEntry
+
+    discounts = {}
+    for trip_pk, minor, currency in (LedgerEntry.objects
+                                     .filter(kind=DISCOUNT_FUNDED, trip_id__in=trip_ids)
+                                     .values_list('trip_id', 'amount_minor', 'currency')):
+        discounts[trip_pk] = discounts.get(trip_pk, Decimal('0.00')) + from_minor(minor, currency)
+
     rows = []
     for entry in ledger:
         trip_id = _trip_id_from_reference(entry.reference_id)
         trip = trips.get(trip_id)
         row = _row_for(entry, trip, trip_id)
         row.commission_percent = percents.get(trip_id)
+        row.promo_discount = discounts.get(trip_id)
         rows.append(row)
     return rows
 
@@ -246,7 +264,8 @@ def summarise(rows):
         if row.net is not None:
             totals['total_net'] += row.net
         if row.driver_holds_cash:
-            totals['cash_collected'] += row.gross
+            # What the driver actually holds: the fare less a platform-funded promo discount.
+            totals['cash_collected'] += row.gross - (row.promo_discount or Decimal('0.00'))
 
     if totals['total_gross'] > 0:
         totals['effective_commission_percent'] = (

@@ -55,6 +55,10 @@ DRIVER_LEDGER_PURPOSES = (
     # The platform paid the driver for a started trip an operator ended as a safety
     # incident or platform fault (the rider paid nothing). Earnings, no commission.
     'platform_funded_trip_end',
+    # Promotions & Incentives (module 12). The platform paid a cash-trip driver the promo
+    # discount the rider did not hand over; a driver incentive reward; a driver referral reward.
+    # All credits, none carrying commission; each is its own line in the statement.
+    'promo_discount_platform_funded', 'incentive_reward', 'referral_reward',
 )
 
 #: `model label -> ORM lookup(s) reaching GeoNode.path`. One table, so a view

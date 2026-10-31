@@ -50,7 +50,10 @@ from servers.admin_audit.services import record_admin_action
 from servers.approvals.service import ApprovalError
 
 from .metrics import METRICS, OVERVIEW_WINDOWS, describe
-from .models import ACK_ALSO, ACK_PERMISSION, FINANCE_ALERT_KINDS, PLATFORM_ALERT_KINDS, OperatorAlert
+from .models import (
+    ACK_ALSO, ACK_PERMISSION, FINANCE_ALERT_KINDS, FRAUD_ALERT_KINDS, PLATFORM_ALERT_KINDS,
+    OperatorAlert,
+)
 from .overview import build_overview, has_data
 from .services import acknowledge
 from .thresholds import active_thresholds, propose_threshold_change
@@ -194,12 +197,12 @@ def _visible_alerts(user):
     from servers.admin_access.bridge import is_migrated, strict_mode
 
     everything = OperatorAlert.objects.select_related('city')
-    qs = everything.exclude(kind__in=FINANCE_ALERT_KINDS)
+    qs = everything.exclude(kind__in=FINANCE_ALERT_KINDS | FRAUD_ALERT_KINDS)
     if not granted(user, 'platform.settings')[0]:
         qs = qs.exclude(kind__in=PLATFORM_ALERT_KINDS)
     if not sees_live_sos(user):
         qs = qs.exclude(kind__in=SOS_ALERT_KINDS)
-    finance = _visible_finance_alerts(user, everything)
+    finance = _visible_finance_alerts(user, everything) | _visible_fraud_alerts(user, everything)
     if not strict_mode() and not is_migrated(user):
         return qs | finance  # unmigrated accounts are unscoped everywhere, until strict mode
     paths = scope_paths(user)
@@ -209,6 +212,23 @@ def _visible_alerts(user):
     for path in paths:
         covered |= Q(city__path__startswith=path)
     return qs.filter(covered) | finance
+
+
+def _visible_fraud_alerts(user, everything):
+    """Fraud alerts (`FRAUD_ALERT_KINDS`): only holders of `fraud.read`, and only for the cities
+    in their scope. An alert with no city is for unrestricted callers only."""
+    from servers.admin_access.access import scope_paths as _paths
+
+    qs = everything.filter(kind__in=FRAUD_ALERT_KINDS)
+    if not granted(user, 'fraud.read')[0]:
+        return qs.none()
+    paths = _paths(user)
+    if paths is None:
+        return qs
+    covered = Q(pk__in=[])
+    for path in paths:
+        covered |= Q(city__path__startswith=path)
+    return qs.filter(covered)
 
 
 def _visible_finance_alerts(user, everything):

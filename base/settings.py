@@ -83,7 +83,7 @@ INSTALLED_APPS = [
     'servers.notifications',
     # Promotions & Incentives (module 12): rider promos, driver incentives, referrals, with budgets.
     'servers.promotions',
-    # Fraud & Risk (module 13 will extend this): flags raised by other modules, read-only for now.
+    # Fraud & Risk (module 13): the review queue, detection rules, linked accounts and review actions.
     'servers.fraud',
     # Console search: trip id, phone, plate, name -- indexed and scoped.
     'servers.search',
@@ -472,6 +472,13 @@ CELERY_BEAT_SCHEDULE = {
         # reservations held by cancelled trips and retries unpaid qualified referrals.
         'task': 'promotions.sweep',
         'schedule': _crontab(minute='*/5'),
+    },
+    'fraud-run-rules-every-15-min': {
+        # Fraud & Risk (module 13): evaluates the enabled detection rules over their bounded recent
+        # windows and raises or extends flags; then the queue-aging alert. Idempotent; it only
+        # raises flags and alerts, it never acts on an account or any money.
+        'task': 'fraud.run_rules',
+        'schedule': _crontab(minute='*/15'),
     },
     'payments-retry-unsettled-trips-hourly': {
         # Trips left unsettled because no commission rule governed them (module 8 path

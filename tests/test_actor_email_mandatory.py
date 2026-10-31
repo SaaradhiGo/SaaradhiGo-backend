@@ -81,6 +81,7 @@ WRITING_COMMANDS = [
     'seed_admin_access',
     'seed_alert_thresholds',
     'seed_approval_policies',
+    'seed_fraud_rules',
     'seed_notification_templates',
     'seed_payout_config',
     'seed_safety_config',
@@ -359,6 +360,13 @@ def _fp_safety_config():
         'country', 'version', 'sos_ack_minutes', 'is_active')))
 
 
+def _fp_fraud_rules():
+    from servers.fraud.models import RiskRuleConfig
+
+    return tuple(sorted(RiskRuleConfig.objects.values_list(
+        'country', 'rule_key', 'version', 'is_active')))
+
+
 def _fp_support_sla():
     from servers.support.models import SupportSlaPolicy
 
@@ -488,6 +496,8 @@ CASES = [
          _prepare_seed_policies, _fp_policies),
     Case('seed_support_sla', 'seed_support_sla',
          _prepare_seed_policies, _fp_support_sla),
+    Case('seed_fraud_rules', 'seed_fraud_rules',
+         _prepare_seed_policies, _fp_fraud_rules),
     Case('seed_safety_config', 'seed_safety_config',
          _prepare_seed_policies, _fp_safety_config),
     Case('seed_payout_config', 'seed_payout_config',

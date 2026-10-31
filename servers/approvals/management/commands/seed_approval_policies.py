@@ -17,6 +17,7 @@ WHAT IT SEEDS (owner rulings, AUDIT.md §10 / §22, INR in paise)
     zone.change         always a checker (module 9)
     notification.template_change, notification.campaign_send  always a checker (module 11)
     promotion.launch, promotion.budget_increase  always a checker, India and US (module 12)
+    fraud.rule_change   always a checker, India and US (module 13)
 
 Nothing is written for the United States. That is the ruling, not an
 omission: a US action that needs a threshold is refused with
@@ -52,7 +53,7 @@ from servers.approvals.actions import (
     BULK_ACTION, DRIVER_DEACTIVATE, FINANCE_ADJUST, FINANCE_PAYOUT,
     FINANCE_PAYOUT_CONFIG, FINANCE_REFUND, FINANCE_WALLET_CREDIT, PRICING_CHANGE,
     NOTIFICATION_CAMPAIGN_SEND, NOTIFICATION_TEMPLATE_CHANGE, PROMOTION_BUDGET_INCREASE,
-    PROMOTION_LAUNCH, SUPPORT_REFUND, SUPPORT_SLA_CHANGE, ZONE_CHANGE,
+    FRAUD_RULE_CHANGE, PROMOTION_LAUNCH, SUPPORT_REFUND, SUPPORT_SLA_CHANGE, ZONE_CHANGE,
 )
 from servers.approvals.models import ALWAYS, COUNT, MONEY
 from servers.approvals.service import active_policy, write_policy_version
@@ -83,6 +84,8 @@ INDIA_DEFAULTS = [
     # Module 12: a campaign going live, and a budget being raised, always need a checker.
     ('IN', PROMOTION_LAUNCH, ALWAYS, '', None),
     ('IN', PROMOTION_BUDGET_INCREASE, ALWAYS, '', None),
+    # Module 13: a fraud rule threshold change always needs a checker.
+    ('IN', FRAUD_RULE_CHANGE, ALWAYS, '', None),
 ]
 
 #: The United States (owner rulings, AUDIT 27.44), USD minor units.
@@ -104,6 +107,7 @@ US_DEFAULTS = [
     ('US', NOTIFICATION_CAMPAIGN_SEND, ALWAYS, '', None),
     ('US', PROMOTION_LAUNCH, ALWAYS, '', None),
     ('US', PROMOTION_BUDGET_INCREASE, ALWAYS, '', None),
+    ('US', FRAUD_RULE_CHANGE, ALWAYS, '', None),
 ]
 
 SEED_REASON = 'Seed: maker-checker defaults (AUDIT.md §10/§22 India; §27.44 United States).'

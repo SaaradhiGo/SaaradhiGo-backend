@@ -58,6 +58,7 @@ NOTIFICATION_TEMPLATE_CHANGE = 'notification.template_change'
 NOTIFICATION_CAMPAIGN_SEND = 'notification.campaign_send'
 PROMOTION_LAUNCH = 'promotion.launch'
 PROMOTION_BUDGET_INCREASE = 'promotion.budget_increase'
+FRAUD_RULE_CHANGE = 'fraud.rule_change'
 
 ACTIONS = {
     action.key: action for action in (
@@ -101,6 +102,9 @@ ACTIONS = {
         Action(PROMOTION_LAUNCH, 'Launch a promotion, incentive or referral campaign',
                'promo.read'),
         Action(PROMOTION_BUDGET_INCREASE, 'Increase a campaign budget', 'promo.read'),
+        # Module 13: a detection rule's thresholds (or switching it off). Always a checker, in India
+        # and the US. The checker must hold fraud.rules too, so it is a second Super Admin.
+        Action(FRAUD_RULE_CHANGE, 'Change a fraud detection rule threshold', 'fraud.rules'),
     )
 }
 

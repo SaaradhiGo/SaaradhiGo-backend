@@ -360,11 +360,12 @@ def world(geo):
     referral = Referral.objects.create(
         campaign=referral_campaign, referrer=rider_user, referee=referee, code_used='ABCD2345',
         status='blocked', blocked_signals=['same_phone'], currency='INR')
-    RiskFlag.objects.create(
+    fraud_flag = RiskFlag.objects.create(
         subject=rider_user, kind='referral_abuse', anchor_node=geo['IN-TG-HYD'],
         source_ref=f'referral:{referral.pk}',
         evidence={'referral_id': referral.pk, 'signals': ['same_phone']})
     return {
+        'fraud_flag': fraud_flag,
         'promo_campaign': promo_campaign,
         'notify_template': notify_template, 'notify_campaign': notify_campaign,
         'notify_message': notify_message,
@@ -466,6 +467,7 @@ def _ids(world):
         'message_id': world['notify_message'].id, 'user_id': world['driver_user'].id,
         'payment_id': world['payment'].id, 'payout_id': world['withdrawal'].id,
         'kind': 'payouts', 'promotion_id': world['promo_campaign'].id,
+        'flag_id': world['fraud_flag'].id,
     }
 
 
@@ -587,6 +589,13 @@ INVENTORY = {
     'api/v1/promotions/admin/campaigns/<int:promotion_id>/activity/': False,
     'api/v1/promotions/admin/options/': False,
     'api/v1/fraud/admin/flags/': False,
+    # Fraud & Risk (module 13): a flag names a subject by a masked reference (`rider #12`) and
+    # ids; the evidence is signal names, ids and counts; linked accounts are masked labels, never
+    # a phone, email, token or instrument; rules name no person.
+    'api/v1/fraud/admin/flags/<int:flag_id>/': False,
+    'api/v1/fraud/admin/flags/<int:flag_id>/reviewers/': False,
+    'api/v1/fraud/admin/rules/': False,
+    'api/v1/fraud/admin/options/': False,
 }
 
 #: GET routes in the namespace that are deliberately not swept. The DRF

@@ -288,14 +288,30 @@ def raise_fraud_flag(referral, signals):
     from servers.notifications import recipients
 
     node = recipients.city_of(referral.referrer)
-    RiskFlag.objects.get_or_create(
+    # A shared device or payout instrument is strong evidence; a shared phone number alone less so.
+    strong = bool({SIGNAL_DEVICE, SIGNAL_INSTRUMENT} & set(signals))
+    now = timezone.now()
+    flag, created = RiskFlag.objects.get_or_create(
         kind=REFERRAL_ABUSE, source_ref=f'referral:{referral.pk}',
         defaults=dict(
-            subject=referral.referrer, anchor_node=node,
+            subject=referral.referrer, anchor_node=node, rule_key=REFERRAL_ABUSE, rule_version=1,
+            severity='high' if strong else 'medium', score=80 if strong else 60, last_seen_at=now,
             evidence={'referral_id': referral.pk, 'campaign_id': referral.campaign_id,
                       'role': _role(referral.referrer), 'signals': list(signals),
+                      'refs': {'counterpart_user_ids': [referral.referee_id],
+                               'campaign_ids': [referral.campaign_id]},
                       'referee_user_id': referral.referee_id,
-                      'trips_completed': referral.trips_completed}))
+                      'trips_completed': referral.trips_completed,
+                      'hit_count': 1, 'first_seen': now.isoformat(), 'last_seen': now.isoformat()}))
+    if created:
+        from servers.fraud.models import EV_RAISED, FlagEvent
+        from servers.fraud.raising import alert_high
+
+        FlagEvent.objects.create(flag=flag, action=EV_RAISED, to_status=flag.status,
+                                 data={'rule': REFERRAL_ABUSE, 'score': flag.score,
+                                       'severity': flag.severity})
+        if flag.severity == 'high':
+            transaction.on_commit(lambda: alert_high(flag.pk))
     if _role(referral.referrer) == 'rider':
         from servers.rider.models import Rider, RiderFlag
 

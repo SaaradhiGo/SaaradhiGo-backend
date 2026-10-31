@@ -16,6 +16,8 @@ from servers.search import urls as search_urls
 from servers.safety import urls as safety_urls
 from servers.live_ops import urls as live_ops_urls
 from servers.notifications import urls as notifications_urls
+from servers.promotions import urls as promotions_urls
+from servers.fraud import urls as fraud_urls
 
 urlpatterns = [
     path('uploads/presign/', presign_upload),
@@ -34,4 +36,6 @@ urlpatterns = [
     path('safety/', include(safety_urls.urlpatterns)),
     path('live-ops/', include(live_ops_urls.urlpatterns)),
     path('notifications/', include(notifications_urls.urlpatterns)),
+    path('promotions/', include(promotions_urls.urlpatterns)),
+    path('fraud/', include(fraud_urls.urlpatterns)),
 ]

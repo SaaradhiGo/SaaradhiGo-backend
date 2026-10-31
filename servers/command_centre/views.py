@@ -50,7 +50,7 @@ from servers.admin_audit.services import record_admin_action
 from servers.approvals.service import ApprovalError
 
 from .metrics import METRICS, OVERVIEW_WINDOWS, describe
-from .models import ACK_PERMISSION, FINANCE_ALERT_KINDS, PLATFORM_ALERT_KINDS, OperatorAlert
+from .models import ACK_ALSO, ACK_PERMISSION, FINANCE_ALERT_KINDS, PLATFORM_ALERT_KINDS, OperatorAlert
 from .overview import build_overview, has_data
 from .services import acknowledge
 from .thresholds import active_thresholds, propose_threshold_change
@@ -60,7 +60,8 @@ logger = logging.getLogger(__name__)
 STATUSES = ('open', 'acknowledged', 'all')
 
 
-ACK_GATE = AnyOfScopedPermission(*sorted(set(ACK_PERMISSION.values())))
+ACK_GATE = AnyOfScopedPermission(*sorted(
+    set(ACK_PERMISSION.values()) | {p for extra in ACK_ALSO.values() for p in extra}))
 
 
 def _serialize(alert):
@@ -299,7 +300,8 @@ def acknowledge_alert(request, alert_id):
         )
 
     needed = ACK_PERMISSION.get(alert.kind)
-    allowed = needed is not None and granted(request.user, needed, alert.city)[0]
+    allowed = needed is not None and any(
+        granted(request.user, cap, alert.city)[0] for cap in (needed, *ACK_ALSO.get(alert.kind, ())))
     if not allowed:
         return error_response(
             code='FORBIDDEN',

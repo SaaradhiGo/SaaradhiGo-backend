@@ -134,8 +134,19 @@ def create_order(request):
             status=status.HTTP_409_CONFLICT
         )
 
-    # Use final_fare if available, otherwise estimated_fare
-    amount_minor = trip.final_fare_minor or trip.estimated_fare_minor
+    from servers.promotions.rider_promos import is_fully_covered
+    if is_fully_covered(trip):
+        return error_response(
+            code='NOT_CHARGED',
+            message='A promotion covered this trip, so you were not charged.',
+            field='trip_id', issue='Fully covered by a promotion',
+            status=status.HTTP_409_CONFLICT
+        )
+
+    # What the RIDER pays: the fare less any promo discount (platform-funded, module 12).
+    # Settlement and driver earnings still read the full fare.
+    from servers.promotions.rider_promos import payable_minor
+    amount_minor = payable_minor(trip)
     amount = from_minor(amount_minor, trip.currency)
     if not amount or amount <= 0:
         return error_response(
@@ -1882,7 +1893,15 @@ def switch_payment_method(request):
         existing.save()
         
         # Create new payment
-        amount = trip.final_fare or trip.estimated_fare
+        from servers.promotions.rider_promos import payable, payable_minor
+        amount = payable(trip)
+        from servers.promotions.rider_promos import is_fully_covered
+        if actual_method == 'online' and is_fully_covered(trip):
+            return error_response(
+                code='NOT_CHARGED',
+                message='A promotion covered this trip, so you were not charged.',
+                field='trip_id', issue='Fully covered by a promotion',
+                status=status.HTTP_409_CONFLICT)
         
         if actual_method == 'online':
             # Use payment gateway abstraction
@@ -1891,7 +1910,7 @@ def switch_payment_method(request):
             if currency_error is not None:
                 return currency_error
             order = gateway.create_order(
-                amount_minor=trip.final_fare_minor or trip.estimated_fare_minor,
+                amount_minor=payable_minor(trip),
                 trip_id=trip.id,
                 currency=pay_currency,
                 customer_id=str(request.user.id),
@@ -2029,7 +2048,17 @@ def retry_payment(request):
         }, status.HTTP_200_OK)
 
     # D-07: Manual retry - create new payment order
-    amount = trip.final_fare or trip.estimated_fare
+    from servers.promotions.rider_promos import is_fully_covered
+    if is_fully_covered(trip):
+        return error_response(
+            code='NOT_CHARGED',
+            message='A promotion covered this trip, so you were not charged.',
+            field='trip_id', issue='Fully covered by a promotion',
+            status=status.HTTP_409_CONFLICT
+        )
+
+    from servers.promotions.rider_promos import payable, payable_minor
+    amount = payable(trip)
 
     with transaction.atomic():
         payment = Payment.objects.select_for_update().get(pk=payment.pk)
@@ -2044,7 +2073,7 @@ def retry_payment(request):
         if currency_error is not None:
             return currency_error
         order = gateway.create_order(
-            amount_minor=trip.final_fare_minor or trip.estimated_fare_minor,
+            amount_minor=payable_minor(trip),
             trip_id=trip.id,
             currency=pay_currency,
             customer_id=str(request.user.id),

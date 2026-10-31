@@ -513,7 +513,20 @@ def create_payment_on_complete(trip):
     if trip.payments.exists():
         return
 
-    amount = trip.final_fare or trip.estimated_fare
+    # What the RIDER pays: the fare less any promo discount. A promo is platform-funded
+    # (module 12), so settlement and driver earnings keep reading the full fare.
+    from servers.promotions.rider_promos import discount_minor, fare_minor, payable
+    amount = payable(trip)
+    if not amount and discount_minor(trip) and fare_minor(trip) > 0:
+        # A promo covered the whole fare: the rider owes nothing, so there is no payment to wait for
+        # and no gateway order. The trip still settles NOW, on the full fare, exactly as with a
+        # smaller promo (driver earnings and commission unchanged; the discount is platform-funded,
+        # and on a cash trip the driver, who collects 0, is credited it).
+        from servers.driver.utils import settle_or_defer
+        trip.payment_status = 'completed'
+        trip.save(update_fields=['payment_status'])
+        settle_or_defer(trip)
+        return
     if not amount:
         logger.warning(f"No fare amount for trip {trip.id}, skipping payment creation")
         return

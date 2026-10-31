@@ -96,12 +96,30 @@ class TripDetailSerializer(TripListSerializer):
     # via the API. SerializerMethodField + request-context check enforces
     # that: only the trip's own rider gets the OTP value back.
     otp = serializers.SerializerMethodField()
+    # Promotions (module 12), additive. `estimated_fare` / `final_fare` stay the FULL fare (the
+    # driver's earnings and commission are computed on it). A promo is platform-funded, so these two
+    # say what the rider is charged: the cash a driver collects on a cash trip is `rider_payable`.
+    promo_discount = serializers.SerializerMethodField()
+    rider_payable = serializers.SerializerMethodField()
 
     class Meta(TripListSerializer.Meta):
         fields = TripListSerializer.Meta.fields + [
             'accepted_at', 'started_at',
-            'fare_breakdown', 'ratings', 'otp',
+            'fare_breakdown', 'ratings', 'otp', 'promo_discount', 'rider_payable',
         ]
+
+    def get_promo_discount(self, obj):
+        from servers.promotions import rider_promos
+
+        minor = rider_promos.discount_minor(obj)
+        return str(rider_promos.dec(minor, obj.currency)) if minor else None
+
+    def get_rider_payable(self, obj):
+        from servers.promotions import rider_promos
+
+        if not rider_promos.discount_minor(obj):
+            return None
+        return str(rider_promos.payable(obj))
 
     def get_fare_breakdown(self, obj):
         # Uses prefetched items rather than hitting the DB

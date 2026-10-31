@@ -80,6 +80,12 @@ SCOPE_PATHS = {
     'notifications.NotificationTemplate': 'geo_node__path',
     'notifications.Campaign': 'geo_node__path',
 
+    # Promotions & Incentives (module 12). A campaign is anchored at the country or city node
+    # it runs in. A fraud flag (module 13 extends this) is anchored at its subject's city, else
+    # country; one with no anchor is visible to unrestricted callers only.
+    'promotions.Campaign': 'geo_node__path',
+    'fraud.RiskFlag': 'anchor_node__path',
+
     # A commission rule is anchored at the country or city node it applies to.
     'pricing.CommissionRule': 'geo_node__path',
 

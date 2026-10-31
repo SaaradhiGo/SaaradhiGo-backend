@@ -1554,6 +1554,18 @@ Driver cancels a trip AFTER accepting it (before the trip starts).
 - **Method**: `POST`
 - **Auth Required**: Yes
 
+**Promo codes at booking (module 12).** Send `"promo_code": "<CODE>"` on the booking frame of
+`ws/ride/request/` (optional). With none, the best live auto-applied promo is used. The promo is
+**platform-funded**: `estimated_fare` stays the full fare (the driver's earnings and commission are
+computed on it); the `trip_created` frame adds `promo_code`, `discount_amount` and `rider_payable`
+(what the rider is charged). A code that no longer applies (or whose campaign has run out of budget)
+refuses the booking with `{"type": "error", "code": "PROMO_NOT_FOUND" | "PROMO_BUDGET_EXHAUSTED" |
+"PROMO_USER_LIMIT" | ...}` and no trip is created, so re-quote with `/ride/promo/apply/`. The apply
+response gains the reasons `PROMO_BUDGET_EXHAUSTED` and `PROMO_NEW_RIDERS_ONLY`. A promo never makes a
+ride free: the rider always pays at least the minimum charge. The payment order, the payment row and the
+cash amount the driver collects are the fare less the discount; the driver earnings rows add
+`promo_discount` and `cash_to_collect`.
+
 ### 4.16 Maps Proxy: Geocode
 - **URL**: `/ride/maps/geocode`
 - **Method**: `POST`
@@ -1864,3 +1876,42 @@ Trigger refunds gracefully.
 - **URL**: `/support/admin/tickets/<ticket_id>/assign/`
 - **Method**: `POST`
 - **Auth Required**: Yes (IsAdmin)
+
+---
+
+## 9. Promotions & Incentives (App: `promotions`, module 12)
+
+### 9.1 Referral: attach a code
+- **URL**: `/promotions/referrals/attach/`
+- **Method**: `POST`
+- **Auth Required**: Yes (rider or driver)
+- **Body**: `{"code": "ABCD2345", "device_id": "<optional stable device id>"}` (only a salted hash of the
+  device id is kept)
+- **201**: `{"status": "attached", "required_trips": 2, "trips_completed": 0, "reward_minor": 5000,
+  "currency": "INR"}`
+- **Errors**: `CODE_REQUIRED` 400, `SELF_REFERRAL` 400, `CODE_NOT_FOUND` 404 (also a code of the other
+  role), `ALREADY_REFERRED` 409, `TOO_LATE` 409 (the person has already completed a trip),
+  `NO_ACTIVE_CAMPAIGN` 409.
+- The reward is earned only after the referee completes the campaign's number of trips, and never across
+  the same device, phone number or payment instrument.
+
+### 9.2 Referral: mine
+- **URL**: `/promotions/referrals/mine/`
+- **Method**: `GET`
+- **Auth Required**: Yes (rider or driver)
+- **Returns**: my shareable `code`, the live `offer` (`required_trips`, `referrer_reward_minor`,
+  `referee_reward_minor`, `currency`), `referrals` (who, status, trips done of required) and
+  `attached_to` (my own progress, if I used a code). A blocked reward shows only `under review`.
+
+### 9.3 Driver incentives
+- **URL**: `/promotions/driver/incentives/`
+- **Method**: `GET`
+- **Auth Required**: Yes (driver)
+- **Returns**: live incentives with my progress: `target_trips`, `progress_trips`, `status`
+  (`in_progress` | `completed` | `unfunded`), `reward_minor`, `budget_used_up`, and the filters
+  (`zone_code`, `hour_from`, `hour_to`, `vehicle_type`). Rewards are paid in the weekly payout with **no
+  commission**; `tax` is `not configured` (go-live blocker 15). The older `/driver/driver/incentives/`
+  keeps working unchanged.
+- `GET /driver/earnings/summary/` adds `incentive_rewards`, `referral_rewards` (their own lines, not in
+  `total_earned`), `incentive_commission` (`none`) and `incentive_tax` (`not configured`).
+

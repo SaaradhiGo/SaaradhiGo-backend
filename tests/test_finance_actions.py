@@ -1230,6 +1230,8 @@ US_ROWS = {
     'zone.change': ('always', '', None),
     'notification.template_change': ('always', '', None),
     'notification.campaign_send': ('always', '', None),
+    'promotion.launch': ('always', '', None),
+    'promotion.budget_increase': ('always', '', None),
 }
 
 

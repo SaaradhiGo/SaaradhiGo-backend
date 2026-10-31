@@ -5,6 +5,11 @@
     trips.operator_cancelled     support cancelled a stale trip the driver never reached (rider)
     trips.operator_ended_rider   support ended a stale STARTED trip: what the rider pays (rider)
     trips.operator_ended_driver  support ended a stale STARTED trip: what the driver earns (driver)
+    promotions.incentive_progress   a driver's quest moved on (driver, in_app + push)
+    promotions.incentive_completed  a driver finished a quest and the reward is on its way
+    promotions.referral_reward      a referral reward was earned (rider or driver)
+    promotions.promo_available      a new offer (PROMOTIONAL: only to people who opted in, held by
+                                    quiet hours; it is the template a promotions campaign sends)
 
 The first two are TRANSACTIONAL, for India and the United States, on in_app + push + sms +
 email. The rider cancellation notice is on in_app + push only (no SMS, no email).
@@ -24,6 +29,10 @@ PAYOUT = 'payout.missing_details'
 OPERATOR_CANCELLED = 'trips.operator_cancelled'
 OPERATOR_ENDED_RIDER = 'trips.operator_ended_rider'
 OPERATOR_ENDED_DRIVER = 'trips.operator_ended_driver'
+INCENTIVE_PROGRESS = 'promotions.incentive_progress'
+INCENTIVE_COMPLETED = 'promotions.incentive_completed'
+REFERRAL_REWARD = 'promotions.referral_reward'
+PROMO_AVAILABLE = 'promotions.promo_available'
 
 _COMMISSION_VARS = ['effective_date', 'scope', 'old_rate', 'new_rate']
 _COMMISSION_SAMPLE = {'effective_date': '12 November 2026', 'scope': 'Sedan in Hyderabad',
@@ -102,12 +111,51 @@ COPY = {
         body='Trip #{trip_id} was ended by SaaradhiGo. {earnings_text}',
         variables=['trip_id', 'earnings_text'],
         sample={'trip_id': '1042', 'earnings_text': 'You earn Rs. 120.00 for the distance driven.'}),
+
+    # Promotions & Incentives (module 12). English, India and the United States, in_app + push.
+    (INCENTIVE_PROGRESS, 'in_app'): dict(
+        title='{name}: {done} of {target} trips',
+        body='You have completed {done} of {target} trips for {name}. Keep going.',
+        variables=['name', 'done', 'target'],
+        sample={'name': 'Weekend 20', 'done': '12', 'target': '20'}),
+    (INCENTIVE_PROGRESS, 'push'): dict(
+        title='{name}: {done} of {target} trips',
+        body='{done} of {target} trips done. Keep going.',
+        variables=['name', 'done', 'target'],
+        sample={'name': 'Weekend 20', 'done': '12', 'target': '20'}),
+    (INCENTIVE_COMPLETED, 'in_app'): dict(
+        title='You completed {name}',
+        body='You earned {reward} for {name}. It is added to your balance and paid out in your '
+             'next weekly payout, with no commission.',
+        variables=['name', 'reward'], sample={'name': 'Weekend 20', 'reward': 'Rs. 500.00'}),
+    (INCENTIVE_COMPLETED, 'push'): dict(
+        title='You completed {name}',
+        body='You earned {reward}. It will be in your next weekly payout.',
+        variables=['name', 'reward'], sample={'name': 'Weekend 20', 'reward': 'Rs. 500.00'}),
+    (REFERRAL_REWARD, 'in_app'): dict(
+        title='Referral reward earned',
+        body='You earned {reward} for a referral.',
+        variables=['reward'], sample={'reward': 'Rs. 100.00'}),
+    (REFERRAL_REWARD, 'push'): dict(
+        title='Referral reward earned',
+        body='You earned {reward} for a referral.',
+        variables=['reward'], sample={'reward': 'Rs. 100.00'}),
+    (PROMO_AVAILABLE, 'in_app'): dict(
+        title='A new offer for you', body='{offer}', category='promotional',
+        variables=['offer'], sample={'offer': '20% off your next ride this weekend.'}),
+    (PROMO_AVAILABLE, 'push'): dict(
+        title='A new offer for you', body='{offer}', category='promotional',
+        variables=['offer'], sample={'offer': '20% off your next ride this weekend.'}),
 }
 
 #: Channels each key is seeded on. Anything not listed uses all of CHANNELS.
 KEY_CHANNELS = {OPERATOR_CANCELLED: ('in_app', 'push'),
                 OPERATOR_ENDED_RIDER: ('in_app', 'push'),
-                OPERATOR_ENDED_DRIVER: ('in_app', 'push')}
+                OPERATOR_ENDED_DRIVER: ('in_app', 'push'),
+                INCENTIVE_PROGRESS: ('in_app', 'push'),
+                INCENTIVE_COMPLETED: ('in_app', 'push'),
+                REFERRAL_REWARD: ('in_app', 'push'),
+                PROMO_AVAILABLE: ('in_app', 'push')}
 
 COUNTRIES = ('IN', 'US')
 CHANNELS = ('in_app', 'push', 'sms', 'email')
@@ -122,7 +170,8 @@ def seed_rows():
     """`[(key, channel, country, fields, active)]` in a stable order."""
     rows = []
     for key in (COMMISSION, PAYOUT, OPERATOR_CANCELLED, OPERATOR_ENDED_RIDER,
-                OPERATOR_ENDED_DRIVER):
+                OPERATOR_ENDED_DRIVER, INCENTIVE_PROGRESS, INCENTIVE_COMPLETED, REFERRAL_REWARD,
+                PROMO_AVAILABLE):
         for country in COUNTRIES:
             for channel in KEY_CHANNELS.get(key, CHANNELS):
                 copy = dict(COPY[(key, channel)])

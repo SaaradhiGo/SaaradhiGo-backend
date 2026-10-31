@@ -85,7 +85,15 @@ PERMISSIONS = {
     'finance.export': 'Export settlements, payouts and payments as CSV',
     'pricing.write': 'Change fare cards, multipliers and commission',
     'zone.write': 'Draw and publish zones and geofences',
-    'promo.write': 'Create and amend promotions and incentives',
+    # Promotions & Incentives (module 12). Reading shows campaigns, budgets and (masked)
+    # redemptions. The two write capabilities split the kinds: rider promos and rider referrals
+    # are Marketing's; driver incentives and driver referrals are City Ops'. Every launch and
+    # every budget increase goes through a checker.
+    'promo.read': 'View promotion, incentive and referral campaigns, budgets and redemptions',
+    'promo.write': 'Draft and submit rider promos and rider referral campaigns',
+    'incentive.write': 'Draft and submit driver incentives and driver referral campaigns',
+    # Fraud & Risk (module 13 extends this): the read-only flag list the Promotions screen shows.
+    'fraud.read': 'View fraud flags (read-only)',
     'notify.send': 'Send campaigns to riders or drivers',
     # Notifications (module 11). Read is the delivery log and the templates (Support uses it to
     # answer "did the rider get the message?"); template and campaign are the two ways to
@@ -140,7 +148,9 @@ ROLE_TEMPLATES = [
         'permissions': [
             'trip.read', 'trip.write', 'trip.stale_resolve', 'rider.read', 'driver.read',
             'driver.write', 'support.read', 'report.read', 'zone.read',
-            'zone.write', 'promo.write', 'pii.view',
+            'zone.write', 'pii.view',
+            # Driver incentives and driver referrals (module 12); rider promos are Marketing's.
+            'promo.read', 'incentive.write', 'fraud.read',
             # Drafts and submits commission and fare-card changes; a different
             # admin must approve (pricing.change is always a checker).
             'pricing.write',
@@ -224,6 +234,8 @@ ROLE_TEMPLATES = [
             'finance.config', 'finance.aggregate',
             'support.refund', 'report.read', 'zone.read', 'pii.view',
             'rider.note',
+            # Budgets and spend, read-only (module 12).
+            'promo.read',
         ],
     },
     {
@@ -232,7 +244,7 @@ ROLE_TEMPLATES = [
         'description': 'Promotions, coupons, referrals and rider '
                        'communications. No access to individuals.',
         'permissions': [
-            'promo.write', 'notify.send', 'report.read',
+            'promo.read', 'promo.write', 'fraud.read', 'notify.send', 'report.read',
             # Demand and supply cells only; never an individual position.
             'liveops.aggregate',
             # Templates and campaigns, each through a checker (module 11).
@@ -252,6 +264,8 @@ ROLE_TEMPLATES = [
             'finance.aggregate',
             # Demand and supply cells only; never an individual position.
             'liveops.aggregate',
+            # Campaign budgets and aggregates, no person (module 12).
+            'promo.read',
         ],
     },
 ]

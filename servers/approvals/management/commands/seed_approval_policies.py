@@ -16,6 +16,7 @@ WHAT IT SEEDS (owner rulings, AUDIT.md §10 / §22, INR in paise)
     finance.wallet_credit         always a checker
     zone.change         always a checker (module 9)
     notification.template_change, notification.campaign_send  always a checker (module 11)
+    promotion.launch, promotion.budget_increase  always a checker, India and US (module 12)
 
 Nothing is written for the United States. That is the ruling, not an
 omission: a US action that needs a threshold is refused with
@@ -50,8 +51,8 @@ from servers.admin_audit.services import record_admin_action
 from servers.approvals.actions import (
     BULK_ACTION, DRIVER_DEACTIVATE, FINANCE_ADJUST, FINANCE_PAYOUT,
     FINANCE_PAYOUT_CONFIG, FINANCE_REFUND, FINANCE_WALLET_CREDIT, PRICING_CHANGE,
-    NOTIFICATION_CAMPAIGN_SEND, NOTIFICATION_TEMPLATE_CHANGE, SUPPORT_REFUND, SUPPORT_SLA_CHANGE,
-    ZONE_CHANGE,
+    NOTIFICATION_CAMPAIGN_SEND, NOTIFICATION_TEMPLATE_CHANGE, PROMOTION_BUDGET_INCREASE,
+    PROMOTION_LAUNCH, SUPPORT_REFUND, SUPPORT_SLA_CHANGE, ZONE_CHANGE,
 )
 from servers.approvals.models import ALWAYS, COUNT, MONEY
 from servers.approvals.service import active_policy, write_policy_version
@@ -79,6 +80,9 @@ INDIA_DEFAULTS = [
     # Module 11: a template going live and a campaign send always need a checker.
     ('IN', NOTIFICATION_TEMPLATE_CHANGE, ALWAYS, '', None),
     ('IN', NOTIFICATION_CAMPAIGN_SEND, ALWAYS, '', None),
+    # Module 12: a campaign going live, and a budget being raised, always need a checker.
+    ('IN', PROMOTION_LAUNCH, ALWAYS, '', None),
+    ('IN', PROMOTION_BUDGET_INCREASE, ALWAYS, '', None),
 ]
 
 #: The United States (owner rulings, AUDIT 27.44), USD minor units.
@@ -98,6 +102,8 @@ US_DEFAULTS = [
     ('US', ZONE_CHANGE, ALWAYS, '', None),
     ('US', NOTIFICATION_TEMPLATE_CHANGE, ALWAYS, '', None),
     ('US', NOTIFICATION_CAMPAIGN_SEND, ALWAYS, '', None),
+    ('US', PROMOTION_LAUNCH, ALWAYS, '', None),
+    ('US', PROMOTION_BUDGET_INCREASE, ALWAYS, '', None),
 ]
 
 SEED_REASON = 'Seed: maker-checker defaults (AUDIT.md §10/§22 India; §27.44 United States).'

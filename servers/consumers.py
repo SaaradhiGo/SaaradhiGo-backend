@@ -659,6 +659,10 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             client_request_id = data.get('client_request_id')
             if client_request_id is not None:
                 client_request_id = str(client_request_id).strip()[:64] or None
+            # A promo code the rider applied on the fare screen (optional; additive). With none,
+            # the best live auto-applied promo is used. See servers/promotions/rider_promos.py.
+            promo_code = str(data.get('promo_code') or '').strip()[:32]
+            self._promo_refusal = ''
 
             # Validate required fields
             if not all([pickup_lat, pickup_lng, destination_lat, destination_lng, pickup_address, destination_address]):
@@ -681,9 +685,21 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 vehicle_type=vehicle_type,
                 payment_method=payment_method,
                 client_request_id=client_request_id,
+                promo_code=promo_code,
             )
 
             if not trip:
+                if self._promo_refusal:
+                    # The rider asked for a discount that no longer applies. Booking without
+                    # it would charge more than they were shown, so the booking is refused and
+                    # the app re-quotes.
+                    await self.send(text_data=json.dumps({
+                        'type': 'error',
+                        'code': self._promo_refusal,
+                        'message': 'That promo code can no longer be applied. '
+                                   'Please check the fare and try again.',
+                    }))
+                    return
                 await self.send(text_data=json.dumps({
                     'type': 'error',
                     'message': 'Failed to create trip'
@@ -699,6 +715,9 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 # An amount with no currency is not a price. Additive, so an
                 # app that ignores it is unaffected.
                 'currency': trip.currency,
+                # Additive (module 12): the promo held on this trip, and what the rider will
+                # be charged. The fare above stays the FULL fare.
+                **(await self._promo_summary(trip)),
                 'reused': reused,
                 'message': ('Reconnected to your existing request...' if reused
                             else 'Searching for nearby drivers...'),
@@ -905,7 +924,7 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     def _create_trip(self, pickup_lat, pickup_lng, destination_lat, destination_lng,
                      pickup_address, destination_address,
                      distance_km=None, duration_min=None, vehicle_type=None,
-                     payment_method='deferred', client_request_id=None):
+                     payment_method='deferred', client_request_id=None, promo_code=''):
         """Create the trip, or return the one this request already created.
 
         Returns `(trip, reused)`. `reused=True` means `client_request_id` had
@@ -1014,7 +1033,7 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     **commission_snapshot,
                 )
 
-                FarePricing.objects.create(
+                fare_pricing = FarePricing.objects.create(
                     trip_id=trip,
                     base_fare=fare['base_fare'],
                     distance_fare=fare['distance_fare'],
@@ -1022,6 +1041,25 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     surge_multiplier=fare['surge_multiplier'],
                     total_fare=fare['total_fare'],
                 )
+
+                # Promotions (module 12). The fare above is the FULL fare and stays so: driver
+                # earnings and commission are computed on it. A promo only lowers what the rider
+                # pays, and the platform funds it. The reservation against the campaign budget is
+                # atomic with the trip: a refusal rolls the booking back.
+                from servers.promotions import rider_promos
+                promo_result = rider_promos.book(
+                    self.user, trip, fare['total_fare'], pickup_zone, promo_code)
+                if promo_result is not None:
+                    from servers.ride.models import PromoCode
+                    fare_pricing.promo = PromoCode.objects.filter(
+                        code__iexact=promo_result.code).first()
+                    fare_pricing.promo_code = promo_result.code
+                    fare_pricing.gross_fare = fare['total_fare']
+                    fare_pricing.discount_amount = promo_result.discount_amount
+                    fare_pricing.rider_payable = promo_result.final_fare
+                    fare_pricing.save(update_fields=[
+                        'promo', 'promo_code', 'gross_fare_minor', 'discount_amount_minor',
+                        'rider_payable_minor'])
 
             # Cache new trip in Redis for fast state reads
             from servers.redis_client import cache_trip as _cache_trip
@@ -1072,6 +1110,12 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 })
 
             return trip, False
+        except rider_promos_refused() as promo_exc:
+            self._promo_refusal = promo_exc.reason
+            logger.info('trip_promo_refused', extra={
+                'event': 'trip_promo_refused', 'rider_id': self.user.id,
+                'reason': promo_exc.reason})
+            return None, False
         except IntegrityError:
             # Two identical requests raced and the other one won. The unique index
             # is the arbiter, so re-read rather than guess -- this is the branch a
@@ -1092,6 +1136,23 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         except Exception as e:
             logger.error(f"Failed to create trip: {str(e)}")
             return None, False
+
+    @database_sync_to_async
+    def _promo_summary(self, trip):
+        """promo_code, discount_amount and rider_payable for the trip_created frame, or {}."""
+        from servers.promotions import rider_promos
+
+        discount = rider_promos.discount_minor(trip)
+        if not discount:
+            return {}
+        from servers.ride.models import PromoRedemption
+        redemption = (PromoRedemption.objects.filter(trip=trip).select_related('promo')
+                      .order_by('-id').first())
+        return {
+            'promo_code': redemption.promo.code if redemption else '',
+            'discount_amount': str(rider_promos.dec(discount, trip.currency)),
+            'rider_payable': str(rider_promos.payable(trip)),
+        }
 
     @database_sync_to_async
     def _find_nearby_drivers(self, lng, lat, vehicle_type=None, radius=5000):
@@ -1159,6 +1220,13 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             send_push_notification(driver.user_id, title, body, data)
         except Exception as e:
             logger.error(f"Failed to send push to driver {driver_id}: {str(e)}")
+
+
+def rider_promos_refused():
+    """The exception booking raises when a rider's promo code cannot be applied."""
+    from servers.promotions.rider_promos import PromoRefused
+
+    return PromoRefused
 
 
 class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
@@ -2252,6 +2320,11 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         lambda: issue_receipt_for_trip.delay(trip_pk)
                     )
 
+                    # Promotions (module 12): count the trip toward the driver's incentives and
+                    # the referee's referral. Out of band and idempotent per trip.
+                    from servers.promotions.tasks import enqueue_trip_completed
+                    transaction.on_commit(lambda: enqueue_trip_completed(trip_pk))
+
                     # Derive actual distance/duration out-of-band. OBSERVE
                     # ONLY: that task writes actual_* and never final_fare, so
                     # nothing here changes what the rider is charged.
@@ -2276,6 +2349,10 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     trip.cancelled_by = cancelled_by or 'system'
                     trip.cancellation_reason = cancellation_reason or ''
                     self._process_refund_on_cancel(trip)
+                    # A promo discount reserved at booking goes back to its campaign's budget
+                    # (module 12). The sweep `promotions.sweep` catches every other cancel path.
+                    from servers.promotions.rider_promos import release_for_trip as _release_promo
+                    transaction.on_commit(lambda t=trip: _release_promo(t))
 
                     Notification.objects.create(
                         user_id=trip.user_id,

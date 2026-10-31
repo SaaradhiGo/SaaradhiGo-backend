@@ -81,6 +81,10 @@ INSTALLED_APPS = [
     'servers.live_ops',
     # Notifications (module 11): templates, outbox dispatcher, provider adapters, campaigns.
     'servers.notifications',
+    # Promotions & Incentives (module 12): rider promos, driver incentives, referrals, with budgets.
+    'servers.promotions',
+    # Fraud & Risk (module 13 will extend this): flags raised by other modules, read-only for now.
+    'servers.fraud',
     # Console search: trip id, phone, plate, name -- indexed and scoped.
     'servers.search',
     # Operator MFA. django-otp is the established Django implementation: TOTP
@@ -461,6 +465,12 @@ CELERY_BEAT_SCHEDULE = {
     'notifications-provider-health-every-5-min': {
         # Raises (and clears) the Super Admin-only `notify.provider_failing` alert.
         'task': 'notifications.check_provider_health',
+        'schedule': _crontab(minute='*/5'),
+    },
+    'promotions-sweep-every-5-min': {
+        # Starts scheduled campaigns, ends campaigns past their window, releases discount
+        # reservations held by cancelled trips and retries unpaid qualified referrals.
+        'task': 'promotions.sweep',
         'schedule': _crontab(minute='*/5'),
     },
     'payments-retry-unsettled-trips-hourly': {

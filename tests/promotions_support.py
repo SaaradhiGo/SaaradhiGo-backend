@@ -115,6 +115,6 @@ def dec(value):
 
 
 __all__ = ['API', 'ADM', 'APPROVALS', 'approve_latest', 'block_the_network', 'body_of',
-           'checker', 'client_for', 'completed_trip', 'create', 'dec', 'driver_and_rider',
+           'checker', 'client_for', 'completed_trip', 'create', 'dec',
            'error_code', 'geo', 'get', 'hyd_driver', 'incentive_payload', 'launch', 'make_rider',
            'operator', 'post', 'promo_payload', 'referral_payload', 'settle', 'when', 'world']

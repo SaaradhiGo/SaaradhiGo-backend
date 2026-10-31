@@ -58,6 +58,7 @@ PURPOSE_CASH = 'trip_commission'
 SETTLEMENT_PURPOSES = (PURPOSE_ONLINE, PURPOSE_CASH)
 
 _REFERENCE_PREFIX = 'TRIP_'
+PROMO_PAID_LABEL = 'Promo paid by SaaradhiGo'
 
 
 @dataclass
@@ -102,6 +103,13 @@ class EarningRow:
             'promo_discount': _s(self.promo_discount or Decimal('0.00')),
             'cash_to_collect': (_s(self.gross - (self.promo_discount or Decimal('0.00')))
                                 if self.driver_holds_cash and self.gross is not None else None),
+            # The same discount, named for the earnings screen: SaaradhiGo paid it, never the
+            # driver. On a cash trip it is credited to the driver's wallet as its own ledger line
+            # (`promo_discount_platform_funded`); on an online trip the platform simply collected
+            # less from the rider. Either way `net_amount` is unchanged.
+            'promo_paid_by_platform': _s(self.promo_discount) if self.promo_discount else None,
+            'promo_paid_label': PROMO_PAID_LABEL if self.promo_discount else None,
+            'promo_credited_to_wallet': bool(self.promo_discount) and self.driver_holds_cash,
         }
 
 
@@ -241,6 +249,8 @@ def summarise(rows):
         'total_commission': Decimal('0.00'),
         'total_net': Decimal('0.00'),
         'cash_collected': Decimal('0.00'),
+        # Rider promo discounts SaaradhiGo paid on these trips (module 12). Not in gross or net.
+        'promo_paid_by_platform': Decimal('0.00'),
         'total_trips': 0,
         # Trips whose fare could not be resolved. Counted rather than dropped:
         # a driver noticing a missing trip trusts the number less than a driver
@@ -249,6 +259,7 @@ def summarise(rows):
     }
     for row in rows:
         totals['total_trips'] += 1
+        totals['promo_paid_by_platform'] += row.promo_discount or Decimal('0.00')
         if row.gross is None:
             totals['unresolved_trips'] += 1
             # A row with no resolvable fare still contributes what it does know.

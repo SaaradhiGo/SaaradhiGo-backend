@@ -259,6 +259,10 @@ def driver_earnings_summary(request):
         'today_net': str(today['total_net']),
         'cash_collected': str(totals['cash_collected']),
         'unresolved_trips': totals['unresolved_trips'],
+        # Module 12: rider promos are paid by SaaradhiGo, shown as their own line.
+        'promo_paid_by_platform': str(totals['promo_paid_by_platform']),
+        'today_promo_paid_by_platform': str(today['promo_paid_by_platform']),
+        'promo_paid_label': 'Promo paid by SaaradhiGo',
         # Module 12: incentive and referral rewards are their own lines. They are NOT in
         # `total_earned` (that is trip fares) and carry no commission. Paid in the weekly payout.
         **incentive_lines(driver),

@@ -2,8 +2,10 @@
 
     commission.increase_notice   a commission increase is coming (drains DriverNotice)
     payout.missing_details       the weekly payout skipped you: add payout details
+    trips.operator_cancelled     support cancelled a stale trip the driver never reached (rider)
 
-Both are TRANSACTIONAL, for India and the United States, on in_app + push + sms + email.
+The first two are TRANSACTIONAL, for India and the United States, on in_app + push + sms +
+email. The rider cancellation notice is on in_app + push only (no SMS, no email).
 
 INDIA SMS ARE DRAFTS, ON PURPOSE. An India SMS template cannot be active without its DLT
 template id, sender id and flow id (the activation rule). Those come from the DLT registry and
@@ -17,6 +19,7 @@ from . import templating
 
 COMMISSION = 'commission.increase_notice'
 PAYOUT = 'payout.missing_details'
+OPERATOR_CANCELLED = 'trips.operator_cancelled'
 
 _COMMISSION_VARS = ['effective_date', 'scope', 'old_rate', 'new_rate']
 _COMMISSION_SAMPLE = {'effective_date': '12 November 2026', 'scope': 'Sedan in Hyderabad',
@@ -63,7 +66,20 @@ COPY = {
         body="SaaradhiGo: you were left out of this week's payout. Add a UPI ID or bank "
              'account in the app to receive your earnings.',
         variables=[], sample={}),
+
+    (OPERATOR_CANCELLED, 'in_app'): dict(
+        title='Your ride was cancelled',
+        body='Trip #{trip_id} was cancelled by SaaradhiGo support because it could not '
+             'go ahead. You have not been charged. You can book again at any time.',
+        variables=['trip_id'], sample={'trip_id': '1042'}),
+    (OPERATOR_CANCELLED, 'push'): dict(
+        title='Your ride was cancelled',
+        body='Trip #{trip_id} was cancelled by support. You have not been charged.',
+        variables=['trip_id'], sample={'trip_id': '1042'}),
 }
+
+#: Channels each key is seeded on. Anything not listed uses all of CHANNELS.
+KEY_CHANNELS = {OPERATOR_CANCELLED: ('in_app', 'push')}
 
 COUNTRIES = ('IN', 'US')
 CHANNELS = ('in_app', 'push', 'sms', 'email')
@@ -77,9 +93,9 @@ def dlt_text(body):
 def seed_rows():
     """`[(key, channel, country, fields, active)]` in a stable order."""
     rows = []
-    for key in (COMMISSION, PAYOUT):
+    for key in (COMMISSION, PAYOUT, OPERATOR_CANCELLED):
         for country in COUNTRIES:
-            for channel in CHANNELS:
+            for channel in KEY_CHANNELS.get(key, CHANNELS):
                 copy = dict(COPY[(key, channel)])
                 active = not (channel == 'sms' and country == 'IN')
                 rows.append((key, channel, country, copy, active))

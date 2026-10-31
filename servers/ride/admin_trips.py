@@ -31,7 +31,7 @@ import logging
 from datetime import datetime, time, timedelta
 
 from django.db import IntegrityError, transaction
-from django.db.models import Exists, OuterRef, Q, Sum
+from django.db.models import Exists, F, OuterRef, Q, Sum
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -195,11 +195,16 @@ def stale_q(now=None):
     now = now or timezone.now()
     stale_cutoff = now - timedelta(seconds=stale_after_seconds())
     attention_cutoff = now - timedelta(seconds=attention_after_seconds())
+    # A trip an operator marked reviewed leaves the time-based rules until its
+    # next phase begins (a later accepted_at); the detector's own flag is held
+    # back by `liveness.reviewed_covers_silence`.
+    not_reviewed = Q(stale_reviewed_at__isnull=True)
     return (
         Q(status_id__status_code='requested', accepted_at__isnull=True,
-          requested_at__lt=stale_cutoff)
-        | Q(status_id__status_code='accepted', reached_at__isnull=True,
-            accepted_at__lt=attention_cutoff)
+          requested_at__lt=stale_cutoff, stale_reviewed_at__isnull=True)
+        | (Q(status_id__status_code='accepted', reached_at__isnull=True,
+             accepted_at__lt=attention_cutoff)
+           & (not_reviewed | Q(stale_reviewed_at__lt=F('accepted_at'))))
         | Q(status_id__status_code__in=ACTIVE_STATUSES, stale_flagged_at__isnull=False)
     )
 
@@ -210,10 +215,13 @@ def stale_reason(trip, now=None):
 
     now = now or timezone.now()
     code = trip.status_id.status_code if trip.status_id else ''
+    reviewed = trip.stale_reviewed_at
     if (code == 'requested' and trip.accepted_at is None and trip.requested_at
+            and reviewed is None
             and (now - trip.requested_at).total_seconds() > stale_after_seconds()):
         return 'no_acceptance'
     if (code == 'accepted' and trip.reached_at is None and trip.accepted_at
+            and (reviewed is None or reviewed < trip.accepted_at)
             and (now - trip.accepted_at).total_seconds() > attention_after_seconds()):
         return 'no_arrival'
     if code in ACTIVE_STATUSES and trip.stale_flagged_at is not None:
@@ -577,6 +585,21 @@ def allowed_actions(user, trip, refundable=None):
     }
 
 
+def _stale_detail(trip, reason):
+    """How long the driver has been silent, for the Stale trip panel. No location."""
+    from servers.ride.liveness import last_known_activity
+
+    last = last_known_activity(trip)
+    silent = int((timezone.now() - last).total_seconds()) if last else None
+    return {
+        'silent_seconds': silent if reason else None,
+        'last_activity_at': _iso(last) if reason else None,
+        'flagged_at': _iso(trip.stale_flagged_at),
+        'reviewed_at': _iso(trip.stale_reviewed_at),
+        'reviewed_by': _staff(trip.stale_reviewed_by) if trip.stale_reviewed_by_id else None,
+    }
+
+
 def detail_extras(request, trip):
     """The sections the Trips module adds to the existing detail payload."""
     from servers.approvals.models import ApprovalRequest
@@ -585,6 +608,8 @@ def detail_extras(request, trip):
     audit = _audit_rows(trip)
     payment = _payment_summary(trip)
     reason = stale_reason(trip)
+
+    from .admin_stale import stale_actions
 
     def dec(value):
         return str(value) if value is not None else None
@@ -639,6 +664,8 @@ def detail_extras(request, trip):
         ],
         'audit_trail': audit,
         'stale': {'is_stale': bool(reason), 'reason': reason or None},
+        'stale_actions': stale_actions(request.user, trip, reason),
+        'stale_detail': _stale_detail(trip, reason),
         'actions': allowed_actions(request.user, trip, payment['refundable_minor']),
     }
 
@@ -720,13 +747,20 @@ def _approval_answer(outcome, extra=None):
 # Cancel
 # ---------------------------------------------------------------------------
 
-def operator_cancel(trip_id, *, reason_code, note='', waive_fee=False, http_request=None):
+def operator_cancel(trip_id, *, reason_code, note='', waive_fee=False, http_request=None,
+                    audit_reason='', stale_release=False):
     """Cancel one trip as an operator. Returns (outcome, trip).
 
     outcome: 'cancelled' | 'already_cancelled' | 'not_cancellable' | 'not_found'.
     Idempotent: a trip an operator already cancelled answers
     already_cancelled and writes nothing. No fee is charged: a fee already
     on the row is zeroed when `waive_fee` is set, and the flag is audited.
+
+    `stale_release` is the Stale trip panel's release (`admin_stale`): the same
+    cancellation, plus the rider's `trips.operator_cancelled` notice, the ride
+    socket event and the release of an online payment the rider already made
+    (their own money back, not a fee). `audit_reason` is the operator's reason
+    for the audit row; the trip keeps only the short `reason_code`.
     """
     with transaction.atomic():
         trip = (Trip.objects.select_for_update(of=('self',))
@@ -755,14 +789,60 @@ def operator_cancel(trip_id, *, reason_code, note='', waive_fee=False, http_requ
             before=before,
             after={**_trip_snapshot(trip), 'reason_code': reason_code,
                    'fee_waived': bool(waive_fee)},
-            reason=note or CANCEL_REASONS.get(reason_code, reason_code),
+            reason=audit_reason or note or CANCEL_REASONS.get(reason_code, reason_code),
         )
         rider_id, driver_id, pk = trip.user_id_id, trip.driver_id_id, trip.id
-        transaction.on_commit(lambda: _after_cancel(pk, rider_id, driver_id))
+        if stale_release:
+            _release_online_payment(trip)
+        transaction.on_commit(lambda: _after_cancel(pk, rider_id, driver_id,
+                                                    stale_release=stale_release))
     return 'cancelled', trip
 
 
-def _after_cancel(trip_id, rider_id, driver_id):
+def _release_online_payment(trip):
+    """Give the rider back an online payment already taken for a trip that will
+    not happen. Best effort: a gateway failure must not stop the release."""
+    from .utils import process_refund_on_cancel
+
+    try:
+        process_refund_on_cancel(trip)
+    except Exception:  # noqa: BLE001
+        logger.exception('stale release: online payment refund failed for trip %s', trip.id)
+
+
+def _tell_rider_released(trip_id, rider_id):
+    """The rider's notice (template trips.operator_cancelled) and the ride socket event."""
+    from django.contrib.auth import get_user_model
+
+    rider = get_user_model().objects.filter(pk=rider_id).first()
+    if rider is not None:
+        try:
+            from servers.notifications import dispatcher
+
+            dispatcher.notify('trips.operator_cancelled', rider, {'trip_id': str(trip_id)},
+                              channels=('in_app', 'push'),
+                              idempotency_key=f'trips.operator_cancelled:{trip_id}')
+        except Exception:  # noqa: BLE001
+            logger.exception('stale release: rider notice failed for trip %s', trip_id)
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        layer = get_channel_layer()
+        if layer is not None:
+            message = 'Your ride was cancelled by support.'
+            async_to_sync(layer.group_send)(f'trip_{trip_id}', {
+                'type': 'trip_status_update', 'trip_id': trip_id, 'status': 'cancel',
+                'message': message, 'driver_id': None})
+            async_to_sync(layer.group_send)(f'rider_{rider_id}', {
+                'type': 'trip_update', 'trip_id': trip_id, 'status': 'cancel',
+                'message': message, 'driver_id': None, 'driver_name': ''})
+    except Exception:  # noqa: BLE001
+        logger.warning('stale release: ride socket event failed for trip %s', trip_id,
+                       exc_info=True)
+
+
+def _after_cancel(trip_id, rider_id, driver_id, stale_release=False):
     """Release the driver and tell both sides. Best effort, outside the lock."""
     from django.contrib.auth import get_user_model
 
@@ -776,7 +856,9 @@ def _after_cancel(trip_id, rider_id, driver_id):
         invalidate_trip(trip_id)
     except Exception:  # noqa: BLE001
         logger.exception('operator cancel: cache cleanup failed for trip %s', trip_id)
-    users = [rider_id]
+    users = [] if stale_release else [rider_id]
+    if stale_release:
+        _tell_rider_released(trip_id, rider_id)
     if driver_id:
         try:
             from servers.redis_client import clear_driver_active_trip

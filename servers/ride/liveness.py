@@ -346,6 +346,22 @@ def stale_candidates(now=None, limit=200):
     return list(stale_candidates_queryset(now=now, limit=limit))
 
 
+def reviewed_covers_silence(trip):
+    """True when an operator already reviewed the silence this trip is in now.
+
+    `stale_reviewed_at` is set by "Mark reviewed". The same silence must not
+    raise the flag again on the next sweep, or the review would last one
+    minute. A NEW silence is one that follows driver activity after the review:
+    `last_known_activity` is then later than `stale_reviewed_at`, and the trip
+    may be flagged again once it has been quiet long enough.
+    """
+    reviewed = getattr(trip, 'stale_reviewed_at', None)
+    if reviewed is None:
+        return False
+    last = last_known_activity(trip)
+    return last is None or last <= reviewed
+
+
 def flag_stale_trips(now=None, limit=200):
     """Flag quiet active trips for operator attention. Changes no trip status.
 
@@ -357,6 +373,7 @@ def flag_stale_trips(now=None, limit=200):
     """
     now = now or timezone.now()
     flagged, already, reasons = 0, 0, {}
+    skipped_reviewed = 0
 
     for trip in stale_candidates(now=now, limit=limit):
         classification, silent, reason = classify(trip, now=now)
@@ -364,6 +381,9 @@ def flag_stale_trips(now=None, limit=200):
             continue
         if trip.stale_flagged_at is not None:
             already += 1
+            continue
+        if reviewed_covers_silence(trip):
+            skipped_reviewed += 1
             continue
         with transaction.atomic():
             # Re-read under a lock so two workers cannot both flag, and so a
@@ -378,6 +398,9 @@ def flag_stale_trips(now=None, limit=200):
             if locked.stale_flagged_at is not None:
                 already += 1
                 continue
+            if reviewed_covers_silence(locked):
+                skipped_reviewed += 1
+                continue
             locked.stale_flagged_at = now
             locked.stale_reason = reason[:64]
             locked.save(update_fields=['stale_flagged_at', 'stale_reason'])
@@ -390,4 +413,5 @@ def flag_stale_trips(now=None, limit=200):
             trip.id, trip.status_id.status_code, classification, silent, reason,
         )
 
-    return {'flagged': flagged, 'already_flagged': already, 'reasons': reasons}
+    return {'flagged': flagged, 'already_flagged': already, 'reasons': reasons,
+            'skipped_reviewed': skipped_reviewed}

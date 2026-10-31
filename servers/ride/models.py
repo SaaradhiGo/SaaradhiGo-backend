@@ -90,6 +90,16 @@ class Trip(CurrencyStampedModel, models.Model):
         max_length=64, blank=True, default='',
         help_text='Why the detector flagged this trip, for the operator queue.',
     )
+    stale_reviewed_at=models.DateTimeField(
+        blank=True, null=True,
+        help_text='When an operator last marked this trip reviewed. The detector '
+                  'does not re-flag it for the same silence: only activity after '
+                  'this moment, followed by new silence, flags it again.',
+    )
+    stale_reviewed_by=models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+',
+    )
     pickup_address=models.CharField(max_length=512,blank=True,null=True)
     pickup_lat=models.DecimalField(max_digits=10,decimal_places=7)
     pickup_long=models.DecimalField(max_digits=10,decimal_places=7)

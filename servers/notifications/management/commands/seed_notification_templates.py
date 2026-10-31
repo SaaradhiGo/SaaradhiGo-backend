@@ -28,7 +28,7 @@ from servers.notifications.models import (
 )
 
 COMMAND = 'seed_notification_templates'
-SEED_REASON = 'Seed: English templates for the commission notice and the missing-payout notice.'
+SEED_REASON = 'Seed: English templates for the commission notice, the missing-payout notice and the operator trip cancellation.'
 AUDIT_ACTION = 'notification_templates_seeded'
 
 

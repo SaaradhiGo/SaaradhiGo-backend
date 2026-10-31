@@ -51,6 +51,9 @@ PERMISSIONS = {
 
     # Acting
     'trip.write': 'Cancel, adjust or flag a trip',
+    # Operational repair of a trip that stopped looking alive. No money moves;
+    # City Ops and Super Admin only (owner ruling, stale-trip actions).
+    'trip.stale_resolve': 'Release a driver from a stale trip and mark stale trips reviewed',
     # Rider actions are separate capabilities (owner ruling, AUDIT 27.32).
     # `rider.write` no longer gates any rider action; it survives only for
     # creating QA test accounts (`auth_user.invite_views`), Super Admin only.
@@ -135,7 +138,7 @@ ROLE_TEMPLATES = [
         'description': 'Runs live operations for their scope: drivers, '
                        'zones, incentives. Proposes pricing; cannot publish it.',
         'permissions': [
-            'trip.read', 'trip.write', 'rider.read', 'driver.read',
+            'trip.read', 'trip.write', 'trip.stale_resolve', 'rider.read', 'driver.read',
             'driver.write', 'support.read', 'report.read', 'zone.read',
             'zone.write', 'promo.write', 'pii.view',
             # Drafts and submits commission and fare-card changes; a different

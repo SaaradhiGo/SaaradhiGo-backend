@@ -21,8 +21,9 @@ A cash trip is settled at completion as "the driver holds the fare and owes the 
 the rider pays it from the wallet instead, the platform has collected that money on the driver's
 behalf, so the driver is credited exactly what the rider was charged
 (`driver.utils.credit_fare_collected_by_platform`). That one append-only line brings the balance to
-the trip's net, as on an online trip; the settlement and its commission snapshot are untouched. A
-trip not yet settled (no commission rule) is settled now as a wallet trip, the normal way.
+the trip's net, as on an online trip. The settlement gets a version 2 with the same amounts and
+commission snapshot and the new method (`driver.utils.settle_paid_by_platform`, the same path an
+online payment takes). A trip not yet settled (no commission rule) is settled now as a wallet trip.
 """
 
 import re
@@ -67,7 +68,7 @@ def _replay(user, trip, key):
 def pay_trip(user, data):
     """Charge the trip's payable amount to the rider's wallet once. Returns (payload, created)."""
     from base.money import currency_for_trip, from_minor, parse_input, to_minor
-    from servers.driver.utils import credit_fare_collected_by_platform, settle_or_defer
+    from servers.driver.utils import settle_or_defer, settle_paid_by_platform
     from servers.fraud.money import held_minor
     from servers.payments.models import Payment, TripSettlement
     from servers.promotions.rider_promos import is_fully_covered, payable_minor
@@ -160,7 +161,7 @@ def pay_trip(user, data):
         if settled_as_cash is None:
             settle_or_defer(trip)
         elif settled_as_cash == 'cash':
-            credit_fare_collected_by_platform(trip, amount_minor, currency)
+            settle_paid_by_platform(trip, amount_minor, currency)
 
     return {'transaction_id': txn.id, 'trip_id': trip.id, 'amount': str(amount),
             'currency': currency, 'new_balance': str(wallet.balance), 'purpose': 'Trip payment',

@@ -184,8 +184,8 @@ def reconcile_stuck_payments():
                             'txn_type': 'payment',
                         },
                     )
-                    from servers.driver.utils import credit_driver_wallet
-                    credit_driver_wallet(trip)
+                    from servers.driver.utils import settle_paid_by_platform
+                    settle_paid_by_platform(trip, p.amount_minor)
             payments_settled += 1
             logger.info(
                 f"recon: settled Payment {payment.pk} (trip {payment.trip_id_id}) "

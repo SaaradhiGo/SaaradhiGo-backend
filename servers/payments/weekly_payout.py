@@ -66,7 +66,7 @@ SKIP_NO_HANDLE = 'no_payout_handle'
 #: duration): skipped and listed for Finance. AUDIT 27.56.
 SKIP_HELD = 'held'
 MAX_DRIVERS_PER_RUN = 2000
-OPEN_STATUSES = ('pending', 'approved', 'processed', 'unresolved')
+OPEN_STATUSES = ('pending', 'approved', 'processed', 'unresolved', 'conflict')
 
 
 def week_start_of(now, tz):

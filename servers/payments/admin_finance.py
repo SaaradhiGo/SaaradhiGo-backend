@@ -707,6 +707,9 @@ def overview_rows(user, node, d_from, d_to, permission=READ):
         # this is what came back.
         (WithdrawalRequest, 'driver__home_city_id', 'requested_at', Q(status='reversed'),
          {'payouts_reversed_minor': Sum('amount_minor')}),
+        # Reported paid after a refund, waiting for Finance (AUDIT 27.72).
+        (WithdrawalRequest, 'driver__home_city_id', 'requested_at', Q(status='conflict'),
+         {'payouts_conflict_minor': Sum('amount_minor')}),
     ]
     from zoneinfo import ZoneInfo
 
@@ -872,7 +875,7 @@ def finance_overview(request):
     names = {n.id: n for n in GeoNode.objects.filter(id__in={k[0] for k in out if k[0]})}
     columns = ['gross_minor', 'commission_minor', 'driver_net_minor', 'refunds_minor',
                'payouts_paid_minor', 'payouts_pending_minor', 'payouts_failed_minor',
-               'payouts_reversed_minor']
+               'payouts_reversed_minor', 'payouts_conflict_minor']
     rows, totals = [], defaultdict(lambda: defaultdict(int))
     for (city_id, day, cur), values in out.items():
         if currency and cur != currency:

@@ -155,7 +155,7 @@ def reconcile_stuck_payments():
         # webhook handler uses (payment.status == 'completed').
         try:
             with transaction.atomic():
-                p = Payment.objects.select_for_update().select_related(
+                p = Payment.objects.select_for_update(of=('self',)).select_related(
                     'trip_id', 'trip_id__driver_id', 'user_id'
                 ).get(pk=payment.pk)
                 if p.status == 'completed':

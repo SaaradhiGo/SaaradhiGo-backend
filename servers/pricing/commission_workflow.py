@@ -379,7 +379,7 @@ def activate_rule(rule_id, request_row, *, now=None, actor_reason=''):
     moved. Returns a result dict."""
     now = now or timezone.now()
     with transaction.atomic():
-        rule = (CommissionRule.objects.select_for_update()
+        rule = (CommissionRule.objects.select_for_update(of=('self',))
                 .select_related('geo_node', 'vehicle_type').filter(pk=rule_id).first())
         if rule is None:
             raise registry.ExecutionRefused('RULE_GONE', 'The draft no longer exists.')

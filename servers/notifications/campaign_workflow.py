@@ -358,7 +358,7 @@ def propose_send(actor, campaign, *, reason='', http_request=None):
     if not reason:
         raise InvalidRequest('A reason is required.', code='REASON_REQUIRED', field='reason')
     with transaction.atomic():
-        locked = (Campaign.objects.select_for_update().select_related('template', 'geo_node')
+        locked = (Campaign.objects.select_for_update(of=('self',)).select_related('template', 'geo_node')
                   .get(pk=campaign.pk))
         if locked.status != CAMPAIGN_DRAFT:
             raise WrongState('Only a draft campaign can be submitted.', code='CAMPAIGN_NOT_DRAFT',
@@ -433,7 +433,7 @@ def cancel(actor, campaign, *, reason='', http_request=None):
 @registry.register(NOTIFICATION_CAMPAIGN_SEND)
 def execute_campaign_send(request):
     with transaction.atomic():
-        campaign = (Campaign.objects.select_for_update().select_related('template')
+        campaign = (Campaign.objects.select_for_update(of=('self',)).select_related('template')
                     .filter(pk=(request.payload or {}).get('campaign_id')).first())
         if campaign is None:
             raise registry.ExecutionRefused('CAMPAIGN_GONE', 'The campaign no longer exists.')

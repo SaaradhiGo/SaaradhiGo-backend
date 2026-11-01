@@ -450,7 +450,7 @@ def create_draft(actor, data, *, http_request=None):
 @transaction.atomic
 def update_draft(actor, campaign, data, *, http_request=None):
     require_write(actor, campaign)
-    campaign = Campaign.objects.select_for_update().select_related('geo_node').get(pk=campaign.pk)
+    campaign = Campaign.objects.select_for_update(of=('self',)).select_related('geo_node').get(pk=campaign.pk)
     if campaign.state != DRAFT or campaign.is_legacy:
         raise WrongState('Only a draft campaign can be edited.', code='CAMPAIGN_NOT_DRAFT',
                          field='state')
@@ -480,7 +480,7 @@ def propose_launch(actor, campaign, *, reason='', http_request=None):
     if not reason:
         raise InvalidRequest('A reason is required.', code='REASON_REQUIRED', field='reason')
     with transaction.atomic():
-        locked = Campaign.objects.select_for_update().select_related('geo_node').get(pk=campaign.pk)
+        locked = Campaign.objects.select_for_update(of=('self',)).select_related('geo_node').get(pk=campaign.pk)
         if locked.state != DRAFT or locked.is_legacy:
             raise WrongState('Only a draft campaign can be submitted.',
                              code='CAMPAIGN_NOT_DRAFT', field='state')
@@ -543,7 +543,7 @@ def _create_promo_code(campaign, active):
 def execute_launch(request):
     """The checker approved: put EXACTLY the submitted terms in force."""
     with transaction.atomic():
-        campaign = (Campaign.objects.select_for_update().select_related('geo_node')
+        campaign = (Campaign.objects.select_for_update(of=('self',)).select_related('geo_node')
                     .filter(pk=(request.payload or {}).get('campaign_id')).first())
         if campaign is None:
             raise registry.ExecutionRefused('CAMPAIGN_GONE', 'The campaign no longer exists.')
@@ -595,7 +595,7 @@ def _transition(actor, campaign, *, allowed, new_state, action, stamp, reason, h
                 active=None):
     require_write(actor, campaign)
     with transaction.atomic():
-        locked = Campaign.objects.select_for_update().select_related(
+        locked = Campaign.objects.select_for_update(of=('self',)).select_related(
             'geo_node', 'promo_code', 'quest').get(pk=campaign.pk)
         if locked.state not in allowed:
             raise WrongState(f'A {locked.state.replace("_", " ")} campaign cannot do that.',
@@ -661,7 +661,7 @@ def propose_budget_increase(actor, campaign, new_budget, *, reason='', http_requ
         raise InvalidRequest('A reason is required.', code='REASON_REQUIRED', field='reason')
     new_budget = _int(new_budget, 'budget_minor', minimum=1)
     with transaction.atomic():
-        locked = Campaign.objects.select_for_update().select_related('geo_node').get(pk=campaign.pk)
+        locked = Campaign.objects.select_for_update(of=('self',)).select_related('geo_node').get(pk=campaign.pk)
         if locked.is_legacy or locked.budget_minor is None:
             raise WrongState('A campaign wrapped from an existing row has no budget; launch a '
                              'new campaign instead.', code='CAMPAIGN_NOT_BUDGETED', field='state')
@@ -701,7 +701,7 @@ def execute_budget_increase(request):
 
     payload = request.payload or {}
     with transaction.atomic():
-        campaign = (Campaign.objects.select_for_update().select_related('geo_node')
+        campaign = (Campaign.objects.select_for_update(of=('self',)).select_related('geo_node')
                     .filter(pk=payload.get('campaign_id')).first())
         if campaign is None:
             raise registry.ExecutionRefused('CAMPAIGN_GONE', 'The campaign no longer exists.')

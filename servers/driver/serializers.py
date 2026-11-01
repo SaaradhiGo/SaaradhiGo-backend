@@ -168,6 +168,30 @@ def has_real_name(user):
     return is_real_name(getattr(user, 'full_name', ''))
 
 
+#: The punctuation a person's name may carry besides letters and spaces.
+NAME_PUNCTUATION = frozenset(".'-")
+
+
+def is_valid_driver_name(value):
+    """The driver-name rule the driver app applies (AUDIT 27.70, D7), so the server and the app
+    agree: trimmed, at least 2 characters, only letters (any script, with their combining marks),
+    spaces and . ' -, and at least one letter. Applied where a name is GIVEN or a driver passes a
+    gate (profile completion, onboarding, KYC approval), never to an unchanged stored name on an
+    unrelated save."""
+    import unicodedata
+
+    name = (value or '').strip()
+    if len(name) < 2 or not any(c.isalpha() for c in name):
+        return False
+    return all(c == ' ' or c in NAME_PUNCTUATION or unicodedata.category(c)[0] in 'LM'
+               for c in name)
+
+
+def has_valid_driver_name(user):
+    """`is_valid_driver_name` for the account's own `full_name`."""
+    return is_valid_driver_name(getattr(user, 'full_name', ''))
+
+
 class KYCApprovalSerializer(serializers.ModelSerializer):
     """KYC approval is the gate that lets a driver accept rides on the
     platform. We refuse to mark `approved=True` unless the driver has
@@ -179,9 +203,10 @@ class KYCApprovalSerializer(serializers.ModelSerializer):
     - at least one Vehicle must exist with rc_doc uploaded
     - the active_vehicle must be assigned (so the driver can actually
       take rides post-approval)
-    - the account must carry a real name: not blank, not a phone number
-      or an email (owner ruling 2026-10-30; a nameless driver showed their
-      number wherever a name is printed)
+    - the account must carry a valid name: the driver-name rule the app
+      applies (`is_valid_driver_name`: 2+ characters, letters, spaces and
+      . ' - only), owner rulings 2026-10-30 and AUDIT 27.71; a nameless
+      driver showed their number wherever a name is printed
 
     Approval can still be REJECTED (approved=False) at any time without
     these checks — withdrawal of approval doesn't depend on documents.
@@ -202,7 +227,7 @@ class KYCApprovalSerializer(serializers.ModelSerializer):
             )
 
         missing = []
-        if not has_real_name(driver.user_id):
+        if not has_valid_driver_name(driver.user_id):
             missing.append('full_name')
         if not driver.license_doc:
             missing.append('license_doc')

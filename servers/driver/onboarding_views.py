@@ -125,6 +125,13 @@ def driver_onboarding(request):
 
     outstanding = [d['key'] for d in driver_docs + vehicle_docs
                    if not (d['present'] and d['recordable'])]
+    # The name is a FIELD too, and the KYC gate refuses a driver without a valid one
+    # (AUDIT 27.71): listed first, so onboarding is never "complete" without it.
+    from .serializers import has_valid_driver_name
+
+    name_ok = has_valid_driver_name(request.user)
+    if not name_ok:
+        outstanding.insert(0, 'full_name')
 
     ready = (
         not outstanding
@@ -152,6 +159,7 @@ def driver_onboarding(request):
             'doc_rejection_reason': driver.doc_rejection_reason or '',
             'license_expiry': driver.license_expiry,
             'license_expiry_ok': expiry_ok,
+            'full_name_ok': name_ok,
             'driver_documents': driver_docs,
             'vehicle': {
                 'id': vehicle.id,

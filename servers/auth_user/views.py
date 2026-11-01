@@ -19,7 +19,7 @@ from servers.rider.models import Rider
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from servers.driver.models import Driver
-from servers.driver.serializers import has_real_name, is_real_name
+from servers.driver.serializers import has_valid_driver_name, is_valid_driver_name
 from base.media import resolve_file_input
 
 logger = logging.getLogger(__name__)
@@ -708,28 +708,32 @@ def _driver_name_error(user, update_data):
     completed by this endpoint, so the rule is applied here and only to a
     driver:
 
-    - a request that sends `full_name` must send a real one (never blank, a
-      phone number or an email); and
+    - a request that sends a NEW `full_name` must send a valid one
+      (`is_valid_driver_name`, the rule the driver app applies: 2+ characters,
+      letters, spaces and . ' - only); and
     - a driver who is completing their profile now (`is_updated` going from
-      false to true) must end up with a real name, sent or already stored.
+      false to true) must end up with a valid name, sent or already stored.
 
-    Existing drivers' other saves are untouched: a request that does not send
-    `full_name` and does not complete the profile is never checked, so an
-    account that predates the rule can still save unrelated changes.
+    Existing drivers' other saves are untouched: a request that does not
+    change `full_name` (not sent, or sent back exactly as stored) and does not
+    complete the profile is never checked, so an account that predates the
+    rule can still save unrelated changes.
     Returns the message for a 400, or None.
     """
     if getattr(user, 'role', None) != 'driver':
-        return None
-    if 'full_name' in update_data:
-        if not is_real_name(update_data.get('full_name')):
-            return 'Enter your full name.'
         return None
     completing = (
         'is_updated' in update_data
         and _truthy(update_data.get('is_updated'))
         and not user.is_updated
     )
-    if completing and not has_real_name(user):
+    if 'full_name' in update_data:
+        sent = update_data.get('full_name')
+        unchanged = (sent or '').strip() == (user.full_name or '').strip()
+        if (completing or not unchanged) and not is_valid_driver_name(sent):
+            return 'Enter your full name.'
+        return None
+    if completing and not has_valid_driver_name(user):
         return 'Enter your full name.'
     return None
 

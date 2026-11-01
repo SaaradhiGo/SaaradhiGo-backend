@@ -145,11 +145,23 @@ def gap_alerts():
     return OperatorAlert.objects.filter(kind=SAFETY_COVERAGE_GAP)
 
 
+@pytest.fixture
+def only_safety_item(monkeypatch):
+    """These tests are about the safety item alone. The other readiness items (zone, fare card,
+    commission, payout, policies, providers) have their own tests in test_platform_markets.py."""
+    monkeypatch.setattr(readiness, 'ITEMS', [readiness._safety_coverage])
+
+
 class TestCoverageGuard:
+    @pytest.fixture(autouse=True)
+    def _only_safety(self, only_safety_item):
+        pass
+
     def test_going_live_is_refused_with_the_failing_item(self, geo):
         with_min('IN', 1)
         wgl = GeoNode.objects.get(code='IN-TG-WGL')
-        assert wgl.status == PAUSED
+        # Module 15: a city that was never launched is a draft, not paused.
+        assert wgl.status == 'draft'
 
         with pytest.raises(readiness.CityNotReady) as refused:
             readiness.set_city_status(wgl, ACTIVE, actor=None, reason='launch')
@@ -157,7 +169,7 @@ class TestCoverageGuard:
         assert refused.value.code == 'CITY_NOT_READY'
         assert [i['key'] for i in refused.value.items] == ['safety_coverage']
         assert refused.value.items[0]['ok'] is False
-        assert GeoNode.objects.get(code='IN-TG-WGL').status == PAUSED
+        assert GeoNode.objects.get(code='IN-TG-WGL').status == 'draft'
 
     def test_going_live_succeeds_when_covered_and_is_audited(self, geo, world):
         with_min('IN', 1)

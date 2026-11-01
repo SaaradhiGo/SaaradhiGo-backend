@@ -260,7 +260,7 @@ class TestWhatItCreates:
         assert zone.is_active is False, 'a seed zone must never be quoted'
         # THE scope anchor for trips.
         assert zone.geo_node_id == geo['US-TX-AUS'].pk
-        assert geo['US-TX-AUS'].status == 'paused'
+        assert geo['US-TX-AUS'].status == 'draft'
 
     def test_two_drivers_anchored_in_austin(self, seeded, geo):
         drivers = seeded['drivers']

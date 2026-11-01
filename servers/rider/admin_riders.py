@@ -169,7 +169,7 @@ def _country(rider, node):
     if code and code != 'GLOBAL':
         return code.split('-')[0]
     country = country_of_phone(getattr(rider.user_id, 'phone_number', None))
-    return country.code if country is not None else 'IN'
+    return country.code if country is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -929,6 +929,11 @@ def admin_bulk_riders(request):
             'action': action, 'results': [{'id': i, 'result': 'not_found'} for i in ids],
             'counts': {'not_found': len(ids)}}}, status.HTTP_200_OK)
     countries = {_country(r, node_of_rider(r)) for r in writable.values()}
+    if None in countries:
+        return error_response(
+            code='UNKNOWN_COUNTRY', message='A rider whose country cannot be determined is '
+            'not in a bulk action.', field='rider_ids', issue='no city and no known phone country',
+            status=status.HTTP_400_BAD_REQUEST)
     if len(countries) != 1:
         return error_response(
             code='MIXED_COUNTRIES', message='A bulk action covers one country at a time.',

@@ -108,7 +108,9 @@ class Command(BaseCommand):
         except InvalidEmail as exc:
             raise CommandError(f'That is not a usable email address: {exc}') from exc
 
-        phone = normalize_phone(str(options['phone']).strip())
+        from servers.platform_ops.markets import default_phone_country
+        phone = normalize_phone(str(options['phone']).strip(),
+                                default_country=default_phone_country())
         if not phone:
             raise CommandError(
                 'That phone number could not be normalised to E.164. Give it '

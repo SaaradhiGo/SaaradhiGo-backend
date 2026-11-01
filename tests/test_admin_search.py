@@ -230,10 +230,18 @@ def body_of(response):
 # ---------------------------------------------------------------------------
 
 class TestTermParsing:
-    @pytest.mark.parametrize('raw', ['+91 98765 43210', '98765-43210', '9876543210', '+919876543210'])
-    def test_an_indian_number_in_any_form_normalises_to_one_e164(self, raw):
+    @pytest.mark.parametrize('raw', ['+91 98765 43210', '+919876543210'])
+    def test_an_indian_number_with_its_country_code_normalises_to_one_e164(self, raw):
         term = parse_term(raw)
         assert term.phone_e164 == '+919876543210'
+        assert term.phone_tail == '9876543210'
+
+    @pytest.mark.parametrize('raw', ['98765-43210', '9876543210'])
+    def test_a_bare_ten_digit_number_is_not_guessed_into_a_country(self, raw):
+        # Module 15: ten digits are a valid national number in two countries, so no e164 is
+        # guessed. The indexed ten-digit TAIL finds the account whichever country it is in.
+        term = parse_term(raw)
+        assert term.phone_e164 is None
         assert term.phone_tail == '9876543210'
 
     @pytest.mark.parametrize('raw', ['+1 (512) 555-0101', '+15125550101', '+1-512-555-0101'])
@@ -249,7 +257,7 @@ class TestTermParsing:
         US account typed without its +1, and is why the tail is indexed."""
         term = parse_term(raw)
         assert term.phone_tail == '5125550101'
-        assert term.phone_e164 is not None
+        assert term.phone_e164 is None
 
     def test_digits_are_a_trip_id_and_a_phone_prefix_and_a_plate_prefix(self):
         term = parse_term('98765')
@@ -262,7 +270,7 @@ class TestTermParsing:
     def test_ten_digits_are_a_whole_phone_number_and_still_a_trip_id(self):
         term = parse_term('9876543210')
         assert term.trip_id == 9876543210
-        assert term.phone_e164 == '+919876543210'
+        assert term.phone_e164 is None and term.phone_tail == '9876543210'
         assert term.phone_prefix is None
 
     def test_three_digits_are_not_a_phone_partial(self):

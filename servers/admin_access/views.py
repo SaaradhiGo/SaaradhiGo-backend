@@ -111,6 +111,9 @@ def admin_whoami(request):
                 super_admin_shortfall() if is_super_admin(user) else 0
             ),
 
+            # Active console maintenance notices for this operator's scope: the banner (module 15).
+            'notices': _console_notices(user),
+
             # Honest about which model is answering for this account, so
             # the console can say "unscoped (not yet migrated)" rather
             # than implying a scope that is not being enforced.
@@ -121,6 +124,15 @@ def admin_whoami(request):
         },
         status_code=status.HTTP_200_OK,
     )
+
+
+def _console_notices(user):
+    from servers.platform_ops.notices import console_banner
+
+    try:
+        return console_banner(user)
+    except Exception:  # noqa: BLE001 - a banner must never stop the console loading
+        return []
 
 
 def access_is_legacy(user):

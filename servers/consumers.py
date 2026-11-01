@@ -639,6 +639,17 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 }))
                 return
 
+            # Module 15: a build below the minimum supported version is told to update, but ONLY
+            # when it sends X-App-Version (an absent header is allowed: current apps keep working).
+            if action == 'request':
+                update = await self._app_version_refusal()
+                if update is not None:
+                    code, message, details = update
+                    await self.send(text_data=json.dumps({
+                        'type': 'error', 'code': code, 'message': message, **details,
+                    }))
+                    return
+
             if action == 'retry':
                 await self._handle_retry(data)
                 return
@@ -672,6 +683,7 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             # the best live auto-applied promo is used. See servers/promotions/rider_promos.py.
             promo_code = str(data.get('promo_code') or '').strip()[:32]
             self._promo_refusal = ''
+            self._booking_refusal = None
 
             # Validate required fields
             if not all([pickup_lat, pickup_lng, destination_lat, destination_lng, pickup_address, destination_address]):
@@ -698,6 +710,12 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             )
 
             if not trip:
+                if getattr(self, '_booking_refusal', None):
+                    code, message = self._booking_refusal
+                    await self.send(text_data=json.dumps({
+                        'type': 'error', 'code': code, 'message': message,
+                    }))
+                    return
                 if self._promo_refusal:
                     # The rider asked for a discount that no longer applies. Booking without
                     # it would charge more than they were shown, so the booking is refused and
@@ -935,6 +953,17 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     # -- Database helpers --
 
     @database_sync_to_async
+    def _app_version_refusal(self):
+        """`(code, message, details)` when the rider app is below the minimum, else None."""
+        from servers.platform_ops import versions
+
+        headers = {k.decode('latin-1').lower(): v.decode('latin-1')
+                   for k, v in (self.scope.get('headers') or [])}
+        return versions.check_headers(
+            headers.get('x-app-version'), headers.get('x-app-platform'),
+            headers.get('x-app-name'), 'rider')
+
+    @database_sync_to_async
     def _create_trip(self, pickup_lat, pickup_lng, destination_lat, destination_lng,
                      pickup_address, destination_address,
                      distance_km=None, duration_min=None, vehicle_type=None,
@@ -980,12 +1009,16 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             # Service-area gate: reject the request before any fare work
             # if either coordinate is outside the Hyderabad polygon. Same
             # check the REST estimate-fare endpoint runs.
-            from base.service_area import validate_service_area
-            area_ok, area_msg = validate_service_area(
+            from base.service_area import validate_service_area_detail
+            area_ok, area_code, area_msg = validate_service_area_detail(
                 pickup_lat, pickup_lng, destination_lat, destination_lng,
             )
             if not area_ok:
                 logger.warning(f"Service area rejection: {area_msg}")
+                if area_code in ('CITY_PAUSED', 'CITY_NOT_LIVE'):
+                    # Module 15: a city that is paused or not yet live takes no NEW bookings.
+                    # The rider gets the stable code and a neutral message, not "Failed".
+                    self._booking_refusal = (area_code, area_msg)
                 raise ValueError(area_msg)
 
             is_valid, validated_km, validated_min, msg = validate_distance(

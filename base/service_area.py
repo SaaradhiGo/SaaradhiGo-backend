@@ -11,7 +11,8 @@ This module used to carry a hard-coded Hyderabad polygon and fall back to it whe
 database had no active zone. That fallback is gone (module 9). With no active zone
 there is no service: a point is outside the service area, and the REST layer says so
 with a clear code (`NO_ACTIVE_ZONE` when no zone is active anywhere,
-`OUT_OF_SERVICE_AREA` when zones exist but none contains the point). A fallback that
+`OUT_OF_SERVICE_AREA` when zones exist but none contains the point), and a point inside a zone of
+a city that is not live is refused with `CITY_PAUSED` or `CITY_NOT_LIVE` (module 15). A fallback that
 quietly served Hyderabad after its zone was deactivated would undo the very change an
 operator and a checker had just agreed to.
 
@@ -54,6 +55,20 @@ def any_active_zone() -> bool:
     return ServiceZone.objects.filter(is_active=True).exists()
 
 
+def _city_gate(pickup_lat, pickup_lon) -> Tuple[bool, str, str]:
+    """A NEW booking starts only in a LIVE city (module 15).
+
+    Paused: `CITY_PAUSED`; never launched: `CITY_NOT_LIVE`. Both with a neutral rider message.
+    Trips already requested or in progress never come through here, so a pause does not touch
+    them. A zone linked to no city is not gated."""
+    from servers.platform_ops.markets import booking_gate_for_zone
+    from servers.pricing.services import find_zone_for_point
+
+    point = _parse(pickup_lat, pickup_lon)
+    zone = find_zone_for_point(*point) if point else None
+    return booking_gate_for_zone(zone)
+
+
 def validate_service_area_detail(
     pickup_lat, pickup_lon, dest_lat, dest_lon,
 ) -> Tuple[bool, str, str]:
@@ -63,7 +78,7 @@ def validate_service_area_detail(
     elif not is_inside_service_area(dest_lat, dest_lon):
         side = 'Drop'
     else:
-        return True, '', ''
+        return _city_gate(pickup_lat, pickup_lon)
     if not any_active_zone():
         return False, NO_ACTIVE_ZONE, (
             'SaaradhiGo is not serving any area right now: no service zone is active.')

@@ -38,6 +38,7 @@ mobile/landline prefix rules is added, replace `normalize_phone` with
 is exactly why the table works today.
 """
 
+import logging
 from dataclasses import dataclass, field
 
 
@@ -188,21 +189,57 @@ UNITED_STATES = Country(
 
 COUNTRIES = {c.code: c for c in (INDIA, UNITED_STATES)}
 
+#: Kept ONLY for callers that have no country at all (a legacy row with no zone) and for
+#: a few tests. NEW CODE MUST NOT USE IT: which country a deployment serves is a row in
+#: Platform Settings (a city's status), not a constant. Use `find_country` (None for an
+#: unknown country) or `require_country` (raises) so a missing or unknown country is a
+#: visible decision instead of a silent India. Module 15, AUDIT 27.36 / 27.37.
 DEFAULT_COUNTRY_CODE = 'IN'
 
 
-def get_country(code):
-    """Look up a country, falling back to the default.
+class UnknownCountry(LookupError):
+    """The code names no country in the registry."""
 
-    Never raises. An unknown code is a configuration error, and the safe
-    behaviour for a function on the request path is to return something usable
-    rather than 500 — but it is a real misconfiguration, so it is logged by the
-    caller that can see the context (see `ServiceZone.save`).
+    def __init__(self, code):
+        super().__init__(f'Unknown country {code!r}')
+        self.code = code
+
+
+def find_country(code):
+    """The `Country` for `code`, or None when it is empty or not in the registry.
+
+    The strict lookup: it NEVER substitutes India. Use it wherever behaviour depends on the
+    country (the app-config endpoint, phone defaults, readiness).
+    """
+    if not code:
+        return None
+    return COUNTRIES.get(str(code).upper().strip())
+
+
+def require_country(code):
+    """Like `find_country`, but raises `UnknownCountry` instead of returning None."""
+    country = find_country(code)
+    if country is None:
+        raise UnknownCountry(code)
+    return country
+
+
+def get_country(code):
+    """Look up a country, falling back to the legacy default.
+
+    LENIENT, for display-shaped call sites that must not 500 (receipts, timezones for a
+    zone with no country yet). An unknown non-empty code is logged. Anything whose behaviour
+    changes with the country must use `find_country` / `require_country` instead; the sites
+    that matter were moved in module 15 (see `normalize_phone`, `servers.platform_ops`).
     """
     if not code:
         return COUNTRIES[DEFAULT_COUNTRY_CODE]
-    return COUNTRIES.get(str(code).upper().strip(),
-                         COUNTRIES[DEFAULT_COUNTRY_CODE])
+    found = COUNTRIES.get(str(code).upper().strip())
+    if found is None:
+        logging.getLogger(__name__).warning(
+            'unknown country %r: falling back to %s', code, DEFAULT_COUNTRY_CODE)
+        return COUNTRIES[DEFAULT_COUNTRY_CODE]
+    return found
 
 
 def is_supported(code):
@@ -221,7 +258,7 @@ def currency_for(code):
 # Phone numbers
 # ---------------------------------------------------------------------------
 
-def normalize_phone(raw, default_country=DEFAULT_COUNTRY_CODE):
+def normalize_phone(raw, default_country=None):
     """Turn whatever a human typed into E.164, or return None.
 
     Replaces three hardcoded `f"+91{phone_number}"` call sites. A US operator
@@ -235,6 +272,13 @@ def normalize_phone(raw, default_country=DEFAULT_COUNTRY_CODE):
     Returns None rather than a guess when the digits do not match a known
     length for any supported country. A guess here is an account that cannot
     be found again.
+
+    NO IMPLICIT COUNTRY (module 15). `default_country=None` no longer means India. A bare
+    national number is resolved only when the caller names a country, or when exactly one
+    supported country has that national length; otherwise it is None (ambiguous), which is
+    what a number typed without a country should be. A number with a plus, or with its
+    calling code, resolves as before. Callers that take a national number pass the
+    country they know (the operator's own, or the sole live one).
     """
     if raw is None:
         return None
@@ -247,7 +291,9 @@ def normalize_phone(raw, default_country=DEFAULT_COUNTRY_CODE):
     if not digits:
         return None
 
-    default = get_country(default_country)
+    default = find_country(default_country)
+    if default_country and default is None:
+        return None
 
     # 1. Already E.164 with a plus: trust the country code in the string, but
     #    only if the total length matches a country we know. Otherwise it is
@@ -261,12 +307,13 @@ def normalize_phone(raw, default_country=DEFAULT_COUNTRY_CODE):
         return None
 
     # 2. A bare national number for the default country.
-    if len(digits) in default.national_number_lengths:
+    if default is not None and len(digits) in default.national_number_lengths:
         return '+' + default.calling_code + digits
 
     # 3. Calling code without the plus, for the default country first so an
     #    ambiguous length resolves the way the caller expects.
-    ordered = [default] + [c for c in COUNTRIES.values() if c.code != default.code]
+    ordered = ([default] if default is not None else []) + [
+        c for c in COUNTRIES.values() if default is None or c.code != default.code]
     for country in ordered:
         if (digits.startswith(country.calling_code)
                 and len(digits) in country.e164_length):
@@ -275,9 +322,12 @@ def normalize_phone(raw, default_country=DEFAULT_COUNTRY_CODE):
     # 4. A national number for some OTHER supported country. Accepted, because
     #    an Indian operator legitimately onboards a US driver, and refusing
     #    would be worse than resolving it.
-    for country in ordered:
-        if len(digits) in country.national_number_lengths:
-            return '+' + country.calling_code + digits
+    #    With no default, only when exactly one country has that length: two is a guess.
+    matches = [c for c in ordered if len(digits) in c.national_number_lengths]
+    if default is not None and matches:
+        return '+' + matches[0].calling_code + digits
+    if len(matches) == 1:
+        return '+' + matches[0].calling_code + digits
 
     return None
 

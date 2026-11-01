@@ -66,6 +66,7 @@ from servers.admin_access.models import (
     CITY,
     COUNTRY,
     GLOBAL,
+    DRAFT,
     PAUSED,
     STATE,
     AdminRole,
@@ -80,13 +81,13 @@ GEO = [
     (COUNTRY, 'IN', 'India', 'GLOBAL', ACTIVE),
     (STATE, 'IN-TG', 'Telangana', 'IN', ACTIVE),
     (CITY, 'IN-TG-HYD', 'Hyderabad', 'IN-TG', ACTIVE),
-    (CITY, 'IN-TG-WGL', 'Warangal', 'IN-TG', PAUSED),
+    (CITY, 'IN-TG-WGL', 'Warangal', 'IN-TG', DRAFT),
     (STATE, 'IN-AP', 'Andhra Pradesh', 'IN', ACTIVE),
-    (CITY, 'IN-AP-VJA', 'Vijayawada', 'IN-AP', PAUSED),
-    (CITY, 'IN-AP-VTZ', 'Visakhapatnam', 'IN-AP', PAUSED),
+    (CITY, 'IN-AP-VJA', 'Vijayawada', 'IN-AP', DRAFT),
+    (CITY, 'IN-AP-VTZ', 'Visakhapatnam', 'IN-AP', DRAFT),
     (COUNTRY, 'US', 'United States', 'GLOBAL', PAUSED),
     (STATE, 'US-TX', 'Texas', 'US', PAUSED),
-    (CITY, 'US-TX-AUS', 'Austin', 'US-TX', PAUSED),
+    (CITY, 'US-TX-AUS', 'Austin', 'US-TX', DRAFT),
 ]
 
 #: One test login per seeded role. QA only — see `_refuse_in_production`.

@@ -82,8 +82,11 @@ ALLOWED_PARENT = {
     CITY: STATE,
 }
 
-ACTIVE, PAUSED = 'active', 'paused'
-STATUS_CHOICES = [(ACTIVE, 'Active'), (PAUSED, 'Paused')]
+#: `active` is what the console calls LIVE. The stored value is unchanged (a dozen readers
+#: filter on it); `draft` is a city that has never been launched, `paused` one that was live.
+#: draft -> live -> paused -> live. Only `readiness.set_city_status` moves a city (module 15).
+DRAFT, ACTIVE, PAUSED = 'draft', 'active', 'paused'
+STATUS_CHOICES = [(DRAFT, 'Draft'), (ACTIVE, 'Live'), (PAUSED, 'Paused')]
 
 
 class GeoNode(models.Model):
@@ -105,7 +108,7 @@ class GeoNode(models.Model):
     # A city is launched or paused. The brief's "launch/pause a city" lives
     # here rather than in a feature flag, because it is a property of the
     # place and reporting needs its history.
-    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=PAUSED)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=DRAFT)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

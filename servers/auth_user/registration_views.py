@@ -134,7 +134,12 @@ def register_with_email(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    phone = normalize_phone(raw_phone) if raw_phone else None
+    # No implicit country (module 15): a bare national number is read in the country the client
+    # names, else the sole live country; with two live countries it needs its country code.
+    from servers.platform_ops.markets import default_phone_country
+    phone = (normalize_phone(raw_phone,
+                             default_country=request.data.get('country') or default_phone_country())
+             if raw_phone else None)
     if not phone:
         return error_response(
             code='AUTH_INVALID_PHONE',

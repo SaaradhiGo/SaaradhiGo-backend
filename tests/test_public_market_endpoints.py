@@ -60,11 +60,12 @@ class TestCountriesEndpoint:
         assert india['calling_code'] == get_country('IN').calling_code
         assert india['currency'] == get_country('IN').currency
 
-    def test_it_names_the_default_so_a_form_need_not_guess(self):
-        from base.countries import DEFAULT_COUNTRY_CODE
+    def test_it_names_the_default_only_when_exactly_one_country_is_live(self):
+        # Module 15: never India by default. The default is the SOLE live country, else null.
+        from servers.platform_ops.markets import default_phone_country
 
         _, data = _get()
-        assert data['default_country'] == DEFAULT_COUNTRY_CODE
+        assert data['default_country'] == default_phone_country()
 
     def test_more_than_one_market_is_offered(self):
         # If this ever drops to one, a client that renders a selector should

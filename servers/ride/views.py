@@ -124,6 +124,13 @@ def estimate_fare(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    # Module 15: a rider build below the minimum supported version is told to update (426), but
+    # ONLY when it sends X-App-Version. An absent header is allowed.
+    from servers.platform_ops import versions as app_versions
+    update = app_versions.check_request(request, 'rider')
+    if update is not None:
+        return app_versions.update_required_response(update)
+
     # Service-area enforcement: both pickup and drop must sit inside an active
     # ServiceZone polygon. Without this check, a tampered client can have us
     # produce fares for any city. The zone table is the authority -- the

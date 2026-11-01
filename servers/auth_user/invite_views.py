@@ -278,7 +278,9 @@ def _create_account(request, *, role, ops_role=None, home_city=None):
     # account is email-only until someone sets a real number.
     raw_phone = request.data.get('phone_number')
     if raw_phone:
-        phone = normalize_phone(raw_phone)
+        from servers.platform_ops.markets import phone_country_for_operator
+        phone = normalize_phone(raw_phone,
+                                default_country=phone_country_for_operator(request.user))
         if not phone:
             return _refuse('AUTH_INVALID_PHONE',
                            'That phone number is not valid.', 'phone_number',

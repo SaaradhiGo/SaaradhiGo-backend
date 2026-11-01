@@ -23,7 +23,7 @@ from django.db.migrations.executor import MigrationExecutor
 
 from conftest import SEED_ACTOR_EMAIL, seed_actor, seed_admin_access
 from servers.admin_access import linking
-from servers.admin_access.models import ACTIVE, CITY, PAUSED, GeoNode
+from servers.admin_access.models import ACTIVE, CITY, DRAFT, GeoNode
 from servers.admin_audit.models import AdminAuditLog
 from servers.driver.management.commands.recompute_driver_trip_counts import (
     AUDIT_ACTION as RECOMPUTE_ACTION,
@@ -452,4 +452,4 @@ def test_seed_output_counts_what_it_linked():
     expected = ServiceZone.objects.filter(geo_node__isnull=False).count()
     assert f'zones linked: {expected}' in text and expected >= 1
     assert 'drivers given a home city: 1' in text
-    assert GeoNode.objects.filter(kind=CITY, status=PAUSED).exists()
+    assert GeoNode.objects.filter(kind=CITY, status=DRAFT).exists()

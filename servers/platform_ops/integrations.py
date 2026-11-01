@@ -26,9 +26,13 @@ PAYMENT_ENV = {
     'razorpay': ('RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET'),
     'stripe': ('STRIPE_SECRET_KEY',),
 }
+#: Optional settings whose absence is a WARNING, not "missing" (names only).
+PAYMENT_WARN_ENV = {'razorpay': ('RAZORPAY_WEBHOOK_SECRET',)}
+PAYOUT_WARN_ENV = {'razorpay': ('RAZORPAYX_WEBHOOK_SECRET',)}
 PAYOUT_ENV = {
     'cashfree': ('CASHFREE_PAYOUTS_CLIENT_ID', 'CASHFREE_PAYOUTS_CLIENT_SECRET'),
-    'razorpay': ('RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET'),
+    # RAZORPAYX_KEY_ID / RAZORPAYX_KEY_SECRET default to the RAZORPAY_* pair when unset.
+    'razorpay': ('RAZORPAYX_ACCOUNT_NUMBER', 'RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET'),
     'stripe_connect': ('STRIPE_SECRET_KEY',),
 }
 
@@ -54,6 +58,31 @@ def _iso(value):
 # Payments
 # ---------------------------------------------------------------------------
 
+def _razorpay_status(kind, currency):
+    """Razorpay / RazorpayX row state: presence only, never a value. The mode comes from the
+    key PREFIX (test -> sandbox, live -> live), read here without echoing it."""
+    from integrations.payments import registry
+    from integrations import razorpay_http as rzp
+
+    names = (PAYMENT_ENV if kind == 'payments' else PAYOUT_ENV)['razorpay']
+    warn_names = (PAYMENT_WARN_ENV if kind == 'payments' else PAYOUT_WARN_ENV)['razorpay']
+    reason = registry.adapter_class(kind, 'razorpay')().not_configured_reason(kind)
+    if kind == 'payments':
+        key_id = getattr(settings, 'RAZORPAY_KEY_ID', '')
+    else:
+        key_id = getattr(settings, 'RAZORPAYX_KEY_ID', '') or getattr(settings, 'RAZORPAY_KEY_ID', '')
+    configured = reason is None
+    mode = ({'test': 'sandbox', 'live': 'live'}.get(rzp.key_mode(key_id)) or 'off') if configured else 'off'
+    note = '' if configured else (
+        'razorpay credentials are not set.' if not key_id else f'{reason}.')
+    warning = ''
+    if configured and not _present(*warn_names):
+        warning = f'{warn_names[0]} is not set: webhooks are rejected until it is.'
+    return {'configured': configured, 'provider': 'razorpay', 'currency': currency, 'mode': mode,
+            'blocker': None, 'env': names + warn_names, 'note': note or warning,
+            'warning': warning}
+
+
 def _gateway_status(kind, country_code):
     """The configured provider for a country, read from the SAME registry the call sites use."""
     from integrations.payments import registry
@@ -71,6 +100,8 @@ def _gateway_status(kind, country_code):
                     'blocker': PAYMENT_BLOCKER_US if currency and currency != 'INR' else None,
                     'note': f'{name} is selected for this country but its adapter is a stub '
                             'that is not implemented yet.', 'env': envs.get(name, ())}
+        if name == 'razorpay' and currency in registry.CURRENCIES.get(name, ()):
+            return _razorpay_status(kind, currency)
         if currency and currency in registry.CURRENCIES.get(name, ()):
             names = envs.get(name, ())
             configured = _present(*names) if names else False
@@ -128,12 +159,12 @@ def _message_times(provider, channel):
     return ok, bad
 
 
-def _payment_times():
+def _payment_times(provider='cashfree'):
     from servers.payments.models import Payment
 
-    ok = (Payment.objects.filter(payment_gateway='cashfree', status='completed', method='online')
+    ok = (Payment.objects.filter(payment_gateway=provider, status='completed', method='online')
           .order_by('-updated_at').values_list('updated_at', flat=True).first())
-    bad = (Payment.objects.filter(payment_gateway='cashfree', status='failed', method='online')
+    bad = (Payment.objects.filter(payment_gateway=provider, status='failed', method='online')
            .order_by('-updated_at').values_list('updated_at', flat=True).first())
     return ok, bad
 
@@ -165,7 +196,7 @@ def rows():
     from servers.notifications import config as nconfig
 
     out = []
-    payment_ok, payment_bad = _payment_times()
+    times = {name: _payment_times(name) for name in ('cashfree', 'razorpay')}
     for code in sorted(COUNTRIES):
         for ptype, label, fn in (('payment_gateway', 'Payment gateway', payment_gateway_status),
                                  ('payout_provider', 'Payout provider', payout_provider_status)):
@@ -175,8 +206,8 @@ def rows():
                 ptype, label, provider or 'none', code, state['configured'],
                 state['mode'], env=state['env'] if provider else (),
                 blocker=state['blocker'], note=state['note'],
-                last_ok=payment_ok if (provider == 'cashfree' and ptype == 'payment_gateway') else None,
-                last_bad=payment_bad if (provider == 'cashfree' and ptype == 'payment_gateway') else None))
+                last_ok=times[provider][0] if (provider in times and ptype == 'payment_gateway') else None,
+                last_bad=times[provider][1] if (provider in times and ptype == 'payment_gateway') else None))
     # Notification channels, per country, from the same table the notifications page reads.
     for channel in ('sms', 'whatsapp', 'email', 'push'):
         for code in sorted(COUNTRIES):

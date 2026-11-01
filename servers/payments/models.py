@@ -10,6 +10,7 @@ User = get_user_model()
 class PaymentGateway(models.TextChoices):
     """Supported payment gateways."""
     CASHFREE = 'cashfree', 'Cashfree'
+    RAZORPAY = 'razorpay', 'Razorpay'
     # Add more gateways as needed
 
 

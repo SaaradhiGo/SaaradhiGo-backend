@@ -74,8 +74,11 @@ WEBHOOK_LOOKBEHIND = timedelta(days=1)
 STUCK_LOOKBACK = timedelta(days=30)
 MAX_ITEMS_PER_CHECK = 2000
 
-PAYMENT_SUCCESS_EVENTS = ('PAYMENT_SUCCESS_WEBHOOK', 'PAYMENT_SUCCESS')
-PAYOUT_SUCCESS_EVENTS = ('TRANSFER_SUCCESS', 'PAYOUT_SUCCESS')
+# Cashfree event names, then Razorpay / RazorpayX (their deliveries are stored raw in the inbox).
+PAYMENT_SUCCESS_EVENTS = ('PAYMENT_SUCCESS_WEBHOOK', 'PAYMENT_SUCCESS', 'payment.captured', 'order.paid')
+PAYOUT_SUCCESS_EVENTS = ('TRANSFER_SUCCESS', 'PAYOUT_SUCCESS', 'payout.processed')
+#: Inbox gateway names that belong to one payment-gateway name (RazorpayX payouts are 'razorpayx').
+INBOX_GATEWAYS = {'razorpay': ('razorpay', 'razorpayx')}
 
 K = ReconciliationItem
 
@@ -133,6 +136,13 @@ def parse_payment_webhook(payload):
     """`{order_id, amount_minor, currency}` from either Cashfree payload shape."""
     if not isinstance(payload, dict):
         return {'order_id': None, 'amount_minor': None, 'currency': None}
+    rz = _dig(payload, 'payload', 'payment', 'entity')
+    if isinstance(rz, dict) and rz.get('order_id'):
+        # Razorpay: amounts are already minor units (paise).
+        amount = rz.get('amount')
+        return {'order_id': str(rz['order_id']),
+                'amount_minor': amount if isinstance(amount, int) else None,
+                'currency': str(rz.get('currency') or 'INR').upper()}
     order_id = _dig(payload, 'data', 'order', 'order_id') or payload.get('orderId')
     amount = (_dig(payload, 'data', 'payment', 'payment_amount')
               or _dig(payload, 'data', 'order', 'order_amount') or payload.get('orderAmount'))
@@ -153,6 +163,9 @@ def parse_payout_webhook(payload):
     """The identifiers a payout webhook can be matched on."""
     if not isinstance(payload, dict):
         return []
+    entity = _dig(payload, 'payload', 'payout', 'entity')
+    if isinstance(entity, dict):
+        return [str(v) for v in (entity.get('reference_id'), entity.get('id')) if v]
     found = [payload.get('transfer_id'), payload.get('payoutId'),
              payload.get('cf_transfer_id'), payload.get('referenceId')]
     return [str(v) for v in found if v]
@@ -351,7 +364,8 @@ def _check_payouts(r, country, currency, gateway, start, end):
     now = r.now
     # -- a payout success webhook while the withdrawal is not paid ----------
     events = (WebhookEvent.objects
-              .filter(gateway=gateway, received_at__gte=start, received_at__lt=min(end, now),
+              .filter(gateway__in=INBOX_GATEWAYS.get(gateway, (gateway,)),
+                      received_at__gte=start, received_at__lt=min(end, now),
                       event_type__in=PAYOUT_SUCCESS_EVENTS)
               .only('id', 'raw_payload', 'received_at')[:MAX_ITEMS_PER_CHECK])
     for event in events:

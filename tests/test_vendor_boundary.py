@@ -169,7 +169,7 @@ def test_the_adapters_exist_and_are_where_the_boundary_says():
         'integrations/push/sns.py', 'integrations/push/fcm_direct.py',
         'integrations/payments/cashfree.py', 'integrations/payments/razorpay.py',
         'integrations/payments/stripe.py', 'integrations/payouts/cashfree.py',
-        'integrations/payouts/razorpay.py', 'integrations/payouts/stripe_connect.py',
+        'integrations/payouts/razorpayx.py', 'integrations/razorpay_http.py', 'integrations/payouts/stripe_connect.py',
         'integrations/storage/s3.py',
     ]
     missing = [p for p in expected if not (ROOT / p).is_file()]

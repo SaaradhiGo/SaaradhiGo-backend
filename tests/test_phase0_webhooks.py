@@ -38,6 +38,8 @@ def _sign(body_bytes: bytes, timestamp: str, secret: str = TEST_SECRET) -> str:
 def _patch_secret(settings):
     """Pin the Cashfree webhook secret to a known value for the suite."""
     settings.CASHFREE_WEBHOOK_SECRET = TEST_SECRET
+    # Cashfree is no longer configured by default; a delivery is only processed when it is.
+    settings.CASHFREE_APP_ID, settings.CASHFREE_SECRET_KEY = 'app-id-test', 'secret-test'
 
 
 # -------------------------------------------------------------------------

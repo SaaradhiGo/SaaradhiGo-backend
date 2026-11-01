@@ -162,10 +162,14 @@ class BasePaymentGateway(ABC):
         purpose: str = "payout",
         currency: str = "INR",
         reference_id: Optional[str] = None,
-        name: Optional[str] = None
+        name: Optional[str] = None,
+        **extra
     ) -> Optional[Dict[str, Any]]:
         """
         Create a payout to a UPI ID.
+
+        `extra` carries provider-specific reuse hints (`contact_id`, `fund_account_id`,
+        `contact_reference`); an adapter that has no use for them ignores them.
         """
         pass
 
@@ -270,7 +274,7 @@ class UnavailableGateway(BasePaymentGateway):
         return None
 
     def create_upi_payout(self, upi_id, amount_minor, purpose='payout', currency='INR',
-                          reference_id=None, name=None):
+                          reference_id=None, name=None, **_):
         # None is a definite rejection (no money moved), so the caller may refund safely.
         logger.warning('create_upi_payout refused: %s', self.reason)
         return None

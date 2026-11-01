@@ -167,6 +167,15 @@ class CashfreeGateway(BasePaymentGateway):
     def get_name(self) -> str:
         return 'cashfree'
 
+    def not_configured_reason(self, kind):
+        """Why this adapter cannot act (credentials absent), or None. No vendor call is made."""
+        if kind == 'payouts':
+            ok = all(payout_credentials())
+        else:
+            ok = bool(getattr(settings, 'CASHFREE_APP_ID', '')
+                      and getattr(settings, 'CASHFREE_SECRET_KEY', ''))
+        return None if ok else 'cashfree is not configured (credentials not set)'
+
 
 
     def create_order(
@@ -185,6 +194,11 @@ class CashfreeGateway(BasePaymentGateway):
         customer_id and customer phone/email. We never hard-code a real person's
         email; the fallback is the platform's no-reply address.
         """
+        if not _positive_minor(amount_minor):
+            # Found by the gateway contract suite: a zero / float / Decimal amount was sent on.
+            logger.error("CashfreeGateway.create_order: amount_minor must be a positive int, got %r",
+                         amount_minor)
+            return None
         try:
             ref = customer_id or (str(trip_id) if trip_id is not None else 'na')
             order_id = f"{ref}{int(time.time())}"
@@ -467,6 +481,7 @@ class CashfreeGateway(BasePaymentGateway):
         currency: str = "INR",
         reference_id: Optional[str] = None,
         name: Optional[str] = None,
+        **_,  # provider-specific extras (contact / fund account reuse) are ignored here
     ) -> Optional[Dict[str, Any]]:
         """Create a UPI payout via Cashfree Payouts (request_transfer flavour).
 

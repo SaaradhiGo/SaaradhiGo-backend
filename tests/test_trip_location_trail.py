@@ -779,8 +779,8 @@ def test_no_public_or_authenticated_endpoint_exposes_the_trail():
 
 def test_trail_is_not_registered_in_django_admin():
     """Deliberate: no browsable full-fleet location history by default."""
-    from django.contrib import admin as dj_admin
-    assert TripLocationPoint not in dj_admin.site._registry
+    from django.conf import settings
+    assert 'django.contrib.admin' not in settings.INSTALLED_APPS
 
 
 def test_celery_task_args_cannot_leak_coordinates():

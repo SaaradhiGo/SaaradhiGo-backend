@@ -30,10 +30,6 @@
                     </div>
                     <h1 class="headline mt-6 text-4xl sm:text-5xl font-black tracking-tight">{% block heading %}Something went off track{% endblock %}</h1>
                     <p class="mt-4 max-w-xl text-base sm:text-lg text-[#d0c5af]">{% block message %}The route you requested could not be served right now.{% endblock %}</p>
-                    <div class="mt-8 flex flex-wrap gap-3">
-                        <a href="/" class="rounded-full bg-[#f2ca50] px-5 py-3 text-sm font-semibold text-[#2f2400] transition hover:brightness-110">Return home</a>
-                        <a href="/admin/" class="rounded-full border border-[#4d4635] bg-[#201f1f] px-5 py-3 text-sm font-semibold text-[#f7f4eb] transition hover:border-[#f2ca50] hover:text-[#f2ca50]">Open admin console</a>
-                    </div>
                     <div class="mt-8 rounded-2xl border border-[#4d4635]/30 bg-[#201f1f]/70 p-4 text-sm text-[#d0c5af]">
                         {% block details %}If this issue persists, contact the operations team.{% endblock %}
                     </div>

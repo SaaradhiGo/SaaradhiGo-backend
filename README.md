@@ -200,6 +200,10 @@ The prod stack runs Django via Daphne (ASGI) and a Celery worker, both reading `
 - [SaaradhiGo-mobile](../SaaradhiGo-mobile) — Flutter rider app (VahanGo)
 - [SaaradhiGo-web](../SaaradhiGo-web) — Web client + branch protection rules
 
+## The Django console is off
+
+There is no Django sign-in, second-factor challenge, sign-out, admin site (`/admin/`) or server-rendered console page: none of those paths is routed, so each answers 404. The only public surface is the API under `/api/v1/`, the health probes (`/healthz`, `/version`) and the websockets. Emergency access is the console's break-glass account (`servers/admin_access`) and Railway / `manage.py`. `tests/test_django_console_off.py` pins every removed route to 404 (anonymous and signed-in superuser, GET and POST).
+
 ## Vendor boundary
 
 Every third-party adapter lives in the top-level `integrations/` package (grouped by capability: `email`, `sms`, `push`, `payments`, `payouts`, `storage`). Business code in `base/` and `servers/` imports only the interfaces and registries, never a vendor SDK; `tests/test_vendor_boundary.py` (part of the normal `pytest` run, so part of CI) fails on any vendor import or vendor hostname outside `integrations/`. The only allowlisted exception is the `sentry_sdk` bootstrap in `base/settings.py`.

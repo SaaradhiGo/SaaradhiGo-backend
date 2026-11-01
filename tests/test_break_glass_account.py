@@ -170,63 +170,6 @@ class TestTheApiDoor:
 
 
 # ---------------------------------------------------------------------------
-# The console door
-# ---------------------------------------------------------------------------
-
-class TestTheConsoleDoor:
-    """If the form let the account in without a reason, the API check would
-    be decoration."""
-
-    def test_no_session_without_a_reason(self, emergency, super_admins):
-        client = Client()
-
-        response = client.post('/login/', {
-            'username': '+917700009999', 'password': PASSWORD,
-        })
-
-        # Re-rendered asking why, not redirected into the console.
-        assert response.status_code == 200
-        assert b'Reason for emergency access' in response.content
-        assert '_auth_user_id' not in client.session
-
-    def test_a_session_with_a_reason(self, emergency, super_admins):
-        client = Client()
-
-        response = client.post('/login/', {
-            'username': '+917700009999', 'password': PASSWORD,
-            'reason': GOOD_REASON,
-        })
-
-        assert response.status_code == 302
-        assert client.session['_auth_user_id'] == str(emergency.pk)
-
-    def test_the_console_use_is_notified_and_audited(
-        self, emergency, super_admins,
-    ):
-        from servers.admin_audit.models import AdminAuditLog
-
-        Client().post('/login/', {
-            'username': '+917700009999', 'password': PASSWORD,
-            'reason': GOOD_REASON,
-        })
-
-        assert Notification.objects.filter(
-            title='Emergency account used'
-        ).count() == len(super_admins)
-        row = AdminAuditLog.objects.filter(action='break_glass_login').first()
-        assert row.after['channel'] == 'console'
-
-    def test_an_ordinary_operator_is_unaffected(self, ordinary, super_admins):
-        client = Client()
-
-        response = client.post('/login/', {
-            'username': '+917700008888', 'password': PASSWORD,
-        })
-
-        assert response.status_code == 302
-
-
-# ---------------------------------------------------------------------------
 # Degenerate cases
 # ---------------------------------------------------------------------------
 

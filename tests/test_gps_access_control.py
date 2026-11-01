@@ -135,12 +135,10 @@ def test_no_serializer_exposes_the_durable_trail():
 
 def test_the_trail_is_not_registered_in_the_django_admin():
     """Admin registration would make the whole trail browsable and exportable."""
-    from django.contrib import admin
+    from django.conf import settings
 
-    assert TripLocationPoint not in admin.site._registry, (
-        'TripLocationPoint is registered in the Django admin, which makes every '
-        "rider's movement history browsable and CSV-exportable by any staff user"
-    )
+    # The Django admin site is off entirely, so nothing can be registered in it.
+    assert 'django.contrib.admin' not in settings.INSTALLED_APPS
 
 
 def test_no_route_mentions_a_trail_or_points_endpoint():

@@ -2191,9 +2191,16 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'error': f'Cash can only be confirmed on a completed trip (currently {current}).',
                     }
 
-                payment = trip.payments.filter(method='cash').first()
+                # Paid another way (the rider paid from the wallet, AUDIT 27.71): there is no cash
+                # to collect, and confirming would charge the rider twice.
+                if trip.payment_method != 'cash' and trip.payment_status == 'completed':
+                    return {'success': False, 'error': 'This trip has already been paid'}
+
+                payment = trip.payments.filter(method='cash').order_by('-created_at', '-id').first()
                 if not payment:
                     return {'success': False, 'error': 'No cash payment found for this trip'}
+                if payment.status == 'failed':
+                    return {'success': False, 'error': 'This trip is no longer a cash trip'}
 
                 # Idempotent: a retried WS frame must not double-count GMV.
                 if payment.status == 'completed':

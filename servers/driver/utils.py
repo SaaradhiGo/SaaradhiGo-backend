@@ -51,6 +51,37 @@ def update_driver_location(driver_id, lng, lat):
 #: tax and fee in hand and owes them to SaaradhiGo, which remits them). Debits, never earnings.
 PURPOSE_TAX_COLLECTED = 'tax_collected'
 PURPOSE_FEE_COLLECTED = 'regulatory_fee_collected'
+#: A cash trip the rider then paid through SaaradhiGo (from the wallet): the platform holds the money
+#: the cash settlement assumed the driver had. A credit of exactly what the rider was charged.
+PURPOSE_FARE_COLLECTED_BY_PLATFORM = 'fare_collected_by_platform'
+
+
+def credit_fare_collected_by_platform(trip, amount_minor, currency):
+    """Credit the driver the fare the platform collected on a trip settled as cash.
+
+    The cash settlement debited the commission (and, in the US, the tax and fee the driver was
+    assumed to hold) and, with a promo, credited the discount. Adding what the rider actually paid
+    the platform leaves the balance at the trip's net, as on an online trip. Append-only and keyed
+    per trip, so a second call writes nothing. Call inside the payment's transaction.
+    """
+    from django.db import IntegrityError, transaction
+
+    from servers.rider.models import Wallet, WalletTransaction, get_wallet
+
+    if not trip.driver_id or amount_minor <= 0:
+        return None
+    wallet = get_wallet(trip.driver_id.user_id, Wallet.SCOPE_DRIVER, lock=True)
+    try:
+        with transaction.atomic():
+            txn = WalletTransaction.objects.create(
+                user_id=trip.driver_id.user_id, currency=currency, amount_minor=amount_minor,
+                txn_type='credit', status='completed', purpose=PURPOSE_FARE_COLLECTED_BY_PLATFORM,
+                reference_id=f'TRIP_{trip.id}', idempotency_key=f'TRIP_{trip.id}_COLLECTED')
+    except IntegrityError:
+        return None
+    wallet.balance_minor = wallet.balance_minor + amount_minor
+    wallet.save(update_fields=['balance_minor'])
+    return txn
 
 
 def settle_or_defer(trip):

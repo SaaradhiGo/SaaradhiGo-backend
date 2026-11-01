@@ -359,6 +359,9 @@ class WithdrawalRequest(CurrencyStampedModel, models.Model):
         # Paid, then reversed by the bank (AUDIT 27.71): the amount is back in the wallet
         # as a `refund_reversed_withdrawal` line.
         ('reversed', 'Reversed after payment'),
+        # Reported paid by the provider after it had failed and been refunded (AUDIT 27.72):
+        # frozen, no money moves, until Finance decides (servers/payments/payout_conflict.py).
+        ('conflict', 'Paid after refund - Finance to decide'),
     ]
     PAYOUT_METHOD_CHOICES = [
         ('bank', 'Bank Transfer'),

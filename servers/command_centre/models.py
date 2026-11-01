@@ -97,8 +97,13 @@ PROMOTION_BUDGET_OVERSHOOT = 'promotion.budget_overshoot'
 #: is back in the driver's balance. Warning, one per payout, anchored to the driver's home city,
 #: Finance (`finance.read` in scope) and Super Admin, acknowledged by Finance.
 FINANCE_PAYOUT_REVERSED = 'finance.payout_reversed'
+#: The provider reported a payout PAID after it had failed and been refunded (AUDIT 27.72): it is
+#: frozen as `conflict` until Finance resolves it with a maker-checker adjustment. Critical, one per
+#: payout, Finance and Super Admin; it clears itself when resolved (or when the provider reverses it).
+FINANCE_PAYOUT_CONFLICT = 'finance.payout_conflict'
 FINANCE_ALERT_KINDS = frozenset({SETTLEMENT_NO_COMMISSION_RULE, FINANCE_PLATFORM_FUNDED_END,
-                                 PROMOTION_BUDGET_OVERSHOOT, FINANCE_PAYOUT_REVERSED})
+                                 PROMOTION_BUDGET_OVERSHOOT, FINANCE_PAYOUT_REVERSED,
+                                 FINANCE_PAYOUT_CONFLICT})
 #: Module 11: a notification provider's failure rate over the last 15 minutes is above its
 #: threshold (warning). Platform health, not operations: visible to Super Admin only, which
 #: is to say holders of `platform.settings`. It clears itself when the rate recovers, and can

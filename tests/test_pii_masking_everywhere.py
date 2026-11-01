@@ -466,7 +466,7 @@ def _ids(world):
         'template_id': world['notify_template'].id, 'campaign_id': world['notify_campaign'].id,
         'message_id': world['notify_message'].id, 'user_id': world['driver_user'].id,
         'payment_id': world['payment'].id, 'payout_id': world['withdrawal'].id,
-        'kind': 'payouts', 'promotion_id': world['promo_campaign'].id,
+        'kind': 'payouts', 'report_key': 'trips', 'promotion_id': world['promo_campaign'].id,
         'flag_id': world['fraud_flag'].id,
     }
 
@@ -596,6 +596,11 @@ INVENTORY = {
     'api/v1/fraud/admin/flags/<int:flag_id>/reviewers/': False,
     'api/v1/fraud/admin/rules/': False,
     'api/v1/fraud/admin/options/': False,
+    # Reports & Analytics (module 14): aggregates only. The rollup tables hold no person, trip id,
+    # coordinate or contact, so there is nothing to mask; the CSV export is swept as text.
+    'api/v1/reports/admin/catalogue/': False,
+    'api/v1/reports/admin/<str:report_key>/': False,
+    'api/v1/reports/admin/<str:report_key>/export/': False,
 }
 
 #: GET routes in the namespace that are deliberately not swept. The DRF
@@ -875,7 +880,9 @@ class TestEveryEndpointAsEveryRole:
 #: JSON, whatever the caller holds -- there is no reveal for a bulk export of
 #: payments, payouts or settlements. `test_finance_read.py` proves `?reveal=1`
 #: is ignored and writes no `pii_export_revealed` row.
-NEVER_UNMASKED_EXPORTS = {'payments/admin_finance.py'}
+#: `reports/views.py`: a report export is the aggregate table the screen shows (counts and
+#: minor-unit sums by period, city and vehicle class), with no personal column to reveal.
+NEVER_UNMASKED_EXPORTS = {'payments/admin_finance.py', 'reports/views.py'}
 
 SENSITIVE_KEY = re.compile(
     r'phone|email|address|upi|ifsc|account_number|licen[cs]e|aadhaar|ssn|dob|contact',
@@ -936,7 +943,10 @@ class TestTheSweepGuard:
             response = client.get(_fill(route, _ids(world)))
             if response.status_code != 200:
                 continue
-            for path, value in _walk(response.json()):
+            payload = _json_or_text(response)
+            if isinstance(payload, str):
+                continue   # a CSV export: its columns are checked by the key-table test below
+            for path, value in _walk(payload):
                 key = path.rsplit('.', 1)[-1].split('[')[0]
                 if not SENSITIVE_KEY.search(key) or key.endswith(NOT_PERSONAL_SUFFIXES):
                     continue

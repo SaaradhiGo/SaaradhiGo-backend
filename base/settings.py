@@ -85,6 +85,7 @@ INSTALLED_APPS = [
     'servers.promotions',
     # Fraud & Risk (module 13): the review queue, detection rules, linked accounts and review actions.
     'servers.fraud',
+    'servers.reports',
     # Console search: trip id, phone, plate, name -- indexed and scoped.
     'servers.search',
     # Operator MFA. django-otp is the established Django implementation: TOTP
@@ -180,6 +181,8 @@ REST_FRAMEWORK = {
         # into a 250 ms-debounced box never approaches it; a script walking
         # phone prefixes does. See servers/search/throttles.py.
         'admin_search': '60/min',
+        # Report CSV exports (module 14), per operator.
+        'report_export': '30/hour',
         # Place lookups from a SIGNED-OUT visitor on the public homepage.
         # Each one costs a Places call, so this is a spend cap, not a
         # security control. Generous enough to type two addresses with
@@ -562,6 +565,18 @@ CELERY_BEAT_SCHEDULE = {
         # no SupportCountryConfig row. Idempotent.
         'task': 'support.sweep_waiting_tickets',
         'schedule': _crontab(minute=7),
+    },
+    'reports-rebuild-recent-every-30-min': {
+        # Reports (module 14): re-compute today and yesterday of every city (city-local days) into
+        # the daily rollups. Idempotent; writes only derived rollup tables.
+        'task': 'reports.rebuild_recent',
+        'schedule': _crontab(minute='*/30'),
+    },
+    'reports-rebuild-week-nightly': {
+        # The last 7 local days plus the weekly rider cohorts: a late settlement or refund lands
+        # on an earlier day.
+        'task': 'reports.rebuild_week',
+        'schedule': _crontab(hour=3, minute=10),
     },
     'command-centre-threshold-sweep-every-minute': {
         # Command Centre: measure every city against its active alert

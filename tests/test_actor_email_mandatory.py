@@ -67,6 +67,8 @@ WRITING_COMMANDS = [
     'apply_commission_ruling',
     # A one-off RULING command (not a seed_*): the owner's payout values, AUDIT 27.43.
     'apply_payout_ruling',
+    # Rebuilds derived report rollups only (module 14): no business row, but audited by name.
+    'backfill_reports',
     'bootstrap_qa_accounts',
     'bootstrap_qa_operator',
     'create_operator',
@@ -464,6 +466,18 @@ def _fp_queued_notices():
             tuple(DriverNotice.objects.values_list('pk', 'status')))
 
 
+def _prepare_backfill_reports(settings, monkeypatch):
+    seed_admin_access()    # the city nodes the rollups hang off
+    return ['--since', '2026-10-01', '--until', '2026-10-02'], {}
+
+
+def _fp_report_rollups():
+    from servers.reports.models import DailyCityMetrics, RebuildLog
+
+    return (tuple(sorted(RebuildLog.objects.values_list('city__code', 'date'))),
+            DailyCityMetrics.objects.count())
+
+
 CASES = [
     Case('migrate_operators --apply', 'migrate_operators',
          _prepare_migrate, _fp_migrate, dry_run=(['--plan', 'qa'], {}),
@@ -514,6 +528,8 @@ CASES = [
     Case('send_queued_notices', 'send_queued_notices',
          _prepare_send_queued_notices, _fp_queued_notices, dry_run=(['--dry-run'], {}),
          needs_operator_to_prepare=True),
+    Case('backfill_reports', 'backfill_reports',
+         _prepare_backfill_reports, _fp_report_rollups, needs_operator_to_prepare=True),
     Case('seed_us_test_city', 'seed_us_test_city',
          _prepare_us_seed, _fp_us_seed, needs_operator_to_prepare=True),
     Case('seed_us_test_city --remove', 'seed_us_test_city',

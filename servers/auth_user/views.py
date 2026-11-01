@@ -678,6 +678,28 @@ def _truthy(value):
     return str(value).strip().lower() in ('true', '1', 'yes', 'on')
 
 
+def _rider_home_city(user, update_data):
+    """The rider's chosen city (R6), popped out of `update_data`.
+
+    The rider app sends `home_city` as a city code from app-config `cities[]`
+    (e.g. `IN-TG-HYD`) when the rider picks one at sign-up. It sets
+    `Rider.home_city`, the anchor for operator scope (`rider.scope`). Only a
+    live city counts. Returns (node, error): node None and error None means
+    nothing was sent (or the account is not a rider), so nothing changes.
+    """
+    if 'home_city' not in update_data:
+        return None, None
+    code = str(update_data.pop('home_city') or '').strip()
+    if getattr(user, 'role', None) != 'rider' or not code:
+        return None, None
+    from servers.admin_access.models import ACTIVE, CITY, GeoNode
+
+    node = GeoNode.objects.filter(code=code, kind=CITY, status=ACTIVE).first()
+    if node is None:
+        return None, 'Choose one of the cities we serve.'
+    return node, None
+
+
 def _driver_name_error(user, update_data):
     """A driver must give a real name when they complete their profile.
 
@@ -733,6 +755,7 @@ def update_user(request):
         "city": str,
         "zip_code": str,
         "emergency_contact": str,
+        "home_city": str (rider only: a live city code from app-config),
         "avatar": file or null,
         "phone_number": str
     }
@@ -768,6 +791,16 @@ def update_user(request):
         if avatar_provided:
             update_data['avatar'] = avatar_value
         
+        home_city, city_error = _rider_home_city(user, update_data)
+        if city_error:
+            return error_response(
+                code='AUTH_VALIDATION_ERROR',
+                message=city_error,
+                field='home_city',
+                issue=city_error,
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         name_error = _driver_name_error(user, update_data)
         if name_error:
             return error_response(
@@ -777,6 +810,10 @@ def update_user(request):
                 issue=name_error,
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        if not update_data and home_city is not None:
+            Rider.objects.filter(user_id=user).update(home_city=home_city)
+            return success_response(UserModelSerializer(user).data, status.HTTP_200_OK)
 
         if not update_data:
             logger.warning(f"Update request with no data for user: {user_id}")
@@ -805,7 +842,10 @@ def update_user(request):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            user_serializer.save()
+            with transaction.atomic():
+                user_serializer.save()
+                if home_city is not None:
+                    Rider.objects.filter(user_id=user).update(home_city=home_city)
             logger.info(f"User profile updated successfully: {user_id}")
             return success_response(
                 user_serializer.data,

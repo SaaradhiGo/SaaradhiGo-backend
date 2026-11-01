@@ -1769,6 +1769,16 @@ def initiate_upi_payout(withdrawal, driver):
             f"withdrawal_{withdrawal.id}_driver_{driver.id}"
         )
 
+        # Reuse the provider-side contact / fund account recorded for THIS provider only (an id
+        # issued by another provider is never sent to this one). The fund account is reused only
+        # while the UPI id is unchanged.
+        reuse = {'contact_reference': str(driver.id)}
+        known = DriverUPIContact.objects.filter(driver=driver, is_active=True).first()
+        if known and known.gateway_provider == gateway.get_name() and known.gateway_contact_id:
+            reuse['contact_id'] = known.gateway_contact_id
+            if known.upi_id == driver.upi_id and known.gateway_fund_account_id:
+                reuse['fund_account_id'] = known.gateway_fund_account_id
+
         payout_result = gateway.create_upi_payout(
             upi_id=driver.upi_id,
             # What the driver receives: the request less the transfer fee that
@@ -1781,6 +1791,7 @@ def initiate_upi_payout(withdrawal, driver):
                 driver.user_id.full_name
                 or driver.user_id.phone_number
             ),
+            **reuse,
         )
 
         if not payout_result:
@@ -1880,6 +1891,7 @@ def initiate_upi_payout(withdrawal, driver):
         # SAVE DRIVER UPI CONTACT
         # -----------------------------------------------------
         try:
+            provider_name = payout_result.get("provider") or gateway.get_name()
             upi_contact, created = DriverUPIContact.objects.get_or_create(
                 driver=driver,
                 defaults={
@@ -1889,6 +1901,7 @@ def initiate_upi_payout(withdrawal, driver):
                     "gateway_fund_account_id": payout_result.get(
                         "fund_account_id"
                     ),
+                    "gateway_provider": provider_name,
                     "upi_id": driver.upi_id,
                     "is_active": True,
                 },
@@ -1901,12 +1914,14 @@ def initiate_upi_payout(withdrawal, driver):
                 upi_contact.gateway_fund_account_id = (
                     payout_result.get("fund_account_id")
                 )
+                upi_contact.gateway_provider = provider_name
                 upi_contact.upi_id = driver.upi_id
                 upi_contact.is_active = True
                 upi_contact.last_used_at = timezone.now()
 
                 upi_contact.save(
                     update_fields=[
+                        "gateway_provider",
                         "gateway_contact_id",
                         "gateway_fund_account_id",
                         "upi_id",

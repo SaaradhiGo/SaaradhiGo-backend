@@ -203,9 +203,13 @@ def _payment_gateway(node):
     code = _country_code(node)
     state = payment_gateway_status(code)
     if state['configured']:
-        return {'key': 'payment_gateway', 'ok': True,
+        item = {'key': 'payment_gateway', 'ok': True,
                 'detail': f"{state['provider']} is configured for {state['currency']} "
                           f"({state['mode']})."}
+        if state.get('warning'):
+            item['status'] = 'warning'
+            item['detail'] += f" {state['warning']}"
+        return item
     blocker = f" (go-live blocker #{state['blocker']})" if state.get('blocker') else ''
     return {'key': 'payment_gateway', 'ok': False,
             'detail': f"No payment gateway is configured for {state['currency'] or code}"

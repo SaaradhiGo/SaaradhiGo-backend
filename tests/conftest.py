@@ -125,6 +125,20 @@ def default_commission_rules(request):
 
 
 @pytest.fixture(autouse=True)
+def legacy_cashfree_providers(settings):
+    """Pin India to Cashfree for the existing payment / payout suites.
+
+    The shipped default is India = Razorpay (owner decision 2026-11-01). The pre-existing suites
+    exercise the Cashfree flows, and Cashfree is still selectable by explicit configuration, so
+    they select it explicitly here. The Razorpay suites (test_payment_gateway_contract.py,
+    test_payout_provider_contract.py, test_razorpay_*.py) override this, and the DEFAULT is
+    asserted in test_razorpay_wiring.py against base.settings itself.
+    """
+    settings.PAYMENT_PROVIDERS = {'IN': 'cashfree', 'US': None}
+    settings.PAYOUT_PROVIDERS = {'IN': 'cashfree', 'US': None}
+
+
+@pytest.fixture(autouse=True)
 def use_dummy_cache(settings):
     settings.CACHES = {
         'default': {

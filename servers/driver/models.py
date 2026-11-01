@@ -434,6 +434,10 @@ class DriverUPIContact(models.Model):
     driver = models.OneToOneField(Driver, on_delete=models.CASCADE, related_name='upi_contact')
     gateway_contact_id = models.CharField(max_length=256, blank=True, null=True)
     gateway_fund_account_id = models.CharField(max_length=256, blank=True, null=True)
+    # Which provider issued the two ids above. A contact / fund account id belongs to ONE
+    # provider: it is reused only when this equals the provider paying now, so a Cashfree id is
+    # never sent to Razorpay (or the reverse). NULL = recorded before this field existed.
+    gateway_provider = models.CharField(max_length=32, blank=True, null=True)
     upi_id = models.CharField(max_length=256, blank=True, null=True, help_text='UPI ID stored at time of contact creation')
     created_at = models.DateTimeField(auto_now_add=True)
     last_used_at = models.DateTimeField(auto_now=True)

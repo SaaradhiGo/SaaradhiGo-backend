@@ -4,11 +4,13 @@ Payment gateway factory: which provider serves WHICH COUNTRY, by configuration o
     settings.PAYMENT_PROVIDERS   country -> provider name (env PAYMENT_PROVIDERS_JSON)
     settings.PAYOUT_PROVIDERS    country -> provider name (env PAYOUT_PROVIDERS_JSON)
 
-e.g. {"IN": "cashfree", "US": null}. A null / missing country has NO provider: the factory then
+e.g. {"IN": "razorpay", "US": null}, which is the DEFAULT (owner decision 2026-11-01: India uses
+Razorpay and RazorpayX). Cashfree stays registered but is configured nowhere unless a table says so. A null / missing country has NO provider: the factory then
 returns an `UnavailableGateway` (falsy), which every call site already treats as "not configured"
 (HTTP 503, or the withdrawal stays awaiting a rail). It NEVER falls back to another country's
-provider. The one legacy fallback: with no explicit entry for India, the old global
-PAYMENT_GATEWAY / PAYOUT_GATEWAY setting is India's provider, so QA keeps working unchanged.
+provider. The one legacy fallback: with no entry for India in the table, the old global
+PAYMENT_GATEWAY / PAYOUT_GATEWAY setting is India's provider, but ONLY when it is set explicitly
+(it has no default, so India never silently resolves to Cashfree).
 
 Business code reaches a provider only through this module (the vendor boundary is enforced by
 tests/test_vendor_boundary.py); the adapters themselves live in the top-level `integrations/`.
@@ -47,7 +49,7 @@ def provider_name_for(kind, country) -> Optional[str]:
     if code in table:
         name = table[code]
     elif code == 'IN':
-        name = getattr(settings, legacy, 'cashfree')
+        name = getattr(settings, legacy, '')
     else:
         name = None
     name = str(name or '').strip().lower()
@@ -60,7 +62,14 @@ def configured_providers(kind):
 
 
 def _build(kind, name) -> BasePaymentGateway:
-    return registry.adapter_class(kind, name)()
+    gateway = registry.adapter_class(kind, name)()
+    # An adapter that knows it has no credentials (or a refused key) answers falsy, so every call
+    # site's `if not gateway:` path says "not configured" without a vendor call.
+    reason = getattr(gateway, 'not_configured_reason', None)
+    reason = reason(kind) if callable(reason) else None
+    if reason:
+        return UnavailableGateway(registry.canonical(name), reason)
+    return gateway
 
 
 def _resolve(kind, gateway_name, country) -> BasePaymentGateway:
@@ -86,6 +95,16 @@ def get_payment_gateway(gateway_name: Optional[str] = None, country=None) -> Bas
     Raises ValueError for an unknown explicit name.
     """
     return _resolve('payments', gateway_name, country)
+
+
+def get_webhook_verifier(kind, gateway_name) -> BasePaymentGateway:
+    """The named provider's adapter WITHOUT the "credentials present" gate.
+
+    A webhook's signature needs only the webhook secret, so a deployment whose API keys are not
+    set yet still answers an unsigned / forged delivery with 400 (and no side effect) rather than
+    a 503. Never use it to make an outbound call.
+    """
+    return registry.adapter_class(kind, gateway_name)()
 
 
 def get_payment_gateway_for_payments(country=None) -> BasePaymentGateway:
@@ -142,6 +161,8 @@ def get_available_gateways() -> list:
             continue
         if name == 'cashfree' and getattr(settings, 'CASHFREE_APP_ID', None) \
                 and getattr(settings, 'CASHFREE_SECRET_KEY', None):
+            names.append(name)
+        elif name == 'razorpay' and not registry.adapter_class('payments', name)().not_configured_reason('payments'):
             names.append(name)
     return names
 

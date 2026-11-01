@@ -256,10 +256,13 @@ class TestBoundedAndIdempotent:
         from servers.payments.tasks import run_daily_reconciliation
 
         result = run_daily_reconciliation()
-        assert result['runs'] == 6 and result['failed'] == []       # 2 countries x 3 days
-        assert ReconciliationRun.objects.count() == 6
+        from servers.payments.models import PaymentGateway
+
+        expected = 2 * 3 * len(PaymentGateway.values)   # 2 countries x 3 days x every gateway
+        assert result['runs'] == expected and result['failed'] == []
+        assert ReconciliationRun.objects.count() == expected
         again = run_daily_reconciliation()
-        assert again['new_findings'] == 0 and ReconciliationRun.objects.count() == 6
+        assert again['new_findings'] == 0 and ReconciliationRun.objects.count() == expected
 
     def test_the_task_is_scheduled_and_acks_late(self):
         from django.conf import settings

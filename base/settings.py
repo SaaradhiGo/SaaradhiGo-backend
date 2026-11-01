@@ -1122,10 +1122,22 @@ AWS_S3_CLIENT_CONFIG = _BotoConfig(
 # base/storage_backends.py.
 AWS_S3_PUBLIC_BASE_URL=os.environ.get("AWS_S3_PUBLIC_BASE_URL", "").strip().rstrip("/")
 
-# Razorpay
+# Razorpay (India payments, adapter: integrations/payments/razorpay.py) and RazorpayX (India
+# payouts, adapter: integrations/payouts/razorpayx.py). Names only; values live in the environment.
+#   Payments  RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET (required), RAZORPAY_WEBHOOK_SECRET (the secret
+#             set on the dashboard webhook; missing = webhooks are rejected, a readiness warning)
+#   Payouts   RAZORPAYX_ACCOUNT_NUMBER (required: the RazorpayX account to debit),
+#             RAZORPAYX_WEBHOOK_SECRET, and RAZORPAYX_KEY_ID / RAZORPAYX_KEY_SECRET, which default to
+#             the RAZORPAY_* pair when unset.
+# Test vs live is decided by the key prefix (rzp_test_ / rzp_live_). A rzp_live_ key is refused when
+# IS_PRODUCTION is false (see integrations/razorpay_http.py). The base URL is fixed.
 RAZORPAY_KEY_ID=os.environ.get("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET=os.environ.get("RAZORPAY_KEY_SECRET", "")
 RAZORPAY_WEBHOOK_SECRET=os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
+RAZORPAYX_ACCOUNT_NUMBER=os.environ.get("RAZORPAYX_ACCOUNT_NUMBER", "")
+RAZORPAYX_KEY_ID=os.environ.get("RAZORPAYX_KEY_ID", "")
+RAZORPAYX_KEY_SECRET=os.environ.get("RAZORPAYX_KEY_SECRET", "")
+RAZORPAYX_WEBHOOK_SECRET=os.environ.get("RAZORPAYX_WEBHOOK_SECRET", "")
 
 # Cashfree. ONE consistent set of names (adapter: integrations/payments/cashfree.py).
 #   Payment gateway  CASHFREE_APP_ID, CASHFREE_SECRET_KEY, CASHFREE_ENVIRONMENT (sandbox|production)
@@ -1148,14 +1160,15 @@ CASHFREE_PAYOUTS_BASE_URL = os.environ.get("CASHFREE_PAYOUTS_BASE_URL", "")
 
 
 # Payment and payout providers, PER COUNTRY, by configuration only (owner ruling, AUDIT 27.62).
-# Registered names: payments cashfree|razorpay|stripe, payouts cashfree|razorpay|stripe_connect.
-# razorpay / stripe / stripe_connect are STUBS today: selecting one gives the clean "provider not
-# available" behaviour, never a fallback to another country's provider. A country with a null or
-# missing entry has no provider. With no explicit IN entry, the legacy global PAYMENT_GATEWAY /
-# PAYOUT_GATEWAY below is India's provider, so QA keeps working unchanged. Set, for example,
-#   PAYMENT_PROVIDERS_JSON={"IN": "razorpay", "US": null}
-PAYMENT_GATEWAY=os.environ.get("PAYMENT_GATEWAY", "cashfree")
-PAYOUT_GATEWAY=os.environ.get("PAYOUT_GATEWAY", "cashfree")
+# Registered names: payments cashfree|razorpay|stripe, payouts cashfree|razorpay(razorpayx)|
+# stripe_connect. DEFAULT (owner decision 2026-11-01): India uses Razorpay, the US has none.
+# stripe / stripe_connect are STUBS. Cashfree stays in the code but is configured nowhere: select it
+# only by explicit config, e.g. PAYMENT_PROVIDERS_JSON={"IN": "cashfree", "US": null}. A country
+# with a null or missing entry has no provider and never borrows India's.
+# PAYMENT_GATEWAY / PAYOUT_GATEWAY are legacy names, read only if set explicitly (no default), and
+# only as India's provider when there is no explicit IN entry in the table.
+PAYMENT_GATEWAY=os.environ.get("PAYMENT_GATEWAY", "")
+PAYOUT_GATEWAY=os.environ.get("PAYOUT_GATEWAY", "")
 
 
 def _provider_table(env_name, default):
@@ -1175,8 +1188,8 @@ def _provider_table(env_name, default):
     return table
 
 
-PAYMENT_PROVIDERS = _provider_table("PAYMENT_PROVIDERS_JSON", {"US": None})
-PAYOUT_PROVIDERS = _provider_table("PAYOUT_PROVIDERS_JSON", {"US": None})
+PAYMENT_PROVIDERS = _provider_table("PAYMENT_PROVIDERS_JSON", {"IN": "razorpay", "US": None})
+PAYOUT_PROVIDERS = _provider_table("PAYOUT_PROVIDERS_JSON", {"IN": "razorpay", "US": None})
 
 # --- Platform / dispatch settings -------------------------------------------
 # The platform commission is NOT a setting. It is the layered, versioned

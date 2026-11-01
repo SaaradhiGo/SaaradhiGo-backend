@@ -198,14 +198,20 @@ class TestExistingNotificationAdaptersAreUnchanged:
 # ---------------------------------------------------------------------------
 
 class TestPerCountryProviderSelection:
-    def test_india_defaults_to_the_legacy_setting_and_us_has_none(self, settings):
+    def test_india_defaults_to_razorpay_and_us_has_none(self):
+        # The shipped defaults (base.settings), not the Cashfree pin the suite applies.
+        from base import settings as base_settings
+        assert base_settings.PAYMENT_PROVIDERS == {'IN': 'razorpay', 'US': None}
+        assert base_settings.PAYOUT_PROVIDERS == {'IN': 'razorpay', 'US': None}
+
+    def test_the_selection_follows_the_table(self, settings):
         from servers.payments.payment_gateways.factory import (
             get_payment_gateway_for_payments, get_payment_gateway_for_payouts, provider_name_for,
         )
+        settings.PAYMENT_PROVIDERS = {'IN': 'cashfree', 'US': None}
+        settings.PAYOUT_PROVIDERS = {'IN': 'cashfree', 'US': None}
         assert provider_name_for('payments', 'IN') == 'cashfree'
-        assert provider_name_for('payouts', 'IN') == 'cashfree'
         assert provider_name_for('payments', 'US') is None
-        assert get_payment_gateway_for_payments('IN').get_name() == 'cashfree'
         us = get_payment_gateway_for_payments('US')
         assert not us and us.get_name() == 'none'
         assert not get_payment_gateway_for_payouts('US')
@@ -227,9 +233,11 @@ class TestPerCountryProviderSelection:
         assert provider_name_for('payments', 'US') == 'stripe'
         assert provider_name_for('payouts', 'US') == 'stripe_connect'
 
-    def test_the_legacy_setting_still_moves_india(self, settings):
+    def test_the_legacy_setting_moves_india_only_when_set_explicitly(self, settings):
         from servers.payments.payment_gateways.factory import provider_name_for
         settings.PAYMENT_PROVIDERS = {'US': None}
+        settings.PAYMENT_GATEWAY = ''
+        assert provider_name_for('payments', 'IN') is None  # never silently Cashfree
         settings.PAYMENT_GATEWAY = 'razorpay'
         assert provider_name_for('payments', 'IN') == 'razorpay'
 
@@ -252,8 +260,7 @@ class TestPerCountryProviderSelection:
 
 class TestStubGatewaysAreCleanlyUnavailable:
     @pytest.mark.parametrize('kind,name', [
-        ('payments', 'razorpay'), ('payments', 'stripe'),
-        ('payouts', 'razorpay'), ('payouts', 'stripe_connect'),
+        ('payments', 'stripe'), ('payouts', 'stripe_connect'),
     ])
     def test_selecting_a_stub_degrades_to_not_available(self, settings, kind, name):
         from servers.payments.payment_gateways.base_gateway import NotConfigured
@@ -283,9 +290,10 @@ class TestStubGatewaysAreCleanlyUnavailable:
     def test_the_stubs_are_registered_and_marked_as_stubs(self):
         from integrations.payments import registry
         assert registry.status('payments', 'cashfree') == 'implemented'
-        assert registry.status('payments', 'razorpay') == 'stub'
+        assert registry.status('payments', 'razorpay') == 'implemented'
         assert registry.status('payments', 'stripe') == 'stub'
-        assert registry.status('payouts', 'razorpay') == 'stub'
+        assert registry.status('payouts', 'razorpay') == 'implemented'
+        assert registry.status('payouts', 'razorpayx') == 'implemented'  # alias
         assert registry.status('payouts', 'stripe_connect') == 'stub'
 
     def test_an_unknown_explicit_name_is_still_an_error(self):
@@ -422,7 +430,7 @@ class TestIntegrationsPageFollowsTheRegistry:
         rows = integrations.rows()
         india = self._row(rows, 'payment_gateway', 'IN')
         assert india['provider'] == 'razorpay' and india['configured'] is False
-        assert 'stub' in india['note']
+        assert 'not set' in india['note']  # keys absent: Razorpay is implemented, just unconfigured
         assert self._row(rows, 'payment_gateway', 'US')['provider'] == 'stripe'
         assert self._row(rows, 'payout_provider', 'US')['provider'] == 'stripe_connect'
         assert self._row(rows, 'sms', 'US')['provider'] == 'sns'

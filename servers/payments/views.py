@@ -19,7 +19,7 @@ from base.money import (
 from servers.payments.models import Payment, TransactionHistory, PaymentGateway, WebhookEvent
 from servers.payments.payment_gateways.factory import (
     country_for_trip, get_payment_gateway, get_payment_gateway_for_payments,
-    get_payment_gateway_for_payouts,
+    get_payment_gateway_for_payouts, get_webhook_verifier,
 )
 from servers.ride.models import Trip
 
@@ -249,6 +249,12 @@ def create_order(request):
     response_data['cashfree_app_id'] = getattr(settings, 'CASHFREE_APP_ID', '')
     response_data['order_token'] = order.get('order_token')
 
+    # Razorpay Checkout needs: the order id, the PUBLIC key id, the amount (paise) and currency.
+    # Added only for a Razorpay order, so the Cashfree response keeps exactly its old shape.
+    if gateway.get_name() == PaymentGateway.RAZORPAY:
+        response_data['order_id'] = order.get('order_id')
+        response_data['key_id'] = order.get('key_id')
+
     return success_response(response_data, status.HTTP_201_CREATED)
 
 
@@ -265,17 +271,22 @@ def verify_payment(request):
         "gateway": "cashfree" (optional, auto-detected from payment)
     }
     """
-    gateway_order_id = request.data.get('gateway_order_id')
-    # gateway_payment_id = request.data.get('gateway_payment_id')
-    # gateway_signature = request.data.get('gateway_signature')
-    gateway_name = request.data.get('gateway','cashfree')
+    gateway_order_id = (request.data.get('gateway_order_id')
+                        or request.data.get('razorpay_order_id'))
+    # Razorpay Checkout returns razorpay_order_id / razorpay_payment_id / razorpay_signature; the
+    # generic names are accepted too. Cashfree sends only the order id (confirmed server side).
+    gateway_payment_id = (request.data.get('razorpay_payment_id')
+                          or request.data.get('gateway_payment_id'))
+    gateway_signature = (request.data.get('razorpay_signature')
+                         or request.data.get('gateway_signature'))
+    gateway_name = request.data.get('gateway')
 
     if not all([gateway_order_id]):
         return error_response(
             code='MISSING_FIELDS',
-            message='gateway_order_id, gateway_payment_id, and gateway_signature are required',
+            message='gateway_order_id (or razorpay_order_id) is required',
             field='request_body',
-            issue='All payment verification fields must be provided',
+            issue='Provide the order id returned by create-order',
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -309,10 +320,9 @@ def verify_payment(request):
             'status': 'completed',
         }, status.HTTP_200_OK)
 
-    # Determine gateway
-    if not gateway_name:
-        gateway_name = payment.payment_gateway or PaymentGateway.CASHFREE
-    
+    # The payment row, not the request, says which provider took this order.
+    gateway_name = payment.payment_gateway or gateway_name or PaymentGateway.CASHFREE
+
     # Get payment gateway
     gateway = get_payment_gateway(gateway_name)
     if not gateway:
@@ -324,10 +334,46 @@ def verify_payment(request):
             status=status.HTTP_503_SERVICE_UNAVAILABLE
         )
 
-    # Verify signature using gateway
-    is_valid = gateway.verify_payment_signature(
-        order_id=gateway_order_id
-    )
+    if gateway.get_name() == PaymentGateway.RAZORPAY:
+        # HMAC-SHA256(order_id|payment_id, key secret), checked in constant time. A bad or missing
+        # signature changes nothing (it does not mark the payment failed: the signed webhook or
+        # reconciliation still settles a payment that really was captured).
+        if not (gateway_payment_id and gateway_signature):
+            return error_response(
+                code='MISSING_FIELDS',
+                message='razorpay_order_id, razorpay_payment_id and razorpay_signature are required',
+                field='request_body',
+                issue='Post the three values Razorpay Checkout returned',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not gateway.verify_payment_signature(
+                gateway_order_id, gateway_payment_id, gateway_signature):
+            return error_response(
+                code='SIGNATURE_INVALID',
+                message='Payment verification failed',
+                field='razorpay_signature',
+                issue='razorpay signature verification failed',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        # Auto capture is the normal case; a payment left `authorized` is captured here.
+        captured = gateway.ensure_captured(
+            gateway_payment_id, payment.amount_minor, payment.currency)
+        if captured not in ('captured', 'refunded'):
+            return error_response(
+                code='PAYMENT_NOT_CAPTURED',
+                message='Your payment is still being confirmed. Please check again shortly.',
+                field='razorpay_payment_id',
+                issue=f'payment status at gateway: {captured}',
+                status=status.HTTP_409_CONFLICT
+            )
+        payment.gateway_payment_id = str(gateway_payment_id)
+        payment.gateway_signature = str(gateway_signature)[:512]
+        is_valid = True
+    else:
+        # Verify via the gateway (Cashfree: order status API)
+        is_valid = gateway.verify_payment_signature(
+            order_id=gateway_order_id
+        )
     if not is_valid:
         payment.status = 'failed'
         payment.save()
@@ -417,21 +463,10 @@ def payment_webhook(request):
             status=400,
         )
 
-    # Get payment gateway
+    # Verify the signature first (it needs only the secret, so a deployment whose API credentials
+    # are absent still answers a forged delivery with 400), then resolve the usable gateway.
     gateway = get_payment_gateway(gateway_name)
-    if not gateway:
-        return JsonResponse(
-            {
-                'error': (
-                    f'Gateway {gateway_name} '
-                    'not configured'
-                )
-            },
-            status=503,
-        )
-
-    # Verify webhook signature
-    if not gateway.verify_webhook_signature(
+    if not get_webhook_verifier('payments', gateway_name).verify_webhook_signature(
         body,
         signature,
         timestamp,
@@ -443,6 +478,17 @@ def payment_webhook(request):
         return JsonResponse(
             {'error': 'Invalid signature'},
             status=400,
+        )
+
+    if not gateway:
+        return JsonResponse(
+            {
+                'error': (
+                    f'Gateway {gateway_name} '
+                    'not configured'
+                )
+            },
+            status=503,
         )
 
     try:
@@ -527,7 +573,13 @@ def payment_webhook(request):
         )
 
 def _handle_cashfree_webhook(payload, gateway):
-    """Handle Cashfree webhook payload."""
+    """Handle a payment webhook payload in Cashfree's shape.
+
+    Razorpay deliveries are normalised into this shape by `razorpay_webhooks` and arrive here, so
+    one settle path serves every provider. `gateway` names which one (it labels the history row).
+    """
+    provider = gateway.get_name() if gateway else 'cashfree'
+    is_cf = provider == 'cashfree'
     event_type = payload.get('type', '')
     data = payload.get('data', {})
     order_data = data.get('order', {})
@@ -623,7 +675,8 @@ def _handle_cashfree_webhook(payload, gateway):
                     )
 
                 wallet_txn.status = 'completed'
-                wallet_txn.cashfree_payment_id = str(payment_id)
+                if is_cf:
+                    wallet_txn.cashfree_payment_id = str(payment_id)
                 wallet_txn.gateway_payment_id = str(payment_id)
                 wallet_txn.save(update_fields=['status', 'cashfree_payment_id', 'gateway_payment_id'])
 
@@ -703,7 +756,8 @@ def _handle_cashfree_webhook(payload, gateway):
                 return JsonResponse({'status': 'already_completed'}, status=200)
 
             payment.status = 'completed'
-            payment.cashfree_payment_id = str(payment_id)
+            if is_cf:
+                payment.cashfree_payment_id = str(payment_id)
             payment.gateway_payment_id = str(payment_id)
             payment.save()
 
@@ -721,8 +775,8 @@ def _handle_cashfree_webhook(payload, gateway):
                         'driver_id': trip.driver_id,
                         'amount': payment.amount,
                         'method': 'online',
-                        'payment_gateway': PaymentGateway.CASHFREE,
-                        'cashfree_payment_id': str(payment_id),
+                        'payment_gateway': provider,
+                        'cashfree_payment_id': str(payment_id) if is_cf else None,
                         'user_name': payment.user_id.full_name or payment.user_id.phone_number,
                         'status': 'completed',
                     }
@@ -778,21 +832,11 @@ def payout_webhook(request):
             status=400,
         )
 
-    # Get payment gateway for payouts
+    # Verify the signature first (needs only the secret, so a deployment whose API credentials are
+    # absent still answers a forged delivery with 400), then resolve the usable gateway for payouts
     gateway = get_payment_gateway_for_payouts(gateway_name=gateway_name)
-    if not gateway:
-        return JsonResponse(
-            {
-                'error': (
-                    f'Gateway {gateway_name} '
-                    'not configured'
-                )
-            },
-            status=503,
-        )
-
     # Verify webhook signature
-    if not gateway.verify_webhook_signature(
+    if not get_webhook_verifier('payouts', gateway_name).verify_webhook_signature(
         body,
         signature,
         timestamp,
@@ -804,6 +848,17 @@ def payout_webhook(request):
         return JsonResponse(
             {'error': 'Invalid signature'},
             status=400,
+        )
+
+    if not gateway:
+        return JsonResponse(
+            {
+                'error': (
+                    f'Gateway {gateway_name} '
+                    'not configured'
+                )
+            },
+            status=503,
         )
 
     try:
@@ -891,8 +946,11 @@ def _handle_cashfree_payout_webhook(payload, gateway):
     """Handle Cashfree payout webhook payload safely and idempotently."""
 
     event = payload.get("event", "")
+    provider = gateway.get_name() if gateway else 'cashfree'
+    is_cf = provider == 'cashfree'
 
-    # Support Cashfree payload variations.
+    # Support Cashfree payload variations (Razorpay deliveries are normalised into this shape
+    # by `razorpay_webhooks`: transfer_id = our reference, cf_transfer_id = the provider's id).
     payout_id = payload.get("transfer_id") or payload.get("payoutId")
     reference_id = payload.get("cf_transfer_id") or payload.get("referenceId")
     status = payload.get("status")
@@ -1106,10 +1164,10 @@ def _handle_cashfree_payout_webhook(payload, gateway):
                     "driver_id": withdrawal.driver,
                     "amount": withdrawal.amount,
                     "method": withdrawal.payout_method,
-                    "payment_gateway": PaymentGateway.CASHFREE,
+                    "payment_gateway": provider,
                     "gateway_payment_id": str(payout_id),
-                    "cashfree_payment_id": str(payout_id),
-                    "cashfree_transfer_id": str(payout_id),
+                    "cashfree_payment_id": str(payout_id) if is_cf else None,
+                    "cashfree_transfer_id": str(payout_id) if is_cf else None,
                     "user_name": (
                         withdrawal.driver.user_id.full_name
                         or withdrawal.driver.user_id.phone_number
@@ -1190,9 +1248,9 @@ def _handle_cashfree_payout_webhook(payload, gateway):
                     "driver_id": withdrawal.driver,
                     "amount": withdrawal.amount,
                     "method": withdrawal.payout_method,
-                    "payment_gateway": PaymentGateway.CASHFREE,
-                    "cashfree_payment_id": str(payout_id),
-                    "cashfree_transfer_id": str(payout_id),
+                    "payment_gateway": provider,
+                    "cashfree_payment_id": str(payout_id) if is_cf else None,
+                    "cashfree_transfer_id": str(payout_id) if is_cf else None,
                     "user_name": (
                         withdrawal.driver.user_id.full_name
                         or withdrawal.driver.user_id.phone_number
@@ -1308,9 +1366,9 @@ def _handle_cashfree_payout_webhook(payload, gateway):
                     "driver_id": withdrawal.driver,
                     "amount": withdrawal.amount,
                     "method": withdrawal.payout_method,
-                    "payment_gateway": PaymentGateway.CASHFREE,
-                    "cashfree_payment_id": str(payout_id),
-                    "cashfree_transfer_id": str(payout_id),
+                    "payment_gateway": provider,
+                    "cashfree_payment_id": str(payout_id) if is_cf else None,
+                    "cashfree_transfer_id": str(payout_id) if is_cf else None,
                     "user_name": (
                         withdrawal.driver.user_id.full_name
                         or withdrawal.driver.user_id.phone_number
@@ -1501,6 +1559,9 @@ def refund_payment(request):
     refund_order_id = None
     if gateway_name == PaymentGateway.CASHFREE:
         refund_order_id = payment.cashfree_order_id or payment.gateway_order_id
+    elif gateway_name == PaymentGateway.RAZORPAY:
+        # Razorpay refunds a PAYMENT (pay_...); an order id is resolved to its captured payment.
+        refund_order_id = payment.gateway_payment_id or payment.gateway_order_id
 
     if not refund_order_id:
         return error_response(

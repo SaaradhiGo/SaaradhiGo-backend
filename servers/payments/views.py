@@ -750,7 +750,7 @@ def _handle_cashfree_webhook(payload, gateway):
         with transaction.atomic():
             # Re-read under a row lock so a concurrent /payments/verify/ for
             # the same order cannot settle it twice.
-            payment = Payment.objects.select_for_update().select_related(
+            payment = Payment.objects.select_for_update(of=('self',)).select_related(
                 'trip_id', 'trip_id__driver_id',
             ).get(pk=payment.pk)
             if payment.status == 'completed':
@@ -1837,7 +1837,7 @@ def _settle_payment_if_paid_at_gateway(trip_id_value, gateway):
         return False
 
     with transaction.atomic():
-        p = Payment.objects.select_for_update().select_related(
+        p = Payment.objects.select_for_update(of=('self',)).select_related(
             'trip_id', 'trip_id__driver_id', 'user_id'
         ).get(pk=payment.pk)
         if p.status == 'completed':

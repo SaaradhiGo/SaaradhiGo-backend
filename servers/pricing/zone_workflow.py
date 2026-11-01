@@ -583,7 +583,7 @@ def _execute_create(request_row, p):
 
 
 def _locked(request_row, p):
-    zone = (ServiceZone.objects.select_for_update().select_related('geo_node', 'parent')
+    zone = (ServiceZone.objects.select_for_update(of=('self',)).select_related('geo_node', 'parent')
             .filter(pk=p['zone']).first())
     if zone is None:
         raise registry.ExecutionRefused('TARGET_GONE', 'The zone is gone.')

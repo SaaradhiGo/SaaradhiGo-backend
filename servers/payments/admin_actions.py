@@ -183,7 +183,8 @@ def _currency_of(value):
 def driver_adjust(request, driver_id):
     """POST /payments/admin/drivers/<id>/adjust/
 
-    {direction: credit|debit, amount_minor, currency, reason_code, note, idempotency_key}
+    {direction: credit|debit, amount_minor, currency, reason_code, note, idempotency_key,
+     withdrawal_id (optional: the payout in `conflict` this debit resolves, AUDIT 27.72)}
 
     Always through finance.adjust maker-checker, with amounts per policy. The
     currency must equal the driver's settlement currency. A debit may never
@@ -237,12 +238,26 @@ def driver_adjust(request, driver_id):
             raise ActionError('COUNTRY_UNKNOWN', 'This driver cannot be placed in a country.',
                               field='driver_id', http=status.HTTP_409_CONFLICT)
         reason = f'{ADJUST_REASONS[reason_code]}: {note}'[:2000]
+        payload = {'driver_id': driver.id, 'direction': direction, 'amount_minor': amount,
+                   'currency': wallet.currency, 'reason_code': reason_code, 'note': note}
+        # Resolving a payout reported paid after its refund (AUDIT 27.72): a debit of exactly
+        # its amount that names it. On approval the payout becomes paid.
+        if data.get('withdrawal_id') not in (None, ''):
+            from servers.payments.payout_conflict import check_resolution
+
+            payload['withdrawal_id'] = _minor_amount(data.get('withdrawal_id'))
+            # Always a second pair of eyes, whatever the maker's limit.
+            payload['requires_checker'] = True
+            try:
+                check_resolution(driver, payload)
+            except ValueError as exc:
+                raise ActionError(exc.args[0], exc.args[1], field='withdrawal_id',
+                                  http=status.HTTP_409_CONFLICT)
         outcome = approvals.require_approval_or_execute(
             FINANCE_ADJUST, actor=request.user, country=country, amount=amount,
             currency=wallet.currency, scope_node=driver.home_city,
             target_type=DRIVER_BALANCE, target_id=driver.id,
-            payload={'driver_id': driver.id, 'direction': direction, 'amount_minor': amount,
-                     'currency': wallet.currency, 'reason_code': reason_code, 'note': note},
+            payload=payload,
             idempotency_key=f'driver_adjust:{driver.id}:{key}', reason=reason,
             http_request=request)
         return _approval_answer(outcome, {'driver_id': driver.id})

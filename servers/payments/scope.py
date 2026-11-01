@@ -50,6 +50,8 @@ from servers.admin_access.scoping import ModelIsNotScopable
 DRIVER_LEDGER_PURPOSES = (
     'trip_earnings', 'trip_commission', 'withdrawal',
     'refund_failed_withdrawal', 'refund_rejected_withdrawal',
+    # A payout paid and then reversed by the bank (AUDIT 27.71): the money came back.
+    'refund_reversed_withdrawal',
     # A manual correction on the driver's balance (Part B).
     'adjustment',
     # The platform paid the driver for a started trip an operator ended as a safety

@@ -25,6 +25,8 @@ The driver's settlement balance (`Wallet`, scope driver) moves only through
   * `withdrawal`     debit    a payout request (taken at request time)
   * `refund_rejected_withdrawal` / `refund_failed_withdrawal`  credit   money
     returned because the payout was rejected, or failed at the gateway
+  * `refund_reversed_withdrawal`  credit   a payout the provider paid and the bank then
+    reversed (AUDIT 27.71): the money came back
   * `adjustment`     credit or debit   a manual correction by Finance through a
     maker-checker request (Part B); the entry carries its reason code and note
 
@@ -73,7 +75,8 @@ SIGNED = Case(
 
 #: `withdrawal_12`, `refund_withdrawal_12`, `refund_withdrawal_12_r1`,
 #: `refund_rejected_withdrawal_12` -> 12.
-WITHDRAWAL_REF = re.compile(r'^(?:refund_rejected_withdrawal|refund_withdrawal|withdrawal)_(\d+)')
+WITHDRAWAL_REF = re.compile(
+    r'^(?:refund_rejected_withdrawal|refund_reversed_withdrawal|refund_withdrawal|withdrawal)_(\d+)')
 
 ENTRY_KINDS = {
     'adjustment': 'adjustment',
@@ -90,6 +93,7 @@ ENTRY_KINDS = {
     'withdrawal': 'withdrawal_requested',
     'refund_rejected_withdrawal': 'withdrawal_rejected',
     'refund_failed_withdrawal': 'withdrawal_returned',
+    'refund_reversed_withdrawal': 'withdrawal_reversed',
 }
 
 #: What a statement line is called, by wallet purpose. The console and the driver app show this text
@@ -119,6 +123,7 @@ ENTRY_LABELS = {
     'withdrawal': 'Withdrawal requested',
     'refund_rejected_withdrawal': 'Withdrawal rejected (returned)',
     'refund_failed_withdrawal': 'Payout failed (returned)',
+    'refund_reversed_withdrawal': 'Payout reversed by the bank (returned)',
     'adjustment': 'Balance adjustment',
 }
 

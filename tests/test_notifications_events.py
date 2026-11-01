@@ -85,9 +85,9 @@ class TestSeed:
         seed()
         rows = NotificationTemplate.objects.all()
         # 2 keys x 2 countries x 4 channels + 3 keys x 2 countries x 2 (operator trips)
-        # + 4 keys x 2 countries x 2 (promotions, module 12)
-        assert rows.count() == 44
-        assert rows.filter(status=ACTIVE).count() == 42
+        # + 4 keys x 2 countries x 2 (promotions, module 12) + 1 key x 2 x 2 (payout reversed)
+        assert rows.count() == 48
+        assert rows.filter(status=ACTIVE).count() == 46
         drafts = rows.filter(status=DRAFT)
         assert {(t.channel, t.country) for t in drafts} == {('sms', 'IN')}
         assert drafts.count() == 2
@@ -99,7 +99,7 @@ class TestSeed:
             'commission.increase_notice', 'payout.missing_details', 'trips.operator_cancelled',
             'trips.operator_ended_rider', 'trips.operator_ended_driver',
             'promotions.incentive_progress', 'promotions.incentive_completed',
-            'promotions.referral_reward', 'promotions.promo_available'}
+            'promotions.referral_reward', 'promotions.promo_available', 'payout.reversed'}
 
     def test_the_india_sms_drafts_carry_the_text_to_register_and_no_ids(self, geo):
         seed()
@@ -128,7 +128,7 @@ class TestSeed:
         NotificationTemplate.objects.filter(pk=template.pk).update(body='Edited by a person')
         assert 'already present' in seed()
         template.refresh_from_db()
-        assert template.body == 'Edited by a person' and NotificationTemplate.objects.count() == 44
+        assert template.body == 'Edited by a person' and NotificationTemplate.objects.count() == 48
 
     def test_a_template_in_any_status_blocks_the_seed_for_that_slot(self, geo):
         seed()
@@ -143,7 +143,7 @@ class TestSeed:
         row = AdminAuditLog.objects.get(action='notification_templates_seeded')
         assert row.actor_id == seed_actor().pk
         assert row.actor_label.endswith('via seed_notification_templates')
-        assert len(row.after['created']) == 44
+        assert len(row.after['created']) == 48
 
     def test_it_needs_an_actor(self, geo):
         with pytest.raises(CommandError, match='--actor-email'):

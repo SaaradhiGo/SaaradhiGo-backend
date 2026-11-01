@@ -1116,8 +1116,9 @@ def _handle_cashfree_payout_webhook(payload, gateway):
                 .get(pk=withdrawal.pk)
             )
 
-            # Already completed: webhook is a duplicate.
-            if withdrawal.status == "completed":
+            # Already completed: webhook is a duplicate. A payout reversed after it was
+            # paid stays reversed: a late success must not mark it paid again.
+            if withdrawal.status in ("completed", "reversed"):
                 logger.info(
                     "Cashfree Payout Webhook: Withdrawal %s "
                     "already completed.",
@@ -1321,9 +1322,23 @@ def _handle_cashfree_payout_webhook(payload, gateway):
                 .get(pk=withdrawal.pk)
             )
 
-            # "reversed" is not a valid WithdrawalRequest status.
-            # Treat the payout as failed/reversed instead.
-            if withdrawal.status in ("completed", "failed"):
+            # Paid, then reversed by the bank (AUDIT 27.71): mark it reversed, credit the
+            # amount back as a new ledger line, alert Finance and tell the driver.
+            if withdrawal.status == "completed":
+                from servers.payments.payout_reversal import reverse_paid_payout
+
+                reverse_paid_payout(withdrawal, provider_status=status)
+                logger.warning(
+                    "Payout Webhook: Withdrawal %s reversed after it was paid.",
+                    withdrawal.id,
+                )
+                return JsonResponse(
+                    {"status": "ok"},
+                    status=200,
+                )
+
+            # Reversed before it was paid: a failed payout (below).
+            if withdrawal.status in ("failed", "reversed"):
                 logger.info(
                     "Ignoring duplicate/late reversed payout webhook "
                     "for withdrawal %s with status=%s.",

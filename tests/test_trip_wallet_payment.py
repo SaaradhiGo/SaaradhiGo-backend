@@ -221,9 +221,12 @@ class TestTheTripAndTheDriverLedger:
         credit = WalletTransaction.objects.get(purpose='fare_collected_by_platform')
         assert (credit.user_id_id, credit.amount_minor, credit.txn_type, credit.reference_id) == (
             driver.user_id_id, 20_000, 'credit', f'TRIP_{trip.id}')
-        settlement = TripSettlement.objects.get(trip=trip)
-        assert (settlement.version, settlement.commission_amount_minor,
-                settlement.driver_net_minor) == (1, 3_000, 17_000)
+        # Append only: version 1 (cash) is unchanged, version 2 says it was paid by wallet
+        # (AUDIT 27.72), with the same commission snapshot and net.
+        rows = list(TripSettlement.objects.filter(trip=trip).order_by('version'))
+        assert [(s.version, s.payment_method, s.commission_amount_minor, s.driver_net_minor)
+                for s in rows] == [(1, 'cash', 3_000, 17_000), (2, 'wallet', 3_000, 17_000)]
+        assert rows[1].wallet_transaction_id == credit.id
 
     def test_the_driver_statement_explains_the_balance(self, setup):
         from datetime import timedelta

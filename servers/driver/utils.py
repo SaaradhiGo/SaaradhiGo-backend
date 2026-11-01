@@ -84,6 +84,49 @@ def credit_fare_collected_by_platform(trip, amount_minor, currency):
     return txn
 
 
+def settle_paid_by_platform(trip, amount_minor, currency=None):
+    """Settle a completed trip the platform has just been PAID for (online, or from the wallet).
+
+    Every path that completes a platform payment calls this, so the driver ends credited exactly
+    once with the trip's net, whatever happened before (AUDIT 27.72):
+
+    * not settled yet: the normal settlement (`credit_driver_wallet`), as an online trip;
+    * already settled as a platform-collected trip: nothing more (a repeat webhook, a poll);
+    * settled as CASH at completion, then switched and paid online or from the wallet: the driver
+      did not collect the cash, so they are credited exactly what the platform collected
+      (`credit_fare_collected_by_platform`), which leaves the balance at the net, and the
+      settlement gets a version 2 (append only) with the same amounts and the new payment method,
+      so reports read the trip as paid through the platform.
+
+    Call with `trip.payment_method` already set to the method that paid. Inside a transaction.
+    """
+    from django.db import transaction
+
+    from servers.payments.models import TripSettlement
+
+    current = TripSettlement.objects.filter(trip=trip).order_by('-version').first()
+    if current is None:
+        return credit_driver_wallet(trip)
+    if current.payment_method != 'cash':
+        return None
+    with transaction.atomic():
+        txn = credit_fare_collected_by_platform(trip, amount_minor, currency or current.currency)
+        if txn is None:
+            return None
+        TripSettlement.objects.create(
+            trip=trip, driver=current.driver, wallet_transaction=txn, currency=current.currency,
+            gross_fare_minor=current.gross_fare_minor,
+            commission_percent=current.commission_percent,
+            commission_amount_minor=current.commission_amount_minor,
+            driver_net_minor=current.driver_net_minor,
+            tax_collected_minor=current.tax_collected_minor,
+            regulatory_fee_collected_minor=current.regulatory_fee_collected_minor,
+            payment_method=trip.payment_method or 'online', settled_at=current.settled_at,
+            version=current.version + 1, source=current.source,
+            provenance_note='Paid through SaaradhiGo after a cash settlement (AUDIT 27.72)')
+    return txn
+
+
 def settle_or_defer(trip):
     """Settle a completed trip, but never let a missing commission rule strand the ride.
 

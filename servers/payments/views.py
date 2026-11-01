@@ -418,9 +418,10 @@ def verify_payment(request):
                 status='completed',
             )
 
-            # Create driver earning for online payment
-            from servers.driver.utils import credit_driver_wallet
-            credit_driver_wallet(trip)
+            # Driver earning for the online payment: exactly once, also after a cash
+            # settlement (a trip switched to online after completion, AUDIT 27.72).
+            from servers.driver.utils import settle_paid_by_platform
+            settle_paid_by_platform(trip, payment.amount_minor)
 
     return success_response({
         'message': 'Payment verified successfully',
@@ -782,9 +783,10 @@ def _handle_cashfree_webhook(payload, gateway):
                     }
                 )
 
-                # Credit driver's wallet for online payment
-                from servers.driver.utils import credit_driver_wallet
-                credit_driver_wallet(trip)
+                # Driver earning for the online payment: exactly once, also after a cash
+                # settlement (a trip switched to online after completion, AUDIT 27.72).
+                from servers.driver.utils import settle_paid_by_platform
+                settle_paid_by_platform(trip, payment.amount_minor)
 
         logger.info(f"Cashfree Webhook: Payment {payment.id} completed for trip {trip.id}")
         return JsonResponse({'status': 'ok'}, status=200)
@@ -1117,8 +1119,9 @@ def _handle_cashfree_payout_webhook(payload, gateway):
             )
 
             # Already completed: webhook is a duplicate. A payout reversed after it was
-            # paid stays reversed: a late success must not mark it paid again.
-            if withdrawal.status in ("completed", "reversed"):
+            # paid stays reversed: a late success must not mark it paid again. One already
+            # in conflict is waiting for Finance.
+            if withdrawal.status in ("completed", "reversed", "conflict"):
                 logger.info(
                     "Cashfree Payout Webhook: Withdrawal %s "
                     "already completed.",
@@ -1126,6 +1129,18 @@ def _handle_cashfree_payout_webhook(payload, gateway):
                 )
                 return JsonResponse(
                     {"status": "already_processed"},
+                    status=200,
+                )
+
+            # Failed (or rejected) and refunded, now reported paid (AUDIT 27.72): never mark it
+            # paid and never credit again. Freeze it for Finance.
+            from servers.payments.payout_conflict import REFUNDED_STATUSES, freeze
+
+            if withdrawal.status in REFUNDED_STATUSES:
+                freeze(withdrawal, provider_status=status, provider=provider,
+                       payout_id=payout_id)
+                return JsonResponse(
+                    {"status": "conflict"},
                     status=200,
                 )
 
@@ -1202,7 +1217,7 @@ def _handle_cashfree_payout_webhook(payload, gateway):
                 .get(pk=withdrawal.pk)
             )
 
-            if withdrawal.status in ("completed", "failed"):
+            if withdrawal.status in ("completed", "failed", "conflict", "reversed"):
                 logger.info(
                     "Ignoring duplicate/late failed payout webhook "
                     "for withdrawal %s with status=%s.",
@@ -1332,6 +1347,17 @@ def _handle_cashfree_payout_webhook(payload, gateway):
                     "Payout Webhook: Withdrawal %s reversed after it was paid.",
                     withdrawal.id,
                 )
+                return JsonResponse(
+                    {"status": "ok"},
+                    status=200,
+                )
+
+            # Reported paid after the refund, now reversed: the money came back, so the
+            # original refund stands (AUDIT 27.72).
+            if withdrawal.status == "conflict":
+                from servers.payments.payout_conflict import reverse_conflict
+
+                reverse_conflict(withdrawal, provider_status=status)
                 return JsonResponse(
                     {"status": "ok"},
                     status=200,
@@ -1843,8 +1869,9 @@ def _settle_payment_if_paid_at_gateway(trip_id_value, gateway):
                     'txn_type': 'payment',
                 },
             )
-            from servers.driver.utils import credit_driver_wallet
-            credit_driver_wallet(trip)
+            # Exactly once, also after a cash settlement (AUDIT 27.72).
+            from servers.driver.utils import settle_paid_by_platform
+            settle_paid_by_platform(trip, p.amount_minor)
 
     logger.info(
         f"Settled payment {payment.pk} for trip {trip_id_value} via gateway poll "

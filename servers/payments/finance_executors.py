@@ -90,6 +90,17 @@ def execute_driver_adjustment(request_row):
             user_id=driver.user_id, amount_minor=amount, currency=wallet.currency,
             txn_type=direction, status='completed', purpose='adjustment',
             reference_id=key, idempotency_key=key)
+        resolved = None
+        if p.get('withdrawal_id'):
+            # Re-checked under the lock: the payout may have been reversed since the request.
+            from servers.payments.payout_conflict import check_resolution, resolve_paid
+
+            try:
+                check_resolution(driver, p)
+            except ValueError as exc:
+                raise ExecutionRefused(exc.args[0], exc.args[1])
+            resolved = resolve_paid(p['withdrawal_id'], adjustment_txn=txn,
+                                    request_id=request_row.id).id
         record_admin_action(
             None, action='driver_balance_adjusted', target_type='driver', target_id=driver.id,
             before={'balance_minor': before},
@@ -97,9 +108,10 @@ def execute_driver_adjustment(request_row):
                    'amount_minor': amount, 'currency': wallet.currency,
                    'reason_code': p.get('reason_code'), 'note': p.get('note'),
                    'approval_request_id': request_row.id,
-                   'wallet_transaction_id': txn.id},
+                   'wallet_transaction_id': txn.id, 'resolved_withdrawal_id': resolved},
             reason=request_row.request_reason or p.get('note') or '')
     return {'wallet_transaction_id': txn.id, 'direction': direction,
+            'resolved_withdrawal_id': resolved,
             'amount_minor': amount, 'currency': wallet.currency,
             'balance_minor': wallet.balance_minor}
 

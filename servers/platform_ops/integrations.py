@@ -20,9 +20,17 @@ from base.countries import COUNTRIES, find_country
 
 PAYMENT_BLOCKER_US = 17
 
-#: Currencies each payment gateway can take. Declared (see base_gateway.supported_currencies):
-#: Cashfree is INR only, which is why a US city has no gateway until blocker #17.
-GATEWAY_CURRENCIES = {'cashfree': ('INR',)}
+#: Env var NAMES each payment/payout provider needs (names only, never values).
+PAYMENT_ENV = {
+    'cashfree': ('CASHFREE_APP_ID', 'CASHFREE_SECRET_KEY'),
+    'razorpay': ('RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET'),
+    'stripe': ('STRIPE_SECRET_KEY',),
+}
+PAYOUT_ENV = {
+    'cashfree': ('CASHFREE_PAYOUTS_CLIENT_ID', 'CASHFREE_PAYOUTS_CLIENT_SECRET'),
+    'razorpay': ('RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET'),
+    'stripe_connect': ('STRIPE_SECRET_KEY',),
+}
 
 
 def live_providers_required():
@@ -46,24 +54,50 @@ def _iso(value):
 # Payments
 # ---------------------------------------------------------------------------
 
-def payment_gateway_status(country_code):
-    """The payment gateway for a country's currency: `configured`, `provider`, `mode`, `blocker`."""
+def _gateway_status(kind, country_code):
+    """The configured provider for a country, read from the SAME registry the call sites use."""
+    from integrations.payments import registry
+    from servers.payments.payment_gateways.factory import provider_name_for
+
     country = find_country(country_code)
     currency = country.currency if country else None
-    gateway = str(getattr(settings, 'PAYMENT_GATEWAY', 'cashfree') or '').lower()
-    if currency and currency in GATEWAY_CURRENCIES.get(gateway, ()):
-        configured = _present('CASHFREE_APP_ID', 'CASHFREE_SECRET_KEY')
-        env = str(getattr(settings, 'CASHFREE_ENVIRONMENT', 'sandbox') or 'sandbox').lower()
-        mode = ('live' if env == 'production' else 'sandbox') if configured else 'off'
-        return {'configured': configured, 'provider': gateway, 'currency': currency,
-                'mode': mode, 'blocker': None,
-                'note': '' if configured else f'{gateway} credentials are not set.'}
+    name = provider_name_for(kind, country_code)
+    noun = 'payment gateway' if kind == 'payments' else 'payout provider'
+    envs = PAYMENT_ENV if kind == 'payments' else PAYOUT_ENV
+    if name and registry.known(kind, name):
+        state = registry.status(kind, name)
+        if state == 'stub':
+            return {'configured': False, 'provider': name, 'currency': currency, 'mode': 'off',
+                    'blocker': PAYMENT_BLOCKER_US if currency and currency != 'INR' else None,
+                    'note': f'{name} is selected for this country but its adapter is a stub '
+                            'that is not implemented yet.', 'env': envs.get(name, ())}
+        if currency and currency in registry.CURRENCIES.get(name, ()):
+            names = envs.get(name, ())
+            configured = _present(*names) if names else False
+            env = str(getattr(settings, 'CASHFREE_ENVIRONMENT', 'sandbox') or 'sandbox').lower()
+            mode = ('live' if env == 'production' else 'sandbox') if configured else 'off'
+            return {'configured': configured, 'provider': name, 'currency': currency,
+                    'mode': mode, 'blocker': None, 'env': names,
+                    'note': '' if configured else f'{name} credentials are not set.'}
+        return {'configured': False, 'provider': name, 'currency': currency, 'mode': 'off',
+                'blocker': None, 'env': envs.get(name, ()),
+                'note': f'{name} cannot settle {currency}.'}
     blocker = PAYMENT_BLOCKER_US if currency and currency != 'INR' else None
     return {'configured': False, 'provider': None, 'currency': currency, 'mode': 'off',
-            'blocker': blocker,
-            'note': ('not configured, blocker #17: no payment gateway supports '
-                     f'{currency} until Stripe Connect is confirmed.') if blocker
-            else 'no payment gateway supports this currency.'}
+            'blocker': blocker, 'env': (),
+            'note': (f'not configured, blocker #17: no {noun} is configured for {country_code} '
+                     'until Stripe Connect is confirmed.') if blocker
+            else f'no {noun} is configured for this country.'}
+
+
+def payment_gateway_status(country_code):
+    """The payment gateway for a country: `configured`, `provider`, `mode`, `blocker`."""
+    return _gateway_status('payments', country_code)
+
+
+def payout_provider_status(country_code):
+    """The payout provider for a country, same shape as `payment_gateway_status`."""
+    return _gateway_status('payouts', country_code)
 
 
 def sms_state(country_code):
@@ -122,6 +156,7 @@ def _row(ptype, label, provider, country, configured, mode, *, env=(), blocker=N
 NOTIFY_BLOCKERS = {
     ('sms', 'msg91'): 18, ('sms', 'twilio'): 19, ('whatsapp', 'msg91'): 21,
     ('email', 'ses'): 20, ('push', 'fcm'): 21,
+    ('sms', 'sns'): 19, ('push', 'sns'): 21,
 }
 CHANNEL_LABEL = {'sms': 'SMS', 'whatsapp': 'WhatsApp', 'email': 'Email', 'push': 'Push (Firebase)'}
 
@@ -132,13 +167,16 @@ def rows():
     out = []
     payment_ok, payment_bad = _payment_times()
     for code in sorted(COUNTRIES):
-        state = payment_gateway_status(code)
-        provider = state['provider']
-        out.append(_row(
-            'payment_gateway', 'Payment gateway', provider or 'none', code, state['configured'],
-            state['mode'], env=('CASHFREE_APP_ID', 'CASHFREE_SECRET_KEY') if provider else (),
-            blocker=state['blocker'], note=state['note'],
-            last_ok=payment_ok if provider else None, last_bad=payment_bad if provider else None))
+        for ptype, label, fn in (('payment_gateway', 'Payment gateway', payment_gateway_status),
+                                 ('payout_provider', 'Payout provider', payout_provider_status)):
+            state = fn(code)
+            provider = state['provider']
+            out.append(_row(
+                ptype, label, provider or 'none', code, state['configured'],
+                state['mode'], env=state['env'] if provider else (),
+                blocker=state['blocker'], note=state['note'],
+                last_ok=payment_ok if (provider == 'cashfree' and ptype == 'payment_gateway') else None,
+                last_bad=payment_bad if (provider == 'cashfree' and ptype == 'payment_gateway') else None))
     # Notification channels, per country, from the same table the notifications page reads.
     for channel in ('sms', 'whatsapp', 'email', 'push'):
         for code in sorted(COUNTRIES):
@@ -157,6 +195,9 @@ def rows():
                 note = 'Live sending is off (NOTIFY_LIVE_SEND): messages go to the stub.'
             elif not present:
                 note = 'Live sending is on but the credentials are not all set.'
+            elif nconfig.sns_blocked(configured):
+                note = 'AWS SNS is sandbox-only: SNS_LIVE_CONFIRMED is off, so nothing is sent.'
+                mode = 'stubbed'
             out.append(_row(
                 channel, CHANNEL_LABEL[channel], configured, code, present, mode,
                 env=nconfig.CREDENTIALS.get(configured, ()),

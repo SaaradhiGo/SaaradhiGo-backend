@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 import requests
 from django.conf import settings
 
-from .base import (
+from servers.notifications.providers.base import (
     PermanentProviderError, Provider, SendResult, TransientProviderError, WebhookEvent,
 )
 

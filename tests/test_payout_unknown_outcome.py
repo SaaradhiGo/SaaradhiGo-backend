@@ -37,7 +37,7 @@ import pytest
 from django.contrib.auth import get_user_model
 
 from servers.driver.models import Driver, WithdrawalRequest
-from servers.payments.payment_gateways.cashfree_gateway import (
+from integrations.payments.cashfree import (
     PayoutDispatchUnknown,
 )
 from servers.rider.models import Wallet, WalletTransaction, get_wallet
@@ -260,7 +260,7 @@ def test_a_successful_payout_is_unaffected(driver):
 # ---------------------------------------------------------------------------
 
 def _gateway_instance():
-    from servers.payments.payment_gateways.cashfree_gateway import CashfreeGateway
+    from integrations.payments.cashfree import CashfreeGateway
     return CashfreeGateway()
 
 
@@ -270,7 +270,7 @@ def test_a_network_failure_after_the_request_raises_unknown(monkeypatch):
     gw = _gateway_instance()
     monkeypatch.setattr(gw, '_get_payout_token', lambda: 'tok')
 
-    import servers.payments.payment_gateways.cashfree_gateway as mod
+    import integrations.payments.cashfree as mod
 
     def _boom(*a, **k):
         raise TimeoutError('read timed out')
@@ -288,7 +288,7 @@ def test_a_5xx_raises_unknown_because_the_provider_may_have_accepted(monkeypatch
     gw = _gateway_instance()
     monkeypatch.setattr(gw, '_get_payout_token', lambda: 'tok')
 
-    import servers.payments.payment_gateways.cashfree_gateway as mod
+    import integrations.payments.cashfree as mod
 
     class _Resp:
         status_code = 502
@@ -311,7 +311,7 @@ def test_a_4xx_is_a_definite_rejection_and_returns_none(monkeypatch):
     gw = _gateway_instance()
     monkeypatch.setattr(gw, '_get_payout_token', lambda: 'tok')
 
-    import servers.payments.payment_gateways.cashfree_gateway as mod
+    import integrations.payments.cashfree as mod
 
     class _Resp:
         status_code = 400

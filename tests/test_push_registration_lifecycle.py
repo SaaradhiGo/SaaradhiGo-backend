@@ -157,7 +157,7 @@ class TestFirebaseCredentialResolution:
     """The reason push was dead everywhere: nothing could configure it."""
 
     def test_the_json_environment_variable_is_preferred(self, settings, tmp_path):
-        from servers.auth_user import services
+        from integrations.push import fcm_direct as services
 
         service_account = {
             'type': 'service_account',
@@ -178,7 +178,7 @@ class TestFirebaseCredentialResolution:
         certificate.assert_called_once_with(service_account)
 
     def test_unusable_json_is_reported_and_does_not_raise(self, settings, caplog):
-        from servers.auth_user import services
+        from integrations.push import fcm_direct as services
 
         settings.FIREBASE_CREDENTIALS_JSON = '{not valid json'
 
@@ -188,7 +188,7 @@ class TestFirebaseCredentialResolution:
         assert 'FIREBASE_CREDENTIALS_JSON is set but unusable' in caplog.text
 
     def test_the_private_key_is_never_logged(self, settings, caplog):
-        from servers.auth_user import services
+        from integrations.push import fcm_direct as services
 
         secret = '-----BEGIN PRIVATE KEY-----VERYSECRETVALUE'
         settings.FIREBASE_CREDENTIALS_JSON = secret  # not valid JSON
@@ -198,7 +198,7 @@ class TestFirebaseCredentialResolution:
         assert 'VERYSECRETVALUE' not in caplog.text
 
     def test_a_missing_file_is_not_an_error(self, settings):
-        from servers.auth_user import services
+        from integrations.push import fcm_direct as services
 
         settings.FIREBASE_CREDENTIALS_JSON = ''
         settings.FIREBASE_CREDENTIALS_PATH = 'definitely-not-here.json'
@@ -208,7 +208,7 @@ class TestFirebaseCredentialResolution:
         assert cred is None and source is None
 
     def test_a_file_is_used_when_no_json_is_set(self, settings, tmp_path):
-        from servers.auth_user import services
+        from integrations.push import fcm_direct as services
 
         path = tmp_path / 'firebase-credentials.json'
         path.write_text('{}', encoding='utf-8')
@@ -235,7 +235,7 @@ class TestPushIsSkippedCleanlyWhenUnconfigured:
         driver_user.fcm_token = DEVICE_TOKEN
         driver_user.save(update_fields=['fcm_token'])
 
-        with mock.patch('servers.auth_user.services.firebase_admin._apps', {}):
+        with mock.patch('integrations.push.fcm_direct.firebase_admin._apps', {}):
             result = send_push_notification_task.apply(
                 args=(driver_user.id, 'New Ride Request', 'from Test Rider',
                       {'trip_id': '42', 'type': 'ride_request'}),

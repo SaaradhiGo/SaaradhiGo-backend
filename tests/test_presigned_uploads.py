@@ -110,7 +110,7 @@ def storage_fields(settings, monkeypatch):
 @pytest.fixture
 def fake_s3(monkeypatch):
     client = FakeS3Client()
-    monkeypatch.setattr("base.s3.build_s3_client", lambda: client)
+    monkeypatch.setattr("integrations.storage.s3.build_s3_client", lambda: client)
     return client
 
 
@@ -211,7 +211,7 @@ def test_presign_url_targets_bucket_region_host(settings):
     style URLs that S3 rejects with 403 SignatureDoesNotMatch on PUT.
     Presigning is a local signing operation, so this runs offline.
     """
-    import base.s3 as s3_module
+    import integrations.storage.s3 as s3_module
 
     settings.AWS_S3_BUCKET_NAME = "saaradhigo-s3-dev"
     settings.AWS_S3_REGION_NAME = "ap-south-2"
@@ -227,7 +227,7 @@ def test_presign_url_targets_bucket_region_host(settings):
 
 @pytest.mark.django_db
 def test_build_s3_client_fails_fast_without_region(settings, monkeypatch):
-    import base.s3 as s3_module
+    import integrations.storage.s3 as s3_module
     from django.core.exceptions import ValidationError
 
     settings.AWS_S3_REGION_NAME = None

@@ -1,6 +1,6 @@
 """FCM: push for Android and, through FCM, for iOS (APNs).
 
-Uses the firebase_admin app that `servers.auth_user.services` initialises from
+Uses the firebase_admin app that `integrations.push.fcm_direct` initialises from
 FIREBASE_CREDENTIALS_JSON (or the credentials file). With no credentials there is no app and
 `FcmPush` refuses to construct: push is disabled, which is the state on QA. Tests patch
 `firebase_admin.messaging.send`; nothing here is exercised against Google.
@@ -11,7 +11,7 @@ reported back, so the log shows `sent` for push and never `delivered`.
 
 import logging
 
-from .base import PermanentProviderError, Provider, SendResult, TransientProviderError
+from servers.notifications.providers.base import PermanentProviderError, Provider, SendResult, TransientProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +23,10 @@ class FcmPush(Provider):
     def __init__(self):
         import firebase_admin
 
-        # Importing the auth_user services module initialises the app when credentials exist.
-        from servers.auth_user import services  # noqa: F401
+        from integrations.push import fcm_direct
+
+        # The app the direct-push path uses; initialised here if nothing has yet.
+        fcm_direct.ensure_initialised()
 
         if not firebase_admin._apps:
             raise PermanentProviderError('Firebase is not initialised: push is disabled.')

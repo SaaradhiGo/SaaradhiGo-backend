@@ -135,7 +135,7 @@ class TestTheAllowlist:
         world = sms_world(geo)
         sms = next(m for m in notify(world) if m.channel == 'sms')
         assert sms.status == QUEUED and sms.provider == 'msg91'
-        with mock.patch('servers.notifications.providers.msg91.Msg91Sms.send',
+        with mock.patch('integrations.sms.msg91.Msg91Sms.send',
                         return_value=SendResult('req-1', 'sent')) as send:
             assert dispatcher.deliver(sms.pk) == SENT
         send.assert_called_once()
@@ -343,7 +343,7 @@ class TestRetries:
         sms = self.live_message(geo, settings, fake_credentials)
         t = timezone.now()
         outcomes = []
-        with mock.patch('servers.notifications.providers.msg91.Msg91Sms.send',
+        with mock.patch('integrations.sms.msg91.Msg91Sms.send',
                         side_effect=TransientProviderError('HTTP 503')):
             for attempt in range(1, 6):
                 sms.refresh_from_db()
@@ -359,7 +359,7 @@ class TestRetries:
 
     def test_a_retry_that_succeeds_is_sent(self, geo, settings, fake_credentials):
         sms = self.live_message(geo, settings, fake_credentials)
-        with mock.patch('servers.notifications.providers.msg91.Msg91Sms.send',
+        with mock.patch('integrations.sms.msg91.Msg91Sms.send',
                         side_effect=[TransientProviderError('HTTP 429'), SendResult('r9', 'sent')]):
             assert dispatcher.deliver(sms.pk) == 'retry'
             sms.refresh_from_db()
@@ -371,7 +371,7 @@ class TestRetries:
     def test_a_permanent_failure_fails_at_once_and_masks_the_error(
             self, geo, settings, fake_credentials):
         sms = self.live_message(geo, settings, fake_credentials)
-        with mock.patch('servers.notifications.providers.msg91.Msg91Sms.send',
+        with mock.patch('integrations.sms.msg91.Msg91Sms.send',
                         side_effect=PermanentProviderError('bad number +919700000001 for a@b.co')):
             assert dispatcher.deliver(sms.pk) == FAILED
         sms.refresh_from_db()
@@ -380,7 +380,7 @@ class TestRetries:
 
     def test_an_unexpected_exception_is_retried_not_lost(self, geo, settings, fake_credentials):
         sms = self.live_message(geo, settings, fake_credentials)
-        with mock.patch('servers.notifications.providers.msg91.Msg91Sms.send',
+        with mock.patch('integrations.sms.msg91.Msg91Sms.send',
                         side_effect=RuntimeError('boom')):
             assert dispatcher.deliver(sms.pk) == 'retry'
 

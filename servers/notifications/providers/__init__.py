@@ -8,13 +8,17 @@ from .. import config
 from .base import LiveSendDisabled, Provider  # noqa: F401
 from .internal import InAppProvider, StubProvider
 
-#: (provider, channel) -> "module:Class", imported only when asked for.
+#: (provider, channel) -> "module:Class", imported only when asked for. The adapters live in the
+#: top-level `integrations/` package (the vendor boundary); this table is the only place the
+#: notifications app names them.
 _LIVE = {
-    ('msg91', 'sms'): ('servers.notifications.providers.msg91', 'Msg91Sms'),
-    ('msg91', 'whatsapp'): ('servers.notifications.providers.msg91', 'Msg91WhatsApp'),
-    ('twilio', 'sms'): ('servers.notifications.providers.twilio', 'TwilioSms'),
-    ('ses', 'email'): ('servers.notifications.providers.ses', 'SesEmail'),
-    ('fcm', 'push'): ('servers.notifications.providers.fcm', 'FcmPush'),
+    ('msg91', 'sms'): ('integrations.sms.msg91', 'Msg91Sms'),
+    ('msg91', 'whatsapp'): ('integrations.sms.msg91', 'Msg91WhatsApp'),
+    ('twilio', 'sms'): ('integrations.sms.twilio', 'TwilioSms'),
+    ('sns', 'sms'): ('integrations.sms.sns', 'SnsSms'),
+    ('ses', 'email'): ('integrations.email.ses', 'SesEmail'),
+    ('fcm', 'push'): ('integrations.push.fcm', 'FcmPush'),
+    ('sns', 'push'): ('integrations.push.sns', 'SnsPush'),
 }
 
 

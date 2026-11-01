@@ -15,7 +15,7 @@ is actually used.
 import pytest
 from django.core.exceptions import ValidationError
 
-from base.s3 import build_s3_client
+from integrations.storage.s3 import build_s3_client
 
 
 @pytest.fixture(autouse=True)

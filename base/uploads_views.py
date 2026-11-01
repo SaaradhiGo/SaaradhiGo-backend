@@ -16,7 +16,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 
-from base.s3 import generate_presigned_put, kind_spec
+from integrations.storage.s3 import generate_presigned_put, kind_spec
 from base.utils import error_response, success_response
 
 logger = logging.getLogger(__name__)

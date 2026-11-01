@@ -121,9 +121,12 @@ Settings load environment variables via `python-dotenv` (see [base/settings.py](
 | `SES_AWS_ACCESS_KEY_ID`, `SES_AWS_SECRET_ACCESS_KEY`, `SES_AWS_REGION`, `SES_FROM_EMAIL`, `SES_CONFIGURATION_SET`, `SES_SNS_TOPIC_ARNS` | AWS SES email and its SNS delivery topic (separate from the S3/SNS-OTP credentials) |
 | `NOTIFY_WEBHOOK_BASE_URL` | Public base URL Twilio signs against (behind a proxy) |
 | `NOTIFY_MAX_ATTEMPTS`, `NOTIFY_BACKOFF_BASE_SECONDS`, `NOTIFY_FAILURE_RATE_THRESHOLD`, `NOTIFY_FAILURE_MIN_SAMPLE` | Dispatcher retry and provider-health tuning |
-| `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_WEBHOOK_SECRET`, `CASHFREE_ENVIRONMENT`, `CASHFREE_PG_BASE_URL`, `CASHFREE_API_VERSION` | Cashfree gateway |
-| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Razorpay (legacy)                       |
-| `PAYMENT_GATEWAY`, `PAYOUT_GATEWAY` | Active gateways (default `cashfree`)                   |
+| `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_ENVIRONMENT` (`sandbox`\|`production`) | Cashfree payment gateway. Hosts are derived from the environment; `CASHFREE_WEBHOOK_SECRET` is optional (PG webhooks are signed with the secret key); `CASHFREE_PG_BASE_URL` / `CASHFREE_PAYOUTS_BASE_URL` are optional overrides, ignored if they name the other environment's host |
+| `CASHFREE_PAYOUTS_CLIENT_ID`, `CASHFREE_PAYOUTS_CLIENT_SECRET` | Cashfree Payouts (the old `CASHFREE_PAYOUT_APP_ID` / `CASHFREE_PAYOUT_SECRET_KEY` are deprecated aliases) |
+| `PAYMENT_PROVIDERS_JSON`, `PAYOUT_PROVIDERS_JSON` | Provider per country, e.g. `{"IN": "cashfree", "US": null}`. Names: payments `cashfree`, `razorpay`*, `stripe`*; payouts `cashfree`, `razorpay`*, `stripe_connect`* (*stub). Unset: `PAYMENT_GATEWAY` / `PAYOUT_GATEWAY` (default `cashfree`) is India's provider, other countries have none |
+| `NOTIFY_PROVIDERS_JSON` | Notification provider per channel and country, merged over the defaults, e.g. `{"sms": {"US": "sns"}}` (sms: `msg91`, `twilio`, `sns`; push: `fcm`, `sns`; email: `ses`) |
+| `SNS_LIVE_CONFIRMED` (default `false`), `SNS_AWS_ACCESS_KEY_ID`, `SNS_AWS_SECRET_ACCESS_KEY`, `SNS_AWS_REGION`, `SNS_SMS_SENDER_ID`, `SNS_PLATFORM_APPLICATION_ARN_FCM`, `SNS_PLATFORM_APPLICATION_ARN_APNS` | AWS SNS SMS and push adapters, sandbox-only: no AWS call unless `NOTIFY_LIVE_SEND` and `SNS_LIVE_CONFIRMED` are both true (owner confirms the AWS account) |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Razorpay (adapter is a stub; names reserved) |
 | `TRIP_ACCEPT_TIMEOUT_SECONDS`  | Driver accept window (default `600`)                        |
 | `GOOGLE_MAPS_API_KEY`          | Maps API key                                                |
 
@@ -196,3 +199,7 @@ The prod stack runs Django via Daphne (ASGI) and a Celery worker, both reading `
 
 - [SaaradhiGo-mobile](../SaaradhiGo-mobile) — Flutter rider app (VahanGo)
 - [SaaradhiGo-web](../SaaradhiGo-web) — Web client + branch protection rules
+
+## Vendor boundary
+
+Every third-party adapter lives in the top-level `integrations/` package (grouped by capability: `email`, `sms`, `push`, `payments`, `payouts`, `storage`). Business code in `base/` and `servers/` imports only the interfaces and registries, never a vendor SDK; `tests/test_vendor_boundary.py` (part of the normal `pytest` run, so part of CI) fails on any vendor import or vendor hostname outside `integrations/`. The only allowlisted exception is the `sentry_sdk` bootstrap in `base/settings.py`.

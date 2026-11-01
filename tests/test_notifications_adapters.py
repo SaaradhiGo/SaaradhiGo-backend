@@ -37,11 +37,11 @@ def sms_outbound(**kw):
 
 class TestMsg91Sms:
     def adapter(self, fake_credentials):
-        from servers.notifications.providers.msg91 import Msg91Sms
+        from integrations.sms.msg91 import Msg91Sms
         return Msg91Sms()
 
     def test_builds_the_documented_flow_request(self, fake_credentials):
-        with mock.patch('servers.notifications.providers.msg91.requests.post',
+        with mock.patch('integrations.sms.msg91.requests.post',
                         return_value=reply(200, {'type': 'success', 'message': 'req-abc'})) as post:
             result = self.adapter(fake_credentials).send(sms_outbound())
         assert result.provider_message_id == 'req-abc' and result.status == 'sent'
@@ -57,15 +57,15 @@ class TestMsg91Sms:
         adapter = self.adapter(fake_credentials)
         for status, error in ((500, TransientProviderError), (429, TransientProviderError),
                               (400, PermanentProviderError), (401, PermanentProviderError)):
-            with mock.patch('servers.notifications.providers.msg91.requests.post',
+            with mock.patch('integrations.sms.msg91.requests.post',
                             return_value=reply(status, {'type': 'error', 'message': 'no'})):
                 with pytest.raises(error):
                     adapter.send(sms_outbound())
-        with mock.patch('servers.notifications.providers.msg91.requests.post',
+        with mock.patch('integrations.sms.msg91.requests.post',
                         return_value=reply(200, {'type': 'error', 'message': 'bad template'})):
             with pytest.raises(PermanentProviderError):
                 adapter.send(sms_outbound())
-        with mock.patch('servers.notifications.providers.msg91.requests.post',
+        with mock.patch('integrations.sms.msg91.requests.post',
                         side_effect=requests.Timeout()):
             with pytest.raises(TransientProviderError):
                 adapter.send(sms_outbound())
@@ -81,11 +81,11 @@ class TestMsg91Sms:
 
 class TestMsg91WhatsApp:
     def test_builds_the_documented_template_request(self, fake_credentials, settings):
-        from servers.notifications.providers.msg91 import Msg91WhatsApp
+        from integrations.sms.msg91 import Msg91WhatsApp
         settings.MSG91_WHATSAPP_NUMBER = '919000000000'
         outbound = sms_outbound(channel='whatsapp', registration={
             'whatsapp_template_name': 'commission_notice', 'whatsapp_namespace': 'ns_1'})
-        with mock.patch('servers.notifications.providers.msg91.requests.post',
+        with mock.patch('integrations.sms.msg91.requests.post',
                         return_value=reply(200, {'type': 'success', 'request_id': 'wa-1'})) as post:
             result = Msg91WhatsApp().send(outbound)
         assert result.provider_message_id == 'wa-1'
@@ -99,19 +99,19 @@ class TestMsg91WhatsApp:
         assert kwargs['json']['integrated_number'] == '919000000000'
 
     def test_a_missing_template_name_is_permanent(self, fake_credentials):
-        from servers.notifications.providers.msg91 import Msg91WhatsApp
+        from integrations.sms.msg91 import Msg91WhatsApp
         with pytest.raises(PermanentProviderError):
             Msg91WhatsApp().send(sms_outbound(channel='whatsapp', registration={}))
 
 
 class TestTwilio:
     def adapter(self):
-        from servers.notifications.providers.twilio import TwilioSms
+        from integrations.sms.twilio import TwilioSms
         return TwilioSms()
 
     def test_builds_the_documented_messages_request(self, fake_credentials):
         outbound = sms_outbound(country='US', to_phone='+15005550001', body='Hi there')
-        with mock.patch('servers.notifications.providers.twilio.requests.post',
+        with mock.patch('integrations.sms.twilio.requests.post',
                         return_value=reply(201, {'sid': 'SMabc', 'status': 'queued'})) as post:
             result = self.adapter().send(outbound)
         assert result.provider_message_id == 'SMabc'
@@ -125,7 +125,7 @@ class TestTwilio:
             self, fake_credentials, settings):
         settings.TWILIO_MESSAGING_SERVICE_SID = 'MGtest'
         settings.NOTIFY_WEBHOOK_BASE_URL = 'https://api.example.test/'
-        with mock.patch('servers.notifications.providers.twilio.requests.post',
+        with mock.patch('integrations.sms.twilio.requests.post',
                         return_value=reply(201, {'sid': 'SMabc'})) as post:
             self.adapter().send(sms_outbound())
         data = post.call_args.kwargs['data']
@@ -138,13 +138,13 @@ class TestTwilio:
                 (503, {}, TransientProviderError), (429, {}, TransientProviderError),
                 (400, {'code': 21211, 'message': 'invalid To'}, PermanentProviderError),
                 (400, {'code': 21610, 'message': 'unsubscribed'}, PermanentProviderError)):
-            with mock.patch('servers.notifications.providers.twilio.requests.post',
+            with mock.patch('integrations.sms.twilio.requests.post',
                             return_value=reply(status, body)):
                 with pytest.raises(error):
                     adapter.send(sms_outbound())
 
     def test_the_error_text_never_carries_the_number(self, fake_credentials):
-        with mock.patch('servers.notifications.providers.twilio.requests.post',
+        with mock.patch('integrations.sms.twilio.requests.post',
                         return_value=reply(400, {'code': 21211,
                                                  'message': 'The number +919876543210 is invalid'})):
             with pytest.raises(PermanentProviderError) as exc:
@@ -159,7 +159,7 @@ class TestTwilio:
 
 class TestSes:
     def adapter(self, fake_credentials):
-        from servers.notifications.providers.ses import SesEmail
+        from integrations.email.ses import SesEmail
         client = mock.Mock()
         with mock.patch('boto3.client', return_value=client) as factory:
             adapter = SesEmail()
@@ -203,7 +203,7 @@ class TestSes:
             adapter.send(sms_outbound(channel='email', to_email='a@example.test'))
 
     def test_it_refuses_to_construct_without_its_own_credentials(self, settings):
-        from servers.notifications.providers.ses import SesEmail
+        from integrations.email.ses import SesEmail
         settings.SES_AWS_ACCESS_KEY_ID = ''
         with mock.patch('boto3.client') as factory, pytest.raises(PermanentProviderError):
             SesEmail()
@@ -216,14 +216,14 @@ class TestFcm:
                             data={'variable_names': ['x'], 'deep_link': 'trip/1'})
 
     def test_it_refuses_to_construct_without_a_firebase_app(self, fake_credentials):
-        from servers.notifications.providers.fcm import FcmPush
+        from integrations.push.fcm import FcmPush
         with mock.patch('firebase_admin._apps', {}), pytest.raises(PermanentProviderError):
             FcmPush()
 
     def test_sends_a_notification_with_data_through_the_sdk(self, fake_credentials):
         from firebase_admin import messaging
 
-        from servers.notifications.providers.fcm import FcmPush
+        from integrations.push.fcm import FcmPush
         with mock.patch('firebase_admin._apps', {'[DEFAULT]': object()}):
             adapter = FcmPush()
         with mock.patch('firebase_admin.messaging.send', return_value='projects/x/messages/1') as send:
@@ -238,7 +238,7 @@ class TestFcm:
     def test_errors_are_classified(self, fake_credentials):
         from firebase_admin import exceptions, messaging
 
-        from servers.notifications.providers.fcm import FcmPush
+        from integrations.push.fcm import FcmPush
         with mock.patch('firebase_admin._apps', {'[DEFAULT]': object()}):
             adapter = FcmPush()
         cases = ((exceptions.UnavailableError('down'), TransientProviderError),
@@ -251,7 +251,7 @@ class TestFcm:
                     adapter.send(self.outbound())
 
     def test_no_token_is_permanent(self, fake_credentials):
-        from servers.notifications.providers.fcm import FcmPush
+        from integrations.push.fcm import FcmPush
         with mock.patch('firebase_admin._apps', {'[DEFAULT]': object()}):
             adapter = FcmPush()
         with pytest.raises(PermanentProviderError):

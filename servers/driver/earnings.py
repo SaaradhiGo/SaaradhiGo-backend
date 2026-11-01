@@ -59,6 +59,11 @@ SETTLEMENT_PURPOSES = (PURPOSE_ONLINE, PURPOSE_CASH)
 
 _REFERENCE_PREFIX = 'TRIP_'
 PROMO_PAID_LABEL = 'Promo paid by SaaradhiGo'
+# US pass-through (owner ruling AUDIT 27.62 item 1; US accountant to confirm, go-live blocker #15):
+# the rider's sales tax and per-trip regulatory fee are collected and remitted by SaaradhiGo. They are
+# never earnings. On a CASH trip the driver holds them, so they are shown as deductions with these labels.
+TAX_COLLECTED_LABEL = 'Sales tax collected (remitted by SaaradhiGo)'
+FEE_COLLECTED_LABEL = 'Regulatory fee collected (remitted by SaaradhiGo)'
 
 
 @dataclass
@@ -83,6 +88,40 @@ class EarningRow:
     # the FULL fare and do not move. This is the discount the rider did not pay, so a cash driver
     # can see how much less they collected; the platform paid it to them.
     promo_discount: Optional[Decimal] = None
+    # US pass-through (None on India and on every settlement written before it existed, which read
+    # exactly as before). NOT part of `gross`, `commission` or `net`.
+    tax_collected: Optional[Decimal] = None
+    fee_collected: Optional[Decimal] = None
+    fee_name: str = ''
+
+    def _fee_label(self):
+        return (f'{self.fee_name} collected (remitted by SaaradhiGo)' if self.fee_name
+                else FEE_COLLECTED_LABEL)
+
+    def pass_through(self):
+        return self.tax_collected is not None
+
+    def deductions(self):
+        """A cash trip's collected-and-owed lines (the driver holds the rider's tax and fee and owes
+        both to SaaradhiGo). Empty for an online trip, where neither touches the driver at all."""
+        if not (self.driver_holds_cash and self.pass_through()):
+            return []
+        out = []
+        if self.tax_collected:
+            out.append({'kind': 'tax_collected', 'label': TAX_COLLECTED_LABEL,
+                        'amount': _s(self.tax_collected)})
+        if self.fee_collected:
+            out.append({'kind': 'regulatory_fee_collected', 'label': self._fee_label(),
+                        'amount': _s(self.fee_collected)})
+        return out
+
+    def cash_in_hand(self):
+        """What a cash driver physically holds from the rider: the fare, plus the tax and fee on a US
+        trip, less a platform-funded promo discount."""
+        if self.gross is None:
+            return None
+        return (self.gross + (self.tax_collected or Decimal('0.00'))
+                + (self.fee_collected or Decimal('0.00')) - (self.promo_discount or Decimal('0.00')))
 
     def to_api(self):
         """The shape the driver app already parses, with nothing removed."""
@@ -101,8 +140,15 @@ class EarningRow:
             'commission_percent': _s(self.commission_percent),
             # Additive (module 12).
             'promo_discount': _s(self.promo_discount or Decimal('0.00')),
-            'cash_to_collect': (_s(self.gross - (self.promo_discount or Decimal('0.00')))
+            'cash_to_collect': (_s(self.cash_in_hand())
                                 if self.driver_holds_cash and self.gross is not None else None),
+            # US pass-through: never earnings. `amount`, `commission` and `net_amount` above are on
+            # the fare before tax and fees; these are what the platform collected for remittance.
+            'tax_collected': _s(self.tax_collected),
+            'regulatory_fee_collected': _s(self.fee_collected),
+            'tax_collected_label': TAX_COLLECTED_LABEL if self.tax_collected else None,
+            'regulatory_fee_collected_label': (self._fee_label() if self.fee_collected else None),
+            'deductions': self.deductions(),
             # The same discount, named for the earnings screen: SaaradhiGo paid it, never the
             # driver. On a cash trip it is credited to the driver's wallet as its own ledger line
             # (`promo_discount_platform_funded`); on an online trip the platform simply collected
@@ -164,17 +210,17 @@ def settlement_rows(driver, since=None, until=None, limit=None):
     trips = {
         t.id: t for t in Trip.objects
         .filter(id__in=trip_ids)
-        .select_related('user_id')
+        .select_related('user_id', 'zone')
     }
     # The percent each settlement applied: the highest version per trip is the
     # current one. One query, however many trips.
     from servers.payments.models import TripSettlement
 
     percents = {}
-    for trip_pk, _version, pct in (TripSettlement.objects.filter(trip_id__in=trip_ids)
-                                  .order_by('trip_id', 'version')
-                                  .values_list('trip_id', 'version', 'commission_percent')):
-        percents[trip_pk] = pct
+    current = {}
+    for st in TripSettlement.objects.filter(trip_id__in=trip_ids).order_by('trip_id', 'version'):
+        percents[st.trip_id] = st.commission_percent
+        current[st.trip_id] = st
 
     from base.money import from_minor
     from servers.promotions.models import DISCOUNT_FUNDED, LedgerEntry
@@ -189,14 +235,14 @@ def settlement_rows(driver, since=None, until=None, limit=None):
     for entry in ledger:
         trip_id = _trip_id_from_reference(entry.reference_id)
         trip = trips.get(trip_id)
-        row = _row_for(entry, trip, trip_id)
+        row = _row_for(entry, trip, trip_id, current.get(trip_id))
         row.commission_percent = percents.get(trip_id)
         row.promo_discount = discounts.get(trip_id)
         rows.append(row)
     return rows
 
 
-def _row_for(entry, trip, trip_id):
+def _row_for(entry, trip, trip_id, settlement=None):
     amount = Decimal(str(entry.amount or '0.00'))
     is_cash = entry.purpose == PURPOSE_CASH
 
@@ -223,6 +269,22 @@ def _row_for(entry, trip, trip_id):
     if trip is not None and trip.user_id is not None:
         rider_name = trip.user_id.full_name or trip.user_id.phone_number or ''
 
+    tax = fee = None
+    fee_name = ''
+    if settlement is not None and settlement.tax_collected_minor is not None:
+        # A US settlement under the pass-through rule: the settlement's own gross (the fare before
+        # tax and fees), commission and net are the truth; the trip's full charge includes the
+        # rider's tax and fee, which are not earnings. Older rows keep the reading above.
+        from base.money import from_minor
+
+        cur = settlement.currency
+        gross = from_minor(settlement.gross_fare_minor, cur)
+        commission = from_minor(settlement.commission_amount_minor, cur)
+        net = from_minor(settlement.driver_net_minor, cur)
+        tax = from_minor(settlement.tax_collected_minor, cur)
+        fee = from_minor(settlement.regulatory_fee_collected_minor or 0, cur)
+        fee_name = getattr(getattr(trip, 'zone', None), 'per_trip_fee_label', '') or ''
+
     return EarningRow(
         ledger_id=entry.id,
         trip_id=trip_id,
@@ -233,6 +295,9 @@ def _row_for(entry, trip, trip_id):
         created_at=entry.created_at,
         rider_name=rider_name,
         driver_holds_cash=is_cash,
+        tax_collected=tax,
+        fee_collected=fee,
+        fee_name=fee_name,
     )
 
 
@@ -251,6 +316,9 @@ def summarise(rows):
         'cash_collected': Decimal('0.00'),
         # Rider promo discounts SaaradhiGo paid on these trips (module 12). Not in gross or net.
         'promo_paid_by_platform': Decimal('0.00'),
+        # US pass-through (AUDIT 27.62 item 1): collected for remittance, in none of gross/net.
+        'tax_collected': Decimal('0.00'),
+        'regulatory_fees_collected': Decimal('0.00'),
         'total_trips': 0,
         # Trips whose fare could not be resolved. Counted rather than dropped:
         # a driver noticing a missing trip trusts the number less than a driver
@@ -270,13 +338,15 @@ def summarise(rows):
             continue
 
         totals['total_gross'] += row.gross
+        totals['tax_collected'] += row.tax_collected or Decimal('0.00')
+        totals['regulatory_fees_collected'] += row.fee_collected or Decimal('0.00')
         if row.commission is not None:
             totals['total_commission'] += row.commission
         if row.net is not None:
             totals['total_net'] += row.net
         if row.driver_holds_cash:
             # What the driver actually holds: the fare less a platform-funded promo discount.
-            totals['cash_collected'] += row.gross - (row.promo_discount or Decimal('0.00'))
+            totals['cash_collected'] += row.cash_in_hand()
 
     if totals['total_gross'] > 0:
         totals['effective_commission_percent'] = (

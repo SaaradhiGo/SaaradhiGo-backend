@@ -9,6 +9,11 @@ flags. Its only writes are to the derived tables in `models.py`. It never re-der
                                 `settled_at`), the same rows `finance.aggregate` reads
                                 (`payments.aggregates._current_settlements`). Commission is what
                                 was applied at settlement, never today's rate card.
+                                US pass-through (AUDIT 27.62 item 1): a US settlement's gross is the fare BEFORE
+                                tax and fees, so GMV, commission and driver net exclude them (and agree with
+                                each other); the tax and fees collected are on the settlement rows
+                                (`tax_collected_minor`, `regulatory_fee_collected_minor`) and in the Finance
+                                overview. Not rolled up here (no new column).
   rider paid                    `charged_fare()` of the trips completed that day (the Command
                                 Centre's "collected": the discounted fare when a promo applied).
   promo cost                    `promotions.LedgerEntry`, kind `promo_discount_platform_funded`.

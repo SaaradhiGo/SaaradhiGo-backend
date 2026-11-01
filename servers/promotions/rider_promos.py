@@ -75,6 +75,44 @@ def _in_place(campaign, zone):
     return zone_node is not None and str(zone_node.path).startswith(node.path)
 
 
+def available_in_market(country_code, city_node=None, at=None):
+    """Is there a rider promo a rider in this market could use right now?
+
+    The app-config `promos_available` flag: the rider app shows its promo-code entry only when
+    this is true. True when a `live` rider-promo campaign anchored at the country (or the named
+    city, or any ancestor of it) is inside its window, or a still-active promo code that was never
+    wrapped in a campaign is. A paused, ended, exhausted or draft campaign does not count. This
+    only SHOWS an entry: whether a given code applies is still decided at apply and booking.
+    """
+    from servers.ride.models import PromoCode
+
+    now = at or timezone.now()
+    campaigns = (Campaign.objects.filter(kind=RIDER_PROMO, state=LIVE, country=country_code)
+                 .filter(Q(starts_at__isnull=True) | Q(starts_at__lte=now))
+                 .filter(Q(ends_at__isnull=True) | Q(ends_at__gt=now))
+                 .select_related('geo_node'))
+    for campaign in campaigns:
+        node = campaign.geo_node
+        if city_node is None or node is None or node.kind in ('country', 'global')                 or str(city_node.path).startswith(str(node.path)):
+            return True
+    from base.countries import find_country
+
+    country = find_country(country_code)
+    if country is None:
+        return False
+    codes = (PromoCode.objects.filter(is_active=True, campaign__isnull=True,
+                                      valid_from__lte=now, valid_to__gt=now,
+                                      currency=country.currency)
+             .select_related('zone__geo_node'))
+    for promo in codes:
+        zone_node = getattr(promo.zone, 'geo_node', None) if promo.zone_id else None
+        if zone_node is None and promo.zone_id and city_node is not None:
+            continue
+        if zone_node is None or city_node is None or                 str(city_node.path).startswith(str(zone_node.path)):
+            return True
+    return False
+
+
 def preview_refusal(promo, user, discount, zone):
     """The refusal code for the apply PREVIEW (read-only), or ''."""
     campaign = campaign_for(promo)

@@ -222,3 +222,64 @@ class TestServerSideGate:
                                                         'role': 'driver'}, format='json',
                                   HTTP_X_APP_VERSION='1.0.0', HTTP_X_APP_PLATFORM='android')
         assert driver.status_code != 426            # no driver policy exists
+
+
+class TestPromosAvailable:
+    """`promos_available`: true only while a rider promo is live in the market (rider app R1)."""
+
+    @staticmethod
+    def _campaign(code, *, state='live', country='IN', currency='INR', node=None, with_code=True,
+                  starts=-1, ends=5):
+        from servers.promotions.models import Campaign
+        from servers.ride.models import PromoCode
+
+        now = timezone.now()
+        promo = PromoCode.objects.create(
+            code=code, discount_type='flat', discount_flat_minor=1000, currency=currency,
+            valid_from=now + timedelta(days=starts), valid_to=now + timedelta(days=ends)) \
+            if with_code else None
+        return Campaign.objects.create(
+            kind='rider_promo', name=code, state=state, country=country, currency=currency,
+            geo_node=node, budget_minor=100000, starts_at=now + timedelta(days=starts),
+            ends_at=now + timedelta(days=ends), promo_code=promo)
+
+    def test_false_when_nothing_is_live(self, markets):
+        assert data(get('?country=IN'))['promos_available'] is False
+        assert data(get('?country=US'))['promos_available'] is False
+
+    def test_true_for_a_live_country_campaign_only_in_that_country(self, markets):
+        self._campaign('INLIVE', node=markets['IN'])
+        assert data(get('?country=IN'))['promos_available'] is True
+        assert data(get('?country=US'))['promos_available'] is False
+
+    @pytest.mark.parametrize('state', ['draft', 'paused', 'ended', 'exhausted', 'cancelled'])
+    def test_a_campaign_that_is_not_live_does_not_count(self, markets, state):
+        self._campaign('NOTLIVE', state=state, node=markets['IN'])
+        assert data(get('?country=IN'))['promos_available'] is False
+
+    def test_a_campaign_outside_its_window_does_not_count(self, markets):
+        self._campaign('LATER', node=markets['IN'], starts=2, ends=9)
+        self._campaign('GONE', node=markets['IN'], starts=-9, ends=-2)
+        assert data(get('?country=IN'))['promos_available'] is False
+
+    def test_a_city_campaign_counts_for_its_city_and_the_country_view_but_not_another_city(
+            self, markets):
+        self._campaign('HYDONLY', node=markets['IN-TG-HYD'])
+        assert data(get('?city=IN-TG-HYD'))['promos_available'] is True
+        assert data(get('?country=IN'))['promos_available'] is True
+        assert data(get('?city=IN-TG-WGL'))['promos_available'] is False
+
+    def test_an_active_code_that_never_got_a_campaign_counts(self, markets):
+        from servers.ride.models import PromoCode
+
+        now = timezone.now()
+        PromoCode.objects.create(
+            code='OLDCODE', discount_type='flat', discount_flat_minor=500, currency='INR',
+            valid_from=now - timedelta(days=1), valid_to=now + timedelta(days=1))
+        assert data(get('?country=IN'))['promos_available'] is True
+        assert data(get('?country=US'))['promos_available'] is False
+        PromoCode.objects.update(is_active=False)
+        assert data(get('?country=IN'))['promos_available'] is False
+
+    def test_absent_without_a_market(self, markets):
+        assert 'promos_available' not in data(get())

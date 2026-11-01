@@ -23,6 +23,7 @@ from base import money
 from base.countries import COUNTRIES, find_country
 from servers.admin_access.models import ACTIVE, CITY, COUNTRY, GeoNode
 from servers.pricing.models import ServiceZone
+from servers.promotions import rider_promos
 
 from . import flags, markets, notices, versions
 from .errors import PlatformError
@@ -136,6 +137,9 @@ def build(country=None, city=None, app=None):
             'status': markets.country_status(registry.code),
             'cities': _live_cities(registry.code),
             'languages': list(LANGUAGES.get(registry.code, ('en',))),
+            # Additive. True only while a rider promo is live in this market; the rider app shows
+            # its promo-code entry only then, and reads a missing key as false.
+            'promos_available': rider_promos.available_in_market(registry.code, city_node),
         }
     policy = versions.public_policy()
     body.update({

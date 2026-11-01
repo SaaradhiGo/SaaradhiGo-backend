@@ -345,7 +345,7 @@ def test_the_console_and_the_api_agree_on_who_is_an_operator():
     about.
     """
     from base.permissions import IsAdmin
-    from servers.admin_dashboard.views import is_operator
+    from base.permissions import is_operator
 
     class _Req:
         def __init__(self, user):

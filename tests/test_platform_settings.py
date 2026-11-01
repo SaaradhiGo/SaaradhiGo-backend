@@ -4,7 +4,6 @@ import ast
 import pathlib
 
 import pytest
-from django.contrib import admin
 from django.test import Client
 from django.urls import NoReverseMatch, reverse
 
@@ -182,13 +181,3 @@ class TestDjangoSurfaceRetired:
         assert django_client.post('/api/global-config/', {}).status_code == 404
         with pytest.raises(NoReverseMatch):
             reverse('update_global_config')
-
-    def test_it_is_not_in_the_inventory_and_cannot_be_allowlisted(self):
-        from servers.admin_dashboard import inventory
-
-        assert 'update_global_config' not in inventory.known_routes()
-        assert inventory.configuration_faults(['update_global_config'])
-        assert 'admin:pricing_platformsettings_changelist' not in inventory.known_routes()
-
-    def test_the_platform_settings_model_admin_is_unregistered(self):
-        assert PlatformSettings not in admin.site._registry

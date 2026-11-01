@@ -430,11 +430,6 @@ def test_all_four_authorization_sites_now_agree():
     """There were four answers to "is this an operator", and an attacker needs the
     most permissive one. This asserts there is now exactly one."""
     from base.permissions import IsAdmin, is_operator
-    from servers.admin_dashboard.views import is_operator as console_is_operator
-
-    assert console_is_operator is is_operator, (
-        'the console has its own copy again; they will diverge'
-    )
 
     class _Req:
         def __init__(self, user):

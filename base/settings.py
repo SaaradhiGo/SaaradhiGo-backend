@@ -38,12 +38,9 @@ CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf_raw.split(',') if o.strip()]
 
 INSTALLED_APPS = [
     'daphne',
-    # django.contrib.admin, through the config that makes `admin.site` a
-    # FrozenAdminSite: every ModelAdmin registered anywhere -- ours or a
-    # third-party app's -- arrives read-only. The Django admin is part of
-    # the frozen console (AUDIT.md section 10, item 1) and must not be a
-    # second, unaudited way to change money, access or driver status.
-    'servers.admin_dashboard.lockdown.FrozenAdminConfig',
+    # django.contrib.admin is deliberately NOT installed: the Django console and admin site are
+    # off (owner ruling, AUDIT 27.62). Nothing needs it (no LogEntry use, no migration depends on
+    # it); the django_admin_log table, if any, is left in place untouched.
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
@@ -110,13 +107,6 @@ MIDDLEWARE = [
     # `request.user.is_verified()`, which is how the console knows whether this
     # SESSION has cleared MFA (as opposed to whether the account has a device).
     'django_otp.middleware.OTPMiddleware',
-    # The frozen console's single gate. Decides by the resolved route name,
-    # so it needs nothing from the view; needs request.user from
-    # AuthenticationMiddleware and is_verified() from OTPMiddleware, hence
-    # its position. Every session-console and admin-site route is 404 unless
-    # the caller is a Super Admin at Global AND the route is on
-    # FROZEN_CONSOLE_ALLOWED_ROUTES. See servers/admin_dashboard/lockdown.py.
-    'servers.admin_dashboard.lockdown.FrozenConsoleMiddleware',
     # Attributes any access write made during the request (an assignment,
     # a role, a scope, an authority flag) to request.user in the audit
     # log. Reads the user lazily, so API bearer-token writes are covered.
@@ -873,45 +863,6 @@ FINANCE_EXPORT_MAX_ROWS = int(os.environ.get('FINANCE_EXPORT_MAX_ROWS', '50000')
 # exist, so there a person passes the flag.
 QA_BOOTSTRAP_ACTOR_EMAIL = (os.environ.get('QA_BOOTSTRAP_ACTOR_EMAIL') or '').strip()
 
-# ---------------------------------------------------------------------------
-# The frozen Django console
-# ---------------------------------------------------------------------------
-# Next.js is the admin. The server-rendered console at the site root and the
-# Django admin site at /admin/ are frozen: a Super Admin at Global may reach
-# the routes named here and nobody may reach anything else (404, not 403 --
-# a retired screen must not advertise itself). The vocabulary is the parity
-# table in servers/admin_dashboard/inventory.py; a name outside it is a
-# typo that would fail silently during an incident, so production refuses
-# to boot on one (guard below). Comma-separated Django view names, e.g.
-#
-#     FROZEN_CONSOLE_ALLOWED_ROUTES=admin:index,admin:driver_driver_changelist
-#
-# The default is the admin index alone: enough to prove a break-glass session
-# works, showing no rider, driver, rupee or secret. Sign-in, the second-factor
-# challenge and sign-out are always reachable and are not on this list.
-from servers.admin_dashboard import inventory as _frozen_console
-
-FROZEN_CONSOLE_ALLOWED_ROUTES = _frozen_console.parse_routes(
-    os.environ.get('FROZEN_CONSOLE_ALLOWED_ROUTES',
-                   ','.join(_frozen_console.DEFAULT_ALLOWED_ROUTES))
-)
-
-# Models whose Django ModelAdmin may still add / change / delete. Default
-# empty: the admin site is read-only, and a write to money, access or driver
-# status goes through the audited API. `app_label.modelname`, lower case.
-FROZEN_CONSOLE_WRITABLE_MODELS = _frozen_console.parse_routes(
-    os.environ.get('FROZEN_CONSOLE_WRITABLE_MODELS', '')
-)
-
-_frozen_console_faults = _frozen_console.configuration_faults(
-    FROZEN_CONSOLE_ALLOWED_ROUTES
-)
-if _frozen_console_faults and not IS_PRODUCTION:
-    # Loud rather than fatal outside production, so QA can see the typo
-    # without the deployment crash-looping over a console nobody uses.
-    for _fault in _frozen_console_faults:
-        logger.warning('frozen_console_config: %s', _fault)
-
 if IS_PRODUCTION:
     from django.core.exceptions import ImproperlyConfigured as _Improper
 
@@ -990,12 +941,6 @@ if IS_PRODUCTION:
                 f'{_name} points at a non-production host. Receipts and '
                 'notifications would carry links into QA.'
             )
-
-    # A route the inventory does not know, or one the console refuses under
-    # any configuration (the admin's password-only login, the TOTP secret
-    # views), cannot be what the owner meant. See
-    # servers/admin_dashboard/inventory.py.
-    _production_faults.extend(_frozen_console_faults)
 
     if _production_faults:
         _joined = chr(10).join('  - ' + f for f in _production_faults)

@@ -26,7 +26,22 @@
           "total_net": "0.00",
           "today_net": "0.00",
           "cash_collected": "0.00",
-          "unresolved_trips": 0
+          "unresolved_trips": 0,
+          "promo_paid_by_platform": "0.00",
+          "today_promo_paid_by_platform": "0.00",
+          "promo_paid_label": "Promo paid by SaaradhiGo",
+          "tax_collected": "0.00",
+          "regulatory_fees_collected": "0.00",
+          "tax_collected_label": "Sales tax collected (remitted by SaaradhiGo)",
+          "incentive_rewards": "0.00",
+          "referral_rewards": "0.00",
+          "incentive_commission": "none",
+          "incentive_tax": "not configured",
+          "rewards_pending_review": "0.00",
+          "rewards_pending_review_label": "Pending review",
+          "reward_recovery": "0.00",
+          "reward_recovery_label": "Recovery of reward (reviewed)",
+          "reward_recovery_remaining": "0.00"
         },
         "meta": {
           "timestamp": "2026-01-01T00:00:00.000000+05:30"
@@ -149,7 +164,9 @@
             "total_fare": "192.00"
           },
           "ratings": [],
-          "otp": null
+          "otp": null,
+          "promo_discount": null,
+          "rider_payable": null
         },
         "meta": {
           "timestamp": "2026-01-01T00:00:00.000000+05:30"
@@ -162,19 +179,19 @@
       "body": {
         "status": "success",
         "data": {
-          "estimated_fare": "142.72",
+          "estimated_fare": "214.32",
           "currency": "INR",
           "distance_unit": "km",
           "fare_breakdown": {
-            "base_fare": "30.00",
-            "distance_fare": "80.52",
-            "time_fare": "32.20",
+            "base_fare": "60.00",
+            "distance_fare": "114.07",
+            "time_fare": "40.25",
             "surge_multiplier": "1.00",
             "min_fare_applied": false,
             "tax_mode": "inclusive",
             "tax_label": "GST",
             "tax_percent": "5.000",
-            "tax_amount": "6.80",
+            "tax_amount": "10.21",
             "per_trip_fee": "0.00"
           },
           "fare_adjustments": [],
@@ -332,7 +349,7 @@
         "status": "success",
         "data": {
           "trip_id": 1,
-          "receipt_number": "SG-202610-1-v1",
+          "receipt_number": "SG-202611-1-v1",
           "sent_to": "",
           "last_sent_at": null,
           "failure_reason": "no_email"
@@ -398,7 +415,9 @@
             "total_fare": "192.00"
           },
           "ratings": [],
-          "otp": null
+          "otp": null,
+          "promo_discount": null,
+          "rider_payable": null
         },
         "meta": {
           "timestamp": "2026-01-01T00:00:00.000000+05:30"
@@ -446,7 +465,9 @@
             "total_fare": "192.00"
           },
           "ratings": [],
-          "otp": null
+          "otp": null,
+          "promo_discount": null,
+          "rider_payable": null
         },
         "meta": {
           "timestamp": "2026-01-01T00:00:00.000000+05:30"

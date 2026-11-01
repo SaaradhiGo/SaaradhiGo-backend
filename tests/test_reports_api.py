@@ -4,6 +4,7 @@ Everything runs through the real endpoints over rollups built by the real `rebui
 """
 
 import csv
+import re
 import io
 import json
 from collections import defaultdict
@@ -99,13 +100,36 @@ class TestCapabilityMatrix:
         listed = {r['key'] for area in data(response)['areas'] for r in area['reports']}
         assert listed == MATRIX[role]
 
-    def test_marketing_sees_promotion_cost_but_no_gmv(self, geo, world):
+    def test_marketing_sees_promotion_cost_with_gmv_and_trip_volume(self, geo, world):
+        """AUDIT 27.59 ruling 1: GMV and trip volume for promo ROI; no take rate, commission,
+        platform revenue or payouts."""
         client, _ = operator('marketing', geo, 'IN-TG-HYD')
         body = data(get(client, 'promotions_cost'))
-        assert body['totals'][0]['promo_cost_minor'] == 5000
-        assert 'gmv_minor' not in body['totals'][0]
+        total = body['totals'][0]
+        assert total['promo_cost_minor'] == 5000
+        finance, _ = operator('finance', geo, 'IN-TG-HYD')
+        assert total['gmv_minor'] == data(get(finance, 'revenue'))['totals'][0]['gmv_minor'] > 0
+        assert total['trips_completed'] > 0
+        assert total['promo_cost_percent_of_gmv'] == pytest.approx(
+            100 * total['promo_cost_minor'] / total['gmv_minor'], abs=0.06)
+        for forbidden in ('commission_minor', 'take_rate', 'net_take_minor', 'rider_paid_minor',
+                          'driver_net_minor', 'platform_cost_minor', 'paid_minor'):
+            assert forbidden not in total
+            assert all(forbidden not in r for r in body['rows'])
         assert get(client, 'revenue').status_code == 403
         assert get(client, 'payouts').status_code == 403
+        # trip volume (the trips report) is open to Marketing through the report door
+        assert data(get(client, 'trips'))['totals'][0]['trips_completed'] > 0
+
+    def test_marketing_promotion_csv_has_gmv_but_no_commission_or_take_rate(self, geo, world):
+        client, _ = operator('marketing', geo, 'IN-TG-HYD')
+        response = client.get(f'{BASE}/promotions_cost/export/', RANGE)
+        assert response.status_code == 200
+        header = response.content.decode().splitlines()[0].split(',')
+        assert 'gmv' in header and 'trips_completed' in header
+        assert not [h for h in header if re.search(r'commission|take_rate|platform|revenue|net_take|payout', h)]
+        assert client.get(f'{BASE}/revenue/export/', RANGE).status_code == 403
+        assert client.get(f'{BASE}/payouts/export/', RANGE).status_code == 403
 
     def test_an_unknown_report_is_404(self, geo, world):
         client, _ = operator('analyst', geo, 'IN-TG-HYD')

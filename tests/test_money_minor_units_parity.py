@@ -444,6 +444,46 @@ def _observe_in_a_fresh_transaction(market, rounding):
     return box['observed']
 
 
+def _rebase_us_pass_through(golden, up, even):
+    """US settlement under the owner's pass-through ruling (AUDIT 27.62 item 1, binding).
+
+    The golden file was captured BEFORE it: a US trip settled on the quote's total, tax and fee
+    included, and commission was taken on that. The ruling changes exactly that and nothing else:
+    sales tax and the regulatory fee are collected and remitted, never driver earnings, and
+    commission is on the fare BEFORE tax and fees. So for the US trips only, the settlement, the
+    driver's ledger row, the transaction history and the driver's running balance are re-based here
+    -- but not on trust: each re-based value is first PROVEN to be the ruling applied to the same
+    run's own quote (gross = total - tax - fee; commission = that x the rate, rounded once by the
+    money helper; net = the difference; the ledger row = the net online, the commission on cash), and
+    a cash trip's wallet also owes the tax and the fee as two further debits. The golden file itself
+    is not touched, and India (inclusive tax) is compared exactly as before.
+    """
+    from base.money import quantize
+
+    balance_delta = Decimal('0')
+    for label in sorted({k.split('.')[1] for k in golden if k.startswith('trips.us-')}):
+        p = f'trips.{label}.'
+        total, tax, fee = (Decimal(up[p + f'quote.{f}']) for f in ('total_fare', 'tax_amount',
+                                                                    'per_trip_fee'))
+        gross = total - tax - fee
+        commission = quantize(gross * Decimal(up[p + 'settlement.commission_percent']) / 100, 'USD')
+        net = gross - commission
+        assert Decimal(up[p + 'settlement.gross_fare']) == gross, label
+        assert Decimal(up[p + 'settlement.commission_amount']) == commission, label
+        assert Decimal(up[p + 'settlement.driver_net']) == net, label
+        cash = golden[p + 'driver_ledger.txn_type'] == 'debit'
+        row = commission if cash else net
+        assert Decimal(up[p + 'driver_ledger.amount']) == row, label
+        assert Decimal(up[p + 'transaction_history.amount']) == row, label
+        old = Decimal(golden[p + 'driver_ledger.amount'])
+        balance_delta += (-(row - old) if cash else (row - old)) - ((tax + fee) if cash else 0)
+        for key in ('settlement.gross_fare', 'settlement.commission_amount', 'settlement.driver_net',
+                    'driver_ledger.amount', 'transaction_history.amount'):
+            golden[p + key] = even[p + key] = up[p + key]
+    for key in ('ledger.driver_wallet_balance', 'ledger.driver_available'):
+        golden[key] = str(Decimal(golden[key]) + balance_delta)
+
+
 @pytest.mark.django_db
 def test_money_path_matches_the_pre_migration_golden_file(market, settings):
     """The after equals the before, except where only the rounding mode moved
@@ -474,6 +514,7 @@ def test_money_path_matches_the_pre_migration_golden_file(market, settings):
     golden = _flatten(_normalised(json.loads(GOLDEN.read_text(encoding='utf-8'))))
     up = _flatten(_normalised(_observe_in_a_fresh_transaction(market, ROUND_HALF_UP)))
     even = _flatten(_normalised(_observe_in_a_fresh_transaction(market, ROUND_HALF_EVEN)))
+    _rebase_us_pass_through(golden, up, even)
 
     # Same shape: no value appeared or disappeared.
     assert set(up) ^ set(golden) == set()

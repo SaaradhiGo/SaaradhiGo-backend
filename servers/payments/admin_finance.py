@@ -183,6 +183,10 @@ def settlement_row(s):
         'commission_amount': money(s.commission_amount_minor, s.currency),
         'driver_net_minor': s.driver_net_minor,
         'driver_net': money(s.driver_net_minor, s.currency),
+        # US pass-through (AUDIT 27.62 item 1): null = nothing passed through (India, and rows
+        # written before the rule, whose gross still read as it did).
+        'tax_collected_minor': s.tax_collected_minor,
+        'regulatory_fee_collected_minor': s.regulatory_fee_collected_minor,
         'currency': s.currency,
         'payment_method': s.payment_method,
         'source': s.source,
@@ -536,7 +540,9 @@ def finance_settlements(request):
         return refusal
     totals = _totals_by_currency(
         qs, gross_minor=Sum('gross_fare_minor'), commission_minor=Sum('commission_amount_minor'),
-        driver_net_minor=Sum('driver_net_minor'))
+        driver_net_minor=Sum('driver_net_minor'),
+        tax_collected_minor=Sum('tax_collected_minor'),
+        regulatory_fee_collected_minor=Sum('regulatory_fee_collected_minor'))
     return success_response(
         _page(request, qs, settlement_row, {'totals': totals}), status.HTTP_200_OK)
 
@@ -684,7 +690,10 @@ def overview_rows(user, node, d_from, d_to, permission=READ):
     families = [
         (TripSettlement, 'trip__zone__geo_node_id', 'settled_at', Q(),
          {'gross_minor': Sum('gross_fare_minor'), 'commission_minor': Sum('commission_amount_minor'),
-          'driver_net_minor': Sum('driver_net_minor')}),
+          'driver_net_minor': Sum('driver_net_minor'),
+          # US pass-through (AUDIT 27.62 item 1), not part of gross, commission or net.
+          'tax_collected_minor': Sum('tax_collected_minor'),
+          'regulatory_fee_collected_minor': Sum('regulatory_fee_collected_minor')}),
         (TripMoneyAction, 'trip__zone__geo_node_id', 'created_at', Q(kind=TripMoneyAction.REFUND),
          {'refunds_minor': Sum('amount_minor')}),
         (TransactionHistory, 'driver_id__home_city_id', 'created_at',
@@ -715,6 +724,29 @@ def overview_rows(user, node, d_from, d_to, permission=READ):
                 for column in sums:
                     out[key][column] += row[column] or 0
     return out
+
+
+def pass_through_section(out, currency=None):
+    """"Tax and fees collected (pass-through)": per currency, what the platform collected from
+    riders for remittance, by kind. `out` is `overview_rows`'s result, so it covers exactly the cities,
+    days and scope of the overview it sits in. A currency with nothing collected is left out."""
+    sums = defaultdict(lambda: {'tax': 0, 'fee': 0})
+    for (_city_id, _day, cur), values in out.items():
+        if currency and cur != currency:
+            continue
+        sums[cur]['tax'] += values.get('tax_collected_minor', 0)
+        sums[cur]['fee'] += values.get('regulatory_fee_collected_minor', 0)
+    return {
+        'title': 'Tax and fees collected (pass-through)',
+        'note': 'Collected from riders and remitted by SaaradhiGo. Not driver earnings and not '
+                'platform revenue; commission is worked out on the fare before tax and fees.',
+        'by_currency': [
+            {'currency': cur, 'collected_minor': v['tax'] + v['fee'],
+             'by_kind': [{'kind': 'tax_collected', 'label': 'Sales tax', 'amount_minor': v['tax']},
+                         {'kind': 'regulatory_fee_collected', 'label': 'Regulatory fees',
+                          'amount_minor': v['fee']}]}
+            for cur, v in sorted(sums.items()) if v['tax'] or v['fee']],
+    }
 
 
 def platform_funded_ends(user, node, limit=100):
@@ -856,6 +888,9 @@ def finance_overview(request):
         'columns': columns,
         'rows': rows,
         'totals': [{'currency': cur, **dict(vals)} for cur, vals in sorted(totals.items())],
+        # US pass-through (AUDIT 27.62 item 1): tax and fees collected from riders, owed to the
+        # authorities, never earnings or revenue. Per currency, by kind. US accountant to confirm.
+        'tax_and_fees_collected': pass_through_section(out, currency),
         # A COUNT per country, in the viewer's scope: never a name or a phone number.
         'skipped_in_latest_run': skipped,
         # Completed trips left unsettled because no commission rule governs them

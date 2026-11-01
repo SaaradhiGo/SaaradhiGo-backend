@@ -31,9 +31,18 @@ charged, within the upfront cap: the pre-tax fare first, then tax on it and the 
 above the quote. If the cap binds, the total is held at the cap and the base is backed out of it
 (`tax_on_charged`). When the rider is charged 0 (safety incident or platform fault) NO tax or fee is
 charged to the rider, and the per-trip regulatory fee the platform owes is booked as a platform expense
-(`payments.PlatformExpense`), on no wallet. A promo applies as before, on the fare as quoted and charged.
-No rate is decided here: the zone's and the card's own configured values are used. US ACCOUNTANT TO
-CONFIRM (go-live blocker #15). India (inclusive tax) is unchanged.
+(`payments.PlatformExpense`), on no wallet. No rate is decided here: the zone's and the card's own
+configured values are used. US ACCOUNTANT TO CONFIRM (go-live blocker #15). India (inclusive tax) is
+unchanged.
+
+OWNER RULINGS OF 2026-11-01 (AUDIT 27.59), both US only, India unchanged
+  * A PROMO on a US standard end: tax is on what the rider is actually charged, so the platform-funded
+    discount lowers the taxable amount: tax = tax_percent x (pre-tax fare - discount), floored at 0,
+    the per-trip fee unchanged. The trip's fare (what commission and driver earnings are computed on)
+    is the pre-discount charge with that lower tax, so it drops by the tax no longer charged.
+  * PLATFORM-FUNDED end (rider charged 0): the driver is paid their normal net for the distance driven:
+    the PRE-TAX, pre-fee metered fare (capped at the pre-tax upfront fare) minus the standard commission
+    on it. No tax or fee is part of the driver's earnings. India: fare minus commission, as before.
 
 NOTHING NEW IS CHARGED. A normal completion charges `final_fare or estimated_fare`
 and adds no fee, tip or toll; neither does this. No fare-card, surge, fee or
@@ -260,6 +269,11 @@ class Plan:
     #: The per-trip regulatory fee the platform owes when the rider is charged 0 (platform-funded
     #: rule): booked as a platform expense, never charged to the rider.
     regulatory_fee_expense_minor: int = 0
+    #: US promo (AUDIT 27.59): the tax no longer charged because the discount lowers the taxable
+    #: amount (0 otherwise), and, under the platform-funded rule, the pre-tax fare the driver's
+    #: earnings and commission are worked out on (None otherwise).
+    tax_relief_minor: int = 0
+    earnings_base_minor: object = None
 
     def as_dict(self):
         """The preview payload and the audit figures. No coordinates, no contact detail."""
@@ -290,9 +304,28 @@ class Plan:
             'tax_minor': self.tax_minor,
             'per_trip_fee_minor': self.fee_minor,
             'regulatory_fee_expense_minor': self.regulatory_fee_expense_minor,
+            'tax_relief_minor': self.tax_relief_minor,
+            'driver_earnings_base_minor': self.earnings_base_minor,
             'tax_note': ('US accountant to confirm (go-live blocker #15)'
                          if self.tax_minor is not None else None),
         }
+
+
+def _upfront_pretax_minor(trip, metered, upfront_minor, currency):
+    """The pre-tax part of the upfront price (additive markets): what the booking quote split into,
+    else worked back out of the upfront total with the zone's own tax percent and fee."""
+    from servers.ride.models import FarePricing
+
+    stored = (FarePricing.objects.filter(trip_id=trip, snapshot_type=FarePricing.SNAPSHOT_QUOTE,
+                                         pretax_fare_minor__isnull=False)
+              .order_by('-id').values_list('pretax_fare_minor', flat=True).first())
+    if stored is not None:
+        return int(stored)
+    from servers.pricing.promo_tax import split_additive
+
+    pretax, _tax, _fee = split_additive(from_minor(upfront_minor, currency),
+                                        metered['tax_percent'], metered['fee'], currency)
+    return to_minor(pretax, currency)
 
 
 def build_plan(trip, reason_code):
@@ -332,9 +365,45 @@ def build_plan(trip, reason_code):
             pretax_minor, tax_minor, fee_minor = (
                 to_minor(base_d, currency), to_minor(tax_d, currency), to_minor(fee_d, currency))
 
+    # Promotions (module 12), STANDARD rule: the discount on the capped fare under the promo's own terms.
+    promo = 0
+    if rule == STANDARD:
+        from servers.promotions.rider_promos import operator_end_discount_minor
+        promo = operator_end_discount_minor(trip, capped)
+    # AUDIT 27.59 ruling 2 (US, additive tax): the tax is on what the rider is charged, so the discount
+    # lowers the taxable amount. `charged_full` is what commission and driver earnings use (the capped
+    # charge with the lower tax); in an inclusive market it is `capped`, exactly as before.
+    charged_full, tax_relief = capped, 0
+    if promo and pretax_minor is not None and rule == STANDARD:
+        from servers.pricing.promo_tax import adjust
+        adj = adjust(from_minor(pretax_minor, currency), metered['tax_percent'],
+                     from_minor(fee_minor, currency), from_minor(promo, currency), currency,
+                     tax_before=from_minor(tax_minor, currency))
+        promo = to_minor(adj['discount'], currency)
+        tax_relief = to_minor(adj['relief'], currency)
+        charged_full = to_minor(adj['full'], currency)
+        tax_minor = to_minor(adj['tax'], currency)
+
+    # AUDIT 27.59 ruling 3 (US platform-funded end): the driver's earnings are the PRE-TAX fare for the
+    # distance driven (capped at the pre-tax upfront fare) less the standard commission on it; no tax
+    # and no fee. In an inclusive market the base is the capped fare, as before.
+    earnings_base = None
+    if rule == PLATFORM_FUNDED:
+        earnings_base = capped
+        if metered['additive']:
+            earnings_base = min(to_minor(metered['pretax'], currency),
+                                _upfront_pretax_minor(trip, metered, upfront, currency))
+    elif pretax_minor is not None:
+        # AUDIT 27.62 item 1 (US standard end): tax and the per-trip fee are PASS-THROUGH, collected
+        # from the rider and remitted, never the driver's earnings; commission is on the fare before
+        # tax and fees. The driver's base is the pre-tax fare (before the promo discount, which the
+        # platform funds), the same as a normal US trip of that distance. US accountant to confirm
+        # (go-live blocker #15).
+        earnings_base = pretax_minor
+    base = charged_full if earnings_base is None else earnings_base
     try:
         percent = commission_percent_for_trip(trip)
-        commission = to_minor(from_minor(capped, currency) * percent / Decimal('100'), currency)
+        commission = to_minor(from_minor(base, currency) * percent / Decimal('100'), currency)
     except CommissionNotConfigured:
         percent = commission = None
     if rule == PLATFORM_FUNDED and commission is None:
@@ -342,24 +411,21 @@ def build_plan(trip, reason_code):
             'commission_not_configured',
             'No commission rule governs this trip, so the earnings the platform would pay '
             'cannot be worked out.')
-    earnings = None if commission is None else capped - commission
-    promo = 0
-    if rule == STANDARD:
-        from servers.promotions.rider_promos import operator_end_discount_minor
-        promo = operator_end_discount_minor(trip, capped)
+    earnings = None if commission is None else base - commission
     return Plan(
         trip_id=trip.id, reason_code=reason_code, rule=rule, currency=currency,
         payment_method=trip.payment_method or 'deferred', last_activity_at=until,
         distance_km=distance, distance_source=source, trail_points=points,
         elapsed_minutes=minutes, uncapped_minor=uncapped, upfront_minor=upfront,
-        capped_minor=capped, rider_pays_minor=0 if rule == PLATFORM_FUNDED else capped,
+        capped_minor=capped, rider_pays_minor=0 if rule == PLATFORM_FUNDED else charged_full,
         commission_percent=percent, commission_minor=commission,
         driver_earnings_minor=earnings,
         funded_by='platform' if rule == PLATFORM_FUNDED else 'rider', metered=metered,
         promo_discount_minor=promo,
-        rider_pays_after_promo_minor=0 if rule == PLATFORM_FUNDED else capped - promo,
+        rider_pays_after_promo_minor=0 if rule == PLATFORM_FUNDED else charged_full - promo,
         pretax_minor=pretax_minor, tax_minor=tax_minor, fee_minor=fee_minor,
-        regulatory_fee_expense_minor=expense_minor)
+        regulatory_fee_expense_minor=expense_minor,
+        tax_relief_minor=tax_relief, earnings_base_minor=earnings_base)
 
 
 # ---------------------------------------------------------------------------
@@ -387,8 +453,10 @@ def _snapshot(trip, plan):
         zone_code=getattr(getattr(trip, 'zone', None), 'code', '') or '',
         vehicle_type=getattr(trip.requested_vehicle_type, 'type', '') or '',
         pricing_source='db', trail_points=plan.trail_points,
-        gross_fare_minor=plan.capped_minor, discount_amount_minor=0,
-        rider_payable_minor=plan.rider_pays_minor,
+        gross_fare_minor=plan.rider_pays_minor if plan.tax_relief_minor else plan.capped_minor,
+        discount_amount_minor=plan.promo_discount_minor if plan.tax_relief_minor else 0,
+        rider_payable_minor=(plan.rider_pays_after_promo_minor if plan.tax_relief_minor
+                             else plan.rider_pays_minor),
         pretax_fare_minor=plan.pretax_minor, tax_minor=plan.tax_minor,
         per_trip_fee_minor=plan.fee_minor)
 
@@ -512,7 +580,8 @@ def apply_plan(trip, plan, *, actor):
     # discount is re-worked on the capped fare under the promo's own terms and settles as a normal
     # promo trip (driver earnings and commission on the full capped fare; the platform funds it).
     from servers.promotions.rider_promos import apply_operator_end, payable_minor
-    apply_operator_end(trip, plan.capped_minor, plan.rule)
+    apply_operator_end(trip, plan.capped_minor, plan.rule,
+                       plan_discount_minor=plan.promo_discount_minor if plan.tax_relief_minor else None)
     if trip.driver_id_id is not None:
         Driver.objects.filter(id=trip.driver_id_id).update(total_trips=F('total_trips') + 1)
 

@@ -299,6 +299,9 @@ def _derive_promotions(row, n, series):
                                + row['referral_rewards_minor'] - row['reward_recovery_minor'])
     row['cost_per_trip_minor'] = (int(round(row['total_cost_minor'] / row['trips_completed']))
                                   if row['trips_completed'] else None)
+    # Owner ruling (AUDIT 27.59): promo cost against GMV, so Marketing can read promo ROI.
+    row['promo_cost_percent_of_gmv'] = _pct(row['promo_cost_minor'], row['gmv_minor'])
+    row['total_cost_percent_of_gmv'] = _pct(row['total_cost_minor'], row['gmv_minor'])
 
 
 def _derive_supply(row, n, series):
@@ -354,7 +357,7 @@ REVENUE_SUMS = ('trips_completed', 'settled_trips', 'gmv_minor', 'rider_paid_min
                 'platform_funded_trip_end_minor', 'regulatory_fee_expense_minor',
                 'incentive_rewards_minor', 'referral_rewards_minor', 'reward_recovery_minor',
                 'refunds_minor')
-PROMO_SUMS = ('trips_completed', 'promo_cost_minor', 'incentive_rewards_minor',
+PROMO_SUMS = ('trips_completed', 'gmv_minor', 'promo_cost_minor', 'incentive_rewards_minor',
               'referral_rewards_minor', 'reward_recovery_minor')
 PAYOUT_SUMS = ('requested_count', 'requested_minor', 'paid_count', 'paid_minor', 'failed_count',
                'failed_minor')

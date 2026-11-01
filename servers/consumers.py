@@ -1094,19 +1094,39 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 # pays, and the platform funds it. The reservation against the campaign budget is
                 # atomic with the trip: a refusal rolls the booking back.
                 from servers.promotions import rider_promos
+                #
+                # US (additive tax): tax is on the fare AFTER the promo (AUDIT 27.59 ruling 2), so
+                # `redeem_promo` lowers the trip's fare by the tax no longer charged; read it back.
+                from decimal import Decimal as _Dec
+
+                from base.money import to_minor as _to_minor
+                additive = fare.get('tax_mode') == 'additive'
+                promo_tax = ((_Dec(str(fare['tax_percent'])), fare['per_trip_fee'])
+                             if additive else False)
+                if additive:
+                    # What the quote split into, so a later early end can cap the pre-tax fare.
+                    _cur = fare['currency']
+                    fare_pricing.pretax_fare_minor = _to_minor(
+                        fare['total_fare'] - fare['tax_amount'] - fare['per_trip_fee'], _cur)
+                    fare_pricing.tax_minor = _to_minor(fare['tax_amount'], _cur)
+                    fare_pricing.per_trip_fee_minor = _to_minor(fare['per_trip_fee'], _cur)
+                    fare_pricing.save(update_fields=[
+                        'pretax_fare_minor', 'tax_minor', 'per_trip_fee_minor'])
                 promo_result = rider_promos.book(
-                    self.user, trip, fare['total_fare'], pickup_zone, promo_code)
+                    self.user, trip, fare['total_fare'], pickup_zone, promo_code, tax=promo_tax)
                 if promo_result is not None:
                     from servers.ride.models import PromoCode
+                    full_fare = trip.estimated_fare
                     fare_pricing.promo = PromoCode.objects.filter(
                         code__iexact=promo_result.code).first()
                     fare_pricing.promo_code = promo_result.code
-                    fare_pricing.gross_fare = fare['total_fare']
+                    fare_pricing.total_fare = full_fare
+                    fare_pricing.gross_fare = full_fare
                     fare_pricing.discount_amount = promo_result.discount_amount
                     fare_pricing.rider_payable = promo_result.final_fare
                     fare_pricing.save(update_fields=[
-                        'promo', 'promo_code', 'gross_fare_minor', 'discount_amount_minor',
-                        'rider_payable_minor'])
+                        'promo', 'promo_code', 'total_fare_minor', 'gross_fare_minor',
+                        'discount_amount_minor', 'rider_payable_minor'])
 
             # Cache new trip in Redis for fast state reads
             from servers.redis_client import cache_trip as _cache_trip
@@ -1118,7 +1138,7 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 pickup_lng=str(pickup_lng),
                 destination_lat=str(destination_lat),
                 destination_lng=str(destination_lng),
-                estimated_fare=str(fare['total_fare']),
+                estimated_fare=str(trip.estimated_fare),
                 payment_method=payment_method or 'cash',
             )
 

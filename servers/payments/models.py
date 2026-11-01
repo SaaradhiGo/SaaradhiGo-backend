@@ -309,6 +309,18 @@ class TripSettlement(CurrencyStampedModel, models.Model):
     gross_fare = MinorUnitsAmount('gross_fare_minor')
     commission_amount = MinorUnitsAmount('commission_amount_minor')
     driver_net = MinorUnitsAmount('driver_net_minor')
+    # US pass-through (owner ruling AUDIT 27.62 item 1; US accountant to confirm, go-live blocker
+    # #15). In an additive-tax market the sales tax and the per-trip regulatory fee are collected
+    # from the rider and remitted by SaaradhiGo: they are NOT in `gross_fare_minor` (the fare before
+    # tax and fees, the commission base), never in the driver's net, and are recorded here as amounts
+    # the platform holds for remittance. rider paid = driver_net + commission + these - a
+    # platform-funded promo. NULL = nothing passed through: India (tax inclusive in the fare) and
+    # every settlement written before this existed, which keep their old meaning (gross then
+    # included tax and fee on a US trip); they are not re-settled.
+    tax_collected_minor = models.BigIntegerField(null=True, blank=True)
+    regulatory_fee_collected_minor = models.BigIntegerField(null=True, blank=True)
+    tax_collected = MinorUnitsAmount('tax_collected_minor')
+    regulatory_fee_collected = MinorUnitsAmount('regulatory_fee_collected_minor')
     # Stamped at write time from the trip's zone. Denormalised on purpose: the
     # currency a row was written in is a fact about that row, not a lookup
     # against today's zone configuration.

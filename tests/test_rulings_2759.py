@@ -9,8 +9,11 @@ THE WORKED EXAMPLE (US, additive): fare 20.00, promo 5.00, tax 8.25%, fee 0.50.
   quote, no promo      20.00 + 1.65 + 0.50                 = 22.15
   with the promo       (20.00 - 5.00) + 1.24 + 0.50        = 16.74   (tax 15.00 x 8.25% = 1.2375 -> 1.24)
   tax no longer charged 1.65 - 1.24                        = 0.41
-  the trip's fare       22.15 - 0.41                       = 21.74   (commission and driver earnings base)
-  commission 25%        21.74 x 25% = 5.435 -> 5.44 ; driver net 16.30
+  the trip's fare       22.15 - 0.41                       = 21.74   (the full charge, before the promo)
+
+SETTLEMENT (owner ruling AUDIT 27.62 item 1, tests/test_us_passthrough.py): tax and the fee are
+PASS-THROUGH, so the driver's gross is the 20.00 fare before tax and fees: commission 25% = 5.00,
+driver net 15.00, whatever the promo did to the tax.
 """
 
 from datetime import timedelta
@@ -227,11 +230,14 @@ class TestSettlementBalances:
         credit_driver_wallet(trip)
         s = TripSettlement.objects.get(trip=trip)
         assert (s.gross_fare_minor, s.commission_amount_minor, s.driver_net_minor) == (
-            2_174, 544, 1_630)
-        assert driver_wallet(driver).balance_minor == 1_630
-        # the platform collected the rider's 16.74, owes the driver 16.30 and keeps 5.44 commission;
-        # it funded the 5.00 discount: 16.74 + 5.00 = 21.74 = 16.30 + 5.44
-        assert rider_promos.payable_minor(trip) + 500 == s.driver_net_minor + s.commission_amount_minor
+            2_000, 500, 1_500)
+        assert (s.tax_collected_minor, s.regulatory_fee_collected_minor) == (124, 50)
+        assert driver_wallet(driver).balance_minor == 1_500
+        # the platform collected the rider's 16.74, owes the driver 15.00, keeps 5.00 commission and
+        # holds 1.24 tax + 0.50 fee for remittance; it funded the 5.00 discount
+        assert (rider_promos.payable_minor(trip) + 500 == s.driver_net_minor
+                + s.commission_amount_minor + s.tax_collected_minor
+                + s.regulatory_fee_collected_minor)
         entry = LedgerEntry.objects.get(kind=DISCOUNT_FUNDED, trip=trip)
         assert (entry.amount_minor, entry.currency) == (500, 'USD')          # the discount, unchanged
         assert not WalletTransaction.objects.filter(purpose='promo_discount_platform_funded').exists()
@@ -244,14 +250,14 @@ class TestSettlementBalances:
         credit_driver_wallet(trip)
         s = TripSettlement.objects.get(trip=trip)
         assert (s.gross_fare_minor, s.commission_amount_minor, s.driver_net_minor) == (
-            2_174, 544, 1_630)
+            2_000, 500, 1_500)
         cash_held = rider_promos.payable_minor(trip)
         assert cash_held == 1_674
         credit = WalletTransaction.objects.get(purpose='promo_discount_platform_funded')
         assert (credit.amount_minor, credit.txn_type) == (500, 'credit')     # the discount, unchanged
-        # cash in hand + wallet (credit - commission owed) == the driver's net: the ledger balances
+        # cash in hand + wallet (+5.00 promo - 5.00 commission - 1.24 tax - 0.50 fee) == the net
         assert cash_held + driver_wallet(driver).balance_minor == s.driver_net_minor
-        assert driver_wallet(driver).balance_minor == 500 - 544
+        assert driver_wallet(driver).balance_minor == 500 - 500 - 124 - 50
 
     @pytest.mark.parametrize('method', ['online', 'cash'])
     def test_settling_twice_changes_nothing(self, us825, method):
@@ -269,9 +275,10 @@ class TestSettlementBalances:
         trip = us_trip(us825, method=method)
         credit_driver_wallet(trip)
         s = TripSettlement.objects.get(trip=trip)
-        # 22.15 gross as before (tax on the full fare), 25% = 5.5375 -> 5.54, net 16.61
+        # pass-through: commission on the 20.00 before tax and fees (25% = 5.00), net 15.00
         assert (s.gross_fare_minor, s.commission_amount_minor, s.driver_net_minor) == (
-            2_215, 554, 1_661)
+            2_000, 500, 1_500)
+        assert (s.tax_collected_minor, s.regulatory_fee_collected_minor) == (165, 50)
         assert rider_promos.payable_minor(trip) == 2_215
         assert not LedgerEntry.objects.filter(kind=DISCOUNT_FUNDED).exists()
 
@@ -330,8 +337,10 @@ class TestOperatorEndWithPromo:
         assert data['pretax_fare_minor'] == 1_050 and data['per_trip_fee_minor'] == 50
         assert data['rider_pays_minor'] == 1_170                      # 10.50 + 0.70 + 0.50
         assert data['rider_pays_after_promo_minor'] == 970            # (10.50 - 2.00) + 0.70 + 0.50
-        assert data['commission_minor'] == 293                        # 25% of 11.70 = 2.925
-        assert data['driver_earnings_minor'] == 1_170 - 293
+        # pass-through: commission on the 10.50 before tax and fee (25% = 2.625 -> 2.63), not on 11.70
+        assert data['commission_minor'] == 263
+        assert data['driver_earnings_base_minor'] == 1_050
+        assert data['driver_earnings_minor'] == 1_050 - 263
         trip.refresh_from_db()
         assert trip.final_fare_minor == 1_170
         assert rider_promos.payable_minor(trip) == 970

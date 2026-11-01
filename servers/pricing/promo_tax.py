@@ -28,7 +28,7 @@ fee are the zone's and the rate card's own configured values.
 
 from decimal import Decimal
 
-from base.money import from_minor, quantize
+from base.money import from_minor, quantize, to_minor
 
 D = Decimal
 
@@ -90,3 +90,63 @@ def adjust(pretax, percent, fee, discount, currency, tax_before=None):
     return {'taxable': taxable, 'tax': tax, 'tax_before': before, 'full': full,
             'discount': applied, 'payable': full - applied, 'relief': before - tax,
             'pretax': pretax, 'fee': fee}
+
+
+# ---------------------------------------------------------------------------
+# Settlement: US tax and the per-trip fee are PASS-THROUGH (AUDIT 27.62 item 1, binding)
+# ---------------------------------------------------------------------------
+
+def fee_label(zone):
+    """The zone's own name for its per-trip fee (what the rider's receipt calls it)."""
+    return (getattr(zone, 'per_trip_fee_label', '') or '') or 'Regulatory fee'
+
+
+def settlement_split(trip, gross_minor, currency):
+    """How a US trip's charge splits for settlement: `{'pretax', 'tax', 'fee'}` in minor units, or
+    None where nothing is passed through (an inclusive-tax market such as India, a trip with no
+    zone, or an additive zone with no rate card to read the tax from).
+
+    THE RULE (owner ruling AUDIT 27.62 item 1; US accountant to confirm, go-live blocker #15): sales
+    tax and the regulatory fee are collected from the rider and remitted. They are never part of the
+    driver's earnings, and commission is worked out on the fare BEFORE tax and fees. `gross_minor` is
+    the trip's full charge (`final_fare or estimated_fare`: the pre-discount fare with the tax on the
+    discounted amount, plus the fee); `pretax + tax + fee == gross_minor` always.
+
+    Where the pre-tax fare comes from, best first:
+      1. the latest fare snapshot that recorded it (booking stores the quote's split; an operator end
+         stores its own), with the fee it recorded;
+      2. else worked out from the trip: the zone's fee and the rate card's tax percent, and the promo
+         discount held on the trip (tax was charged on the fare after it).
+    """
+    zone = getattr(trip, 'zone', None)
+    if zone is None or (getattr(zone, 'tax_mode', '') or 'inclusive') != 'additive':
+        return None
+    gross_minor = int(gross_minor or 0)
+
+    from servers.ride.models import FarePricing
+
+    stored = (FarePricing.objects.filter(trip_id=trip, pretax_fare_minor__isnull=False)
+              .order_by('-id').values_list('pretax_fare_minor', 'per_trip_fee_minor').first())
+    if stored is not None:
+        pretax, fee = int(stored[0]), int(stored[1] or 0)
+        tax = gross_minor - pretax - fee
+        if pretax >= 0 and fee >= 0 and tax >= 0:
+            return {'pretax': pretax, 'tax': tax, 'fee': fee}
+
+    ctx = additive_context(zone, getattr(trip, 'requested_vehicle_type', None))
+    if ctx is None:
+        return None
+    percent, zone_fee = ctx
+    fee = min(to_minor(zone_fee, currency), gross_minor)
+    remainder = gross_minor - fee
+    from servers.promotions import rider_promos
+
+    discount = rider_promos.discount_minor(trip)
+    if remainder <= discount:
+        # The promo took the taxable amount to zero: no tax was charged, the rest is the fare.
+        return {'pretax': remainder, 'tax': 0, 'fee': fee}
+    # remainder = pretax + tax(pretax - discount): split what is left after the discount.
+    taxable, tax, _ = split_additive(from_minor(remainder - discount, currency), percent,
+                                     D('0'), currency)
+    return {'pretax': to_minor(taxable, currency) + discount, 'tax': to_minor(tax, currency),
+            'fee': fee}

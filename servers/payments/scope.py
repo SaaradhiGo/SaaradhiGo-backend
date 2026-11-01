@@ -62,6 +62,10 @@ DRIVER_LEDGER_PURPOSES = (
     # Fraud money actions (AUDIT 27.56): a debit taking back an approved reward recovery. Named
     # for what it is to the driver ("Recovery of reward (reviewed)"), never with a fraud word.
     'reward_recovery',
+    # US pass-through (AUDIT 27.62 item 1): on a CASH trip the driver holds the rider's sales tax and
+    # per-trip regulatory fee and owes both to SaaradhiGo, which remits them. Two debits, each its
+    # own line; never earnings. (Online trips never touch the driver's wallet with either.)
+    'tax_collected', 'regulatory_fee_collected',
 )
 
 #: `model label -> ORM lookup(s) reaching GeoNode.path`. One table, so a view

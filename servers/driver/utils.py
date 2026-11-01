@@ -47,6 +47,12 @@ def update_driver_location(driver_id, lng, lat):
         status_code=status.HTTP_200_OK
     )
 
+#: Wallet-ledger purposes of the US pass-through lines on a CASH trip (the driver holds the rider's
+#: tax and fee in hand and owes them to SaaradhiGo, which remits them). Debits, never earnings.
+PURPOSE_TAX_COLLECTED = 'tax_collected'
+PURPOSE_FEE_COLLECTED = 'regulatory_fee_collected'
+
+
 def settle_or_defer(trip):
     """Settle a completed trip, but never let a missing commission rule strand the ride.
 
@@ -96,6 +102,20 @@ def credit_driver_wallet(trip):
     currency = currency_for_trip(trip)
     gross_minor = trip.final_fare_minor or trip.estimated_fare_minor or 0
 
+    # US (additive-tax) trips: sales tax and the per-trip regulatory fee are PASS-THROUGH (owner
+    # ruling, AUDIT 27.62 item 1). They are collected from the rider and remitted by SaaradhiGo,
+    # never part of the driver's earnings, and commission is worked out on the fare BEFORE tax and
+    # fees. So the settlement's gross is the pre-tax fare and the tax and fee are recorded beside it.
+    # India (inclusive tax) and a zone with nothing to split: `passthrough` is None and every line
+    # below is exactly what it was. US accountant to confirm (go-live blocker #15).
+    from servers.pricing.promo_tax import settlement_split
+
+    passthrough = settlement_split(trip, gross_minor, currency)
+    tax_minor = fee_minor = None
+    if passthrough is not None:
+        gross_minor, tax_minor, fee_minor = (
+            passthrough['pretax'], passthrough['tax'], passthrough['fee'])
+
     # Commission comes from the RateCard in force for the trip's zone, not
     # from a global env var. PLATFORM_COMMISSION_PERCENT defaulted to "0",
     # so an unset env var meant the platform took nothing on every ride,
@@ -119,6 +139,10 @@ def credit_driver_wallet(trip):
             txn_type = 'debit'
             purpose = 'trip_commission'
             new_balance_minor = wallet.balance_minor - commission_minor
+            # The driver also holds the tax and fee the rider handed over: it is not theirs, so
+            # the wallet owes it to SaaradhiGo as two more debits, each its own labelled line
+            # (written below, once the commission line has gone in).
+            new_balance_minor -= (tax_minor or 0) + (fee_minor or 0)
         else:
             # Online/Wallet payment, platform owes driver the net amount
             txn_minor = net_minor
@@ -159,6 +183,15 @@ def credit_driver_wallet(trip):
         wallet.balance_minor = new_balance_minor
         wallet.save(update_fields=['balance_minor'])
 
+        if trip.payment_method == 'cash':
+            for amount, purpose_, key in ((tax_minor, PURPOSE_TAX_COLLECTED, 'TAX'),
+                                          (fee_minor, PURPOSE_FEE_COLLECTED, 'FEE')):
+                if amount:
+                    WalletTransaction.objects.create(
+                        user_id=trip.driver_id.user_id, currency=currency, amount_minor=amount,
+                        txn_type='debit', status='completed', purpose=purpose_,
+                        reference_id=f'TRIP_{trip.id}', idempotency_key=f'TRIP_{trip.id}_{key}')
+
         # Create transaction history
         TransactionHistory.objects.create(
             trip_id=trip,
@@ -195,6 +228,10 @@ def credit_driver_wallet(trip):
             commission_percent=commission_rate,
             commission_amount_minor=commission_minor,
             driver_net_minor=net_minor,
+            # Pass-through amounts owed by the platform (None = nothing passed through: India, and
+            # every settlement written before this existed, which read exactly as they always did).
+            tax_collected_minor=tax_minor,
+            regulatory_fee_collected_minor=fee_minor,
             payment_method=trip.payment_method or 'online',
             settled_at=timezone.now(),
             source=TripSettlement.SOURCE_NATIVE,

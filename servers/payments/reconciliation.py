@@ -48,6 +48,7 @@ from zoneinfo import ZoneInfo
 
 from django.db import IntegrityError, transaction
 from django.db.models import Exists, F, OuterRef, Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from base.countries import COUNTRIES, get_country
@@ -319,7 +320,12 @@ def _check_settlements(r, country, currency, start, end):
     off = (TripSettlement.objects
            .filter(settled_at__gte=start, settled_at__lt=end, currency=currency,
                    trip__zone__country=country, trip__final_fare_minor__isnull=False)
-           .exclude(gross_fare_minor=F('trip__final_fare_minor'))
+           # US pass-through (AUDIT 27.62 item 1): the settlement's gross is the fare BEFORE tax and
+           # fees, so the trip's full charge is gross + tax + fee (tax/fee are NULL on India and on
+           # settlements written before the rule, where gross alone is the charge).
+           .annotate(_charge=F('gross_fare_minor') + Coalesce(F('tax_collected_minor'), 0)
+                     + Coalesce(F('regulatory_fee_collected_minor'), 0))
+           .exclude(_charge=F('trip__final_fare_minor'))
            .exclude(Exists(newer))
            .select_related('trip__zone__geo_node')[:MAX_ITEMS_PER_CHECK])
     for s in off:

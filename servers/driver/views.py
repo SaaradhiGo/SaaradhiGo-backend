@@ -263,6 +263,12 @@ def driver_earnings_summary(request):
         'promo_paid_by_platform': str(totals['promo_paid_by_platform']),
         'today_promo_paid_by_platform': str(today['promo_paid_by_platform']),
         'promo_paid_label': 'Promo paid by SaaradhiGo',
+        # US pass-through (AUDIT 27.62 item 1): sales tax and the regulatory fee are collected from
+        # the rider and remitted by SaaradhiGo. NOT in `total_earned`, `total_net` or commission; on a
+        # cash trip they are in `cash_collected` (the driver holds them) and owed back.
+        'tax_collected': str(totals['tax_collected']),
+        'regulatory_fees_collected': str(totals['regulatory_fees_collected']),
+        'tax_collected_label': 'Sales tax collected (remitted by SaaradhiGo)',
         # Module 12: incentive and referral rewards are their own lines. They are NOT in
         # `total_earned` (that is trip fares) and carry no commission. Paid in the weekly payout.
         **incentive_lines(driver),

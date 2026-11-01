@@ -393,6 +393,13 @@ def build_plan(trip, reason_code):
         if metered['additive']:
             earnings_base = min(to_minor(metered['pretax'], currency),
                                 _upfront_pretax_minor(trip, metered, upfront, currency))
+    elif pretax_minor is not None:
+        # AUDIT 27.62 item 1 (US standard end): tax and the per-trip fee are PASS-THROUGH, collected
+        # from the rider and remitted, never the driver's earnings; commission is on the fare before
+        # tax and fees. The driver's base is the pre-tax fare (before the promo discount, which the
+        # platform funds), the same as a normal US trip of that distance. US accountant to confirm
+        # (go-live blocker #15).
+        earnings_base = pretax_minor
     base = charged_full if earnings_base is None else earnings_base
     try:
         percent = commission_percent_for_trip(trip)

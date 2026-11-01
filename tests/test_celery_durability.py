@@ -228,6 +228,15 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # converges. It only RELEASES money (never takes or pays any); no retry needed, the next
         # run is the retry.
         'fraud.release_holds',
+        # Reports & Analytics (module 14). reports.rebuild_recent: beat, every 30 minutes (today and
+        # yesterday of every city, city-local days); reports.rebuild_week: beat, nightly (the last 7
+        # days plus the weekly rider cohorts). acks_late is safe: rebuild_day deletes and re-inserts
+        # one (city, date) of DERIVED rollup rows in a single transaction from the source data, so a
+        # redelivered or doubled run ends in the same rows. One city failing is logged and does not
+        # stop the others. They read trips, ledgers and queues and write only the rollup tables;
+        # no trip, money, account or setting. No retry needed: the next run is the retry.
+        'reports.rebuild_recent',
+        'reports.rebuild_week',
         'pricing.fare_shadow_sweep',
         # No explicit name= on the decorator, unlike its siblings in the same
         # module, so Celery registers the full dotted path. Nothing references

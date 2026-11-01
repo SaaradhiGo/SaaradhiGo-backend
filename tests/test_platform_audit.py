@@ -128,11 +128,13 @@ class TestListAndFilters:
         old = dated(now - timedelta(days=10), 'old_action')
         recent = dated(now - timedelta(hours=1), 'recent_action')
         client, _ = operator('super_admin', geo)
-        day = (now - timedelta(days=10)).date().isoformat()
+        # The viewer reads from/to as dates in TIME_ZONE (Asia/Kolkata), so the day is taken there
+        # too; the UTC date differs from 18:30 to 24:00 UTC and the test failed in that window.
+        day = timezone.localtime(now - timedelta(days=10)).date().isoformat()
         got = ids(client.get(LIST + f'?from={day}&to={day}'))
         assert old.id in got and recent.id not in got
         assert client.get(LIST + '?from=garbage').status_code == 400
-        end = now.date().isoformat()
+        end = timezone.localdate(now).isoformat()
         assert client.get(LIST + f'?from={end}&to={day}').status_code == 400
 
     def test_a_row_carries_the_fields_the_console_draws(self, geo, world):

@@ -294,7 +294,9 @@ def _row_for(entry, trip, trip_id, settlement=None):
         method=method,
         created_at=entry.created_at,
         rider_name=rider_name,
-        driver_holds_cash=is_cash,
+        # A cash trip the rider then paid from the wallet (AUDIT 27.71): the driver holds nothing.
+        driver_holds_cash=is_cash and not (trip is not None and trip.payment_method
+                                           and trip.payment_method != 'cash'),
         tax_collected=tax,
         fee_collected=fee,
         fee_name=fee_name,

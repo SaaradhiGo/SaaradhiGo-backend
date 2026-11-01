@@ -371,132 +371,32 @@ def get_wallet_transactions(request):
 @permission_classes([IsAuthenticated])
 def wallet_payment(request):
     """
-    Initiate a direct payment from wallet without Razorpay.
-    
-    Expected: {
-        "amount": "100.00",
-        "purpose": "Trip payment",
-        "reference_id": "TRIP_123",
-        "idempotency_key": "unique-key-123"
-    }
-    """
-    from .models import WalletTransaction, Wallet
-    from django.db import transaction
-    import uuid
-    
-    amount = request.data.get('amount')
-    purpose = request.data.get('purpose', 'Payment')
-    reference_id = request.data.get('reference_id')
-    idempotency_key = request.data.get('idempotency_key')
-    
-    # Validate required fields
-    if not amount:
-        return error_response(
-            code='MISSING_FIELDS',
-            message='amount is required',
-            field='amount',
-            issue='Provide the amount to pay from wallet',
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    # Generate idempotency key if not provided
-    if not idempotency_key:
-        idempotency_key = str(uuid.uuid4())
-    
-    try:
-        # Exact from the request onwards; no float touches the ledger.
-        from base.money import parse_input
-        amount_val = parse_input(amount)
-        if amount_val <= 0:
-            raise ValueError("Amount must be positive")
-    except (ValueError, TypeError):
-        return error_response(
-            code='INVALID_AMOUNT',
-            message='Invalid amount provided',
-            field='amount',
-            issue='Amount must be a positive number',
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    # Check for duplicate idempotency key
-    existing_txn = WalletTransaction.objects.filter(
-        idempotency_key=idempotency_key
-    ).first()
-    
-    if existing_txn:
-        return success_response({
-            'message': 'Duplicate request detected - using existing transaction',
-            'transaction_id': existing_txn.id,
-            'status': existing_txn.status,
-            'amount': str(existing_txn.amount)
-        }, status.HTTP_200_OK)
-    
-    try:
-        with transaction.atomic():
-            # Lock wallet row for update
-            wallet = Wallet.objects.select_for_update().get(
-                user_id=request.user, scope=Wallet.SCOPE_RIDER,
-            )
-            
-            # Check balance with lock
-            from base.money import to_minor
-            amount_minor = to_minor(amount_val, wallet.currency)
-            from servers.fraud.money import held_minor
+    Pay a completed trip from the rider's wallet. The server sets the amount.
 
-            # A reward pending review (AUDIT 27.56) is in the wallet but not spendable.
-            if wallet.balance_minor - held_minor(request.user, wallet.currency) < amount_minor:
-                return error_response(
-                    code='INSUFFICIENT_BALANCE',
-                    message='Insufficient wallet balance',
-                    field='wallet',
-                    issue='Wallet balance is less than the amount to pay',
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Deduct amount from wallet
-            wallet.balance_minor = wallet.balance_minor - amount_minor
-            wallet.save()
-            
-            # Create direct debit transaction
-            txn = WalletTransaction.objects.create(
-                user_id=request.user,
-                currency=wallet.currency,
-                amount_minor=amount_minor,
-                txn_type='debit',
-                status='completed',
-                purpose=purpose,
-                reference_id=reference_id,
-                idempotency_key=idempotency_key
-            )
-            
-            logger.info(f"Direct wallet payment successful for user {request.user.id}: "
-                        f"Deducted {amount_val}, new balance: {wallet.balance}")
-            
-            return success_response({
-                'transaction_id': txn.id,
-                'amount': str(float(amount_val)),  # legacy response text, e.g. '100.0'
-                'new_balance': str(wallet.balance),
-                'purpose': purpose,
-                'reference_id': reference_id,
-                'idempotency_key': idempotency_key,
-                'message': 'Payment successful'
-            }, status.HTTP_201_CREATED)
-            
-    except Wallet.DoesNotExist:
-        return error_response(
-            code='WALLET_NOT_FOUND',
-            message='Wallet not found',
-            field='wallet',
-            issue='User wallet does not exist',
-            status=status.HTTP_404_NOT_FOUND
+    Expected: {
+        "trip_id": 123,            (or the legacy "reference_id": "123" / "TRIP_123")
+        "amount": "100.00"         (optional; refused with AMOUNT_MISMATCH if it differs)
+    }
+    The trip's payable amount is charged once (`servers/rider/trip_wallet_payment.py`). A client
+    `idempotency_key` is ignored: the key is the trip's own. A repeat returns the original
+    transaction with `duplicate: true` and charges nothing.
+    """
+    from .trip_wallet_payment import Refusal, pay_trip
+
+    try:
+        payload, created = pay_trip(request.user, request.data)
+    except Refusal as refusal:
+        response = error_response(
+            code=refusal.code,
+            message=refusal.message,
+            field=refusal.field,
+            issue=refusal.message,
+            status=refusal.http_status
         )
-    
-    except Exception as e:
-        logger.error(f"Direct wallet payment failed: {str(e)}")
-        return error_response(
-            code='PAYMENT_FAILED',
-            message='Payment failed',
-            field='general',
-            issue=str(e),
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        response.data['error']['details'].update(refusal.extra)
+        return response
+    if created:
+        logger.info('trip_wallet_payment', extra={
+            'event': 'trip_wallet_payment', 'trip_id': payload['trip_id'],
+            'transaction_id': payload['transaction_id']})
+    return success_response(payload, status.HTTP_201_CREATED if created else status.HTTP_200_OK)

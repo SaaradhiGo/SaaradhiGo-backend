@@ -15,6 +15,8 @@ The driver's settlement balance (`Wallet`, scope driver) moves only through
   * `tax_collected`, `regulatory_fee_collected`  debit   a US CASH trip: the driver holds the rider's
                       sales tax and per-trip fee and owes both to SaaradhiGo, which remits them
                       (pass-through, AUDIT 27.62 item 1); each is its own line, never earnings
+  * `fare_collected_by_platform`  credit   a cash trip the rider then paid from the wallet: the
+                      platform collected what the driver was assumed to hold (AUDIT 27.71)
   * `incentive_reward` credit   a driver incentive reward: no commission, paid out with the next
                       weekly payout, its own line (tax: not configured, go-live blocker 15)
   * `referral_reward` credit    a driver referral reward: same treatment
@@ -84,6 +86,7 @@ ENTRY_KINDS = {
     'reward_recovery': 'reward_recovery',
     'tax_collected': 'tax_collected',
     'regulatory_fee_collected': 'regulatory_fee_collected',
+    'fare_collected_by_platform': 'fare_collected_by_platform',
     'withdrawal': 'withdrawal_requested',
     'refund_rejected_withdrawal': 'withdrawal_rejected',
     'refund_failed_withdrawal': 'withdrawal_returned',
@@ -112,6 +115,7 @@ ENTRY_LABELS = {
     'reward_recovery': 'Recovery of reward (reviewed)',
     'tax_collected': TAX_COLLECTED_LABEL,
     'regulatory_fee_collected': FEE_COLLECTED_LABEL,
+    'fare_collected_by_platform': 'Rider paid SaaradhiGo (no cash collected)',
     'withdrawal': 'Withdrawal requested',
     'refund_rejected_withdrawal': 'Withdrawal rejected (returned)',
     'refund_failed_withdrawal': 'Payout failed (returned)',

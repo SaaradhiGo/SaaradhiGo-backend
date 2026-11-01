@@ -66,6 +66,9 @@ DRIVER_LEDGER_PURPOSES = (
     # per-trip regulatory fee and owes both to SaaradhiGo, which remits them. Two debits, each its
     # own line; never earnings. (Online trips never touch the driver's wallet with either.)
     'tax_collected', 'regulatory_fee_collected',
+    # A cash trip the rider then paid from the wallet (AUDIT 27.71): the platform collected the
+    # fare the cash settlement assumed the driver held, and credits it to the driver.
+    'fare_collected_by_platform',
 )
 
 #: `model label -> ORM lookup(s) reaching GeoNode.path`. One table, so a view

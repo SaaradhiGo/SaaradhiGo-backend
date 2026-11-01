@@ -179,6 +179,29 @@ def live_campaign_for(user):
     return best[1] if best else None
 
 
+def available_in_market(country_code, audience, city_node=None):
+    """Is a referral offer live for a `rider` or `driver` in this market right now?
+
+    The app-config `referrals_available` flag: the apps show their referral entry (and the rider's
+    sign-up code field) only when this is true. It mirrors `live_campaign_for`: a `live`,
+    non-legacy referral campaign for this audience, in this country, anchored at the country or at
+    the named city (or an ancestor of it). With no city named, a campaign anchored at any city of
+    the country counts. This only SHOWS an entry; attach still decides.
+    """
+    if audience not in ('rider', 'driver'):
+        return False
+    for campaign in (Campaign.objects.filter(kind=REFERRAL, state=LIVE, is_legacy=False,
+                                             country=country_code or '')
+                     .select_related('geo_node')):
+        if (campaign.config or {}).get('audience') != audience:
+            continue
+        place = campaign.geo_node
+        if (city_node is None or place is None or place.kind in ('country', 'global')
+                or str(city_node.path).startswith(str(place.path))):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Attribution
 # ---------------------------------------------------------------------------

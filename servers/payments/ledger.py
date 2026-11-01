@@ -12,6 +12,9 @@ The driver's settlement balance (`Wallet`, scope driver) moves only through
                       driver the earnings (fare minus the commission that would have applied)
   * `promo_discount_platform_funded`  credit   a CASH trip with a rider promo: the driver collected
                       the fare less the discount, and the platform pays them the discount (module 12)
+  * `tax_collected`, `regulatory_fee_collected`  debit   a US CASH trip: the driver holds the rider's
+                      sales tax and per-trip fee and owes both to SaaradhiGo, which remits them
+                      (pass-through, AUDIT 27.62 item 1); each is its own line, never earnings
   * `incentive_reward` credit   a driver incentive reward: no commission, paid out with the next
                       weekly payout, its own line (tax: not configured, go-live blocker 15)
   * `referral_reward` credit    a driver referral reward: same treatment
@@ -79,6 +82,8 @@ ENTRY_KINDS = {
     'incentive_reward': 'incentive_reward',
     'referral_reward': 'referral_reward',
     'reward_recovery': 'reward_recovery',
+    'tax_collected': 'tax_collected',
+    'regulatory_fee_collected': 'regulatory_fee_collected',
     'withdrawal': 'withdrawal_requested',
     'refund_rejected_withdrawal': 'withdrawal_rejected',
     'refund_failed_withdrawal': 'withdrawal_returned',
@@ -87,6 +92,16 @@ ENTRY_KINDS = {
 #: What a statement line is called, by wallet purpose. The console and the driver app show this text
 #: as-is, so a platform-funded line is never shown as a raw purpose code.
 PROMO_PAID_LABEL = 'Promo paid by SaaradhiGo'
+#: US pass-through lines on a cash trip (AUDIT 27.62 item 1). The fee line takes the zone's own fee
+#: name where the trip's zone has one (`fee_collected_label`).
+TAX_COLLECTED_LABEL = 'Sales tax collected (remitted by SaaradhiGo)'
+FEE_COLLECTED_LABEL = 'Regulatory fee collected (remitted by SaaradhiGo)'
+
+
+def fee_collected_label(fee_name):
+    return f'{fee_name} collected (remitted by SaaradhiGo)' if fee_name else FEE_COLLECTED_LABEL
+
+
 ENTRY_LABELS = {
     'trip_earnings': 'Trip earnings (online trip)',
     'trip_commission': 'Commission on a cash trip',
@@ -95,6 +110,8 @@ ENTRY_LABELS = {
     'incentive_reward': 'Incentive reward',
     'referral_reward': 'Referral reward',
     'reward_recovery': 'Recovery of reward (reviewed)',
+    'tax_collected': TAX_COLLECTED_LABEL,
+    'regulatory_fee_collected': FEE_COLLECTED_LABEL,
     'withdrawal': 'Withdrawal requested',
     'refund_rejected_withdrawal': 'Withdrawal rejected (returned)',
     'refund_failed_withdrawal': 'Payout failed (returned)',
@@ -178,7 +195,13 @@ def entry_dicts(driver, in_range_rows, opening_minor, offset, limit):
         if ref.startswith('TRIP_') and ref[5:].isdigit():
             trip_ids.append(int(ref[5:]))
     settlements = {}
+    fee_names = {}
     if trip_ids:
+        from servers.ride.models import Trip
+
+        for tid, name in (Trip.objects.filter(id__in=trip_ids, zone__isnull=False)
+                          .values_list('id', 'zone__per_trip_fee_label')):
+            fee_names[tid] = name
         for s in (TripSettlement.objects.filter(trip_id__in=trip_ids, wallet_transaction__isnull=False)
                   .order_by('version')):
             settlements[s.trip_id] = s
@@ -220,6 +243,15 @@ def entry_dicts(driver, in_range_rows, opening_minor, offset, limit):
                     'payment_method': s.payment_method,
                     'version': s.version,
                 }
+                if s.tax_collected_minor is not None:
+                    # US pass-through: not part of gross, net or commission (see TripSettlement).
+                    entry['settlement']['tax_collected_minor'] = s.tax_collected_minor
+                    entry['settlement']['regulatory_fee_collected_minor'] = (
+                        s.regulatory_fee_collected_minor)
+        if txn.purpose == 'regulatory_fee_collected':
+            entry['label'] = fee_collected_label(fee_names.get(entry['trip_id']))
+        if txn.purpose in ('tax_collected', 'regulatory_fee_collected'):
+            entry['pass_through'] = True
         if txn.purpose in ('promo_discount_platform_funded', 'platform_funded_trip_end'):
             entry['funded_by'] = 'platform'
         if txn.purpose in ('incentive_reward', 'referral_reward'):

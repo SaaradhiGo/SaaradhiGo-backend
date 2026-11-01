@@ -56,9 +56,13 @@ class PromoResult:
     final_fare: Decimal = Decimal('0.00')
     description: str = ''
     reason: str = ''   # error code; '' on success
+    #: Additive-tax markets only (the US; None elsewhere): the tax charged on the fare AFTER the
+    #: discount, and the tax no longer charged because of it (AUDIT 27.59 ruling 2).
+    tax_amount: Optional[Decimal] = None
+    tax_relief: Optional[Decimal] = None
 
     def to_dict(self):
-        return {
+        out = {
             'ok': self.ok,
             'code': self.code,
             'discount_amount': str(self.discount_amount),
@@ -66,6 +70,10 @@ class PromoResult:
             'description': self.description,
             'reason': self.reason,
         }
+        if self.tax_amount is not None:
+            out['tax_amount'] = str(self.tax_amount)
+            out['tax_relief'] = str(self.tax_relief)
+        return out
 
 
 def _two(v: Decimal, currency) -> Decimal:
@@ -85,7 +93,24 @@ def _compute_discount(promo, fare: Decimal) -> Decimal:
     return min(raw, fare)
 
 
-def apply_promo(code: str, user, fare: Decimal, zone=None, at=None) -> PromoResult:
+def _tax_adjust(promo, zone, fare, discount, tax):
+    """The US rule (AUDIT 27.59 ruling 2): tax on what the rider is charged, so the discount lowers
+    the taxable amount. None in an inclusive-tax market (India), where nothing changes.
+    `tax` is `(percent, fee)` from the quote, False for "this quote is inclusive", or None to read
+    the zone."""
+    if tax is False:
+        return None
+    from servers.pricing import promo_tax
+
+    ctx = tax if tax is not None else promo_tax.additive_context(zone)
+    if ctx is None:
+        return None
+    percent, fee = ctx
+    pretax, tax_before, fee = promo_tax.split_additive(fare, percent, fee, promo.currency)
+    return promo_tax.adjust(pretax, percent, fee, discount, promo.currency, tax_before)
+
+
+def apply_promo(code: str, user, fare: Decimal, zone=None, at=None, tax=None) -> PromoResult:
     """Compute the discount for a code WITHOUT redeeming it.
 
     Called from the fare-estimate screen so the rider can preview the
@@ -128,6 +153,9 @@ def apply_promo(code: str, user, fare: Decimal, zone=None, at=None) -> PromoResu
         return PromoResult(ok=False, code=code, reason='PROMO_LIMIT_REACHED')
 
     discount = _compute_discount(promo, fare)
+    adj = _tax_adjust(promo, zone, fare, discount, tax)
+    if adj is not None:
+        discount = adj['discount']
 
     from servers.promotions import rider_promos
     refusal = rider_promos.preview_refusal(promo, user, discount, zone)
@@ -135,14 +163,18 @@ def apply_promo(code: str, user, fare: Decimal, zone=None, at=None) -> PromoResu
         return PromoResult(ok=False, code=code, reason=refusal)
 
     final = max(Decimal('0.00'), _two(fare - discount, promo.currency))
+    if adj is not None:
+        final = adj['payable']
     return PromoResult(
         ok=True, code=promo.code,
         discount_amount=_two(discount, promo.currency), final_fare=final,
         description=promo.description, reason='',
+        tax_amount=adj['tax'] if adj is not None else None,
+        tax_relief=adj['relief'] if adj is not None else None,
     )
 
 
-def redeem_promo(code: str, user, trip, fare: Decimal, zone=None, at=None) -> PromoResult:
+def redeem_promo(code: str, user, trip, fare: Decimal, zone=None, at=None, tax=None) -> PromoResult:
     """Atomically claim a redemption for an existing trip.
 
     Re-validates the code (rules can have changed since apply_promo),
@@ -153,7 +185,10 @@ def redeem_promo(code: str, user, trip, fare: Decimal, zone=None, at=None) -> Pr
       * increments redemption_count
 
     The trip's final_fare is NOT updated here; the caller wires the
-    discount into the trip's fare pricing.
+    discount into the trip's fare pricing. In an additive-tax market (the US) the tax is on the
+    fare after the discount (AUDIT 27.59 ruling 2), so the trip's own fare (`estimated_fare`, the
+    amount commission and driver earnings are computed on) drops by the tax no longer charged;
+    that is done here, in the same transaction as the redemption.
     """
     from servers.ride.models import PromoCode, PromoRedemption
 
@@ -191,7 +226,12 @@ def redeem_promo(code: str, user, trip, fare: Decimal, zone=None, at=None) -> Pr
             return PromoResult(ok=False, code=code, reason='PROMO_LIMIT_REACHED')
 
         discount = _compute_discount(promo, fare)
+        adj = _tax_adjust(promo, zone, fare, discount, tax)
+        if adj is not None:
+            discount = adj['discount']
         final = max(Decimal('0.00'), _two(fare - discount, promo.currency))
+        if adj is not None:
+            final = adj['payable']
 
         # Module 12: the campaign behind the code (state, place, budget). The reservation is
         # atomic with the redemption row: both commit, or neither does.
@@ -209,6 +249,13 @@ def redeem_promo(code: str, user, trip, fare: Decimal, zone=None, at=None) -> Pr
         )
         promo.redemption_count = F('redemption_count') + 1
         promo.save(update_fields=['redemption_count', 'updated_at'])
+        if adj is not None and adj['relief'] > 0 and trip is not None:
+            from base.money import to_minor
+            from servers.ride.models import Trip
+
+            new_fare = max(0, int(trip.estimated_fare_minor or 0) - to_minor(adj['relief'], promo.currency))
+            Trip.objects.filter(pk=trip.pk).update(estimated_fare_minor=new_fare)
+            trip.estimated_fare_minor = new_fare
 
     logger.info(
         'promo redeemed code=%s user=%s trip=%s amount=%s',
@@ -218,4 +265,6 @@ def redeem_promo(code: str, user, trip, fare: Decimal, zone=None, at=None) -> Pr
         ok=True, code=promo.code,
         discount_amount=_two(discount, promo.currency), final_fare=final,
         description=promo.description, reason='',
+        tax_amount=adj['tax'] if adj is not None else None,
+        tax_relief=adj['relief'] if adj is not None else None,
     )

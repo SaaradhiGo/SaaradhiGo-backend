@@ -19,6 +19,7 @@ from servers.rider.models import Rider
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from servers.driver.models import Driver
+from servers.driver.serializers import has_real_name, is_real_name
 from base.media import resolve_file_input
 
 logger = logging.getLogger(__name__)
@@ -673,6 +674,44 @@ def logout(request):
         )
 
 
+def _truthy(value):
+    return str(value).strip().lower() in ('true', '1', 'yes', 'on')
+
+
+def _driver_name_error(user, update_data):
+    """A driver must give a real name when they complete their profile.
+
+    Owner ruling (AUDIT 27.62, D7): the name is required at sign-up. A driver
+    account is created by the OTP login with no name, and the profile is
+    completed by this endpoint, so the rule is applied here and only to a
+    driver:
+
+    - a request that sends `full_name` must send a real one (never blank, a
+      phone number or an email); and
+    - a driver who is completing their profile now (`is_updated` going from
+      false to true) must end up with a real name, sent or already stored.
+
+    Existing drivers' other saves are untouched: a request that does not send
+    `full_name` and does not complete the profile is never checked, so an
+    account that predates the rule can still save unrelated changes.
+    Returns the message for a 400, or None.
+    """
+    if getattr(user, 'role', None) != 'driver':
+        return None
+    if 'full_name' in update_data:
+        if not is_real_name(update_data.get('full_name')):
+            return 'Enter your full name.'
+        return None
+    completing = (
+        'is_updated' in update_data
+        and _truthy(update_data.get('is_updated'))
+        and not user.is_updated
+    )
+    if completing and not has_real_name(user):
+        return 'Enter your full name.'
+    return None
+
+
 @api_view(['PATCH'])
 @permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser, JSONParser])
@@ -729,6 +768,16 @@ def update_user(request):
         if avatar_provided:
             update_data['avatar'] = avatar_value
         
+        name_error = _driver_name_error(user, update_data)
+        if name_error:
+            return error_response(
+                code='AUTH_VALIDATION_ERROR',
+                message=name_error,
+                field='full_name',
+                issue=name_error,
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         if not update_data:
             logger.warning(f"Update request with no data for user: {user_id}")
             return error_response(

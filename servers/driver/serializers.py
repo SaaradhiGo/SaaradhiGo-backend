@@ -154,13 +154,18 @@ class DriverAdminListSerializer(serializers.ModelSerializer):
         model = Driver
         fields = ['id', 'user_details', 'license_doc', 'license_expiry', 'status', 'total_trips', 'ratings', 'approved', 'active_vehicle']
 
-def has_real_name(user):
+def is_real_name(value):
     """A name a person could be addressed by: not blank, not a phone
     number or an email standing in for one."""
-    name = (getattr(user, 'full_name', '') or '').strip()
+    name = (value or '').strip()
     if not name or '@' in name:
         return False
     return not name.replace('-', '').replace(' ', '').lstrip('+').isdigit()
+
+
+def has_real_name(user):
+    """`is_real_name` for the account's own `full_name`."""
+    return is_real_name(getattr(user, 'full_name', ''))
 
 
 class KYCApprovalSerializer(serializers.ModelSerializer):

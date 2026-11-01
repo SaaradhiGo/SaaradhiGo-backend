@@ -1,4 +1,3 @@
-import boto3
 import logging
 import random
 import secrets
@@ -9,7 +8,9 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from celery import shared_task
 from celery.exceptions import Retry
-from botocore.exceptions import ClientError, BotoCoreError
+from integrations.sms.sns_otp import (  # noqa: F401  (get_sns_client is patched by tests here)
+    OtpTerminalError, OtpTransientError, get_sns_client, publish_otp,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,25 +23,6 @@ CHARACTERS = (
     list(map(str, range(0, 10)))
 )
 
-
-
-def get_sns_client():
-    """
-    Get AWS SNS client with error handling.
-    
-    Returns:
-        boto3 SNS client or None if initialization fails
-    """
-    try:
-        return boto3.client(
-            "sns",
-            region_name=settings.AWS_REGION,
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-        )
-    except Exception as e:
-        logger.error(f"Failed to initialize SNS client: {str(e)}")
-        return None
 
 
 def success_response(data: Any, status_code: int) -> Response:
@@ -118,16 +100,6 @@ def generate_otp(n: int) -> str:
     return ''.join(secrets.choice(digits) for _ in range(n))
 
 
-# Transient AWS conditions worth another attempt. An invalid phone number will
-# not become valid, so those stay terminal and are not retried.
-_SNS_TERMINAL_ERROR_CODES = frozenset({
-    'InvalidParameter',
-    'InvalidParameterValue',
-    'OptedOut',          # the recipient has opted out of SMS
-    'AuthorizationError',
-})
-
-
 @shared_task(
     bind=True,
     max_retries=3,
@@ -179,52 +151,33 @@ def send_otp_via_sns(self, phone_number: str, message: str) -> Dict[str, Any]:
             )
             raise self.retry(exc=RuntimeError('SNS client unavailable'))
         
-        resp = client.publish(
-            PhoneNumber=phone_number,
-            Message=message,
-            MessageAttributes={
-                'AWS.SNS.SMS.SenderID': {
-                    'DataType': 'String',
-                    'StringValue': settings.AWS_SNS_SENDER_ID
-                },
-                'AWS.SNS.SMS.SMSType': {
-                    'DataType': 'String',
-                    'StringValue': 'Transactional'
-                }
-            }
-        )
-        
+        message_id = publish_otp(client, phone_number, message)
+
         logger.info(f"OTP sent successfully to {phone_number}")
         return {
             "success": True,
-            "message_id": resp.get('MessageId')
+            "message_id": message_id
         }
-    
-    except ClientError as e:
-        code = (e.response or {}).get('Error', {}).get('Code', '')
-        if code in _SNS_TERMINAL_ERROR_CODES:
-            # Retrying will not help. Terminal, and reported as such.
-            logger.error(
-                "otp_send_terminal reason=sns_client_error code=%s", code,
-            )
-            return {
-                "success": False,
-                "error": f"AWS error: {e.response.get('Error', {}).get('Message', str(e))}",
-                "terminal": True,
-            }
+
+    except OtpTerminalError as e:
+        # Retrying will not help. Terminal, and reported as such.
         logger.error(
-            "otp_send_failure reason=sns_client_error code=%s retry=%s/%s",
-            code, self.request.retries, self.max_retries,
+            "otp_send_terminal reason=sns_client_error code=%s", e.code,
         )
-        raise self.retry(exc=e)
-    except BotoCoreError as e:
-        # Connection, endpoint and timeout errors all land here. Always worth
-        # another attempt.
+        return {
+            "success": False,
+            "error": e.message,
+            "terminal": True,
+        }
+    except OtpTransientError as e:
         logger.error(
-            "otp_send_failure reason=botocore_error retry=%s/%s",
+            "otp_send_failure reason=%s retry=%s/%s",
+            'botocore_error' if e.code == 'botocore_error' else f'sns_client_error code={e.code}',
             self.request.retries, self.max_retries,
         )
-        raise self.retry(exc=e)
+        # Connection, endpoint and timeout errors, throttling and credentials blips: always
+        # worth another attempt.
+        raise self.retry(exc=e.cause)
     except Retry:
         # self.retry() signals by raising. Never swallow it into the generic
         # handler below, which is what would turn a retry into a silent success.

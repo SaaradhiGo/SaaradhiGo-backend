@@ -23,7 +23,7 @@ class S3UploadKeyField(serializers.Field):
 
     Keys are produced by POST /api/v1/uploads/presign/ and must already be
     uploaded; structural + existence verification happens in
-    base.s3.verify_uploaded_key. File inputs keep the pre-existing behaviour
+    integrations.storage.s3.verify_uploaded_key. File inputs keep the pre-existing behaviour
     (validators run later through model full_clean), so existing clients
     continue to work while they migrate.
 
@@ -61,7 +61,7 @@ class S3UploadKeyField(serializers.Field):
             return data
 
         if isinstance(data, str):
-            from base.s3 import verify_uploaded_key
+            from integrations.storage.s3 import verify_uploaded_key
 
             try:
                 verify_uploaded_key(self.kind, data.strip())

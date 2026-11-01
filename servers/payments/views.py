@@ -17,7 +17,10 @@ from base.money import (
     currency_for_trip, format_money, from_minor, normalize_currency, parse_input, to_minor,
 )
 from servers.payments.models import Payment, TransactionHistory, PaymentGateway, WebhookEvent
-from servers.payments.payment_gateways.factory import get_payment_gateway, get_payment_gateway_for_payments, get_payment_gateway_for_payouts
+from servers.payments.payment_gateways.factory import (
+    country_for_trip, get_payment_gateway, get_payment_gateway_for_payments,
+    get_payment_gateway_for_payouts,
+)
 from servers.ride.models import Trip
 
 logger = logging.getLogger(__name__)
@@ -157,8 +160,8 @@ def create_order(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Get payment gateway
-    gateway = get_payment_gateway()
+    # Get the payment gateway configured for the trip's country (never another country's)
+    gateway = get_payment_gateway(country=country_for_trip(trip))
     if not gateway:
         return error_response(
             code='PAYMENT_GATEWAY_ERROR',
@@ -776,7 +779,7 @@ def payout_webhook(request):
         )
 
     # Get payment gateway for payouts
-    gateway = get_payment_gateway_for_payouts()
+    gateway = get_payment_gateway_for_payouts(gateway_name=gateway_name)
     if not gateway:
         return JsonResponse(
             {
@@ -1876,7 +1879,7 @@ def switch_payment_method(request):
     # tapping "switch", the late webhook would otherwise land on a now-
     # deactivated payment row, leaving the trip paid AND a fresh order
     # outstanding (and the driver potentially double-credited).
-    poll_gateway = get_payment_gateway_for_payments()
+    poll_gateway = get_payment_gateway_for_payments(country_for_trip(trip))
     if _settle_payment_if_paid_at_gateway(trip.id, poll_gateway):
         return error_response(
             code='ALREADY_PAID',
@@ -1917,7 +1920,7 @@ def switch_payment_method(request):
         
         if actual_method == 'online':
             # Use payment gateway abstraction
-            gateway = get_payment_gateway_for_payments()
+            gateway = get_payment_gateway_for_payments(country_for_trip(trip))
             pay_currency, currency_error = _online_payment_currency(gateway, trip)
             if currency_error is not None:
                 return currency_error
@@ -2043,7 +2046,7 @@ def retry_payment(request):
         )
 
     # Use payment gateway abstraction
-    gateway = get_payment_gateway_for_payments()
+    gateway = get_payment_gateway_for_payments(country_for_trip(trip))
 
     # Before re-issuing an order, ask the gateway whether the failed payment
     # was actually paid. Cashfree may report PAID even when our local row is

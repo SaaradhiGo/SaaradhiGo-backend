@@ -90,14 +90,23 @@ def reconcile_stuck_payments():
     grace_cutoff = now - timedelta(minutes=RECON_GRACE_MINUTES)
     lookback_cutoff = now - timedelta(hours=RECON_LOOKBACK_HOURS)
 
-    try:
-        gateway = get_payment_gateway()
-    except Exception as e:
-        logger.error(f"reconcile_stuck_payments: cannot get gateway: {e}")
-        return {'ok': False, 'reason': 'no gateway'}
-    if not gateway:
-        logger.warning("reconcile_stuck_payments: gateway unavailable, skipping")
-        return {'ok': False, 'reason': 'no gateway'}
+    # One gateway per provider NAME, built once. A payment polls the provider it was created on;
+    # a wallet top-up polls its currency's country provider. No provider, nothing to poll.
+    from servers.payments.payment_gateways.factory import country_of_currency
+
+    gateways = {}
+
+    def gateway_named(name):
+        if name not in gateways:
+            try:
+                gateways[name] = get_payment_gateway(name)
+            except Exception as e:
+                logger.error(f"reconcile_stuck_payments: cannot get gateway {name}: {e}")
+                gateways[name] = None
+        return gateways[name]
+
+    def gateway_for_currency(currency):
+        return get_payment_gateway(country=country_of_currency(currency))
 
     payments_settled = 0
     wallets_settled = 0
@@ -117,6 +126,10 @@ def reconcile_stuck_payments():
     for payment in stuck_payments:
         order_id = payment.cashfree_order_id or payment.gateway_order_id
         if not order_id:
+            skipped += 1
+            continue
+        gateway = gateway_named(payment.payment_gateway or 'cashfree')
+        if not gateway:
             skipped += 1
             continue
         try:
@@ -196,6 +209,10 @@ def reconcile_stuck_payments():
 
     for txn in stuck_topups:
         order_id = txn.gateway_order_id
+        gateway = gateway_for_currency(txn.currency)
+        if not gateway:
+            skipped += 1
+            continue
         try:
             info = gateway.get_order_status(order_id)
         except Exception as e:
@@ -346,20 +363,19 @@ def reconcile_stuck_withdrawals():
     """
     from servers.driver.models import WithdrawalRequest
     from servers.payments.payment_gateways.factory import (
+        any_payout_provider_configured,
         get_payment_gateway_for_payouts,
     )
     from datetime import timedelta
 
     now = timezone.now()
 
-    try:
-        gateway = get_payment_gateway_for_payouts()
-    except Exception as e:
-        logger.error(f"reconcile_stuck_withdrawals: cannot get payout gateway: {e}")
+    # Provider polling is not implemented (see below), so the gateway is only checked for
+    # existence: is any country configured with an implemented payout provider?
+    if not any_payout_provider_configured():
+        logger.warning("reconcile_stuck_withdrawals: no payout provider configured")
         return {'ok': False, 'reason': 'no gateway'}
-    if not gateway:
-        logger.warning("reconcile_stuck_withdrawals: payout gateway unavailable")
-        return {'ok': False, 'reason': 'no gateway'}
+    gateway = get_payment_gateway_for_payouts(gateway_name='cashfree')
 
     stuck = list(stuck_withdrawal_candidates(now=now))
 

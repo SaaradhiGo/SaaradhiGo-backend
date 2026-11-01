@@ -2,7 +2,7 @@
 
 ONE PLACE, BECAUSE THERE ARE TWO CALLERS AND THEY MUST NOT DRIFT
 ----------------------------------------------------------------
-`base/s3.py` builds its own boto3 client for presigning. `django-storages`
+`integrations/storage/s3.py` builds its own boto3 client for presigning. `django-storages`
 builds another from Django settings for reading and writing. When those two
 disagree about addressing style, region or checksums, the symptom is a
 signature the server rejects -- and it only shows up on whichever path

@@ -1005,7 +1005,7 @@ AWS_S3_SIGNATURE_VERSION="s3v4"
 # existing in that environment at all.
 #
 # django-storages reads AWS_S3_ENDPOINT_URL from settings by itself, so the
-# storage backends need no change; only base.s3.build_s3_client (which constructs
+# storage backends need no change; only integrations.storage.s3.build_s3_client (which constructs
 # its own boto3 client for presigning) has to be told.
 #
 #   Cloudflare R2:  https://<account-id>.r2.cloudflarestorage.com
@@ -1035,7 +1035,7 @@ if not AWS_S3_REGION:
 AWS_S3_REGION_NAME = AWS_S3_REGION
 
 # The botocore Config django-storages' own client uses, so it signs exactly
-# the way base/s3.py does.
+# the way integrations/storage/s3.py does.
 #
 # IT MUST BE COMPLETE. django-storages applies `addressing_style` and
 # `signature_version` only when `client_config` is None -- read its
@@ -1043,7 +1043,7 @@ AWS_S3_REGION_NAME = AWS_S3_REGION
 # SILENTLY DROP path-style addressing, and the first write to R2 would fail
 # as an unexplainable 403. Everything the backend would otherwise have set
 # is therefore set here as well.
-from botocore.config import Config as _BotoConfig  # noqa: E402
+from integrations.storage.errors import Config as _BotoConfig  # noqa: E402
 
 AWS_S3_CLIENT_CONFIG = _BotoConfig(
     signature_version=AWS_S3_SIGNATURE_VERSION,
@@ -1072,22 +1072,56 @@ RAZORPAY_KEY_ID=os.environ.get("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET=os.environ.get("RAZORPAY_KEY_SECRET", "")
 RAZORPAY_WEBHOOK_SECRET=os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
 
-# Cashfree
+# Cashfree. ONE consistent set of names (adapter: integrations/payments/cashfree.py).
+#   Payment gateway  CASHFREE_APP_ID, CASHFREE_SECRET_KEY, CASHFREE_ENVIRONMENT (sandbox|production)
+#   Webhook          CASHFREE_WEBHOOK_SECRET is optional: PG webhooks (API 2023-08-01) are signed
+#                    with the client secret key, which is used when this is unset.
+#   Payouts          CASHFREE_PAYOUTS_CLIENT_ID, CASHFREE_PAYOUTS_CLIENT_SECRET
+#                    (deprecated aliases still read: CASHFREE_PAYOUT_APP_ID, CASHFREE_PAYOUT_SECRET_KEY)
+# Hosts are DERIVED from CASHFREE_ENVIRONMENT (sandbox is the default). The two *_BASE_URL
+# overrides are optional and are ignored if they point at the other environment's host.
 CASHFREE_APP_ID=os.environ.get("CASHFREE_APP_ID", "")
 CASHFREE_SECRET_KEY=os.environ.get("CASHFREE_SECRET_KEY", "")
 CASHFREE_WEBHOOK_SECRET=os.environ.get("CASHFREE_WEBHOOK_SECRET", "")
 CASHFREE_API_VERSION=os.environ.get("CASHFREE_API_VERSION", "2023-08-01")
 CASHFREE_ENVIRONMENT=os.environ.get("CASHFREE_ENVIRONMENT", "sandbox")  # sandbox or production
-CASHFREE_PG_BASE_URL = os.environ.get("CASHFREE_PG_BASE_URL", "https://sandbox.cashfree.com")
+CASHFREE_PG_BASE_URL = os.environ.get("CASHFREE_PG_BASE_URL", "")
 
-CASHFREE_PAYOUTS_CLIENT_ID = os.environ.get("CASHFREE_PAYOUTS_CLIENT_ID", "")
-CASHFREE_PAYOUTS_CLIENT_SECRET = os.environ.get("CASHFREE_PAYOUTS_CLIENT_SECRET", "")
-CASHFREE_PAYOUTS_BASE_URL = os.environ.get("CASHFREE_PAYOUTS_BASE_URL", "https://payout-api.cashfree.com/payout/v1")
+CASHFREE_PAYOUTS_CLIENT_ID = os.environ.get("CASHFREE_PAYOUTS_CLIENT_ID", "") or os.environ.get("CASHFREE_PAYOUT_APP_ID", "")
+CASHFREE_PAYOUTS_CLIENT_SECRET = os.environ.get("CASHFREE_PAYOUTS_CLIENT_SECRET", "") or os.environ.get("CASHFREE_PAYOUT_SECRET_KEY", "")
+CASHFREE_PAYOUTS_BASE_URL = os.environ.get("CASHFREE_PAYOUTS_BASE_URL", "")
 
 
-# Payment Gateway Selection
+# Payment and payout providers, PER COUNTRY, by configuration only (owner ruling, AUDIT 27.62).
+# Registered names: payments cashfree|razorpay|stripe, payouts cashfree|razorpay|stripe_connect.
+# razorpay / stripe / stripe_connect are STUBS today: selecting one gives the clean "provider not
+# available" behaviour, never a fallback to another country's provider. A country with a null or
+# missing entry has no provider. With no explicit IN entry, the legacy global PAYMENT_GATEWAY /
+# PAYOUT_GATEWAY below is India's provider, so QA keeps working unchanged. Set, for example,
+#   PAYMENT_PROVIDERS_JSON={"IN": "razorpay", "US": null}
 PAYMENT_GATEWAY=os.environ.get("PAYMENT_GATEWAY", "cashfree")
 PAYOUT_GATEWAY=os.environ.get("PAYOUT_GATEWAY", "cashfree")
+
+
+def _provider_table(env_name, default):
+    import json as _json_pt
+
+    table = dict(default)
+    raw = os.environ.get(env_name, "").strip()
+    if raw:
+        try:
+            parsed = _json_pt.loads(raw)
+            assert isinstance(parsed, dict)
+        except (ValueError, AssertionError):
+            from django.core.exceptions import ImproperlyConfigured as _IC
+            raise _IC(f"{env_name} must be a JSON object of country code -> provider name or null")
+        for code, name in parsed.items():
+            table[str(code).strip().upper()] = (str(name).strip().lower() if name else None)
+    return table
+
+
+PAYMENT_PROVIDERS = _provider_table("PAYMENT_PROVIDERS_JSON", {"US": None})
+PAYOUT_PROVIDERS = _provider_table("PAYOUT_PROVIDERS_JSON", {"US": None})
 
 # --- Platform / dispatch settings -------------------------------------------
 # The platform commission is NOT a setting. It is the layered, versioned
@@ -1450,6 +1484,29 @@ NOTIFY_PROVIDERS = {
     'push': {'IN': 'fcm', 'US': 'fcm'},
     'in_app': {'IN': 'in_app', 'US': 'in_app'},
 }
+# Every provider is swappable BY CONFIGURATION ONLY (owner ruling, AUDIT 27.62). To switch a
+# channel in a country, set NOTIFY_PROVIDERS_JSON to a partial table, e.g.
+#   {"sms": {"US": "sns"}, "push": {"IN": "sns"}}
+# It is merged over the table above, channel by channel and country by country; a null value
+# removes the provider (messages are suppressed). Valid names per channel: sms msg91|twilio|sns,
+# whatsapp msg91, email ses, push fcm|sns, in_app in_app, and `stub` anywhere.
+_notify_override = os.environ.get('NOTIFY_PROVIDERS_JSON', '').strip()
+if _notify_override:
+    import json as _json_np
+    try:
+        _parsed_np = _json_np.loads(_notify_override)
+        assert isinstance(_parsed_np, dict)
+        for _channel, _by_country in _parsed_np.items():
+            assert isinstance(_by_country, dict)
+            _row = NOTIFY_PROVIDERS.setdefault(_channel, {})
+            for _country, _provider in _by_country.items():
+                if _provider is None:
+                    _row.pop(_country, None)
+                else:
+                    _row[_country] = str(_provider).strip().lower()
+    except (ValueError, AssertionError):
+        from django.core.exceptions import ImproperlyConfigured as _IC
+        raise _IC('NOTIFY_PROVIDERS_JSON must be a JSON object of channel -> country -> provider')
 # Promotional quiet hours, recipient-local, per country (start hour inclusive, end hour
 # exclusive). GO-LIVE LEGAL ITEM: the exact TRAI (India) and TCPA (US) windows need legal
 # confirmation before any live promotional send.
@@ -1458,7 +1515,7 @@ NOTIFY_QUIET_HOURS_DEFAULT = (21, 10)
 NOTIFY_MAX_ATTEMPTS = int(os.environ.get('NOTIFY_MAX_ATTEMPTS', '5'))
 NOTIFY_BACKOFF_BASE_SECONDS = int(os.environ.get('NOTIFY_BACKOFF_BASE_SECONDS', '30'))
 # Sends per provider per minute (0 or missing = unlimited).
-NOTIFY_RATE_LIMITS = {'msg91': 600, 'twilio': 600, 'ses': 600, 'fcm': 3000}
+NOTIFY_RATE_LIMITS = {'msg91': 600, 'twilio': 600, 'ses': 600, 'fcm': 3000, 'sns': 600}
 # `notify.provider_failing`: failed / (sent + delivered + failed) over the window.
 NOTIFY_FAILURE_WINDOW_MINUTES = 15
 NOTIFY_FAILURE_RATE_THRESHOLD = float(os.environ.get('NOTIFY_FAILURE_RATE_THRESHOLD', '0.3'))
@@ -1485,5 +1542,18 @@ SES_CONFIGURATION_SET = os.environ.get('SES_CONFIGURATION_SET', '')
 SES_SNS_TOPIC_ARNS = [
     arn.strip() for arn in os.environ.get('SES_SNS_TOPIC_ARNS', '').split(',') if arn.strip()
 ]
+# AWS SNS as an alternative SMS and push provider (adapters in integrations/sms/sns.py and
+# integrations/push/sns.py). SANDBOX-ONLY: they never call AWS unless NOTIFY_LIVE_SEND is on AND
+# SNS_LIVE_CONFIRMED is true; otherwise the message is recorded as `suppressed: sns not
+# confirmed` with no network call. SNS_LIVE_CONFIRMED means "the owner confirms the AWS account".
+#   SNS_AWS_ACCESS_KEY_ID, SNS_AWS_SECRET_ACCESS_KEY, SNS_AWS_REGION, SNS_SMS_SENDER_ID (optional)
+#   SNS_PLATFORM_APPLICATION_ARN_FCM, SNS_PLATFORM_APPLICATION_ARN_APNS (platform applications)
+SNS_LIVE_CONFIRMED = os.environ.get('SNS_LIVE_CONFIRMED', 'false').strip().lower() in {'1', 'true', 'yes'}
+SNS_AWS_ACCESS_KEY_ID = os.environ.get('SNS_AWS_ACCESS_KEY_ID', '')
+SNS_AWS_SECRET_ACCESS_KEY = os.environ.get('SNS_AWS_SECRET_ACCESS_KEY', '')
+SNS_AWS_REGION = os.environ.get('SNS_AWS_REGION', '')
+SNS_SMS_SENDER_ID = os.environ.get('SNS_SMS_SENDER_ID', '')
+SNS_PLATFORM_APPLICATION_ARN_FCM = os.environ.get('SNS_PLATFORM_APPLICATION_ARN_FCM', '')
+SNS_PLATFORM_APPLICATION_ARN_APNS = os.environ.get('SNS_PLATFORM_APPLICATION_ARN_APNS', '')
 # The public base URL Twilio signs against (the URL it was configured with).
 NOTIFY_WEBHOOK_BASE_URL = os.environ.get('NOTIFY_WEBHOOK_BASE_URL', '')

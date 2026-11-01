@@ -171,7 +171,7 @@ class TestCashIsRefusedOnlineIsAllowed:
             def get_order_status(self, order_id):  # pragma: no cover
                 raise AssertionError('no gateway call expected')
 
-        monkeypatch.setattr(views, 'get_payment_gateway_for_payments', lambda: NoGateway())
+        monkeypatch.setattr(views, 'get_payment_gateway_for_payments', lambda *a, **k: NoGateway())
         w = world
         rider = make_rider('K1', '91')
         trip = self._completed_trip(rider)
@@ -197,7 +197,7 @@ class TestCashIsRefusedOnlineIsAllowed:
             def get_order_status(self, order_id):
                 return {'order_status': 'ACTIVE'}
 
-        monkeypatch.setattr(views, 'get_payment_gateway_for_payments', lambda: NoGateway())
+        monkeypatch.setattr(views, 'get_payment_gateway_for_payments', lambda *a, **k: NoGateway())
         w = world
         rider = make_rider('K2', '91')
         trip = self._completed_trip(rider)
@@ -213,7 +213,7 @@ class TestCashIsRefusedOnlineIsAllowed:
             def get_order_status(self, order_id):
                 return {'order_status': 'ACTIVE'}
 
-        monkeypatch.setattr(views, 'get_payment_gateway_for_payments', lambda: NoGateway())
+        monkeypatch.setattr(views, 'get_payment_gateway_for_payments', lambda *a, **k: NoGateway())
         rider = make_rider('K3', '91')
         trip = self._completed_trip(rider)
         r = client_for(rider).post('/api/v1/payments/switch/',
@@ -227,7 +227,7 @@ class TestCashIsRefusedOnlineIsAllowed:
             def get_order_status(self, order_id):
                 return {'order_status': 'ACTIVE'}
 
-        monkeypatch.setattr(views, 'get_payment_gateway_for_payments', lambda: NoGateway())
+        monkeypatch.setattr(views, 'get_payment_gateway_for_payments', lambda *a, **k: NoGateway())
         w = world
         rider = make_rider('K4', '91')
         trip = self._completed_trip(rider)

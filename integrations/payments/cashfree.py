@@ -17,7 +17,9 @@ from django.conf import settings
 
 from base.money import to_gateway_major, to_major_string
 
-from .base_gateway import BasePaymentGateway
+from servers.payments.payment_gateways.base_gateway import (  # noqa: F401
+    BasePaymentGateway, PayoutDispatchUnknown,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,26 +47,6 @@ def _fallback_customer_email():
 
 
 
-class PayoutDispatchUnknown(Exception):
-    """The payout request may or may not have reached the provider.
-
-    Raised only for failures that happen *after* the HTTP request was issued: a
-    network timeout, a dropped connection, or a 5xx. In those cases Cashfree may
-    have created the transfer and we simply did not learn the outcome.
-
-    This is deliberately NOT the same as a rejection. A validation error, a
-    missing token, or a 4xx is a definite "no money moved", and the caller may
-    safely refund the driver's wallet. An unknown outcome must not be refunded,
-    because the driver may already have been paid -- refunding on top of that is
-    a double credit, and there is no provider status call proven to tell us
-    which happened.
-
-    Whether the provider honours transferId idempotency on a retry is unverified
-    (see the Cashfree sandbox verification requirement), so a retry is not a
-    safe substitute for asking a human to check.
-    """
-
-
 # Cashfree PG SDK (v3.2.12)
 try:
     import cashfree_pg
@@ -77,6 +59,86 @@ try:
 except ImportError:
     logger.warning("Cashfree PG SDK not installed. Install with: pip install cashfree-pg==3.2.12")
     CASHFREE_PG_AVAILABLE = False
+
+
+# ---------------------------------------------------------------------------
+# Environment and hosts: ONE consistent set of names
+# ---------------------------------------------------------------------------
+#
+#   Payment gateway  CASHFREE_APP_ID, CASHFREE_SECRET_KEY, CASHFREE_ENVIRONMENT (sandbox|production),
+#                    CASHFREE_WEBHOOK_SECRET (optional, see webhook_secret)
+#   Payouts          CASHFREE_PAYOUTS_CLIENT_ID, CASHFREE_PAYOUTS_CLIENT_SECRET
+#                    (deprecated aliases still read: CASHFREE_PAYOUT_APP_ID, CASHFREE_PAYOUT_SECRET_KEY)
+#   Optional host overrides CASHFREE_PG_BASE_URL, CASHFREE_PAYOUTS_BASE_URL. They are IGNORED when
+#   they point at the other environment's host: a sandbox deployment can never reach production.
+
+PG_HOSTS = {'sandbox': 'https://sandbox.cashfree.com/pg', 'production': 'https://api.cashfree.com/pg'}
+PAYOUT_HOSTS = {'sandbox': 'https://payout-gamma.cashfree.com',
+                'production': 'https://payout-api.cashfree.com'}
+_PRODUCTION_HOSTS = ('//api.cashfree.com', '//payout-api.cashfree.com')
+
+
+def environment():
+    """`sandbox` or `production`. Anything else (including unset) is sandbox."""
+    value = str(getattr(settings, 'CASHFREE_ENVIRONMENT', '') or 'sandbox').strip().lower()
+    return 'production' if value in ('production', 'prod', 'live') else 'sandbox'
+
+
+def _host_ok(url, env):
+    is_prod_host = any(h in url for h in _PRODUCTION_HOSTS)
+    return is_prod_host if env == 'production' else not is_prod_host
+
+
+def _override(name, env):
+    url = (getattr(settings, name, '') or '').strip().rstrip('/')
+    if not url:
+        return ''
+    if not _host_ok(url, env):
+        logger.error('%s points at a host that does not match CASHFREE_ENVIRONMENT=%s; ignored.',
+                     name, env)
+        return ''
+    return url
+
+
+def pg_base_url():
+    """The PG API root, `.../pg`, derived from CASHFREE_ENVIRONMENT unless overridden safely."""
+    env = environment()
+    url = _override('CASHFREE_PG_BASE_URL', env)
+    if not url:
+        return PG_HOSTS[env]
+    return url if url.endswith('/pg') else url + '/pg'
+
+
+def payout_base_url():
+    """The Payouts API host (no path), derived from CASHFREE_ENVIRONMENT unless overridden safely."""
+    env = environment()
+    url = _override('CASHFREE_PAYOUTS_BASE_URL', env)
+    if not url:
+        return PAYOUT_HOSTS[env]
+    for suffix in ('/payout/v1', '/payout'):
+        if url.endswith(suffix):
+            url = url[:-len(suffix)]
+    return url
+
+
+def payout_credentials():
+    """`(client_id, client_secret)` for Cashfree Payouts, or `(None, None)`."""
+    client_id = (getattr(settings, 'CASHFREE_PAYOUTS_CLIENT_ID', '')
+                 or getattr(settings, 'CASHFREE_PAYOUT_APP_ID', '') or '')
+    client_secret = (getattr(settings, 'CASHFREE_PAYOUTS_CLIENT_SECRET', '')
+                     or getattr(settings, 'CASHFREE_PAYOUT_SECRET_KEY', '') or '')
+    return client_id or None, client_secret or None
+
+
+def webhook_secret():
+    """The key Cashfree PG webhooks (API version 2023-08-01) are signed with.
+
+    Cashfree signs a PG webhook with HMAC-SHA256 under the merchant's client SECRET KEY; there
+    is no separate webhook secret in that version. So CASHFREE_WEBHOOK_SECRET is accepted when
+    set (an override), and CASHFREE_SECRET_KEY is used otherwise. Never logged.
+    """
+    return (getattr(settings, 'CASHFREE_WEBHOOK_SECRET', '')
+            or getattr(settings, 'CASHFREE_SECRET_KEY', '') or '')
 
 
 class CashfreeGateway(BasePaymentGateway):
@@ -94,8 +156,7 @@ class CashfreeGateway(BasePaymentGateway):
             Cashfree.XClientId = settings.CASHFREE_APP_ID
             Cashfree.XClientSecret = settings.CASHFREE_SECRET_KEY
             Cashfree.XEnvironment = (
-                Cashfree.SANDBOX if "sandbox" in settings.CASHFREE_PG_BASE_URL.lower() 
-                else Cashfree.PRODUCTION
+                Cashfree.PRODUCTION if environment() == 'production' else Cashfree.SANDBOX
             )
             self.pg_client = Cashfree()
         else:
@@ -128,8 +189,7 @@ class CashfreeGateway(BasePaymentGateway):
             ref = customer_id or (str(trip_id) if trip_id is not None else 'na')
             order_id = f"{ref}{int(time.time())}"
 
-            env = "sandbox" if "sandbox" in settings.CASHFREE_PG_BASE_URL.lower() else "api"
-            url = f"https://{env}.cashfree.com/pg/orders"
+            url = f"{pg_base_url()}/orders"
 
             headers = {
                 "X-Client-Id": settings.CASHFREE_APP_ID,
@@ -202,10 +262,10 @@ class CashfreeGateway(BasePaymentGateway):
         production deployment would otherwise accept any forged "payment success"
         payload from the public internet.
         """
-        secret = getattr(settings, 'CASHFREE_WEBHOOK_SECRET', None)
+        secret = webhook_secret()
         if not secret:
             logger.error(
-                "Cashfree webhook rejected: CASHFREE_WEBHOOK_SECRET is not configured"
+                "Cashfree webhook rejected: neither CASHFREE_WEBHOOK_SECRET nor CASHFREE_SECRET_KEY is configured"
             )
             return False
 
@@ -307,8 +367,7 @@ class CashfreeGateway(BasePaymentGateway):
         Cashfree actually recorded as paid.
         """
         try:
-            env = "sandbox" if "sandbox" in settings.CASHFREE_PG_BASE_URL.lower() else "api"
-            url = f"https://{env}.cashfree.com/pg/orders/{order_id}"
+            url = f"{pg_base_url()}/orders/{order_id}"
 
             headers = {
                 "X-Client-Id": settings.CASHFREE_APP_ID,
@@ -345,11 +404,7 @@ class CashfreeGateway(BasePaymentGateway):
     _payout_token_expires_at = 0  # epoch seconds
 
     def _payout_base_url(self):
-        return getattr(
-            settings,
-            'CASHFREE_PAYOUT_BASE_URL',
-            'https://payout-api.cashfree.com',
-        )
+        return payout_base_url()
 
     def _payout_credentials(self):
         """Return (client_id, client_secret) for Cashfree Payouts or (None, None).
@@ -358,9 +413,7 @@ class CashfreeGateway(BasePaymentGateway):
         the platform isn't onboarded for payouts yet, both will be empty
         and the caller falls back to the failure path.
         """
-        client_id = getattr(settings, 'CASHFREE_PAYOUT_APP_ID', '') or ''
-        client_secret = getattr(settings, 'CASHFREE_PAYOUT_SECRET_KEY', '') or ''
-        return client_id or None, client_secret or None
+        return payout_credentials()
 
     def _get_payout_token(self):
         """Authorize against Cashfree Payouts and cache the token in-process.
@@ -374,8 +427,8 @@ class CashfreeGateway(BasePaymentGateway):
         client_id, client_secret = self._payout_credentials()
         if not client_id or not client_secret:
             logger.error(
-                "CashfreeGateway.create_upi_payout: CASHFREE_PAYOUT_APP_ID / "
-                "CASHFREE_PAYOUT_SECRET_KEY are not configured; payouts will fail. "
+                "CashfreeGateway.create_upi_payout: CASHFREE_PAYOUTS_CLIENT_ID / "
+                "CASHFREE_PAYOUTS_CLIENT_SECRET are not configured; payouts will fail. "
                 "Configure them in env once the platform is onboarded for Cashfree Payouts."
             )
             return None

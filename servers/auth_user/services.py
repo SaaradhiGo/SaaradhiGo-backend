@@ -5,75 +5,18 @@ a Celery task and returns immediately. The actual FCM round-trip runs in
 the worker so request/WS handlers don't block on Google's latency.
 """
 
-import json
 import logging
-import os
 
 from celery import shared_task
-from django.conf import settings
 from django.contrib.auth import get_user_model
-import firebase_admin
-from firebase_admin import credentials, messaging
+
+from integrations.push import fcm_direct
 
 logger = logging.getLogger(__name__)
 
-
-def _firebase_credentials():
-    """Service-account credentials, from the environment or a file.
-
-    WHY THE ENVIRONMENT MATTERS HERE
-    --------------------------------
-    This read `FIREBASE_CREDENTIALS_PATH` only -- a FILE path, defaulting to
-    `firebase-credentials.json` in BASE_DIR. That file is gitignored and is
-    not in the image, and `FIREBASE_CREDENTIALS_PATH` was not even defined in
-    settings, so there was no supported way to configure it on Railway at all.
-    Every deployment therefore logged "Firebase credentials not found" and
-    skipped every push: `send_push_notification_task` returns False at the
-    `firebase_admin._apps` check before it looks at a token.
-
-    So push has never worked in any deployment, for either app, however
-    correct the clients were. Dispatch's FCM leg has been dead the whole time
-    and the WebSocket has been carrying every offer alone.
-
-    `FIREBASE_CREDENTIALS_JSON` holds the service-account JSON itself, which
-    is what a platform with environment variables and no persistent filesystem
-    can actually supply. The file path still works for local development.
-    """
-    raw = (getattr(settings, 'FIREBASE_CREDENTIALS_JSON', '') or '').strip()
-    if raw:
-        try:
-            return credentials.Certificate(json.loads(raw)), 'FIREBASE_CREDENTIALS_JSON'
-        except Exception as exc:  # noqa: BLE001
-            # Never log the value: it is a private key.
-            logger.error(
-                'FIREBASE_CREDENTIALS_JSON is set but unusable (%s): %s',
-                type(exc).__name__, exc,
-            )
-            return None, None
-
-    cred_path = getattr(settings, 'FIREBASE_CREDENTIALS_PATH', '') or 'firebase-credentials.json'
-    if not os.path.isabs(cred_path):
-        cred_path = os.path.join(settings.BASE_DIR, cred_path)
-    if os.path.exists(cred_path):
-        return credentials.Certificate(cred_path), cred_path
-    return None, None
-
-
-# Initialize Firebase on module load if credentials exist.
-try:
-    if not firebase_admin._apps:
-        cred, source = _firebase_credentials()
-        if cred is not None:
-            firebase_admin.initialize_app(cred)
-            logger.info('Firebase Admin initialized from %s.', source)
-        else:
-            logger.warning(
-                'No Firebase credentials. Push notifications are DISABLED. '
-                'Set FIREBASE_CREDENTIALS_JSON (the service-account JSON) or '
-                'place the file at FIREBASE_CREDENTIALS_PATH.'
-            )
-except Exception as e:
-    logger.error(f"Failed to initialize Firebase Admin: {str(e)}")
+# Initialise Firebase on module load if credentials exist (the vendor SDK lives in
+# integrations/push/fcm_direct.py; this module never imports it).
+fcm_direct.ensure_initialised()
 
 
 def _clear_fcm_token(user_id):
@@ -100,7 +43,7 @@ def send_push_notification_task(self, user_id, title, body, data=None):
     the user row so we stop retrying them. Transient errors are retried up
     to 3 times with a 15s backoff.
     """
-    if not firebase_admin._apps:
+    if not fcm_direct.is_initialised():
         logger.warning("Firebase Admin not initialized. Skipping push.")
         return False
 
@@ -115,23 +58,16 @@ def send_push_notification_task(self, user_id, title, body, data=None):
     if not token:
         return False
 
-    str_data = {str(k): str(v) for k, v in (data or {}).items()}
-    message = messaging.Message(
-        notification=messaging.Notification(title=title, body=body),
-        data=str_data,
-        token=token,
-    )
-
     try:
-        response = messaging.send(message)
+        response = fcm_direct.send(token, title, body, data)
         logger.info(f"FCM sent to user {user_id}: {response}")
         return True
-    except (messaging.UnregisteredError, messaging.SenderIdMismatchError) as e:
+    except fcm_direct.InvalidTokenError as e:
         # Token is permanently invalid — clear it so we stop retrying.
-        logger.info(f"FCM token invalid for user {user_id} ({type(e).__name__}); clearing")
+        logger.info(f"FCM token invalid for user {user_id} ({e}); clearing")
         _clear_fcm_token(user_id)
         return False
-    except messaging.QuotaExceededError as exc:
+    except fcm_direct.QuotaExceededError as exc:
         logger.warning(f"FCM quota exceeded for user {user_id}; retrying")
         raise self.retry(exc=exc, countdown=30)
     except Exception as exc:

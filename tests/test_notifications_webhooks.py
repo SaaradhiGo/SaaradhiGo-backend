@@ -31,8 +31,8 @@ from servers.notifications import preferences
 from servers.notifications.models import (
     DELIVERED, FAILED, NotificationMessage, NotificationPreference, NotificationStatusEvent,
 )
-from servers.notifications.providers import ses as ses_module
-from servers.notifications.providers.twilio import TwilioSms
+from integrations.email import ses as ses_module
+from integrations.sms.twilio import TwilioSms
 
 pytestmark = [pytest.mark.django_db]
 
@@ -193,7 +193,7 @@ class TestMsg91:
     def test_the_comparison_is_constant_time(self, fake_credentials):
         import inspect
 
-        from servers.notifications.providers import msg91
+        from integrations.sms import msg91
         assert 'hmac.compare_digest' in inspect.getsource(msg91.verify_token)
 
     def test_a_failed_report_marks_the_message_failed(self, msg91_message, fake_credentials):
@@ -256,7 +256,7 @@ class TestSes:
         settings.SES_SNS_TOPIC_ARNS = [TOPIC]
         response = mock.Mock(content=signer[1])
         response.raise_for_status = lambda: None
-        with mock.patch('servers.notifications.providers.ses.requests.get',
+        with mock.patch('integrations.email.ses.requests.get',
                         return_value=response) as get:
             self.get = get
             yield

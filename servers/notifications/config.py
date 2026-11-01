@@ -24,6 +24,7 @@ CREDENTIALS = {
     'ses': ('SES_AWS_ACCESS_KEY_ID', 'SES_AWS_SECRET_ACCESS_KEY', 'SES_AWS_REGION',
             'SES_FROM_EMAIL'),
     'fcm': ('FIREBASE_CREDENTIALS_JSON',),
+    'sns': ('SNS_AWS_ACCESS_KEY_ID', 'SNS_AWS_SECRET_ACCESS_KEY', 'SNS_AWS_REGION'),
     'stub': (),
     'in_app': (),
 }
@@ -36,6 +37,16 @@ ALLOWLIST_SUPPRESSION = 'not on test allowlist'
 
 def live_send_enabled():
     return bool(getattr(settings, 'NOTIFY_LIVE_SEND', False))
+
+
+def sns_confirmed():
+    """True when the owner has confirmed the AWS account (SNS_LIVE_CONFIRMED). Default False."""
+    return bool(getattr(settings, 'SNS_LIVE_CONFIRMED', False))
+
+
+def sns_blocked(provider):
+    """True when `provider` is AWS SNS and the owner has not confirmed the account."""
+    return provider == 'sns' and not sns_confirmed()
 
 
 def is_production():

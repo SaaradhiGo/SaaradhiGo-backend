@@ -216,18 +216,26 @@ def operator_end_discount_minor(trip, capped_minor):
     return min(total, capped_minor)
 
 
-def apply_operator_end(trip, capped_minor, rule):
+def apply_operator_end(trip, capped_minor, rule, plan_discount_minor=None):
     """Settle the promo of a trip an operator ended. PLATFORM-FUNDED: the rider pays 0, so the
     reservation is released. STANDARD: the booked trip is honoured, the discount re-worked on the
-    capped fare and the reservation moved to that amount (settled later like any promo trip)."""
+    capped fare and the reservation moved to that amount (settled later like any promo trip).
+
+    `plan_discount_minor` (US, AUDIT 27.59 ruling 2): the discount the plan arrived at once the tax is on
+    the fare after the discount; it can only be lower than the promo's own amount on the capped fare
+    (it is capped at what the rider would otherwise pay). None everywhere else."""
     if rule == 'platform_funded':
         return release_for_trip(trip)
     from servers.ride.models import PromoRedemption
 
+    left = plan_discount_minor
     with transaction.atomic():
         for r in PromoRedemption.objects.select_for_update().select_related('promo').filter(
                 trip=trip, state=PromoRedemption.STATE_COMMITTED):
             new = min(operator_end_discount_minor_one(r, capped_minor), capped_minor)
+            if left is not None:
+                new = min(new, left)
+                left -= new
             if r.campaign_id is not None and new != r.discount_amount_minor:
                 budget.adjust_reservation(r.campaign_id, r.discount_amount_minor, new)
             r.discount_amount_minor = new
@@ -262,7 +270,7 @@ class PromoRefused(Exception):
         self.reason = reason
 
 
-def find_auto_promo(user, fare, zone, at=None):
+def find_auto_promo(user, fare, zone, at=None, tax=None):
     """The best live auto-applied rider promo for this booking, or None.
 
     Best = the largest discount. Only campaigns that are `live`, flagged `auto_apply`, in the
@@ -276,26 +284,30 @@ def find_auto_promo(user, fare, zone, at=None):
                      .select_related('promo_code', 'geo_node')):
         if not (campaign.config or {}).get('auto_apply'):
             continue
-        result = apply_promo(campaign.promo_code.code, user, fare, zone=zone, at=at)
+        result = apply_promo(campaign.promo_code.code, user, fare, zone=zone, at=at, tax=tax)
         if result.ok and (best is None or result.discount_amount > best.discount_amount):
             best = result
     return best.code if best else None
 
 
-def book(user, trip, fare, zone, code):
+def book(user, trip, fare, zone, code, tax=None):
     """Redeem `code` (or the best auto-applied promo when `code` is empty) for a new trip.
 
     Call inside the booking transaction. Returns the `PromoResult`, or None when there is no
     promo. Raises `PromoRefused` if the rider ASKED for a code and it cannot be applied, so the
     booking is refused rather than silently charged more than the rider was shown.
+
+    `tax` is `(percent, fee)` for an additive-tax quote (the US), or False for an inclusive one:
+    the tax is then charged on the fare after the discount (AUDIT 27.59 ruling 2; US accountant to
+    confirm, blocker #15) and the trip's own fare drops by the tax no longer charged.
     """
     from servers.ride.promos import redeem_promo
 
     asked = bool((code or '').strip())
-    code = (code or '').strip() or find_auto_promo(user, fare, zone)
+    code = (code or '').strip() or find_auto_promo(user, fare, zone, tax=tax)
     if not code:
         return None
-    result = redeem_promo(code, user, trip, fare, zone=zone)
+    result = redeem_promo(code, user, trip, fare, zone=zone, tax=tax)
     if not result.ok:
         if asked:
             raise PromoRefused(result.reason or 'PROMO_INVALID')

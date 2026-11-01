@@ -138,7 +138,7 @@ def us_trip_of(data):
 
 
 class TestPromo:
-    def test_the_promo_applies_as_today_and_tax_stays_on_the_fare_before_it(self, us):
+    def test_the_promo_discount_lowers_the_taxable_amount(self, us):
         from servers.promotions.models import Campaign
         from servers.ride.models import PromoCode
         from servers.ride.promos import redeem_promo
@@ -156,14 +156,16 @@ class TestPromo:
         assert redeem_promo('USD2', trip.user_id, trip, D(trip.estimated_fare),
                             zone=trip.zone).ok
         data = release(us['client'], trip, 'other').json()['data']
-        # The decision (flag in the PR): the promo is the module 12 discount on the fare as it is
-        # quoted and charged (tax and fee inside it, as at booking); the tax split is on the fare
-        # BEFORE the promo, so the recorded tax is the tax of the full charge.
+        # AUDIT 27.59 ruling 2 (was: tax on the fare before the promo, 1.05): the discount is the
+        # module 12 discount on the capped fare (2.00), and the tax is now on what the rider is
+        # charged: 10% of (10.50 - 2.00) = 0.85, so 0.20 less. The fee (1.50) is unchanged.
         assert data['capped_fare_minor'] == 1_305
         assert (data['pretax_fare_minor'], data['tax_minor'], data['per_trip_fee_minor']) == (
-            1_050, 105, 150)
+            1_050, 85, 150)
+        assert data['tax_relief_minor'] == 20
         assert data['promo_discount_minor'] == 200
-        assert data['rider_pays_after_promo_minor'] == 1_105
+        assert data['rider_pays_minor'] == 1_285                  # 10.50 + 0.85 + 1.50
+        assert data['rider_pays_after_promo_minor'] == 1_085      # (10.50 - 2.00) + 0.85 + 1.50
 
 
 class TestPlatformFunded:

@@ -561,6 +561,23 @@ def _resolve_tax_rate(trip):
     return rate
 
 
+def _tax_basis(trip, total):
+    """The amount the receipt's tax is worked out on. Normally the total. A US (additive-tax) trip
+    that held a promo: the tax was charged on the fare AFTER the discount (AUDIT 27.59 ruling 2), so
+    it is worked out on what the rider was actually charged. India and no-promo trips: the total."""
+    zone = getattr(trip, 'zone', None)
+    if (getattr(zone, 'tax_mode', '') or 'inclusive') != 'additive':
+        return total
+    try:
+        from servers.promotions import rider_promos
+
+        if rider_promos.discount_minor(trip):
+            return rider_promos.payable(trip)
+    except Exception:  # noqa: BLE001 - a receipt must still render
+        logger.exception('promo tax basis failed for trip=%s', getattr(trip, 'pk', None))
+    return total
+
+
 def _receipt_tax(trip, total, rate):
     """Tax, currency and label for one receipt, in this market's convention.
 
@@ -598,7 +615,7 @@ def _receipt_tax(trip, total, rate):
         per_trip_fee = Decimal(str(getattr(zone, 'per_trip_fee', None) or '0'))
         # total = fare + tax + fee, and tax = fare * rate/100, so
         # fare = (total - fee) / (1 + rate/100).
-        taxable = total - per_trip_fee
+        taxable = max(Decimal('0'), total - per_trip_fee)
         divisor = (Decimal('1') + rate / Decimal('100'))
         pre_tax = (taxable / divisor) if divisor else taxable
         amount = quantize(pre_tax * rate / Decimal('100'), currency)
@@ -644,7 +661,7 @@ def issue_receipt(trip, force_resend: bool = False):
     fare_pricing = FarePricing.objects.filter(trip_id=trip).order_by('-id').first()
     total = _total_fare(trip)
 
-    tax = _receipt_tax(trip, total, gst_rate)
+    tax = _receipt_tax(trip, _tax_basis(trip, total), gst_rate)
     gst_amount, tax_mode = tax['amount'], tax['mode']
     tax_label, currency = tax['label'], tax['currency']
 
@@ -695,7 +712,7 @@ def reissue_receipt(trip):
     from servers.ride.models import FarePricing
     fare_pricing = FarePricing.objects.filter(trip_id=trip).order_by('-id').first()
     total = _total_fare(trip)
-    tax = _receipt_tax(trip, total, gst_rate)
+    tax = _receipt_tax(trip, _tax_basis(trip, total), gst_rate)
     gst_amount = tax['amount']
     receipt_number = f"SG-{(trip.completed_at or timezone.now()).strftime('%Y%m')}-{trip.id}-v{new_version}"
 

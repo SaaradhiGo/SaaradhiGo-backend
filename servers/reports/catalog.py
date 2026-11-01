@@ -13,7 +13,8 @@ rows are in (`payments.scope.paths_for`, the same narrowing every Finance surfac
                  Centre finance tiles: city totals, never one person's earnings.
   promotion cost `promo.read` OR a money capability: the promo / incentive / referral cost
                  report, which is what a campaign budget already shows. This is what Marketing
-                 sees of the money (it holds neither finance capability, by design).
+                 sees of the money (it holds neither finance capability, by design), plus GMV and trips
+                 completed on that report so promo cost reads against GMV (AUDIT 27.59).
 
 Support Agent, Support Lead, Safety Officer and KYC Verifier hold none of these: 403.
 """
@@ -113,16 +114,20 @@ PROMOTIONS = Report(
     description='What the platform spent on rider promos, driver incentives and referrals, per currency.',
     gate=PROMO_GATE, money=True, groups=('none', 'city'), default_group='none',
     columns=(
-        col('trips_completed', 'Completed trips'), col('promo_cost_minor', 'Promo cost', MONEY),
+        col('trips_completed', 'Completed trips'), col('gmv_minor', 'GMV (full fare)', MONEY),
+        col('promo_cost_minor', 'Promo cost', MONEY),
         col('incentive_rewards_minor', 'Incentive rewards', MONEY),
         col('referral_rewards_minor', 'Referral rewards', MONEY),
         col('reward_recovery_minor', 'Reward recovery', MONEY),
         col('total_cost_minor', 'Net promotion cost', MONEY),
         col('cost_per_trip_minor', 'Cost per completed trip', MONEY),
+        col('promo_cost_percent_of_gmv', 'Promo cost per GMV', PERCENT),
+        col('total_cost_percent_of_gmv', 'Net promotion cost per GMV', PERCENT),
     ),
     definitions=(
         'Promo cost is the platform-funded discount in the promotions ledger; incentive and referral rewards are credits in the driver and rider wallet ledgers; recovery is the amount taken back after a reviewed fraud decision.',
         'Net promotion cost = promo + incentive + referral - recovery.',
+        'GMV is the full fare of the trips settled that day, before any promo. It is shown here so promo cost can be read against it; commission, take rate and platform revenue stay in Revenue (Finance).',
     ),
 )
 

@@ -849,7 +849,7 @@ def apply_promo_endpoint(request):
     """Preview a promo code against a fare quote.
 
     Body: {"code": str, "fare": "150.00",
-           "pickup_lat": ..., "pickup_long": ...}
+           "pickup_lat": ..., "pickup_long": ..., "vehicle_type": optional}
     The pickup is used to scope zone-bound promos. We don't redeem
     yet; that happens once the trip is created. The response is the
     same shape as PromoResult.to_dict().
@@ -880,7 +880,15 @@ def apply_promo_endpoint(request):
             zone = find_zone_for_point(float(p_lat), float(p_lon))
         except Exception:
             zone = None
-    result = apply_promo(code, request.user, fare_dec, zone=zone)
+    # US (additive tax): the preview shows tax on the fare AFTER the discount (AUDIT 27.59 ruling 2),
+    # using the card of the vehicle class when the client names one. Inclusive tax: nothing changes.
+    tax = None
+    vt_name = (request.data.get('vehicle_type') or '').strip()
+    if zone is not None and vt_name:
+        from servers.driver.models import VehicleType
+        from servers.pricing.promo_tax import additive_context
+        tax = additive_context(zone, VehicleType.objects.filter(type__iexact=vt_name).first())
+    result = apply_promo(code, request.user, fare_dec, zone=zone, tax=tax)
     http_status = status.HTTP_200_OK if result.ok else status.HTTP_400_BAD_REQUEST
     return success_response(result.to_dict(), http_status) if result.ok else error_response(
         code=result.reason or 'PROMO_INVALID',

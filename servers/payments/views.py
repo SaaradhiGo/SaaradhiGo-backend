@@ -418,9 +418,10 @@ def verify_payment(request):
                 status='completed',
             )
 
-            # Create driver earning for online payment
-            from servers.driver.utils import credit_driver_wallet
-            credit_driver_wallet(trip)
+            # Driver earning for the online payment: exactly once, also after a cash
+            # settlement (a trip switched to online after completion, AUDIT 27.72).
+            from servers.driver.utils import settle_paid_by_platform
+            settle_paid_by_platform(trip, payment.amount_minor)
 
     return success_response({
         'message': 'Payment verified successfully',
@@ -782,9 +783,10 @@ def _handle_cashfree_webhook(payload, gateway):
                     }
                 )
 
-                # Credit driver's wallet for online payment
-                from servers.driver.utils import credit_driver_wallet
-                credit_driver_wallet(trip)
+                # Driver earning for the online payment: exactly once, also after a cash
+                # settlement (a trip switched to online after completion, AUDIT 27.72).
+                from servers.driver.utils import settle_paid_by_platform
+                settle_paid_by_platform(trip, payment.amount_minor)
 
         logger.info(f"Cashfree Webhook: Payment {payment.id} completed for trip {trip.id}")
         return JsonResponse({'status': 'ok'}, status=200)
@@ -1843,8 +1845,9 @@ def _settle_payment_if_paid_at_gateway(trip_id_value, gateway):
                     'txn_type': 'payment',
                 },
             )
-            from servers.driver.utils import credit_driver_wallet
-            credit_driver_wallet(trip)
+            # Exactly once, also after a cash settlement (AUDIT 27.72).
+            from servers.driver.utils import settle_paid_by_platform
+            settle_paid_by_platform(trip, p.amount_minor)
 
     logger.info(
         f"Settled payment {payment.pk} for trip {trip_id_value} via gateway poll "

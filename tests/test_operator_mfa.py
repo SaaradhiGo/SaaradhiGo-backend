@@ -54,13 +54,10 @@ REFUSED = (401, 403)
 
 
 @pytest.fixture(autouse=True)
-def enforced(settings, frozen_console_open):
+def enforced(settings):
     """MFA on, and the login guard out of the way unless a test wants it.
 
-    The fleet monitor is opened through `frozen_console_open` because the
-    session tests below walk `/`; the operator is a Super Admin at Global
-    (`grant_legacy_equivalent` of `ops_role='admin'`), which the frozen
-    console's gate requires before it will even redirect to the challenge.
+    (The Django console session and its challenge page no longer exist: the console is off.)
     """
     settings.OPS_MFA_ENFORCED = True
     settings.OPS_LOGIN_MAX_ATTEMPTS = 50
@@ -332,106 +329,6 @@ def test_a_driver_can_still_sign_in_through_the_sms_path(settings):
 
     assert resp.status_code == 200, resp.content[:300]
     assert Driver.objects.filter(user_id__phone_number='+919643000001').exists()
-
-
-# ===========================================================================
-# Bypass 3 — the console session
-# ===========================================================================
-
-def test_a_correct_password_alone_does_not_open_the_console(enrolled):
-    """A session cookie is one factor."""
-    client = Client()
-    resp = client.post('/login/', {'username': OP_PHONE,
-                                   'password': OP_PASSWORD}, follow=False)
-
-    assert resp.status_code in (301, 302)
-    assert resp['Location'].endswith('/mfa/'), (
-        f'a password alone went straight to {resp["Location"]!r} instead of the '
-        f'second-factor challenge'
-    )
-
-
-def test_console_pages_bounce_to_the_challenge_until_a_code_is_given(enrolled):
-    """Every guarded page, not only the one the login redirect happened to name."""
-    client = Client()
-    client.post('/login/', {'username': OP_PHONE, 'password': OP_PASSWORD})
-
-    resp = client.get('/', follow=False)
-
-    assert resp.status_code in (301, 302), (
-        f'a console page rendered for a session that never presented a factor '
-        f'(HTTP {resp.status_code})'
-    )
-    assert '/mfa/' in resp['Location']
-
-
-def test_a_correct_code_opens_the_console(enrolled):
-    """The authorised half."""
-    operator, device = enrolled
-    client = Client()
-    client.post('/login/', {'username': OP_PHONE, 'password': OP_PASSWORD})
-
-    resp = client.post('/mfa/', {'code': _code(device)}, follow=False)
-
-    assert resp.status_code in (301, 302), resp.content[:200]
-    assert '/mfa/' not in resp['Location'], 'the challenge did not accept the code'
-
-    page = client.get('/')
-    assert page.status_code == 200, (
-        f'the console still refused after a verified code: HTTP {page.status_code}'
-    )
-
-
-def test_a_wrong_code_keeps_the_console_closed(enrolled):
-    client = Client()
-    client.post('/login/', {'username': OP_PHONE, 'password': OP_PASSWORD})
-
-    resp = client.post('/mfa/', {'code': '000000'})
-
-    assert resp.status_code == 200, 'expected the challenge page again'
-    assert client.get('/', follow=False).status_code in (301, 302)
-
-
-def test_the_challenge_is_rate_limited(enrolled, settings):
-    """Six digits and a 30-second window is a short brute force without a limit."""
-    operator, device = enrolled
-    settings.OPS_LOGIN_MAX_ATTEMPTS = 3
-    client = Client()
-    client.post('/login/', {'username': OP_PHONE, 'password': OP_PASSWORD})
-
-    for i in range(settings.OPS_LOGIN_MAX_ATTEMPTS):
-        client.post('/mfa/', {'code': f'00000{i}'})
-
-    # Past the threshold, even the CORRECT code must be refused.
-    client.post('/mfa/', {'code': _code(device)})
-
-    assert client.get('/', follow=False).status_code in (301, 302), (
-        'the challenge accepted a code after repeated failures, so it is an '
-        'unmetered six-digit oracle against an already-authenticated session'
-    )
-
-
-def test_the_challenge_is_not_reachable_without_signing_in_first(enrolled):
-    """It must not be a standalone way to verify a session that has no account."""
-    resp = Client().get('/mfa/', follow=False)
-
-    assert resp.status_code in (301, 302)
-    assert '/login/' in resp['Location']
-
-
-def test_a_rider_session_cannot_use_the_challenge():
-    """Nor a way for a non-operator to obtain a verified session."""
-    rider = User.objects.create_user(
-        phone_number='+919743000001', username='+919743000001', role='rider',
-        password=OP_PASSWORD)
-    Rider.objects.create(user_id=rider)
-    client = Client()
-    client.force_login(rider)
-
-    resp = client.get('/mfa/', follow=False)
-
-    assert resp.status_code in (301, 302)
-    assert '/login/' in resp['Location']
 
 
 # ===========================================================================

@@ -169,7 +169,7 @@ def resolve_file_input(request, field_name, kind=None):
         return True, None, None
 
     if kind is not None:
-        from base.s3 import verify_uploaded_key
+        from integrations.storage.s3 import verify_uploaded_key
 
         try:
             verify_uploaded_key(kind, str(raw_value).strip())

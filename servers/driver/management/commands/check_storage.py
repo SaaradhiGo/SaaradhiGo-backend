@@ -174,9 +174,9 @@ class Command(BaseCommand):
             self._ok('private document URLs', 'presigned, no custom domain')
 
     def _check_client(self, settings):
-        from botocore.exceptions import BotoCoreError, ClientError
+        from integrations.storage.errors import StorageClientError as ClientError, StorageTransportError as BotoCoreError
 
-        from base.s3 import build_s3_client
+        from integrations.storage.s3 import build_s3_client
 
         try:
             client = build_s3_client()
@@ -206,7 +206,7 @@ class Command(BaseCommand):
 
     def _check_round_trip(self, client, settings):
         """Put, read back and delete a real object, through django-storages."""
-        from botocore.exceptions import ClientError
+        from integrations.storage.errors import StorageClientError as ClientError
 
         from base.storage_backends import PrivateDocumentStorage
 
@@ -253,7 +253,7 @@ class Command(BaseCommand):
 
     def _check_presigned_put(self, settings):
         """The path the mobile apps use: sign a PUT, then actually make it."""
-        from base.s3 import generate_presigned_put
+        from integrations.storage.s3 import generate_presigned_put
 
         try:
             signed = generate_presigned_put('license_doc', 'image/jpeg')
@@ -275,7 +275,7 @@ class Command(BaseCommand):
         if response.ok:
             self._ok('presigned PUT', f'HTTP {response.status_code}')
             try:
-                from base.s3 import build_s3_client
+                from integrations.storage.s3 import build_s3_client
                 build_s3_client().delete_object(
                     Bucket=settings.AWS_S3_BUCKET_NAME, Key=signed['key'])
             except Exception:

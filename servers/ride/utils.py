@@ -483,7 +483,8 @@ def process_refund_on_cancel(trip):
     if not payment or not payment.gateway_payment_id:
         return {'refunded': False, 'amount': None}
 
-    gateway = get_payment_gateway()
+    # Refund through the provider the payment was taken on (recorded on the row).
+    gateway = get_payment_gateway(payment.payment_gateway or 'cashfree')
     refund = gateway.create_refund(payment.gateway_payment_id)
     if refund:
         payment.status = 'refunded'
@@ -610,13 +611,15 @@ def create_payment_on_complete(trip):
         # — if it timed out, the trip failed to complete; if the
         # transaction later rolled back, we had orphaned orders at
         # Cashfree with no local row.
+        from servers.payments.payment_gateways.factory import country_for_trip, provider_name_for
+
         Payment.objects.create(
             trip_id=trip,
             user_id=trip.user_id,
             amount=amount,
             method='online',
             status='pending',
-            payment_gateway=getattr(settings, 'PAYMENT_GATEWAY', 'cashfree'),
+            payment_gateway=provider_name_for('payments', country_for_trip(trip)) or '',
         )
         trip.payment_status = 'pending'
         trip.save(update_fields=['payment_status'])

@@ -108,7 +108,7 @@ def completed_trip(db):
 def _no_gateway(monkeypatch):
     monkeypatch.setattr(
         'servers.payments.views.get_payment_gateway_for_payments',
-        lambda: _NoGateway(),
+        lambda *a, **k: _NoGateway(),
     )
 
 
@@ -229,7 +229,7 @@ class TestRefusals:
         completed_trip['payment'].save()
         monkeypatch.setattr(
             'servers.payments.views.get_payment_gateway_for_payments',
-            lambda: _PaidGateway(),
+            lambda *a, **k: _PaidGateway(),
         )
 
         response = _switch_to_cash(completed_trip)

@@ -1296,7 +1296,7 @@ def trigger_payout_creation(withdrawal):
     from django.db import transaction
     from django.utils import timezone
 
-    from servers.payments.payment_gateways.cashfree_gateway import (
+    from servers.payments.payment_gateways.base_gateway import (
         PayoutDispatchUnknown,
     )
     from servers.rider.models import Wallet, WalletTransaction
@@ -1564,7 +1564,7 @@ def trigger_payout_creation(withdrawal):
             )
 
         return False
-from servers.payments.payment_gateways.cashfree_gateway import (  # noqa: E402
+from servers.payments.payment_gateways.base_gateway import (  # noqa: E402
     PayoutDispatchUnknown,
 )
 
@@ -1587,6 +1587,8 @@ def initiate_upi_payout(withdrawal, driver):
 
     from .models import DriverUPIContact
     from servers.payments.payment_gateways.factory import (
+        country_for_driver,
+        country_of_currency,
         get_payment_gateway_for_payouts,
     )
 
@@ -1740,7 +1742,24 @@ def initiate_upi_payout(withdrawal, driver):
             driver.id,
         )
 
-        gateway = get_payment_gateway_for_payouts()
+        # The payout provider is chosen by the driver's country (configuration only). A country
+        # with no provider has no payout rail: nothing is dispatched, so the caller refunds.
+        payout_country = country_of_currency(withdrawal_currency) or country_for_driver(driver)
+        gateway = get_payment_gateway_for_payouts(payout_country)
+        if not gateway:
+            withdrawal.failure_reason = (
+                f'No payout provider is configured for {payout_country or "this market"}'
+            )
+            withdrawal.failure_count += 1
+            withdrawal.last_failure_at = timezone.now()
+            withdrawal.save(
+                update_fields=["failure_reason", "failure_count", "last_failure_at"]
+            )
+            logger.error(
+                "withdrawal %s: no payout provider configured for %s",
+                withdrawal.id, payout_country,
+            )
+            return False
 
         # Use a stable reference for this withdrawal.
         #
@@ -1955,9 +1974,12 @@ def initiate_bank_payout(withdrawal, driver):
     
     try:
         # Import Cashfree gateway
-        from servers.payments.payment_gateways.factory import get_payment_gateway_for_payouts
-        
-        get_payment_gateway_for_payouts()  # stub: bank payouts not wired yet
+        from servers.payments.payment_gateways.factory import (
+            country_for_driver,
+            get_payment_gateway_for_payouts,
+        )
+
+        get_payment_gateway_for_payouts(country_for_driver(driver))  # stub: bank payouts not wired yet
         
         # In a real implementation, you would need:
         # 1. Get driver's bank details (account number, IFSC code, name)

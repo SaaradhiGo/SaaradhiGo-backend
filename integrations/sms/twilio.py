@@ -26,7 +26,7 @@ import logging
 import requests
 from django.conf import settings
 
-from .base import (
+from servers.notifications.providers.base import (
     PermanentProviderError, Provider, SendResult, TransientProviderError, WebhookEvent, mask_for_log,
 )
 

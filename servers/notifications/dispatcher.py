@@ -78,6 +78,9 @@ def channels_with_template(key, country, locale=LOCALE):
     return [c for c in CHANNELS if resolve_template(key, c, country, locale) is not None]
 
 
+SNS_NOT_CONFIRMED = 'sns not confirmed'
+
+
 class Decision:
     def __init__(self, status, reason='', provider='', not_before=None):
         self.status = status
@@ -92,6 +95,10 @@ def decide(user, *, channel, category, country, now=None, zone=None):
     provider, live = config.effective_provider(channel, country)
     if config.configured_provider(channel, country) is None:
         return Decision(SUPPRESSED, f'no provider configured for {channel} in {country}', provider)
+
+    # AWS SNS is sandbox-only until the owner confirms the account: no send, no network call.
+    if live and config.sns_blocked(provider):
+        return Decision(SUPPRESSED, SNS_NOT_CONFIRMED, provider)
 
     allowed, reason = preferences.is_opted_in(user.pk, channel, category)
     if not allowed:

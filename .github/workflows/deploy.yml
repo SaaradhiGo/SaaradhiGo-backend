@@ -52,7 +52,7 @@ jobs:
       - name: Bandit (SAST)
         # Reports medium severity and above. Migrations and tests are
         # excluded: generated code and asserts are not findings.
-        run: bandit -r base servers -ll --exclude "*/migrations/*"
+        run: bandit -r base servers integrations -ll --exclude "*/migrations/*"
 
       - name: pip-audit (known CVEs in dependencies)
         # Non-blocking for now: cashfree-pg pins pydantic <2, which drags in

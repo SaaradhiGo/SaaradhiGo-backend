@@ -393,8 +393,8 @@ def test_a_redelivered_push_does_not_corrupt_the_users_token(rider):
     from servers.auth_user.services import send_push_notification_task
     User.objects.filter(pk=rider.pk).update(fcm_token='a-token-value')
 
-    with mock.patch('servers.auth_user.services.firebase_admin') as fb, \
-            mock.patch('servers.auth_user.services.messaging') as msg:
+    with mock.patch('integrations.push.fcm_direct.firebase_admin') as fb, \
+            mock.patch('integrations.push.fcm_direct.messaging') as msg:
         fb._apps = {'default': object()}
         msg.send.return_value = 'projects/x/messages/1'
         first = send_push_notification_task.apply(
@@ -423,8 +423,8 @@ def test_a_push_task_never_writes_the_token_into_the_logs(rider, caplog):
     User.objects.filter(pk=rider.pk).update(fcm_token=token)
 
     with caplog.at_level(logging.DEBUG), \
-            mock.patch('servers.auth_user.services.firebase_admin') as fb, \
-            mock.patch('servers.auth_user.services.messaging') as msg:
+            mock.patch('integrations.push.fcm_direct.firebase_admin') as fb, \
+            mock.patch('integrations.push.fcm_direct.messaging') as msg:
         fb._apps = {'default': object()}
         msg.send.return_value = 'ok'
         send_push_notification_task.apply(

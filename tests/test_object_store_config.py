@@ -79,7 +79,7 @@ class TestTheThreeDefaultsThatDifferOnR2:
 
 
 class TestTheTwoClientsCannotDisagree:
-    """`base/s3.py` presigns with its own client; django-storages reads and
+    """`integrations/storage/s3.py` presigns with its own client; django-storages reads and
     writes with another. When they disagree on addressing style the symptom
     is that one path works and the other 403s."""
 

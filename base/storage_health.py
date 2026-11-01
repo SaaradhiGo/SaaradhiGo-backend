@@ -30,7 +30,7 @@ defect in this area presented. It reports what actually happened.
 
 import logging
 
-from botocore.exceptions import BotoCoreError, ClientError
+from integrations.storage.errors import StorageClientError as ClientError, StorageTransportError as BotoCoreError
 from rest_framework import status
 
 from base.utils import error_response

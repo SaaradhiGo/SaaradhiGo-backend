@@ -356,6 +356,9 @@ class WithdrawalRequest(CurrencyStampedModel, models.Model):
         # 'failed'. There is no automated resolution because no provider status
         # call has been verified against the sandbox.
         ('unresolved', 'Unresolved - provider outcome unknown'),
+        # Paid, then reversed by the bank (AUDIT 27.71): the amount is back in the wallet
+        # as a `refund_reversed_withdrawal` line.
+        ('reversed', 'Reversed after payment'),
     ]
     PAYOUT_METHOD_CHOICES = [
         ('bank', 'Bank Transfer'),

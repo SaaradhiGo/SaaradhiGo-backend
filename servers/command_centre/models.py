@@ -93,8 +93,12 @@ PROMOTION_BUDGET_EXHAUSTED = 'promotion.budget_exhausted'
 #: Module 12: trips that already held a discount were honoured past the campaign's budget
 #: (warning). Money, so Finance (`finance.read`) and Super Admin, like the other money alerts.
 PROMOTION_BUDGET_OVERSHOOT = 'promotion.budget_overshoot'
+#: A payout the provider reported paid was then reversed by the bank (AUDIT 27.71): the amount
+#: is back in the driver's balance. Warning, one per payout, anchored to the driver's home city,
+#: Finance (`finance.read` in scope) and Super Admin, acknowledged by Finance.
+FINANCE_PAYOUT_REVERSED = 'finance.payout_reversed'
 FINANCE_ALERT_KINDS = frozenset({SETTLEMENT_NO_COMMISSION_RULE, FINANCE_PLATFORM_FUNDED_END,
-                                 PROMOTION_BUDGET_OVERSHOOT})
+                                 PROMOTION_BUDGET_OVERSHOOT, FINANCE_PAYOUT_REVERSED})
 #: Module 11: a notification provider's failure rate over the last 15 minutes is above its
 #: threshold (warning). Platform health, not operations: visible to Super Admin only, which
 #: is to say holders of `platform.settings`. It clears itself when the rate recovers, and can
@@ -119,6 +123,7 @@ PLATFORM_ALERT_KINDS = frozenset({NOTIFY_PROVIDER_FAILING})
 ACK_PERMISSION = {
     NOTIFY_PROVIDER_FAILING: 'platform.settings',
     FINANCE_PLATFORM_FUNDED_END: 'finance.read',
+    FINANCE_PAYOUT_REVERSED: 'finance.read',
     PROMOTION_BUDGET_OVERSHOOT: 'finance.read',
     FRAUD_FLAG_HIGH: 'fraud.review',
     FRAUD_QUEUE_AGING: 'fraud.review',

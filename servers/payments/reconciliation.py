@@ -380,7 +380,8 @@ def _check_payouts(r, country, currency, gateway, start, end):
                     withdrawal = WithdrawalRequest.objects.filter(
                         id=int(ref.split('_')[1])).select_related('driver__home_city').first()
                     break
-        if withdrawal is None or withdrawal.status == 'completed' or withdrawal.currency != currency:
+        if (withdrawal is None or withdrawal.status in ('completed', 'reversed')
+                or withdrawal.currency != currency):
             continue
         if not WithdrawalRequest.objects.filter(_withdrawal_country_q(country), pk=withdrawal.pk).exists():
             continue

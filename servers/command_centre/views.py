@@ -44,7 +44,7 @@ from rest_framework.permissions import IsAuthenticated
 from base.utils import error_response, success_response
 from servers.admin_access.access import scope_paths
 from servers.admin_access.bridge import AnyOfScopedPermission, ScopedPermission, granted
-from servers.admin_access.models import ACTIVE, CITY, GeoNode
+from servers.admin_access.models import ACTIVE, CITY, PAUSED, GeoNode
 from servers.admin_access.scoping import ScopeNotHeld, requested_node, scoped_to_request
 from servers.admin_audit.services import record_admin_action
 from servers.approvals.service import ApprovalError
@@ -155,16 +155,16 @@ def admin_overview(request):
         # to every holder but links only for those who can open the page.
         'reconciliation_link': bool(include_money),
     }
-    # On an UNRESTRICTED board (Super Admin) a paused city with nothing in
-    # it is noise, while a paused city with trips (Austin on QA) is a row
-    # the owner asked to see. An operator scoped to a city always gets that
+    # On an UNRESTRICTED board (Super Admin) a DRAFT city (never launched) with nothing in it is
+    # noise, while a PAUSED city (it was live; module 15) is always a row: an operator paused it
+    # and the board must say so, empty or not. A draft with trips is a row too. An operator scoped to a city always gets that
     # city's row, paused or not: an empty board that says "no requests in
     # this window" is their truth, and "no cities in your scope" is not.
     if scope_paths(request.user) is None:
         by_code = {c.code: c for c in cities}
         payload['cities'] = [
             row for row in payload['cities']
-            if by_code[row['code']].status == ACTIVE or has_data(row)
+            if by_code[row['code']].status in (ACTIVE, PAUSED) or has_data(row)
         ]
     payload['cached'] = False
     if ttl:

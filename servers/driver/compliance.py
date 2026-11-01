@@ -46,7 +46,7 @@ blocking approval visibly.
 
 import logging
 
-from base.countries import DEFAULT_COUNTRY_CODE, country_of_phone, get_country
+from base.countries import country_of_phone, get_country
 
 logger = logging.getLogger(__name__)
 
@@ -110,24 +110,28 @@ def document_description(key):
 
 
 def driver_country_code(driver):
-    """The country whose rules this driver is reviewed against.
+    """The country whose rules this driver is reviewed against, or None when it cannot be told.
 
-    Resolved from their E.164 phone number, which is the only signal available
-    before they have taken a trip.
+    The home city's country first (module 15: a driver is placed by the city they work in), then
+    the country of their E.164 phone number. NO LONGER INDIA BY DEFAULT: a driver with neither
+    gets None, which the console shows as "unknown country". The document checklist for such a
+    driver still falls back to the registry default (`get_country(None)`), so they are never
+    asked for FEWER documents than a known driver, and the warning below says so.
     """
+    home = getattr(driver, 'home_city', None)
+    country = getattr(home, 'country', None) if home is not None else None
+    if country is not None:
+        return country.code
     user = getattr(driver, 'user_id', None)
     phone = getattr(user, 'phone_number', None)
     country = country_of_phone(phone)
     if country is not None:
         return country.code
-    if phone:
-        logger.warning(
-            'driver %s has a phone number in no supported country; reviewing '
-            'against the %s checklist. They may be being asked for the wrong '
-            'documents.',
-            getattr(driver, 'pk', None), DEFAULT_COUNTRY_CODE,
-        )
-    return DEFAULT_COUNTRY_CODE
+    logger.warning(
+        'driver %s has no home city and a phone number in no supported country: their country '
+        'is unknown. Their document checklist falls back to the registry default until a city '
+        'is assigned.', getattr(driver, 'pk', None))
+    return None
 
 
 def required_vehicle_documents(driver):

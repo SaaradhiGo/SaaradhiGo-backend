@@ -70,6 +70,9 @@ class PlatformSettings(models.Model):
     value = models.TextField(help_text='Serialized value; typed by setting_type.')
     setting_type = models.CharField(max_length=20, choices=SETTING_TYPES, default='string')
     description = models.TextField(blank=True, default='')
+    #: A sensitive key changes only through a checker (`platform.setting_change`) and its value is
+    #: never shown in a list (module 15).
+    is_sensitive = models.BooleanField(default=False)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,

@@ -468,7 +468,18 @@ def _ids(world):
         'payment_id': world['payment'].id, 'payout_id': world['withdrawal'].id,
         'kind': 'payouts', 'report_key': 'trips', 'promotion_id': world['promo_campaign'].id,
         'flag_id': world['fraud_flag'].id,
+        # Platform Settings (module 15) and the audit viewer.
+        'city_code': 'IN-TG-HYD', 'key': _platform_flag().key,
+        'entry_id': AdminAuditLog.objects.order_by('id').first().id,
     }
+
+
+def _platform_flag():
+    from servers.platform_ops.models import FeatureFlag
+
+    flag, _ = FeatureFlag.objects.get_or_create(
+        key='sweep.test_flag', defaults={'description': 'test-only flag for the PII sweep'})
+    return flag
 
 
 #: route pattern (as the resolver prints it) -> whether it names a person,
@@ -601,6 +612,21 @@ INVENTORY = {
     'api/v1/reports/admin/catalogue/': False,
     'api/v1/reports/admin/<str:report_key>/': False,
     'api/v1/reports/admin/<str:report_key>/export/': False,
+    # Platform Settings & Integrations (module 15): cities, flags, versions, notices and settings
+    # name no person beyond the staff attribution the renderer leaves alone; the integrations page
+    # shows presence only; the audit viewer scrubs contact-shaped strings (see admin_audit.viewer).
+    'api/v1/platform/admin/markets/': False,
+    'api/v1/platform/admin/markets/<str:city_code>/readiness/': False,
+    'api/v1/platform/admin/flags/': False,
+    'api/v1/platform/admin/flags/<str:key>/': False,
+    'api/v1/platform/admin/app-versions/': False,
+    'api/v1/platform/admin/notices/': False,
+    'api/v1/platform/admin/settings/': False,
+    'api/v1/platform/admin/integrations/': False,
+    'api/v1/platform/admin/options/': False,
+    'api/v1/admin-audit/admin/entries/': False,
+    'api/v1/admin-audit/admin/entries/export/': False,
+    'api/v1/admin-audit/admin/entries/<int:entry_id>/': False,
 }
 
 #: GET routes in the namespace that are deliberately not swept. The DRF
@@ -882,7 +908,10 @@ class TestEveryEndpointAsEveryRole:
 #: is ignored and writes no `pii_export_revealed` row.
 #: `reports/views.py`: a report export is the aggregate table the screen shows (counts and
 #: minor-unit sums by period, city and vehicle class), with no personal column to reveal.
-NEVER_UNMASKED_EXPORTS = {'payments/admin_finance.py', 'reports/views.py'}
+#: `admin_audit/views.py`: the audit-log CSV lists id, time, actor, action, target, place and the
+#: reason, never the free-form before/after payload; contact-shaped strings are scrubbed, and every
+#: export is itself an audit row.
+NEVER_UNMASKED_EXPORTS = {'payments/admin_finance.py', 'reports/views.py', 'admin_audit/views.py'}
 
 SENSITIVE_KEY = re.compile(
     r'phone|email|address|upi|ifsc|account_number|licen[cs]e|aadhaar|ssn|dob|contact',

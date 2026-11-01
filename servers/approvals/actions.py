@@ -63,6 +63,10 @@ PROMOTION_LAUNCH = 'promotion.launch'
 PROMOTION_BUDGET_INCREASE = 'promotion.budget_increase'
 FRAUD_RULE_CHANGE = 'fraud.rule_change'
 FINANCE_PAYOUT_HOLD = 'finance.payout_hold'
+PLATFORM_CITY_STATUS = 'platform.city_status'
+PLATFORM_FLAG_CHANGE = 'platform.flag_change'
+PLATFORM_APP_VERSION = 'platform.app_version'
+PLATFORM_SETTING_CHANGE = 'platform.setting_change'
 
 ACTIONS = {
     action.key: action for action in (
@@ -114,6 +118,16 @@ ACTIONS = {
         # fraud. Always a checker, India and US; the checker must be a second finance.payout holder.
         Action(FINANCE_PAYOUT_HOLD, 'Hold a suspended driver\'s payouts (serious fraud)',
                'finance.payout', always_checker=True),
+        # Module 15: adding, launching or pausing a country or city; a money-affecting or safety
+        # feature flag; RAISING an app's minimum version; a sensitive platform setting. All four
+        # always need a checker, in India and the US, and the checker must hold platform.settings
+        # too (a second Super Admin).
+        Action(PLATFORM_CITY_STATUS, 'Add, launch or pause a country or city', 'platform.settings'),
+        Action(PLATFORM_FLAG_CHANGE, 'Change a money-affecting or safety feature flag',
+               'platform.settings'),
+        Action(PLATFORM_APP_VERSION, 'Raise the minimum supported app version',
+               'platform.settings'),
+        Action(PLATFORM_SETTING_CHANGE, 'Change a sensitive platform setting', 'platform.settings'),
     )
 }
 

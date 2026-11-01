@@ -329,6 +329,13 @@ class ApprovalRequest(models.Model):
     def is_past_expiry(self):
         return bool(self.expires_at) and timezone.now() >= self.expires_at
 
+    def shown_payload(self):
+        """The payload as a list shows it. A sensitive platform setting's VALUE never leaves the
+        row (module 15): the checker sees the key and a fingerprint, not the secret."""
+        if self.action_key == 'platform.setting_change' and isinstance(self.payload, dict):
+            return {**self.payload, 'value': '********'}
+        return self.payload
+
     def as_dict(self):
         return {
             'id': self.id,
@@ -340,7 +347,7 @@ class ApprovalRequest(models.Model):
             'policy_id': self.policy_id,
             'target_type': self.target_type,
             'target_id': self.target_id,
-            'payload': self.payload,
+            'payload': self.shown_payload(),
             'request_reason': self.request_reason,
             'maker': {
                 'id': self.maker_id, 'email': self.maker_email,

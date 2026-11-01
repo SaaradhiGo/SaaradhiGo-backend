@@ -86,6 +86,7 @@ INSTALLED_APPS = [
     # Fraud & Risk (module 13): the review queue, detection rules, linked accounts and review actions.
     'servers.fraud',
     'servers.reports',
+    'servers.platform_ops',
     # Console search: trip id, phone, plate, name -- indexed and scoped.
     'servers.search',
     # Operator MFA. django-otp is the established Django implementation: TOTP
@@ -183,6 +184,11 @@ REST_FRAMEWORK = {
         'admin_search': '60/min',
         # Report CSV exports (module 14), per operator.
         'report_export': '30/hour',
+        # Audit-log CSV export (module 15), per operator.
+        'audit_export': '10/hour',
+        # Public app-config read (module 15), per client address. The apps read it at start-up
+        # and on login; 120 a minute is far above that and far below a scrape.
+        'app_config': '120/min',
         # Place lookups from a SIGNED-OUT visitor on the public homepage.
         # Each one costs a Places call, so this is a spend cap, not a
         # security control. Generous enough to type two addresses with

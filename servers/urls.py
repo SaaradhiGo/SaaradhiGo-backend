@@ -19,6 +19,9 @@ from servers.notifications import urls as notifications_urls
 from servers.promotions import urls as promotions_urls
 from servers.fraud import urls as fraud_urls
 from servers.reports import urls as reports_urls
+from servers.admin_audit import urls as admin_audit_urls
+from servers.platform_ops import urls as platform_ops_urls
+from servers.platform_ops.views import app_config as app_config_view
 
 urlpatterns = [
     path('uploads/presign/', presign_upload),
@@ -40,4 +43,8 @@ urlpatterns = [
     path('promotions/', include(promotions_urls.urlpatterns)),
     path('fraud/', include(fraud_urls.urlpatterns)),
     path('reports/', include(reports_urls.urlpatterns)),
+    path('admin-audit/', include(admin_audit_urls.urlpatterns)),
+    path('platform/', include(platform_ops_urls.urlpatterns)),
+    # Public, read-only market config for the rider and driver apps (module 15).
+    path('app-config/', app_config_view, name='app_config'),
 ]

@@ -24,7 +24,6 @@ from .views import (
     emergency_dashboard,
     stale_rides,
     transaction_dashboard,
-    update_global_config,
     notifications,
 )
 
@@ -50,7 +49,6 @@ urlpatterns = [
     path("stale-rides/", stale_rides, name="stale_rides"),
     path("transactions/", transaction_dashboard, name="transaction_dashboard"),
     path("fare_surge/", fare_surge, name="fare_surge"),
-    path("api/global-config/", update_global_config, name="update_global_config"),
     path("predictive_heatmaps/", predictive_heatmaps, name="predictive_heatmaps"),
     path("logout/", admin_logout, name="logout"),
 

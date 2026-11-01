@@ -741,7 +741,10 @@ SOURCE_DIRS = ('servers', 'base')
 #: Files that may NAME the deprecated sources: the model that keeps the column and its
 #: serializer module. A DOCSTRING or COMMENT naming them is fine anywhere: the guard
 #: reads the syntax tree, not the text.
-MAY_NAME = {'servers/pricing/models.py', 'servers/pricing/serializers.py'}
+# `platform_ops/settings_editor.py` NAMES the key to refuse it: it is the deprecated-key registry of
+# the Platform Settings editor (read-only, pointing at /pricing). It never reads the value.
+MAY_NAME = {'servers/pricing/models.py', 'servers/pricing/serializers.py',
+            'servers/platform_ops/settings_editor.py'}
 
 
 def python_trees():

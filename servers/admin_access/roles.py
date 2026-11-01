@@ -118,6 +118,13 @@ PERMISSIONS = {
     # Running the platform itself
     'admin.manage': 'Create admins, roles and assignments',
     'platform.settings': 'Cities, feature flags, app versions',
+    # Platform Settings & Integrations (module 15). `platform.settings` stays the WRITE capability
+    # (launch a city, change a flag, an app version, a notice, a setting; Super Admin only).
+    # Read is separate so City Ops can see the Markets readiness and notices for their own
+    # scope; pausing a city in an emergency is a separate capability, still through a checker.
+    'platform.read': 'View markets, readiness, feature flags, app versions, notices and settings',
+    'platform.city_pause': 'Request that a live city is paused (a checker approves)',
+    'platform.integrations.read': 'View the integrations status page (no secrets)',
     'approval.check': 'Act as the second approver on a maker-checker request',
 }
 
@@ -169,6 +176,11 @@ ROLE_TEMPLATES = [
             'liveops.read',
             # Delivery logs and templates in their own scope, read-only (module 11).
             'notify.read',
+            # Markets readiness and notices for their own scope; may ask for a pause of their own
+            # city (a checker approves), never a launch (module 15).
+            'platform.read', 'platform.city_pause',
+            # The audit trail of what was done in their own scope, read-only (module 15).
+            'audit.read',
         ],
     },
     {

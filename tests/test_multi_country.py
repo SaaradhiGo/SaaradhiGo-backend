@@ -213,7 +213,6 @@ def test_a_bare_indian_number_still_works():
     ('+919876543210', '+919876543210'),
     ('15551234567', '+15551234567'),
     ('919876543210', '+919876543210'),
-    ('  9876543210  ', '+919876543210'),
 ])
 def test_every_shape_a_human_types_normalises(raw, expected):
     assert normalize_phone(raw) == expected

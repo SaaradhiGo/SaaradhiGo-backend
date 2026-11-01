@@ -188,8 +188,8 @@ def admin_login(request):
             #
             # Was an inline +91 prepend, so a US operator could not sign in
             # here either. One helper, resolving against the country registry.
-            phone_number = normalize_phone(str(phone_number).strip()) or str(
-                phone_number).strip()
+            from servers.platform_ops.markets import resolve_login_phone
+            phone_number = resolve_login_phone(str(phone_number).strip())
 
         # The lockout key. One namespace for both identifier kinds -- an
         # email and a phone can never collide as strings -- so a hundred

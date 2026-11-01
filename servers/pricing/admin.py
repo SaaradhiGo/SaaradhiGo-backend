@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from servers.pricing.models import PlatformSettings, RateCard, ServiceZone
+from servers.pricing.models import RateCard, ServiceZone
 
 
 @admin.register(ServiceZone)
@@ -125,13 +125,5 @@ class RateCardAdmin(admin.ModelAdmin):
     )
 
 
-@admin.register(PlatformSettings)
-class PlatformSettingsAdmin(admin.ModelAdmin):
-    list_display = ('key', 'setting_type', 'value', 'updated_at', 'updated_by')
-    list_filter = ('setting_type',)
-    search_fields = ('key', 'description', 'value')
-    readonly_fields = ('created_at', 'updated_at')
-    fieldsets = (
-        ('Setting', {'fields': ('key', 'value', 'setting_type', 'description')}),
-        ('Audit', {'fields': ('updated_by', 'created_at', 'updated_at')}),
-    )
+# PlatformSettings has no ModelAdmin any more: it is edited in the console under Platform Settings
+# (module 15), with type checks, an audit row for every change and a checker for sensitive keys.

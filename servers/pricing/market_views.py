@@ -27,7 +27,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 
-from base.countries import COUNTRIES, DEFAULT_COUNTRY_CODE
+from base.countries import COUNTRIES
 from base.utils import success_response
 
 
@@ -42,6 +42,12 @@ def _as_dict(country):
         'distance_unit': country.distance_unit,
         'national_number_lengths': list(country.national_number_lengths),
     }
+
+
+def _default_country():
+    from servers.platform_ops.markets import default_phone_country
+
+    return default_phone_country()
 
 
 @api_view(['GET'])
@@ -60,7 +66,9 @@ def list_countries(request):
             'countries': countries,
             # So a client does not have to guess which entry to preselect,
             # and the choice lives in one place rather than in every form.
-            'default_country': DEFAULT_COUNTRY_CODE,
+            # The sole LIVE country, else null (module 15): never India by default. A client
+            # with two live countries asks the user, or reads /app-config/.
+            'default_country': _default_country(),
         },
         status.HTTP_200_OK,
     )

@@ -126,6 +126,13 @@ def request_otp(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        # Module 15: a build below the minimum supported version is told to update (426), but ONLY
+        # when it sends X-App-Version; an absent header is allowed so current apps keep working.
+        from servers.platform_ops import versions as app_versions
+        update = app_versions.check_request(request, role)
+        if update is not None:
+            return app_versions.update_required_response(update)
+
         # Test-phone bypass: if this phone is configured in
         # settings.TEST_PHONE_NUMBERS, use the operator-supplied fixed OTP
         # and skip the AWS SNS round-trip. The login path is unchanged —

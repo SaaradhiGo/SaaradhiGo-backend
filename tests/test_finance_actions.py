@@ -1233,6 +1233,8 @@ US_ROWS = {
     'promotion.launch': ('always', '', None),
     'promotion.budget_increase': ('always', '', None),
     'fraud.rule_change': ('always', '', None),
+    'platform.city_status': ('always', '', None), 'platform.flag_change': ('always', '', None),
+    'platform.app_version': ('always', '', None), 'platform.setting_change': ('always', '', None),
 }
 
 

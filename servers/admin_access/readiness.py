@@ -2,13 +2,15 @@
 
 READINESS ITEMS
 ---------------
-`city_readiness(node)` returns a list of `{key, ok, detail}`. Items today:
-`safety_coverage` (enough Safety Officers for the country's configured
+`city_readiness(node)` returns a list of `{key, ok, detail, status, blocking, label, href}`
+(`status` is `ok`, `missing` or `warning`; `ok` is False only for `missing`; `href` is the console
+page that fixes it). Items today: `safety_coverage` (enough Safety Officers for the country's configured
 minimum), `commission` (an active commission rule covers every vehicle class,
 module 8), `fare_card` (an active card for every vehicle class in the
 city's zone, module 8) and `zone` (the city has an active service zone with a
-valid polygon, module 9). Later modules add providers to the SAME list by
-appending items to `ITEMS`; nothing else in this file changes. An item that cannot be determined is NOT ok: a country
+valid polygon, module 9), and from module 15 `payout_config`, `approval_policies`,
+`payment_gateway`, `sms_provider` and `tax` (a warning, blocker #15). Later modules add to the
+SAME list by appending items to `ITEMS`. An item that cannot be determined is NOT ok: a country
 with no safety config is "not configured", never a pass.
 
 THE ONE DOOR
@@ -156,13 +158,120 @@ def _zone(node):
                       f'{", ".join(sorted(usable))}.'}
 
 
-#: Append here. Each is `callable(node) -> {key, ok, detail}`.
-ITEMS = [_safety_coverage, _commission, _fare_card, _zone]
+# ---------------------------------------------------------------------------
+# Module 15: country-level prerequisites
+# ---------------------------------------------------------------------------
+
+def _country_code(node):
+    country = node.country
+    return country.code if country is not None else None
+
+
+def _payout_config(node):
+    from servers.payments.payout_config import active_config
+
+    code = _country_code(node)
+    if code is None or active_config(code) is None:
+        return {'key': 'payout_config', 'ok': False,
+                'detail': f'No active payout configuration for {code or "an unknown country"}: '
+                          f'fee, minimum withdrawal and schedule are unset. Set it under Finance.'}
+    return {'key': 'payout_config', 'ok': True,
+            'detail': f'{code} has an active payout configuration.'}
+
+
+def _approval_policies(node):
+    from servers.approvals.actions import ACTIONS
+    from servers.approvals.service import active_policy
+
+    code = _country_code(node)
+    if code is None:
+        return {'key': 'approval_policies', 'ok': False,
+                'detail': 'This city is not under a country, so no approval policy can apply.'}
+    missing = sorted(a.key for a in ACTIONS.values()
+                     if not a.always_checker and active_policy(code, a.key) is None)
+    if missing:
+        return {'key': 'approval_policies', 'ok': False,
+                'detail': f'{code} has no maker-checker policy for: {", ".join(missing)}. '
+                          f'Run seed_approval_policies, or set them under Finance.'}
+    return {'key': 'approval_policies', 'ok': True,
+            'detail': f'{code} has a maker-checker policy for every action.'}
+
+
+def _payment_gateway(node):
+    from servers.platform_ops.integrations import payment_gateway_status
+
+    code = _country_code(node)
+    state = payment_gateway_status(code)
+    if state['configured']:
+        return {'key': 'payment_gateway', 'ok': True,
+                'detail': f"{state['provider']} is configured for {state['currency']} "
+                          f"({state['mode']})."}
+    blocker = f" (go-live blocker #{state['blocker']})" if state.get('blocker') else ''
+    return {'key': 'payment_gateway', 'ok': False,
+            'detail': f"No payment gateway is configured for {state['currency'] or code}"
+                      f"{blocker}: {state['note']}"}
+
+
+def _sms_provider(node):
+    """The SMS provider for the country.
+
+    STUBBED IS NEVER A HIDDEN PASS. With live sending off the item is a visible `warning`
+    ("stubbed"); it becomes a blocker (`missing`) when live sending is REQUIRED, which is
+    production (`PLATFORM_REQUIRE_LIVE_PROVIDERS`, default: IS_PRODUCTION)."""
+    from servers.platform_ops.integrations import live_providers_required, sms_state
+
+    code = _country_code(node)
+    state = sms_state(code)
+    if state['mode'] == 'live':
+        return {'key': 'sms_provider', 'ok': True,
+                'detail': f"{state['provider']} sends SMS for {code}."}
+    if state['mode'] == 'stubbed':
+        detail = (f"SMS for {code} is stubbed ({state['provider'] or 'no provider'}; live "
+                  f"sending is off). ")
+    else:
+        detail = f'No SMS provider is configured for {code}. '
+    if live_providers_required():
+        return {'key': 'sms_provider', 'ok': False,
+                'detail': detail + 'Live sending is required before going live here.'}
+    return {'key': 'sms_provider', 'ok': True, 'status': 'warning',
+            'detail': detail + 'This does not block QA; it blocks production.'}
+
+
+def _tax(node):
+    return {'key': 'tax', 'ok': True, 'status': 'warning',
+            'detail': 'Tax is not configured: settlements show it as "not configured". '
+                      "Go-live blocker #15 (owner's CA for India, US accountant for the US). "
+                      'This does not block QA.'}
+
+
+#: Append here. Each is `callable(node) -> {key, ok, detail[, status]}`.
+ITEMS = [_safety_coverage, _commission, _fare_card, _zone, _payout_config, _approval_policies,
+         _payment_gateway, _sms_provider, _tax]
+
+#: What the console shows for each item, and the page that fixes it.
+ITEM_META = {
+    'zone': ('Service zone', '/zones'),
+    'fare_card': ('Fare cards', '/pricing'),
+    'commission': ('Commission rule', '/pricing'),
+    'safety_coverage': ('Safety coverage', '/safety-ops'),
+    'payout_config': ('Payout configuration', '/finance'),
+    'approval_policies': ('Maker-checker policies', '/finance'),
+    'payment_gateway': ('Payment gateway', '/settings/integrations'),
+    'sms_provider': ('SMS provider', '/settings/integrations'),
+    'tax': ('Tax settings', '/pricing'),
+}
+
+
+def _decorate(raw):
+    ok = bool(raw['ok'])
+    status = raw.get('status') or ('ok' if ok else 'missing')
+    label, href = ITEM_META.get(raw['key'], (raw['key'], ''))
+    return {**raw, 'ok': ok, 'status': status, 'blocking': not ok, 'label': label, 'href': href}
 
 
 def city_readiness(node):
     """Every readiness item for `node`, passing or not."""
-    return [item(node) for item in ITEMS]
+    return [_decorate(item(node)) for item in ITEMS]
 
 
 def failing(items):
@@ -172,9 +281,10 @@ def failing(items):
 def set_city_status(node, status, actor, reason, request=None):
     """Change a city's status. Returns `(node, changed)`.
 
-    Refuses ACTIVE while any readiness item fails. Raises `NotACity` for a
-    node that is not a city and `ValueError` for an unknown status or a
-    missing reason.
+    draft -> live, paused -> live, live -> paused. Refuses ACTIVE (live) while any readiness
+    item fails, checked HERE so it is re-checked when a checker approves. Raises `NotACity` for
+    a node that is not a city and `ValueError` for an unknown status, a missing reason, or
+    pausing a city that is not live.
     """
     if status not in (ACTIVE, PAUSED):
         raise ValueError(f'status must be {ACTIVE!r} or {PAUSED!r}')
@@ -188,6 +298,9 @@ def set_city_status(node, status, actor, reason, request=None):
             raise NotACity(f'{locked.code} is a {locked.kind}, not a city')
         if locked.status == status:
             return locked, False
+        if status == PAUSED and locked.status != ACTIVE:
+            raise ValueError(f'{locked.code} is {locked.status}, not live: only a live city '
+                             f'can be paused')
         if status == ACTIVE:
             bad = failing(city_readiness(locked))
             if bad:

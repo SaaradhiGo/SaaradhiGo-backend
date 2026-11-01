@@ -54,6 +54,7 @@ from servers.approvals.actions import (
     FINANCE_PAYOUT_CONFIG, FINANCE_REFUND, FINANCE_WALLET_CREDIT, PRICING_CHANGE,
     NOTIFICATION_CAMPAIGN_SEND, NOTIFICATION_TEMPLATE_CHANGE, PROMOTION_BUDGET_INCREASE,
     FRAUD_RULE_CHANGE, PROMOTION_LAUNCH, SUPPORT_REFUND, SUPPORT_SLA_CHANGE, ZONE_CHANGE,
+    PLATFORM_APP_VERSION, PLATFORM_CITY_STATUS, PLATFORM_FLAG_CHANGE, PLATFORM_SETTING_CHANGE,
 )
 from servers.approvals.models import ALWAYS, COUNT, MONEY
 from servers.approvals.service import active_policy, write_policy_version
@@ -86,6 +87,12 @@ INDIA_DEFAULTS = [
     ('IN', PROMOTION_BUDGET_INCREASE, ALWAYS, '', None),
     # Module 13: a fraud rule threshold change always needs a checker.
     ('IN', FRAUD_RULE_CHANGE, ALWAYS, '', None),
+    # Module 15: city status, money/safety flags, raising a minimum app version and a sensitive
+    # setting always need a checker.
+    ('IN', PLATFORM_CITY_STATUS, ALWAYS, '', None),
+    ('IN', PLATFORM_FLAG_CHANGE, ALWAYS, '', None),
+    ('IN', PLATFORM_APP_VERSION, ALWAYS, '', None),
+    ('IN', PLATFORM_SETTING_CHANGE, ALWAYS, '', None),
 ]
 
 #: The United States (owner rulings, AUDIT 27.44), USD minor units.
@@ -108,6 +115,10 @@ US_DEFAULTS = [
     ('US', PROMOTION_LAUNCH, ALWAYS, '', None),
     ('US', PROMOTION_BUDGET_INCREASE, ALWAYS, '', None),
     ('US', FRAUD_RULE_CHANGE, ALWAYS, '', None),
+    ('US', PLATFORM_CITY_STATUS, ALWAYS, '', None),
+    ('US', PLATFORM_FLAG_CHANGE, ALWAYS, '', None),
+    ('US', PLATFORM_APP_VERSION, ALWAYS, '', None),
+    ('US', PLATFORM_SETTING_CHANGE, ALWAYS, '', None),
 ]
 
 SEED_REASON = 'Seed: maker-checker defaults (AUDIT.md §10/§22 India; §27.44 United States).'

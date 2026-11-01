@@ -332,9 +332,9 @@ class TestScope:
         _, data = _get(client, window='24h')
         codes = [c['code'] for c in data['cities']]
         assert 'IN-TG-HYD' in codes and 'US-TX-AUS' in codes
-        # Paused, no trips, no drivers: not a row.
+        # Draft (never launched), no trips, no drivers: not a row.
         assert 'IN-TG-WGL' not in codes and 'IN-AP-VJA' not in codes
-        assert _row(data, 'US-TX-AUS')['status'] == 'paused'
+        assert _row(data, 'US-TX-AUS')['status'] == 'draft'
 
     def test_super_admin_can_narrow_to_one_city(self, geo, world):
         client, _ = operator('super_admin', geo)

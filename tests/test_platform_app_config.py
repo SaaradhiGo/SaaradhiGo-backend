@@ -283,3 +283,47 @@ class TestPromosAvailable:
 
     def test_absent_without_a_market(self, markets):
         assert 'promos_available' not in data(get())
+
+
+class TestReferralsAvailable:
+    """`referrals_available`: true only while a referral offer is live for the named app."""
+
+    @staticmethod
+    def _referral(code, *, audience='rider', state='live', country='IN', currency='INR',
+                  node=None, legacy=False):
+        from servers.promotions.models import Campaign
+
+        return Campaign.objects.create(
+            kind='referral', name=code, state=state, country=country, currency=currency,
+            geo_node=node, budget_minor=100000, is_legacy=legacy,
+            config={'audience': audience, 'required_trips': 2, 'referrer_reward_minor': 10000,
+                    'referee_reward_minor': 5000})
+
+    def test_false_when_nothing_is_live(self, markets):
+        assert data(get('?country=IN&app=rider'))['referrals_available'] is False
+        assert data(get('?country=IN&app=driver'))['referrals_available'] is False
+
+    def test_true_only_for_the_audience_and_country_it_is_live_for(self, markets):
+        self._referral('RIDERIN', node=markets['IN'])
+        assert data(get('?country=IN&app=rider'))['referrals_available'] is True
+        assert data(get('?country=IN&app=driver'))['referrals_available'] is False
+        assert data(get('?country=US&app=rider'))['referrals_available'] is False
+
+    @pytest.mark.parametrize('state', ['draft', 'paused', 'ended', 'exhausted', 'cancelled'])
+    def test_a_referral_that_is_not_live_does_not_count(self, markets, state):
+        self._referral('NOTLIVE', state=state, node=markets['IN'])
+        assert data(get('?country=IN&app=rider'))['referrals_available'] is False
+
+    def test_a_wrapped_legacy_row_does_not_count(self, markets):
+        self._referral('OLD', node=markets['IN'], legacy=True)
+        assert data(get('?country=IN&app=rider'))['referrals_available'] is False
+
+    def test_a_city_offer_counts_for_its_city_but_not_another_city(self, markets):
+        self._referral('HYDONLY', node=markets['IN-TG-HYD'])
+        assert data(get('?city=IN-TG-HYD&app=rider'))['referrals_available'] is True
+        assert data(get('?city=IN-TG-WGL&app=rider'))['referrals_available'] is False
+
+    def test_absent_without_an_app_or_without_a_market(self, markets):
+        self._referral('RIDERIN', node=markets['IN'])
+        assert 'referrals_available' not in data(get('?country=IN'))
+        assert 'referrals_available' not in data(get('?app=rider'))

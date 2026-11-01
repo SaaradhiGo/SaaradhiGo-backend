@@ -23,7 +23,7 @@ from base import money
 from base.countries import COUNTRIES, find_country
 from servers.admin_access.models import ACTIVE, CITY, COUNTRY, GeoNode
 from servers.pricing.models import ServiceZone
-from servers.promotions import rider_promos
+from servers.promotions import referrals, rider_promos
 
 from . import flags, markets, notices, versions
 from .errors import PlatformError
@@ -141,6 +141,12 @@ def build(country=None, city=None, app=None):
             # its promo-code entry only then, and reads a missing key as false.
             'promos_available': rider_promos.available_in_market(registry.code, city_node),
         }
+        if app:
+            # Additive. True only while a referral offer is live for this app in this market; the
+            # app shows its referral entry (and the rider's sign-up code field) only then, and
+            # reads a missing key as false. Named with `app=rider|driver`, so absent otherwise.
+            body['referrals_available'] = referrals.available_in_market(
+                registry.code, app, city_node)
     policy = versions.public_policy()
     body.update({
         'flags': flags.resolved_for(scope_node),

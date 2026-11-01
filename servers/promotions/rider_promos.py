@@ -93,7 +93,8 @@ def available_in_market(country_code, city_node=None, at=None):
                  .select_related('geo_node'))
     for campaign in campaigns:
         node = campaign.geo_node
-        if city_node is None or node is None or node.kind in ('country', 'global')                 or str(city_node.path).startswith(str(node.path)):
+        if (city_node is None or node is None or node.kind in ('country', 'global')
+                or str(city_node.path).startswith(str(node.path))):
             return True
     from base.countries import find_country
 
@@ -108,7 +109,8 @@ def available_in_market(country_code, city_node=None, at=None):
         zone_node = getattr(promo.zone, 'geo_node', None) if promo.zone_id else None
         if zone_node is None and promo.zone_id and city_node is not None:
             continue
-        if zone_node is None or city_node is None or                 str(city_node.path).startswith(str(zone_node.path)):
+        if (zone_node is None or city_node is None
+                or str(city_node.path).startswith(str(zone_node.path))):
             return True
     return False
 

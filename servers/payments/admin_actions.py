@@ -228,7 +228,10 @@ def driver_adjust(request, driver_id):
                 'CURRENCY_MISMATCH',
                 f"The driver's settlement currency is {wallet.currency}; this amount is in "
                 f"{currency or 'no currency'}.", field='currency')
-        if direction == 'debit' and wallet.balance_minor - amount < 0:
+        resolves_conflict = data.get('withdrawal_id') not in (None, '')
+        # A debit never takes the balance below zero, except the one that resolves a payout paid
+        # after its refund (AUDIT 27.75): the refund may already have been withdrawn.
+        if direction == 'debit' and wallet.balance_minor - amount < 0 and not resolves_conflict:
             raise ActionError(
                 'BALANCE_WOULD_GO_NEGATIVE',
                 'The balance is lower than this debit; a debit cannot take it below zero.',

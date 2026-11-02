@@ -193,3 +193,70 @@ class TestFinanceResolvesIt:
         w.refresh_from_db()
         assert w.status == 'failed' and _balance(driver) == 500_000
         assert not WalletTransaction.objects.filter(purpose='adjustment').exists()
+
+
+class TestNothingMoreIsPaidWhileInConflict:
+    """Independent review HIGH-1 (AUDIT 27.75): the driver must not be able to take the refund out
+    again while the payout is undecided, and if they already did, the resolution must still work."""
+
+    def _conflict(self, api_client, world, driver):  # noqa: F811
+        w = _failed_and_refunded(api_client, world, driver)
+        _deliver(api_client, world, 'success', w.payout_reference_id, 'evt_late')
+        w.refresh_from_db()
+        assert w.status == 'conflict'
+        return w
+
+    def test_a_driver_withdrawal_is_refused(self, world, driver, api_client):  # noqa: F811
+        from finance_world import client_for, seed_in_payout_config
+
+        seed_in_payout_config()
+        self._conflict(api_client, world, driver)
+        r = client_for(driver.user_id).post('/api/v1/driver/withdrawals/request/',
+                                            {'amount': '500.00', 'payout_method': 'upi'},
+                                            format='json')
+        assert r.status_code == 400 and r.json()['error']['code'] == 'PAYOUT_ON_HOLD'
+
+    def test_a_pending_withdrawal_cannot_be_approved_or_released(self, world, driver,  # noqa: F811
+                                                                 api_client, geo):  # noqa: F811
+        from servers.approvals.executors import _approve_one
+
+        self._conflict(api_client, world, driver)
+        pending = WithdrawalRequest.objects.create(driver=driver, amount=D('500.00'),
+                                                   payout_method='upi', status='pending')
+        maker, _ = operator('finance', geo)
+        r = post(maker, f'/api/v1/payments/admin/payouts/{pending.id}/approve/',
+                 {'reason': 'weekly'})
+        assert r.status_code == 409 and error_code(r) == 'PAYOUT_CONFLICT_OPEN'
+        assert _approve_one(pending.id, 'checker') is None       # the executor re-checks
+        pending.refresh_from_db()
+        assert pending.status == 'pending'
+
+    def test_the_refund_already_withdrawn_is_still_recovered(self, world, driver,  # noqa: F811
+                                                             api_client, geo):  # noqa: F811
+        """The reviewer's sequence: fail -> refund -> the driver withdraws it again (paid) -> the
+        late "paid" for the first payout -> Finance resolves it. The debit takes the balance below
+        zero rather than being refused, and later earnings recover it."""
+        w = _failed_and_refunded(api_client, world, driver)
+        wallet = get_wallet(driver.user_id, Wallet.SCOPE_DRIVER)
+        wallet.balance_minor = 30_000                  # the refund has gone out again
+        wallet.save(update_fields=['balance_minor'])
+        _deliver(api_client, world, 'success', w.payout_reference_id, 'evt_late')
+        maker, _ = operator('finance', geo)
+        r = post(maker, ADJUST.format(driver.id), {
+            'direction': 'debit', 'amount_minor': 100_000, 'currency': 'INR',
+            'reason_code': 'correction', 'note': 'Payout reported paid after its refund',
+            'idempotency_key': f'conflict-{w.id}', 'withdrawal_id': w.id})
+        assert r.status_code == 202, r.content
+        chk, _ = checker()
+        assert approve_request(chk, body_of(r)['approval_request']['id']).status_code == 200
+        w.refresh_from_db()
+        assert w.status == 'completed'
+        assert _balance(driver) == -70_000
+
+    def test_any_other_debit_still_cannot_go_below_zero(self, world, driver, geo):  # noqa: F811
+        maker, _ = operator('finance', geo)
+        r = post(maker, ADJUST.format(driver.id), {
+            'direction': 'debit', 'amount_minor': _balance(driver) + 1, 'currency': 'INR',
+            'reason_code': 'correction', 'note': 'An ordinary correction',
+            'idempotency_key': 'plain-debit'})
+        assert r.status_code == 409 and error_code(r) == 'BALANCE_WOULD_GO_NEGATIVE'

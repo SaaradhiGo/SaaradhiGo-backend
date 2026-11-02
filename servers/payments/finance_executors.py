@@ -79,7 +79,7 @@ def execute_driver_adjustment(request_row):
             return {'wallet_transaction_id': existing.id, 'duplicate': True}
         if wallet.currency != p.get('currency'):
             raise ExecutionRefused('CURRENCY_CHANGED', "The wallet's currency changed.")
-        if direction == 'debit' and wallet.balance_minor - amount < 0:
+        if direction == 'debit' and wallet.balance_minor - amount < 0 and not p.get('withdrawal_id'):
             raise ExecutionRefused(
                 'BALANCE_WOULD_GO_NEGATIVE',
                 'The balance is lower than the debit; a debit cannot take it below zero.')

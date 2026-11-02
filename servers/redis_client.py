@@ -464,13 +464,17 @@ def cache_trip(trip_id, **fields):
             destination_lng (str): Destination longitude
             estimated_fare (str): String-serialized Decimal fare
             payment_method (str): Payment method (cash/online)
-            otp (str): Otp for the trip
+        The pickup OTP is never cached: it is dropped if passed. The start-trip
+        check reads Trip.otp from the database, so a plaintext copy here would
+        only widen who can read it (anyone with Redis access).
     Returns:
         bool: True on success, False on failure
     """
     if redis_client is None:
         logger.error("Redis client not available for cache_trip")
         return False
+    if fields.pop('otp', None) is not None:
+        logger.warning(f"cache_trip({trip_id}) was passed an otp; it was not cached")
     try:
         key = f"{RIDE_CACHE_PREFIX}{trip_id}"
         # Convert all values to strings for Redis compatibility

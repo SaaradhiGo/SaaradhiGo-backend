@@ -297,6 +297,31 @@ class TestNotice:
         rule = body_of(draft(maker, percent='18', expect=201))
         assert datetime.fromisoformat(rule['effective_from']) < timezone.now() + timedelta(minutes=5)
 
+    def test_a_country_class_rule_that_outranks_a_cheaper_city_is_a_raise_there(self, world):
+        """Review B2 H3 (AUDIT 27.77): country 15%, Hyderabad 10%, a country-wide sedan rule at 14%
+        is not a raise against 15% but outranks Hyderabad's override, so Hyderabad sedan drivers go
+        from 10% to 14%. It must wait for the notice period and tell them their own numbers."""
+        make_rule('IN', '15.00', node=world.geo['IN'])
+        make_rule('IN', '10.00', node=world.geo['IN-TG-HYD'])
+        maker, _ = world.super
+        soon = (timezone.now() + timedelta(days=1)).isoformat()
+        r = draft(maker, percent='14', vehicle_type=world.sedan.id, effective_from=soon)
+        assert r.status_code == 400 and error_code(r) == 'NOTICE_TOO_SHORT'
+        rule = body_of(draft(maker, percent='14', vehicle_type=world.sedan.id, expect=201))
+        assert datetime.fromisoformat(rule['effective_from']) >= timezone.now() + timedelta(days=6)
+        activate(world, rule['id'])
+        hyd = world.geo['IN-TG-HYD'].id
+        assert resolver.resolve('IN', hyd, world.sedan.id).percent == Decimal('10.00')   # not yet
+        notices = {(n.geo_node_id, n.vehicle_type_id): (n.old_percent, n.new_percent)
+                   for n in DriverNotice.objects.all()}
+        assert notices[(hyd, world.sedan.id)] == (Decimal('10.00'), Decimal('14.00'))
+
+    def test_the_same_rule_is_immediate_where_it_lowers_every_rate(self, world):
+        make_rule('IN', '15.00', node=world.geo['IN'])
+        maker, _ = world.super
+        rule = body_of(draft(maker, percent='14', vehicle_type=world.sedan.id, expect=201))
+        assert datetime.fromisoformat(rule['effective_from']) < timezone.now() + timedelta(minutes=5)
+
     def test_the_driver_notice_is_handed_to_the_outbox_and_stays_queued_until_drained(self, world):
         from servers.pricing.driver_notices import deliver
 

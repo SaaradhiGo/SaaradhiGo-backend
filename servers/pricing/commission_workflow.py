@@ -196,9 +196,72 @@ def _current_rate(country, node, vt_id, now):
     return rule.percent if rule is not None else None
 
 
+def _cells(country, node, vt_id, percent, now):
+    """(cells the draft would govern, raised cells with their old percent)."""
+    from servers.driver.models import VehicleType
+
+    from .commission_models import PERCENTAGE, CommissionRule
+
+    draft = CommissionRule(country=country, geo_node=node, vehicle_type_id=vt_id,
+                           percent=percent, kind=PERCENTAGE, effective_from=now, version=10 ** 6)
+    if node is not None and node.kind == 'city':
+        cities = [node]
+    else:
+        root = node or GeoNode.objects.filter(code=country).first()
+        cities = list(GeoNode.objects.filter(kind='city', path__startswith=root.path)) if root else []
+        cities.append(None)
+    classes = [vt_id] if vt_id else list(VehicleType.objects.values_list('id', flat=True)) + [None]
+    governed, raised = [], []
+    for city in cities:
+        city_id = city.id if city is not None else None
+        for v in classes:
+            if resolver.resolve(country, city_id, v, now, override=draft) is not draft:
+                continue
+            governed.append((city, v))
+            current = resolver.resolve(country, city_id, v, now)
+            if current is not None and percent > current.percent:
+                raised.append((city, v, current.percent))
+    return governed, raised
+
+
+def notice_targets(country, node, vt_id, percent, now):
+    """Who to tell, with what old rate: `[(geo_node, vehicle_type_id, old_percent)]`.
+
+    One notice at the rule's own scope when every cell it governs rises from the same rate (the
+    plain case). Otherwise one per city, split by class only where that city's old rates differ,
+    so drivers whose own override is outranked are told their own numbers (AUDIT 27.77).
+    """
+    governed, raised = _cells(country, node, vt_id, percent, now)
+    if not raised:
+        return []
+    olds = {o for _, _, o in raised}
+    if len(raised) == len(governed) and len(olds) == 1:
+        return [(node, vt_id, olds.pop())]
+    out = []
+    for city in {c for c, _, _ in raised if c is not None}:
+        rows = [(v, o) for c, v, o in raised if c == city]
+        city_olds = {o for _, o in rows}
+        city_cells = [g for g in governed if g[0] == city]
+        if len(rows) == len(city_cells) and len(city_olds) == 1:
+            out.append((city, vt_id, city_olds.pop()))
+        else:
+            out.extend((city, v, o) for v, o in rows)
+    return out or [(node, vt_id, max(olds))]
+
+
+def raised_cells(country, node, vt_id, percent, now):
+    """Every (city, vehicle class) cell this rule would govern where it RAISES today's rate.
+
+    Returns `[(city_node_or_None, vehicle_type_id_or_None, old_percent)]`. A rule is judged against
+    the rates it would actually replace, not only its own scope key (review B2 H3, AUDIT 27.77): a
+    country-wide sedan rule (specificity 2) outranks every city override (specificity 1), so at 14%
+    it is not a raise against the country's 15% but it IS one for a city whose override was 10%.
+    """
+    return _cells(country, node, vt_id, percent, now)[1]
+
+
 def is_increase(country, node, vt_id, percent, now):
-    before = _current_rate(country, node, vt_id, now)
-    return before is not None and percent > before
+    return bool(raised_cells(country, node, vt_id, percent, now))
 
 
 def check_rule(country, node, vt, kind, percent, effective_from, now, *, enforce_notice=True):
@@ -399,7 +462,6 @@ def activate_rule(rule_id, request_row, *, now=None, actor_reason=''):
             eff, adjusted = now, True  # never retroactive
         raised = is_increase(rule.country, rule.geo_node, rule.vehicle_type_id,
                              rule.percent, now)
-        old = _current_rate(rule.country, rule.geo_node, rule.vehicle_type_id, now)
         if raised:
             earliest = now + timedelta(days=resolver.notice_days(rule.country))
             if eff < earliest:
@@ -424,23 +486,29 @@ def activate_rule(rule_id, request_row, *, now=None, actor_reason=''):
         rule.activated_at = now
         rule.save()
 
-        notice_id = None
+        notice_ids = []
         if raised:
-            notice = DriverNotice.objects.create(
-                rule=rule, country=rule.country, geo_node=rule.geo_node,
-                vehicle_type=rule.vehicle_type, old_percent=old, new_percent=rule.percent,
-                effective_from=eff)
-            notice_id = notice.id
+            # One notice per (city, class) whose rate rises, with THAT cell's old rate, so a city
+            # override being outranked is told its own numbers (AUDIT 27.77). A cell with no city
+            # cannot be fanned out to anyone in particular; the rule's own scope covers it.
+            targets = notice_targets(rule.country, rule.geo_node, rule.vehicle_type_id,
+                                     rule.percent, now)
+            for city, vt_id, old_percent in targets:
+                notice_ids.append(DriverNotice.objects.create(
+                    rule=rule, country=rule.country, geo_node=city, vehicle_type_id=vt_id,
+                    old_percent=old_percent, new_percent=rule.percent, effective_from=eff).id)
+        notice_id = notice_ids[0] if notice_ids else None
         record_admin_action(
             None, action='commission_rule_activated', target_type='commission_rule',
             target_id=rule.id, after=rule_dict(rule, now),
             reason=request_row.decision_reason or request_row.request_reason or actor_reason)
-    if notice_id:
+    if notice_ids:
         from .driver_notices import deliver
-        deliver(DriverNotice.objects.get(pk=notice_id))
+        for nid in notice_ids:
+            deliver(DriverNotice.objects.get(pk=nid))
     return {'rule_id': rule.id, 'version': rule.version, 'effective_from': eff.isoformat(),
             'effective_from_adjusted': adjusted, 'raised': raised,
-            'driver_notice_id': notice_id}
+            'driver_notice_id': notice_id, 'driver_notice_ids': notice_ids}
 
 
 # ---------------------------------------------------------------------------

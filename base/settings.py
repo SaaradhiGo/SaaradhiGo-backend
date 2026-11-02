@@ -1447,6 +1447,9 @@ if SENTRY_DSN:
     from sentry_sdk.integrations.celery import CeleryIntegration
     from sentry_sdk.integrations.redis import RedisIntegration
     from django.dispatch.dispatcher import Signal
+    from base.sentry_scrub import (
+        before_breadcrumb as _sentry_before_breadcrumb, before_send as _sentry_before_send,
+    )
 
     # WORKAROUND: sentry-sdk 1.32.0 crashes on Django 5.0 due to a bug in signal receiver patching
     # (TypeError: 'tuple' object does not support item assignment). We must use 1.32.0 for cashfree-pg.
@@ -1468,6 +1471,11 @@ if SENTRY_DSN:
         # Sentry a processor of personal data we never told users about,
         # and it defeats the PII redaction filter above.
         send_default_pii=False,
+        # ...and that does not look inside what integrations attach, such as
+        # CeleryIntegration's task args/kwargs. These scrub every event and
+        # breadcrumb for OTPs, passwords, tokens and secrets (base/sentry_scrub.py).
+        before_send=_sentry_before_send,
+        before_breadcrumb=_sentry_before_breadcrumb,
         environment=os.environ.get('ENVIRONMENT', 'production' if not DEBUG else 'development')
     )
 

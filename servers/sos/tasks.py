@@ -6,6 +6,10 @@ from celery import shared_task
 
 logger = logging.getLogger(__name__)
 
+# How long the emergency-contact SMS text waits in the cache for the send task. Longer than
+# a login OTP's: a backed-up queue should delay this message, not lose it.
+SOS_SMS_TTL_SECONDS = 3600
+
 
 @shared_task(name='sos.dispatch_sos', bind=True, max_retries=2, default_retry_delay=10)
 def dispatch_sos(self, sos_id):
@@ -68,11 +72,15 @@ def dispatch_sos(self, sos_id):
     try:
         emergency = getattr(event.user, 'emergency_contact', None) if event.user else None
         if emergency:
-            from base.utils import send_otp_via_sns
+            from base.utils import send_otp_via_sns, stash_sms_message
+            # The task takes a reference, never the text (base.utils explains).
             send_otp_via_sns.delay(
                 emergency,
-                f"SaaradhiGo SOS: {event.user_label or 'A user'} has raised an "
-                f"SOS. Please call them. SOS#{event.id}.",
+                stash_sms_message(
+                    f"SaaradhiGo SOS: {event.user_label or 'A user'} has raised an "
+                    f"SOS. Please call them. SOS#{event.id}.",
+                    ttl=SOS_SMS_TTL_SECONDS,
+                ),
             )
             logger.warning(
                 f"dispatch_sos[{sos_id}]: SMS queued to emergency contact"

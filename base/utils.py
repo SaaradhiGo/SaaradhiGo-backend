@@ -100,6 +100,27 @@ def generate_otp(n: int) -> str:
     return ''.join(secrets.choice(digits) for _ in range(n))
 
 
+# The SMS text never travels as a task argument. It carries the login OTP, and
+# task arguments are copied to places a secret must not go: the Redis broker,
+# the worker's "received" log line, and Sentry, whose CeleryIntegration
+# attaches args/kwargs to every event from a failing task. The caller stashes
+# the text in the cache (Redis, shared by web and worker) under a random id,
+# and only that id is enqueued. The task reads the text and deletes it once
+# the send is final, so it lives no longer than one delivery.
+SMS_MESSAGE_CACHE_PREFIX = 'sms_message:'
+SMS_MESSAGE_TTL_SECONDS = 600  # the login OTP's own lifetime; a later send is useless anyway
+
+
+def stash_sms_message(message: str, ttl: int = SMS_MESSAGE_TTL_SECONDS) -> str:
+    """Store an SMS text for `send_otp_via_sns` and return the reference to enqueue."""
+    import uuid
+    from django.core.cache import cache
+
+    ref = uuid.uuid4().hex
+    cache.set(f'{SMS_MESSAGE_CACHE_PREFIX}{ref}', message, ttl)
+    return ref
+
+
 @shared_task(
     bind=True,
     max_retries=3,
@@ -107,7 +128,7 @@ def generate_otp(n: int) -> str:
     retry_backoff=True,
     retry_jitter=True,
 )
-def send_otp_via_sns(self, phone_number: str, message: str) -> Dict[str, Any]:
+def send_otp_via_sns(self, phone_number: str, message_ref: str) -> Dict[str, Any]:
     """
     Send OTP via AWS SNS service.
 
@@ -123,7 +144,8 @@ def send_otp_via_sns(self, phone_number: str, message: str) -> Dict[str, Any]:
 
     Args:
         phone_number: Recipient phone number (E.164 format)
-        message: OTP message content
+        message_ref: what `stash_sms_message` returned. Never the text itself:
+            see SMS_MESSAGE_CACHE_PREFIX for why.
 
     Returns:
         dict: Status and response, or terminal error details.
@@ -131,13 +153,20 @@ def send_otp_via_sns(self, phone_number: str, message: str) -> Dict[str, Any]:
     Raises:
         Retry: transient AWS or network failure; Celery will try again.
     """
+    from django.core.cache import cache
+
+    message_key = f'{SMS_MESSAGE_CACHE_PREFIX}{message_ref}'
     try:
         # Validate inputs
+        message = cache.get(message_key) if message_ref else None
         if not phone_number or not message:
-            logger.warning("Missing phone_number or message")
+            # Missing, expired (the TTL outlived every retry) or already sent.
+            # Terminal: retrying cannot bring the text back.
+            logger.warning("Missing phone_number or SMS message (expired or already sent)")
             return {
                 "success": False,
-                "error": "Phone number and message are required"
+                "error": "Phone number and message are required",
+                "terminal": True,
             }
         
         client = get_sns_client()
@@ -152,6 +181,7 @@ def send_otp_via_sns(self, phone_number: str, message: str) -> Dict[str, Any]:
             raise self.retry(exc=RuntimeError('SNS client unavailable'))
         
         message_id = publish_otp(client, phone_number, message)
+        cache.delete(message_key)
 
         logger.info(f"OTP sent successfully to {phone_number}")
         return {
@@ -161,6 +191,7 @@ def send_otp_via_sns(self, phone_number: str, message: str) -> Dict[str, Any]:
 
     except OtpTerminalError as e:
         # Retrying will not help. Terminal, and reported as such.
+        cache.delete(message_key)
         logger.error(
             "otp_send_terminal reason=sns_client_error code=%s", e.code,
         )

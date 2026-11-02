@@ -24,6 +24,12 @@ import re
 _PII_PATTERNS = [
     # OTP-like 4-8 digit numbers attached to "otp" or "code" tokens
     (re.compile(r'(?i)\b(otp|code)["\']?\s*[:=]\s*["\']?\d{4,8}'), r'\1=***'),
+    # ...and in prose, the way the SMS text itself reads: "Your OTP for
+    # SaaradhiGo is 482913", "verification code is 1234". The first standalone
+    # 4-8 digit run within 60 characters after the word goes; a longer run (a
+    # phone number, or the digits after a "+") is skipped over: phones are the
+    # phone pattern's job below.
+    (re.compile(r'(?i)(\b(?:otp|code)\b[^\n]{0,60}?)(?<![\d+])\d{4,8}(?!\d)'), r'\1***'),
     # Bearer tokens
     (re.compile(r'(?i)bearer\s+[A-Za-z0-9._\-]+'), 'Bearer ***'),
     # JWTs out in the open
@@ -71,7 +77,7 @@ _REDACT_KEYS_EXACT = frozenset({
 # would inevitably miss one (`fcm_token`, `access_token`, `webhook_secret`, …).
 _REDACT_KEY_SUBSTRINGS = (
     'otp', 'token', 'secret', 'password', 'passwd', 'authorization',
-    'jwt', 'api_key', 'apikey', 'phone', 'email', 'cvv',
+    'jwt', 'api_key', 'api-key', 'apikey', 'phone', 'email', 'cvv', 'cookie',
     # Payment-instrument keys only. A bare 'card' substring also swallowed
     # `rate_card_id` and `rate_card_version`, which are pricing-schedule
     # identifiers with nothing sensitive in them -- and redacting them removes

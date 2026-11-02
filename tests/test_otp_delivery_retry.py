@@ -76,7 +76,7 @@ def test_a_network_failure_is_retried(monkeypatch):
     task = _run(monkeypatch, _FailingSns(BotoCoreError()))
 
     with pytest.raises(Retry):
-        task.run('+919999000001', 'Your OTP is 1234')
+        task.run('+919999000001', base_utils.stash_sms_message('Your OTP is 1234'))
 
 
 def test_a_throttling_error_is_retried(monkeypatch):
@@ -84,14 +84,14 @@ def test_a_throttling_error_is_retried(monkeypatch):
     task = _run(monkeypatch, _FailingSns(_client_error('ThrottlingException')))
 
     with pytest.raises(Retry):
-        task.run('+919999000001', 'Your OTP is 1234')
+        task.run('+919999000001', base_utils.stash_sms_message('Your OTP is 1234'))
 
 
 def test_an_sns_internal_error_is_retried(monkeypatch):
     task = _run(monkeypatch, _FailingSns(_client_error('InternalErrorException')))
 
     with pytest.raises(Retry):
-        task.run('+919999000001', 'Your OTP is 1234')
+        task.run('+919999000001', base_utils.stash_sms_message('Your OTP is 1234'))
 
 
 def test_an_unavailable_sns_client_is_retried(monkeypatch):
@@ -99,14 +99,14 @@ def test_an_unavailable_sns_client_is_retried(monkeypatch):
     task = _run(monkeypatch, None)
 
     with pytest.raises(Retry):
-        task.run('+919999000001', 'Your OTP is 1234')
+        task.run('+919999000001', base_utils.stash_sms_message('Your OTP is 1234'))
 
 
 def test_an_unexpected_exception_is_retried(monkeypatch):
     task = _run(monkeypatch, _FailingSns(RuntimeError('something odd')))
 
     with pytest.raises(Retry):
-        task.run('+919999000001', 'Your OTP is 1234')
+        task.run('+919999000001', base_utils.stash_sms_message('Your OTP is 1234'))
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +127,7 @@ def test_a_terminal_error_is_not_retried(monkeypatch, code):
     """
     task = _run(monkeypatch, _FailingSns(_client_error(code)))
 
-    result = task.run('+919999000001', 'Your OTP is 1234')
+    result = task.run('+919999000001', base_utils.stash_sms_message('Your OTP is 1234'))
 
     assert result['success'] is False
     assert result.get('terminal') is True, (
@@ -138,7 +138,7 @@ def test_a_terminal_error_is_not_retried(monkeypatch, code):
 def test_a_missing_phone_number_is_terminal(monkeypatch):
     task = _run(monkeypatch, _WorkingSns())
 
-    result = task.run('', 'Your OTP is 1234')
+    result = task.run('', base_utils.stash_sms_message('Your OTP is 1234'))
 
     assert result['success'] is False
 
@@ -151,7 +151,7 @@ def test_a_successful_send_still_reports_success(monkeypatch):
     client = _WorkingSns()
     task = _run(monkeypatch, client)
 
-    result = task.run('+919999000001', 'Your OTP is 1234')
+    result = task.run('+919999000001', base_utils.stash_sms_message('Your OTP is 1234'))
 
     assert result['success'] is True
     assert result['message_id'] == 'mid-1'
@@ -192,7 +192,7 @@ def test_a_retry_signal_is_never_swallowed_into_a_success(monkeypatch):
     monkeypatch.setattr(base_utils.send_otp_via_sns, 'retry', _retry)
 
     with pytest.raises(Retry):
-        base_utils.send_otp_via_sns.run('+919999000001', 'msg')
+        base_utils.send_otp_via_sns.run('+919999000001', base_utils.stash_sms_message('msg'))
 
     assert calls['n'] == 1, (
         f'retry was invoked {calls["n"]} times for one failure; the Retry signal '

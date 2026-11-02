@@ -4,7 +4,9 @@ from rest_framework import status
 from rest_framework.decorators import (
     api_view, permission_classes, parser_classes, throttle_classes,
 )
-from base.utils import success_response, error_response, generate_otp, send_otp_via_sns
+from base.utils import (
+    success_response, error_response, generate_otp, send_otp_via_sns, stash_sms_message,
+)
 from django.conf import settings
 from base.throttles import (
     OtpRequestThrottle, OtpRequestBurstThrottle, OtpVerifyThrottle,
@@ -171,12 +173,15 @@ def request_otp(request):
 
         if not test_otp:
             try:
-                # Send OTP via SNS (async task)
-                task_id = send_otp_via_sns.delay(
-                    phone_number,
+                # Send OTP via SNS (async task). The text, which contains the
+                # OTP, is stashed and only its reference is enqueued: task
+                # arguments reach the broker, worker logs and Sentry.
+                message_ref = stash_sms_message(
                     f"Your OTP for {settings.PLATFORM_BRAND_NAME} is {otp}. "
-                    f"It will expire in 10 minutes."
+                    f"It will expire in 10 minutes.",
+                    ttl=OTP_EXPIRY,
                 )
+                task_id = send_otp_via_sns.delay(phone_number, message_ref)
                 logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id}")
             except Exception as e:
                 logger.error(f"Failed to queue OTP send task: {str(e)}")

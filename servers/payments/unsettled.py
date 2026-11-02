@@ -59,7 +59,8 @@ def city_node_of(trip):
 def raise_unsettled_alert(trip, detail=''):
     """One critical alert for `trip`; the open one is returned if it already exists."""
     city = city_node_of(trip)
-    fare_minor = trip.final_fare_minor or trip.estimated_fare_minor or 0
+    fare_minor = (trip.final_fare_minor if trip.final_fare_minor is not None
+                  else trip.estimated_fare_minor or 0)
     return raise_alert(
         SETTLEMENT_NO_COMMISSION_RULE, severity=CRITICAL,
         title=f'Trip {trip.id} cannot be settled: no commission rule'
@@ -155,7 +156,8 @@ def unsettled_rows(user, node=None, limit=100):
     rows = []
     for trip in trips.select_related('zone', 'zone__geo_node').order_by('completed_at', 'id')[:limit]:
         city = city_node_of(trip)
-        minor = trip.final_fare_minor or trip.estimated_fare_minor or 0
+        minor = (trip.final_fare_minor if trip.final_fare_minor is not None
+                 else trip.estimated_fare_minor or 0)
         rows.append({
             'trip_id': trip.id,
             'city': {'code': city.code, 'name': city.name} if city is not None else None,

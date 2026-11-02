@@ -71,7 +71,7 @@ def pay_trip(user, data):
     from servers.driver.utils import settle_or_defer, settle_paid_by_platform
     from servers.fraud.money import held_minor
     from servers.payments.models import Payment, TripSettlement
-    from servers.promotions.rider_promos import is_fully_covered, payable_minor
+    from servers.promotions.rider_promos import not_charged, payable_minor
     from servers.ride.models import Trip
     from servers.rider.models import Wallet, WalletTransaction
 
@@ -107,9 +107,9 @@ def pay_trip(user, data):
                         .order_by('-created_at', '-id'))
         if any(p.status == 'completed' for p in payments) or trip.payment_status == 'completed':
             raise Refusal('ALREADY_PAID', 'This trip has already been paid', 'trip_id', 409)
-        if is_fully_covered(trip):
-            raise Refusal('NOT_CHARGED', 'A promotion covered this trip, so you were not charged.',
-                          'trip_id', 409)
+        reason = not_charged(trip)
+        if reason:
+            raise Refusal('NOT_CHARGED', reason, 'trip_id', 409)
 
         currency = currency_for_trip(trip)
         amount_minor = payable_minor(trip)

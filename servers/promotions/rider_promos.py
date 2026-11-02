@@ -227,13 +227,27 @@ def discount_minor(trip):
 
 def fare_minor(trip):
     """The FULL fare: what driver earnings and commission are computed on."""
-    return trip.final_fare_minor or trip.estimated_fare_minor or 0
+    # A recorded final fare of 0 is a fare, not a missing one: an operator end under the
+    # platform-funded rule charges the rider nothing (review B2 H1, AUDIT 27.77). Falling back
+    # to the estimate there charged the rider the whole upfront fare.
+    if trip.final_fare_minor is not None:
+        return trip.final_fare_minor
+    return trip.estimated_fare_minor or 0
 
 
 def payable_minor(trip):
     """What the RIDER is charged: the full fare less the promo discount, never below zero."""
     full = fare_minor(trip)
     return max(0, full - min(discount_minor(trip), full))
+
+
+def not_charged(trip):
+    """Why the rider owes nothing for this trip, or None. Every charging path asks this first."""
+    if getattr(trip, 'end_rule', '') == 'platform_funded':
+        return 'This trip was ended by SaaradhiGo and you were not charged.'
+    if is_fully_covered(trip):
+        return 'A promotion covered this trip, so you were not charged.'
+    return None
 
 
 def is_fully_covered(trip):

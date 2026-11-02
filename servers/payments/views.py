@@ -2080,12 +2080,13 @@ def switch_payment_method(request):
         # Create new payment
         from servers.promotions.rider_promos import payable, payable_minor
         amount = payable(trip)
-        from servers.promotions.rider_promos import is_fully_covered
-        if actual_method == 'online' and is_fully_covered(trip):
+        from servers.promotions.rider_promos import is_fully_covered, not_charged
+        if trip.end_rule == 'platform_funded' or (
+                actual_method == 'online' and is_fully_covered(trip)):
             return error_response(
                 code='NOT_CHARGED',
-                message='A promotion covered this trip, so you were not charged.',
-                field='trip_id', issue='Fully covered by a promotion',
+                message=not_charged(trip),
+                field='trip_id', issue='The rider owes nothing for this trip',
                 status=status.HTTP_409_CONFLICT)
         
         if actual_method == 'online':
@@ -2233,12 +2234,13 @@ def retry_payment(request):
         }, status.HTTP_200_OK)
 
     # D-07: Manual retry - create new payment order
-    from servers.promotions.rider_promos import is_fully_covered
-    if is_fully_covered(trip):
+    from servers.promotions.rider_promos import not_charged
+    reason = not_charged(trip)
+    if reason:
         return error_response(
             code='NOT_CHARGED',
-            message='A promotion covered this trip, so you were not charged.',
-            field='trip_id', issue='Fully covered by a promotion',
+            message=reason,
+            field='trip_id', issue='The rider owes nothing for this trip',
             status=status.HTTP_409_CONFLICT
         )
 

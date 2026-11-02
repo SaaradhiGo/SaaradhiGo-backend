@@ -614,6 +614,7 @@ def detail_extras(request, trip):
     reason = stale_reason(trip)
 
     from .admin_stale import stale_actions
+    from .fare_card import fare_card
 
     def dec(value):
         return str(value) if value is not None else None
@@ -626,6 +627,8 @@ def detail_extras(request, trip):
         'timeline_events': _timeline_events(trip, audit),
         'offers_recorded': False,  # dispatch offers live in Redis only, never persisted
         'fare_minor': _fare_minor(trip),
+        # Who paid what, as one line (AUDIT 27.74): fare, promo, rider paid, cash, rewards.
+        'fare_card': fare_card(trip),
         'payment_summary': payment,
         'route': {
             'estimated_distance_km': dec(trip.estimated_distance_km),

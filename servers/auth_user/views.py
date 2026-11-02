@@ -683,26 +683,47 @@ def _truthy(value):
     return str(value).strip().lower() in ('true', '1', 'yes', 'on')
 
 
-def _rider_home_city(user, update_data):
-    """The rider's chosen city (R6), popped out of `update_data`.
+def _home_city(user, update_data):
+    """The rider's or driver's chosen city, popped out of `update_data`.
 
-    The rider app sends `home_city` as a city code from app-config `cities[]`
-    (e.g. `IN-TG-HYD`) when the rider picks one at sign-up. It sets
-    `Rider.home_city`, the anchor for operator scope (`rider.scope`). Only a
-    live city counts. Returns (node, error): node None and error None means
-    nothing was sent (or the account is not a rider), so nothing changes.
+    The app sends `home_city` as a city code from app-config `cities[]` (e.g. `IN-TG-HYD`). It sets
+    `Rider.home_city` (R6) or `Driver.home_city`, the anchor for operator scope: a driver with no
+    home city is invisible to every city-scoped operator, so their KYC could never be approved by
+    the city's own team (found by the QA payout run, AUDIT 27.76). Only a live city counts.
+
+    A driver chooses it during onboarding, until approved. After approval the city decides which
+    operations team is responsible for them, so a move goes through Support, not the driver.
+
+    Returns (node, error): node None and error None means nothing was sent (or the account is
+    neither), so nothing changes.
     """
     if 'home_city' not in update_data:
         return None, None
     code = str(update_data.pop('home_city') or '').strip()
-    if getattr(user, 'role', None) != 'rider' or not code:
+    role = getattr(user, 'role', None)
+    if role not in ('rider', 'driver') or not code:
         return None, None
+    if role == 'driver':
+        from servers.driver.models import Driver
+
+        driver = Driver.objects.filter(user_id=user).only('approved').first()
+        if driver is not None and driver.approved:
+            return None, 'Your city can be changed by support once you are approved.'
     from servers.admin_access.models import ACTIVE, CITY, GeoNode
 
     node = GeoNode.objects.filter(code=code, kind=CITY, status=ACTIVE).first()
     if node is None:
         return None, 'Choose one of the cities we serve.'
     return node, None
+
+
+def _save_home_city(user, node):
+    if getattr(user, 'role', None) == 'driver':
+        from servers.driver.models import Driver
+
+        Driver.objects.filter(user_id=user, approved=False).update(home_city=node)
+    else:
+        Rider.objects.filter(user_id=user).update(home_city=node)
 
 
 def _driver_name_error(user, update_data):
@@ -764,7 +785,7 @@ def update_user(request):
         "city": str,
         "zip_code": str,
         "emergency_contact": str,
-        "home_city": str (rider only: a live city code from app-config),
+        "home_city": str (rider, or a driver before approval: a live city code from app-config),
         "avatar": file or null,
         "phone_number": str
     }
@@ -800,7 +821,7 @@ def update_user(request):
         if avatar_provided:
             update_data['avatar'] = avatar_value
         
-        home_city, city_error = _rider_home_city(user, update_data)
+        home_city, city_error = _home_city(user, update_data)
         if city_error:
             return error_response(
                 code='AUTH_VALIDATION_ERROR',
@@ -821,7 +842,7 @@ def update_user(request):
             )
 
         if not update_data and home_city is not None:
-            Rider.objects.filter(user_id=user).update(home_city=home_city)
+            _save_home_city(user, home_city)
             return success_response(UserModelSerializer(user).data, status.HTTP_200_OK)
 
         if not update_data:
@@ -854,7 +875,7 @@ def update_user(request):
             with transaction.atomic():
                 user_serializer.save()
                 if home_city is not None:
-                    Rider.objects.filter(user_id=user).update(home_city=home_city)
+                    _save_home_city(user, home_city)
             logger.info(f"User profile updated successfully: {user_id}")
             return success_response(
                 user_serializer.data,

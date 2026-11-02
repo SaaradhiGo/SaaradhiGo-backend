@@ -123,6 +123,20 @@ def register_with_email(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    # A driver's name follows the driver-name rule from the first request (AUDIT 27.76): sign-up
+    # used to store a name that profile completion then refused.
+    if role == 'driver' and full_name:
+        from servers.driver.serializers import is_valid_driver_name
+
+        if not is_valid_driver_name(full_name):
+            return error_response(
+                code='AUTH_VALIDATION_ERROR',
+                message='Enter your full name.',
+                field='full_name',
+                issue='Letters, spaces and . \' - only, at least 2 characters',
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     try:
         email = normalize_email(raw_email)
     except InvalidEmail as exc:

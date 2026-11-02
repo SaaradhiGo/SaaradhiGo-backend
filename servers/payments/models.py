@@ -106,6 +106,40 @@ class Payment(CurrencyStampedModel, models.Model):
         ]
 
 
+class PaymentOrder(models.Model):
+    """Every gateway order a trip Payment has been issued (owner decision on review B, AUDIT 27.76).
+
+    `create_order` reuses one Payment row per trip, and used to overwrite its order id: a rider who
+    opened checkout twice and paid the FIRST one could not be matched (the trip showed unpaid and
+    they were asked to pay again). Every order id is kept here; a capture on ANY of them settles the
+    trip once (`Payment.gateway_order_id` then names the order that paid), and a capture on another
+    order after that is a late payment: never settled, refunded in full (`payments.late_paid`), with
+    its own capture and refund recorded on its row.
+    """
+
+    REFUND_NONE = ''
+    REFUND_PENDING = 'pending'
+    REFUND_DONE = 'refunded'
+    REFUND_MANUAL = 'manual_refund_needed'
+    REFUND_CHOICES = [(REFUND_NONE, 'Not a late capture'), (REFUND_PENDING, 'Refund pending'),
+                      (REFUND_DONE, 'Refunded'), (REFUND_MANUAL, 'Refund by hand')]
+
+    payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name='orders')
+    order_id = models.CharField(max_length=256, unique=True)
+    provider = models.CharField(max_length=20, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    # A late capture on this order: the gateway payment taken, and what happened to it.
+    late_payment_id = models.CharField(max_length=256, blank=True, default='')
+    late_refund = models.CharField(max_length=24, choices=REFUND_CHOICES, blank=True, default='')
+    refund_id = models.CharField(max_length=256, blank=True, default='')
+
+    class Meta:
+        indexes = [models.Index(fields=['payment', '-created_at'], name='paymentorder_payment_idx')]
+
+    def __str__(self):
+        return f'PaymentOrder {self.order_id} -> payment {self.payment_id}'
+
+
 class TransactionHistory(CurrencyStampedModel, models.Model):
     # Where this row's currency is derived from. See base/currency_stamp.py.
     #  trip_id is nullable here (a withdrawal has no trip), so this falls

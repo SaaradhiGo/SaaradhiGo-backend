@@ -520,6 +520,30 @@ class TestFareCardsThroughMakerChecker:
         assert card.notes == 'checked with ops'
         assert AdminAuditLog.objects.filter(action='rate_card_updated').exists()
 
+    @pytest.mark.parametrize('field', ['zone', 'vehicle_type', 'effective_from', 'version',
+                                       'effective_to_and_notes'])
+    def test_a_direct_edit_cannot_move_or_reschedule_a_card(self, world, field):
+        """Review B2 H2 (AUDIT 27.77): a plain PATCH wrote zone, class, version and dates straight
+        through, moving a Hyderabad card to Austin or out of force with no checker."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        card = self.seed_card(world)
+        before = (card.zone_id, card.vehicle_type_id, card.effective_from, card.version)
+        body = {'zone': {'zone': world.aus.id},
+                'vehicle_type': {'vehicle_type': world.auto.id},
+                'effective_from': {'effective_from': (timezone.now() + timedelta(days=30)).isoformat()},
+                'version': {'version': 77},
+                'effective_to_and_notes': {'notes': 'x', 'version': 77}}[field]
+        body.setdefault('notes', 'x')
+        maker, _ = world.super
+        r = maker.patch(f'{BASE}/rate-cards/{card.id}/', body, format='json')
+        assert r.status_code == 400, r.content
+        card.refresh_from_db()
+        assert (card.zone_id, card.vehicle_type_id, card.effective_from, card.version) == before
+        assert card.notes != 'x'
+
     def test_a_reason_is_required_and_a_card_in_another_country_is_a_404(self, world):
         maker, _ = world.super
         r = post(maker, f'{BASE}/rate-cards/', self.card_body(world, reason=''))

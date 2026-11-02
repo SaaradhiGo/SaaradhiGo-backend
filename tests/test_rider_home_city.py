@@ -68,8 +68,9 @@ class TestRiderHomeCity:
         assert resp.status_code == 200
         assert _home_city(user) == geo['IN-TG-HYD']
 
-    def test_a_driver_sending_home_city_is_not_affected(self, auth_client_driver, geo):
+    def test_a_driver_sending_an_unknown_city_is_refused(self, auth_client_driver, geo):
+        """Drivers choose a city too now (AUDIT 27.76, tests/test_driver_home_city.py)."""
         client, user = auth_client_driver
         resp = client.patch(URL, {'full_name': 'Ravi Kumar', 'home_city': 'NOPE'},
                             format='json')
-        assert resp.status_code == 200
+        assert resp.status_code == 400

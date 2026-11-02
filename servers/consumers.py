@@ -2114,7 +2114,9 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 vehicle_brand=vehicle.brand if vehicle else 'Unknown',
                 vehicle_number=vehicle.vehicle_number if vehicle else 'Unknown',
                 vehicle_color=vehicle.color if vehicle else 'Unknown',
-                otp=otp,
+                # No otp: the start-trip check reads Trip.otp from the
+                # database and nothing reads it from here, so a plaintext
+                # copy in Redis was only exposure (AUDIT 27.76).
             )
 
             # Create notification for rider

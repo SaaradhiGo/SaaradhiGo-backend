@@ -314,7 +314,11 @@ def anonymise_user(user, *, reason, reference, actor=None, actor_label='',
 
         cleared.extend(_anonymise_driver_profile(user, failures))
         cleared.extend(_anonymise_rider_profile(user))
-        revoked = revoke_all_refresh_tokens(user)
+        # The deactivating save above has already revoked them (session_revocation's
+        # signal, AUDIT 27.78); count both so the row says how many sessions ended.
+        from servers.auth_user.session_revocation import REVOKED_ON_DEACTIVATION
+        revoked = (revoke_all_refresh_tokens(user)
+                   + getattr(user, REVOKED_ON_DEACTIVATION, 0))
 
         row = AdminAuditLog.objects.create(
             **who,

@@ -70,10 +70,10 @@ SOS_DEDUPE_WINDOW_SECONDS = 120
 
 
 def _client_ip(request):
-    xff = request.META.get('HTTP_X_FORWARDED_FOR', '')
-    if xff:
-        return xff.split(',')[0].strip()
-    return request.META.get('REMOTE_ADDR') or None
+    # One rule for every audit/security reader (AUDIT 27.78, M1).
+    from base.client_ip import client_ip
+
+    return client_ip(request)
 
 
 def _user_label(user):

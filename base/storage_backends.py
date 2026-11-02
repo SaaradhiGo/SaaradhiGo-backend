@@ -87,6 +87,11 @@ class PrivateDocumentStorage(S3Boto3Storage):
         # Defence in depth: refuse the argument too, so no caller can pass
         # one in and quietly unsign this storage.
         kwargs['custom_domain'] = None
+        # Its own bucket when one is configured (AUDIT 27.78): a bucket opened
+        # for public reads of avatars serves documents in it too.
+        private_bucket = getattr(settings, 'AWS_S3_PRIVATE_BUCKET_NAME', '') or ''
+        if private_bucket:
+            kwargs.setdefault('bucket_name', private_bucket)
         super().__init__(*args, **kwargs)
 
 

@@ -68,7 +68,10 @@ class TestDriverHomeCity:
 
 class TestSignUpName:
     def _register(self, client, name, role='driver'):
+        from servers.auth_user import phone_proof
+
         return client.post(REGISTER, {
+            'phone_proof': phone_proof.issue('+919811100771', role),
             'full_name': name, 'phone_number': '+919811100771', 'email': 'new.driver@example.test',
             'password': 'Plain-test-pass-1', 'confirm_password': 'Plain-test-pass-1',
             'role': role}, format='json')

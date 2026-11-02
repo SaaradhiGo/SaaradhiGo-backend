@@ -12,11 +12,12 @@ Permissions: any authenticated user may presign `avatar`; the document kinds
 import logging
 
 from django.core.exceptions import ValidationError
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 
 from integrations.storage.s3 import generate_presigned_put, kind_spec
+from base.throttles import UploadPresignThrottle
 from base.utils import error_response, success_response
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+@throttle_classes([UploadPresignThrottle])
 def presign_upload(request):
     kind = request.data.get('kind')
     content_type = request.data.get('content_type')
@@ -58,7 +60,8 @@ def presign_upload(request):
         )
 
     try:
-        payload = generate_presigned_put(kind, content_type.split(';')[0])
+        # Bound to this account: only it can later submit the key.
+        payload = generate_presigned_put(kind, content_type.split(';')[0], request.user)
     except ValidationError as exc:
         return error_response(
             code='PRESIGN_FAILED',
@@ -68,7 +71,9 @@ def presign_upload(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    logger.info(f"Issued presigned upload key={payload['key']} user={request.user.id}")
+    # No key in the log: with a public read path on the bucket a key is all it
+    # takes to fetch the object, and logs are read by more people than that.
+    logger.info('presigned_upload_issued kind=%s user=%s', kind, request.user.id)
     return success_response(
         {
             'kind': kind,

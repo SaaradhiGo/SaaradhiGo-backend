@@ -421,10 +421,6 @@ def _document_rows(driver, vehicle, documents_visible):
         name = getattr(field, 'name', '') if field else ''
         review = latest.get(key)
         current = review is not None and review.file_name == name
-        url = None
-        if documents_visible and name:
-            from .admin_views import _document_url
-            url = _document_url(field)
         rows.append({
             'key': key,
             'label': check['label'],
@@ -433,9 +429,12 @@ def _document_rows(driver, vehicle, documents_visible):
             'vehicle_id': vehicle.id if vehicle is not None else None,
             'present': check['present'],
             'recordable': check['applicable'],
-            # Documents follow `pii.view` at the driver's city, as the full
-            # detail always has; `url_withheld` says why there is no link.
-            'url': url,
+            # NO URL HERE (AUDIT 27.78): this row is in the KYC queue, a list,
+            # and in the detail; a link minted for every row was a link nobody
+            # opened and nothing recorded. `viewable` says the console may ask
+            # `admin_document_view` for one (pii.view at the driver's city);
+            # `url_withheld` says why it may not.
+            'viewable': bool(name) and documents_visible,
             'url_withheld': bool(name) and not documents_visible,
             'review_state': review.state if current else ('not_reviewed' if name else 'missing'),
             'review': ({
@@ -458,6 +457,50 @@ def documents_payload(user, driver):
     for vehicle in driver.vehicle_set.order_by('id'):
         rows.extend(_document_rows(driver, vehicle, visible))
     return rows
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
+def admin_document_view(request, driver_id, key):
+    """GET /driver/admin/<id>/documents/<key>/view/?vehicle_id=N  Open one document.
+
+    The only way an operator gets a document URL (AUDIT 27.78): the detail and
+    the queue say what is on file and whether this operator may open it, and
+    nothing more. Out of scope is 404, like every scoped read; in scope without
+    `pii.view` AT THE DRIVER'S CITY is 403. The audit row is written first and
+    carries no URL; if it cannot be written the document is not opened.
+    """
+    from . import document_access
+
+    driver = scoped_or_none(request.user, for_kyc_view(request.user, Driver.objects.select_related(
+        'user_id', 'home_city')), id=driver_id)
+    if driver is None:
+        return _not_found(driver_id)
+    if not _documents_visible(request.user, driver):
+        return error_response(
+            code='PERMISSION_DENIED',
+            message="You do not hold pii.view for this driver's city.",
+            field='driver_id', issue='pii.view', status=status.HTTP_403_FORBIDDEN)
+    field, vehicle = document_access.stored_document(
+        driver, key, request.query_params.get('vehicle_id'))
+    if field is None:
+        return error_response(code='NOT_FOUND', message='No such document on file.',
+                              field='key', issue=f'No {key} for driver {driver_id}',
+                              status=status.HTTP_404_NOT_FOUND)
+    if document_access.record_view(request, actor=request.user, driver=driver, key=key,
+                                   vehicle=vehicle, via='console') is None:
+        return error_response(code='AUDIT_UNAVAILABLE',
+                              message='The document cannot be opened right now.',
+                              field='general', issue='audit write failed',
+                              status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    url = document_access.signed_url(field)
+    if url is None:
+        return error_response(code='DOCUMENT_UNAVAILABLE',
+                              message='The document could not be opened.',
+                              field='key', issue='no signed link',
+                              status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return success_response({'url': url, 'expires_in': document_access.url_ttl()},
+                            status.HTTP_200_OK)
 
 
 def queue_response(request):

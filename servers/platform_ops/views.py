@@ -122,8 +122,11 @@ class AppConfigThrottle(SimpleRateThrottle):
     scope = 'app_config'
 
     def get_cache_key(self, request, view):
-        xff = request.META.get('HTTP_X_FORWARDED_FOR')
-        ident = xff.split(',')[0].strip() if xff else request.META.get('REMOTE_ADDR', '')
+        # Keyed on the trusted end of the chain: a rotated X-Forwarded-For
+        # no longer buys a fresh bucket (AUDIT 27.78, M1).
+        from base.client_ip import client_ip
+
+        ident = client_ip(request, default='')
         return self.cache_format % {'scope': self.scope, 'ident': ident}
 
 

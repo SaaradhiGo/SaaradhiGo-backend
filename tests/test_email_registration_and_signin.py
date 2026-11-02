@@ -38,7 +38,14 @@ GOOD = {
 
 
 def _register(**overrides):
+    # Registration needs a proof of the number since AUDIT 27.78 (H4); these
+    # tests are about what happens after it, so they mint a real one.
+    from servers.auth_user import phone_proof
+
     payload = {**GOOD, **overrides}
+    if 'phone_proof' not in overrides and payload.get('phone_number'):
+        payload['phone_proof'] = phone_proof.issue(
+            payload['phone_number'], payload.get('role') or 'rider')
     return APIClient().post(REGISTER, payload, format='json')
 
 

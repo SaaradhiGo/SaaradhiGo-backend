@@ -3,6 +3,7 @@ and for resource endpoints accepting already-uploaded S3 keys alongside
 legacy multipart files.
 """
 import uuid
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 import pytest
@@ -17,8 +18,17 @@ from servers.driver.models import Driver, Vehicle, VehicleType
 
 User = get_user_model()
 
-PNG_KEY = lambda prefix="avatars": f"{prefix}/{uuid.uuid4().hex}.png"  # noqa: E731
-PDF_KEY = lambda prefix="rc_docs": f"{prefix}/{uuid.uuid4().hex}.pdf"  # noqa: E731
+def _owned(user, prefix, ext):
+    """A key as `/uploads/presign/` mints it for `user` (bound to them since AUDIT 27.78)."""
+    from base.media import UPLOAD_KINDS
+    from integrations.storage.s3 import owned_key
+
+    kind = next(k for k, spec in UPLOAD_KINDS.items() if spec["prefix"] == prefix)
+    return owned_key(kind, user, ext)
+
+
+PNG_KEY = lambda user, prefix="avatars": _owned(user, prefix, "png")  # noqa: E731
+PDF_KEY = lambda user, prefix="rc_docs": _owned(user, prefix, "pdf")  # noqa: E731
 
 
 class FakeS3Client:
@@ -219,7 +229,7 @@ def test_presign_url_targets_bucket_region_host(settings):
     settings.AWS_SECRET_ACCESS_KEY = "testing"
     settings.AWS_QUERYSTRING_EXPIRE = 900
 
-    url = s3_module.generate_presigned_put("rc_doc", "application/pdf")["upload_url"]
+    url = s3_module.generate_presigned_put("rc_doc", "application/pdf", SimpleNamespace(pk=1))["upload_url"]
 
     host = urlparse(url).netloc
     assert host == "saaradhigo-s3-dev.s3.ap-south-2.amazonaws.com"
@@ -246,7 +256,7 @@ def test_create_vehicle_with_presigned_keys(auth_client_driver, fake_s3):
     client, user = auth_client_driver
     VehicleType.objects.create(type="Auto")
 
-    rc_key, pic_key = PDF_KEY(), PNG_KEY("vehicle_pics")
+    rc_key, pic_key = PDF_KEY(user), PNG_KEY(user, "vehicle_pics")
     fake_s3.seed(rc_key, "application/pdf", size=2048)
     fake_s3.seed(pic_key, "image/png", size=2048)
 
@@ -266,8 +276,10 @@ def test_create_vehicle_with_presigned_keys(auth_client_driver, fake_s3):
     vehicle = Vehicle.objects.get(driver_id=user.driver)
     assert vehicle.rc_doc.name == rc_key
     assert vehicle.vehicle_pic.name == pic_key
-    # Private docs come back as signed URLs, public pics as plain ones.
-    assert response.data["data"]["rc_doc"].endswith("?signature=fake")
+    # Private docs come back as the driver's audited view link, never a
+    # bucket URL (AUDIT 27.78); public pics keep their storage URL.
+    assert "/driver/driver/documents/view/" in response.data["data"]["rc_doc"]
+    assert "private-media.test" not in response.data["data"]["rc_doc"]
     assert response.data["data"]["vehicle_pic"].endswith("?signature=fake")
 
 
@@ -281,7 +293,7 @@ def test_create_vehicle_rejects_key_never_uploaded(auth_client_driver, fake_s3):
         data={
             "vehicle_number": "KA01AB1234",
             "vehicle_type": "Auto",
-            "rc_doc": PDF_KEY(),
+            "rc_doc": PDF_KEY(user),
         },
         format="json",
     )
@@ -296,7 +308,7 @@ def test_create_vehicle_rejects_cross_kind_prefix(auth_client_driver, fake_s3):
     client, user = auth_client_driver
     VehicleType.objects.create(type="Auto")
 
-    smuggled = PDF_KEY(prefix="license_docs")
+    smuggled = PDF_KEY(user, prefix="license_docs")
     fake_s3.seed(smuggled, "application/pdf")
 
     response = client.post(
@@ -317,7 +329,7 @@ def test_create_vehicle_rejects_oversize_object(auth_client_driver, fake_s3):
     client, user = auth_client_driver
     VehicleType.objects.create(type="Auto")
 
-    key = PDF_KEY()
+    key = PDF_KEY(user)
     fake_s3.seed(key, "application/pdf", size=6 * 1024 * 1024)
 
     response = client.post(
@@ -338,7 +350,7 @@ def test_create_vehicle_rejects_wrong_stored_content_type(auth_client_driver, fa
     client, user = auth_client_driver
     VehicleType.objects.create(type="Auto")
 
-    key = PNG_KEY("vehicle_pics")
+    key = PNG_KEY(user, "vehicle_pics")
     fake_s3.seed(key, "video/mp4")
 
     response = client.post(
@@ -364,7 +376,7 @@ def test_update_vehicle_accepts_keys_and_clearing(auth_client_driver, fake_s3):
         vehicle_number="KA02CD5678",
         rc_doc="rc_docs/00000000000000000000000000000000.pdf",
     )
-    new_rc = PDF_KEY()
+    new_rc = PDF_KEY(user)
     fake_s3.seed(new_rc, "application/pdf")
 
     response = client.patch(
@@ -384,7 +396,7 @@ def test_update_driver_profile_license_via_key(auth_client_driver, fake_s3):
     client, user = auth_client_driver
     driver = user.driver
 
-    license_key = PDF_KEY(prefix="license_docs")
+    license_key = PDF_KEY(user, prefix="license_docs")
     fake_s3.seed(license_key, "application/pdf")
 
     response = client.patch(
@@ -406,7 +418,7 @@ def test_update_driver_profile_license_via_key(auth_client_driver, fake_s3):
 def test_avatar_update_via_key(auth_client_rider, fake_s3):
     client, user = auth_client_rider
 
-    key = PNG_KEY()
+    key = PNG_KEY(user)
     fake_s3.seed(key, "image/png")
 
     response = client.patch(
@@ -458,8 +470,8 @@ def test_profile_license_doc_back_via_key(auth_client_driver, fake_s3):
     client, user = auth_client_driver
     driver = user.driver
 
-    front_key = PDF_KEY(prefix="license_docs")
-    back_key = PDF_KEY(prefix="license_docs_back")
+    front_key = PDF_KEY(user, prefix="license_docs")
+    back_key = PDF_KEY(user, prefix="license_docs_back")
     fake_s3.seed(front_key, "application/pdf")
     fake_s3.seed(back_key, "application/pdf")
 
@@ -473,22 +485,23 @@ def test_profile_license_doc_back_via_key(auth_client_driver, fake_s3):
     driver.refresh_from_db()
     assert driver.license_doc.name == front_key
     assert driver.license_doc_back.name == back_key
-    # Both licence sides are private docs -> short-lived signed URLs.
-    assert response.data["data"]["license_doc"].endswith("?signature=fake")
-    assert response.data["data"]["license_doc_back"].endswith("?signature=fake")
-    assert "license_docs/" in response.data["data"]["license_doc"]
-    assert "license_docs_back/" in response.data["data"]["license_doc_back"]
+    # Both licence sides are private docs -> the driver's five-minute view
+    # links, never a bucket URL or key (AUDIT 27.78).
+    for side in ("license_doc", "license_doc_back"):
+        assert "/driver/driver/documents/view/" in response.data["data"][side]
+        assert "private-media.test" not in response.data["data"][side]
+    assert front_key not in str(response.data) and back_key not in str(response.data)
 
     profile = client.get("/api/v1/driver/driver/profile/")
     assert profile.status_code == 200
-    assert profile.data["data"]["license_doc_back"].endswith("?signature=fake")
+    assert "/driver/driver/documents/view/" in profile.data["data"]["license_doc_back"]
 
 
 @pytest.mark.django_db
 def test_license_front_rejects_back_side_key(auth_client_driver, fake_s3):
     client, user = auth_client_driver
 
-    smuggled = PDF_KEY(prefix="license_docs_back")
+    smuggled = PDF_KEY(user, prefix="license_docs_back")
     fake_s3.seed(smuggled, "application/pdf")
 
     response = client.patch(
@@ -536,8 +549,8 @@ def test_legacy_multipart_vehicle_creation_still_supported(
         data={
             "vehicle_number": "KA05IJ6789",
             "vehicle_type": "Auto",
-            "rc_doc": SimpleUploadedFile("rc.pdf", b"pdf-bytes", content_type="application/pdf"),
-            "vehicle_pic": SimpleUploadedFile("pic.png", b"img-bytes", content_type="image/png"),
+            "rc_doc": SimpleUploadedFile("rc.pdf", b"%PDF-1.4 test", content_type="application/pdf"),
+            "vehicle_pic": SimpleUploadedFile("pic.png", b"\x89PNG\r\n\x1a\n test", content_type="image/png"),
         },
         format="multipart",
     )
@@ -546,7 +559,7 @@ def test_legacy_multipart_vehicle_creation_still_supported(
     vehicle = Vehicle.objects.get(driver_id=user.driver)
     assert vehicle.rc_doc.name.startswith("rc_docs/")
     assert vehicle.vehicle_pic.name.startswith("vehicle_pics/")
-    assert response.data["data"]["rc_doc"].endswith("?signature=fake")
+    assert "/driver/driver/documents/view/" in response.data["data"]["rc_doc"]
 
 
 @pytest.mark.django_db

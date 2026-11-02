@@ -46,10 +46,11 @@ logger = logging.getLogger(__name__)
 def _client_ip(request):
     if not request:
         return None
-    xff = request.META.get('HTTP_X_FORWARDED_FOR', '')
-    if xff:
-        return xff.split(',')[0].strip()
-    return request.META.get('REMOTE_ADDR') or None
+    # The trusted end of the proxy chain, not the client-written first entry:
+    # an audit row must not record an address the caller chose (AUDIT 27.78, M1).
+    from base.client_ip import client_ip
+
+    return client_ip(request)
 
 
 def _user_agent(request):

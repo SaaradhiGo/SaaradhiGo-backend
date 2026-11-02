@@ -286,7 +286,8 @@ class TestKycOnly:
     def test_without_pii_view_the_document_links_are_withheld(self, geo, world):
         client, _ = operator('analyst', geo)
         data = client.get(url(world['review'], 'full/')).json()['data']
-        assert all(d['url'] is None for d in data['documents'])
+        assert not any(d['viewable'] for d in data['documents'])
+        assert all('url' not in d for d in data['documents'])  # never carried (AUDIT 27.78)
         assert any(d['url_withheld'] for d in data['documents'])
 
 

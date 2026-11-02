@@ -13,3 +13,8 @@ class AuthUserConfig(AppConfig):
         from . import erasure
 
         erasure.connect()
+
+        # Deactivating an account revokes its refresh tokens (AUDIT 27.78).
+        from . import session_revocation
+
+        session_revocation.connect()

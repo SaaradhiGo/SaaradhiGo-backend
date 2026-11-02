@@ -233,6 +233,14 @@ def admin_login(request):
             login_guard.record_failure(request, identifier)
             return _refuse()
 
+        # A deactivated operator is refused like any other failure, with the
+        # same message, so the endpoint does not report which accounts were
+        # removed (AUDIT 27.78, Low 3). This used to mint a token for them.
+        if not user.is_active:
+            login_guard.record_failure(request, identifier)
+            logger.warning('ops_api_login_refused_inactive user_id=%s', user.id)
+            return _refuse()
+
         # A CORRECT password on a non-operator account still counts as a failure.
         # Otherwise every rider and driver account is an unthrottled oracle for
         # password guessing -- the attacker simply aims at a non-operator.

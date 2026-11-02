@@ -39,6 +39,14 @@ Beyond the schema, a ride-hailing account without a number is not usable: the
 driver has to be able to reach the rider at the pickup. So registration takes
 both, and the result is one account reachable two ways — OTP or password —
 rather than a second, parallel identity.
+
+THE NUMBER IS PROVED BEFORE THE ACCOUNT EXISTS (AUDIT 27.78, H4)
+----------------------------------------------------------------
+Because the number is the unique identity, taking it on trust let anyone
+register a stranger's number and lock the stranger out of signing up. The
+request must carry `phone_proof`, issued by `/auth/otp/verify/` after a
+correct SMS code for this number and role (`phone_proof.py`), and the proof
+is spent here.
 """
 
 import logging
@@ -82,6 +90,14 @@ GENERIC_ACCEPTED_NO_MAIL = (
 )
 
 
+#: What the person reads when the phone proof is refused, per reason.
+_PROOF_MESSAGES = {
+    'AUTH_PHONE_PROOF_REQUIRED': 'Verify your mobile number with the code we text you, then try again.',
+    'AUTH_PHONE_PROOF_INVALID': 'That verification is not for this mobile number. Verify the number again.',
+    'AUTH_PHONE_PROOF_EXPIRED': 'Your mobile verification has expired. Verify the number again.',
+    'AUTH_PHONE_PROOF_USED': 'That verification has already been used. Verify the number again.',
+}
+
 def _verification_is_deliverable():
     """See `base.auth_email.verification_is_deliverable`.
 
@@ -101,7 +117,8 @@ def register_with_email(request):
 
     Expected:
         {"full_name", "phone_number", "email", "password",
-         "confirm_password", "role": "rider"|"driver"}
+         "confirm_password", "role": "rider"|"driver",
+         "phone_proof": from POST /auth/otp/verify/ for this number and role}
     """
     data = request.data
     raw_email = data.get('email')
@@ -187,6 +204,32 @@ def register_with_email(request):
             message=' '.join(exc.messages),
             field='password',
             issue='Password rejected',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # THE NUMBER MUST BE PROVED FIRST (AUDIT 27.78, H4). The number is the
+    # account's unique identity, so registering it on trust let anyone take a
+    # stranger's number -- the stranger then could not sign up at all. The
+    # proof comes from `/auth/otp/` + `/auth/otp/verify/` and is bound to this
+    # number and role; it is spent here, whatever happens next, so one SMS
+    # code buys at most one registration attempt.
+    from . import phone_proof
+
+    def _same_phone(proved, submitted):
+        return proved == submitted or normalize_phone(
+            proved, default_country=request.data.get('country') or default_phone_country(),
+        ) == submitted
+
+    proof_error = phone_proof.redeem(
+        data.get('phone_proof'), phone, role, same_phone=_same_phone,
+    )
+    if proof_error is not None:
+        logger.warning('register_refused reason=phone_proof code=%s', proof_error)
+        return error_response(
+            code=proof_error,
+            message=_PROOF_MESSAGES.get(proof_error, _PROOF_MESSAGES[phone_proof.INVALID]),
+            field='phone_proof',
+            issue='Verify your mobile number with the SMS code first',
             status=status.HTTP_400_BAD_REQUEST,
         )
 

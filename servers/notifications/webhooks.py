@@ -31,8 +31,11 @@ logger = logging.getLogger(__name__)
 
 
 def _client_address(request):
-    forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
-    return (forwarded.split(',')[0].strip() if forwarded else request.META.get('REMOTE_ADDR', ''))
+    # Logged on a rejected signature, so it must be the address that actually
+    # connected, not one the caller wrote (AUDIT 27.78, M1).
+    from base.client_ip import client_ip
+
+    return client_ip(request, default='')
 
 
 def handle(provider, request, path_token=''):

@@ -160,6 +160,14 @@ def reconcile_stuck_payments():
                 ).get(pk=payment.pk)
                 if p.status == 'completed':
                     continue
+                from servers.payments.late_paid import record as record_late_paid, superseded
+
+                # The trip was paid another way first (AUDIT 27.75): record, alert, refund.
+                if superseded(p):
+                    record_late_paid(p, gateway_name=p.payment_gateway,
+                                     gateway_payment_id=info.get('cf_payment_id')
+                                     or info.get('payment_id'), source='recon')
+                    continue
                 p.status = 'completed'
                 p.save(update_fields=['status', 'updated_at'])
                 trip = p.trip_id

@@ -103,10 +103,17 @@ def settle_paid_by_platform(trip, amount_minor, currency=None):
     from django.db import transaction
 
     from servers.payments.models import TripSettlement
+    from servers.rider.models import Wallet, get_wallet
 
+    # Read the settlement under the driver-wallet lock every settlement takes, so a cash completion
+    # settling at the same moment is either committed (seen) or not started (review MEDIUM-2).
+    if trip.driver_id:
+        get_wallet(trip.driver_id.user_id, Wallet.SCOPE_DRIVER, lock=True)
     current = TripSettlement.objects.filter(trip=trip).order_by('-version').first()
     if current is None:
-        return credit_driver_wallet(trip)
+        # No commission rule must not undo the rider's payment (review MEDIUM-3): settle or defer.
+        settle_or_defer(trip)
+        return None
     if current.payment_method != 'cash':
         return None
     with transaction.atomic():

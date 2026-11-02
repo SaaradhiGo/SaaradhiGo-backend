@@ -192,11 +192,14 @@ class FakeRazorpay:
         return 200, {'items': items}
 
 
-def webhook_body(event, **entities):
-    """A webhook body as Razorpay sends it: {"entity":"event","event":..., "payload":{...}}."""
+def webhook_body(event, created_at=None, **entities):
+    """A webhook body as Razorpay sends it:
+    {"entity":"event","event":..., "payload":{...}, "created_at": <unix seconds>}."""
     import json
+    import time
     return json.dumps({'entity': 'event', 'event': event,
-                       'payload': {k: {'entity': v} for k, v in entities.items()}}).encode()
+                       'payload': {k: {'entity': v} for k, v in entities.items()},
+                       'created_at': int(time.time()) if created_at is None else created_at}).encode()
 
 
 def sign(body, secret):

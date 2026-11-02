@@ -15,7 +15,8 @@ Docs this follows (razorpay.com/docs):
     idempotency header exists: `receipt` is the key (a repeat gives 400 "Duplicate receipt"), so
     the refund reference goes in `receipt` and a duplicate is resolved by fetching that refund.
   * Webhooks: X-Razorpay-Signature = HMAC-SHA256 hex of the RAW body under the webhook secret;
-    X-Razorpay-Event-Id uniquely identifies an event (webhooks / validate-test).
+    X-Razorpay-Event-Id uniquely identifies an event (webhooks / validate-test), but the HMAC
+    does not cover it, so the inbox dedupes on the signed body (servers/payments/razorpay_webhooks.py).
 """
 
 import logging

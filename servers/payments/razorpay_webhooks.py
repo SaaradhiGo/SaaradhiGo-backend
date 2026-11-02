@@ -6,14 +6,21 @@
 Order of operations, per delivery:
   1. Verify X-Razorpay-Signature (HMAC-SHA256 of the RAW body under the webhook secret, constant
      time). Missing or invalid -> 400 and NOTHING else happens (no inbox row, no side effect).
-  2. Insert into the WebhookEvent inbox keyed (gateway, X-Razorpay-Event-Id). A duplicate returns
-     200 "already_processed" and does nothing. (Razorpay documents the event id header as the
-     idempotency key; if a delivery has none, a hash of the raw body is used instead.)
-  3. Process through the SAME code paths the Cashfree webhooks use: the delivery is normalised
+  2. Refuse a stale event: the SIGNED body's `created_at` must be within
+     RAZORPAY_WEBHOOK_MAX_AGE_SECONDS (default 24 h 5 min: Razorpay retries a failed delivery
+     for 24 hours after the event's creation, so anything older is a replay, not a retry).
+     A stale event gets 200 "ignored" (so nothing retries it) and no inbox row; a body with no
+     usable `created_at` gets 400.
+  3. Insert into the WebhookEvent inbox keyed (gateway, sha256 of the raw signed body). A
+     duplicate returns 200 "already_processed" and does nothing. The key is never the
+     X-Razorpay-Event-Id header: the HMAC does not cover headers, so a captured signed body
+     replayed under a fresh header would otherwise be processed again. A Razorpay retry resends
+     the same event, byte for byte, so the body hash dedupes it just as well.
+  4. Process through the SAME code paths the Cashfree webhooks use: the delivery is normalised
      into Cashfree's event shape and handed to `views._handle_cashfree_webhook` /
      `views._handle_cashfree_payout_webhook`. Money still moves only after the order is
      re-read from the provider (`get_order_status`), never on the webhook body alone.
-  4. If processing raises, the inbox row is removed so Razorpay's retry is processed, not
+  5. If processing raises, the inbox row is removed so Razorpay's retry is processed, not
      swallowed as a duplicate, and 500 is returned.
 
 Events (subscribe to exactly these in each dashboard):
@@ -26,7 +33,9 @@ Events (subscribe to exactly these in each dashboard):
 import hashlib
 import json
 import logging
+import time
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.http import JsonResponse
 from django.utils import timezone
@@ -143,14 +152,34 @@ def _inbox_delivery(request, provider, kind, resolve_gateway, handler):
     except ValueError:
         return JsonResponse({'error': 'Invalid payload'}, status=400)
 
+    # 2. Age window, read from the signed body (a header could be rewritten by a replayer).
+    created_at = payload.get('created_at')
+    if isinstance(created_at, bool) or not isinstance(created_at, (int, float)):
+        logger.error('%s webhook rejected: signed body has no usable created_at', provider)
+        return JsonResponse({'error': 'Invalid payload'}, status=400)
+    age = time.time() - created_at
+    if age > settings.RAZORPAY_WEBHOOK_MAX_AGE_SECONDS:
+        # 200, not 4xx: any non-2xx makes Razorpay retry, and a run of failures disables the
+        # webhook. A genuine retry can never be this old, so this is a replay; acknowledge it
+        # and do nothing.
+        logger.warning('%s webhook ignored: event created %ds ago, beyond the %ds window '
+                       '(event %s)', provider, age, settings.RAZORPAY_WEBHOOK_MAX_AGE_SECONDS,
+                       str(payload.get('event', ''))[:64])
+        return JsonResponse({'status': 'ignored', 'reason': 'stale event'}, status=200)
+
     gateway = resolve_gateway()
     if not gateway:
         return JsonResponse({'error': f'Gateway {provider} not configured'}, status=503)
 
-    # 2. Inbox, idempotent by event id.
-    dedupe_key = (request.headers.get('X-Razorpay-Event-Id')
-                  or 'body:' + hashlib.sha256(body).hexdigest())[:512]
+    # 3. Inbox, idempotent by the signed body.
+    dedupe_key = 'body:' + hashlib.sha256(body).hexdigest()
     event_type = str(payload.get('event', ''))[:64]
+    header_id = request.headers.get('X-Razorpay-Event-Id', '')[:512]
+    if header_id and WebhookEvent.objects.filter(gateway=provider, dedupe_key=header_id).exists():
+        # Rows written before the key moved to the body hash were keyed by this header. Only a
+        # validly signed body reaches here, so honouring it cannot let a replay through.
+        logger.info('%s webhook deduplicated (legacy event id %s)', provider, header_id[:24])
+        return JsonResponse({'status': 'already_processed'}, status=200)
     try:
         with transaction.atomic():
             row = WebhookEvent.objects.create(
@@ -160,7 +189,7 @@ def _inbox_delivery(request, provider, kind, resolve_gateway, handler):
         logger.info('%s webhook deduplicated (event %s)', provider, dedupe_key[:24])
         return JsonResponse({'status': 'already_processed'}, status=200)
 
-    # 3. Process through the shared handlers.
+    # 4. Process through the shared handlers.
     try:
         response = handler(payload, gateway)
     except Exception:

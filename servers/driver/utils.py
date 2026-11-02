@@ -379,6 +379,27 @@ def credit_driver_wallet(trip):
             with transaction.atomic():
                 from servers.promotions.rider_promos import settle_trip as _settle_trip_promo
                 _settle_trip_promo(trip, wallet, is_cash=(trip.payment_method == 'cash'))
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.exception('promo_settlement_failed', extra={
                 'event': 'promo_settlement_failed', 'trip_id': trip.id})
+            # Logging is not enough: on a cash trip the driver is short the discount. One critical
+            # Finance alert, as with every other money failure (AUDIT 27.78). It must never undo
+            # the settlement it reports on.
+            try:
+                from servers.command_centre.models import (
+                    CRITICAL, FINANCE_PROMO_SETTLEMENT_FAILED,
+                )
+                from servers.command_centre.services import raise_alert
+                from servers.payments.unsettled import city_node_of
+
+                city = city_node_of(trip)
+                raise_alert(
+                    FINANCE_PROMO_SETTLEMENT_FAILED, severity=CRITICAL,
+                    title=(f'Trip {trip.id}: the promo could not be settled'
+                           f'{"; the cash driver is short the discount" if trip.payment_method == "cash" else ""}')[:200],
+                    payload={'trip_id': trip.id, 'payment_method': trip.payment_method or '',
+                             'error': type(exc).__name__,
+                             'city': city.code if city is not None else None},
+                    source_type='promo_settlement', source_id=str(trip.id), city=city)
+            except Exception:  # noqa: BLE001
+                logger.exception('could not raise the promo settlement alert for trip %s', trip.id)

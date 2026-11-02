@@ -105,9 +105,13 @@ FINANCE_PAYOUT_CONFLICT = 'finance.payout_conflict'
 #: settled, refunded in full automatically. Critical, one per payment; the title says whether the
 #: refund went through or must be made by hand.
 FINANCE_PAID_AFTER_SETTLED = 'finance.paid_after_settled'
+#: A trip's promo settlement failed after the trip settled (AUDIT 27.78): on a cash trip the
+#: driver has not been paid the discount they did not collect. Critical, one per trip, Finance.
+FINANCE_PROMO_SETTLEMENT_FAILED = 'finance.promo_settlement_failed'
 FINANCE_ALERT_KINDS = frozenset({SETTLEMENT_NO_COMMISSION_RULE, FINANCE_PLATFORM_FUNDED_END,
                                  PROMOTION_BUDGET_OVERSHOOT, FINANCE_PAYOUT_REVERSED,
-                                 FINANCE_PAYOUT_CONFLICT, FINANCE_PAID_AFTER_SETTLED})
+                                 FINANCE_PAYOUT_CONFLICT, FINANCE_PAID_AFTER_SETTLED,
+                                 FINANCE_PROMO_SETTLEMENT_FAILED})
 #: Module 11: a notification provider's failure rate over the last 15 minutes is above its
 #: threshold (warning). Platform health, not operations: visible to Super Admin only, which
 #: is to say holders of `platform.settings`. It clears itself when the rate recovers, and can

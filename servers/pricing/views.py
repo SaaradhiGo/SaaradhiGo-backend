@@ -466,7 +466,17 @@ class RateCardViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.ModelV
                     http_request=request))
         except ApprovalError as exc:
             return exc.response()
-        # Notes only: lifecycle, direct, and audited by the mixin.
+        # Notes only: lifecycle, direct, and audited by the mixin. Anything else a card carries is
+        # fixed: its zone, vehicle class, version and dates. A plain PATCH used to write them
+        # straight through the serializer, moving a card to another city or country, or out of
+        # force, with no checker (review B2 H2, AUDIT 27.77). A new price is a new version.
+        unexpected = sorted(keys - {'notes', 'reason'})
+        if unexpected:
+            return Response(
+                {'detail': 'Only the notes on a card can be edited directly. Its zone, vehicle '
+                           'class, version and dates are fixed; change a price to make a new '
+                           'version, or retire the card.', 'fields': unexpected},
+                status=status.HTTP_400_BAD_REQUEST)
         kwargs['partial'] = True
         return super().update(request, *args, **kwargs)
 

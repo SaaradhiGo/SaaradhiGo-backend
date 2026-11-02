@@ -355,7 +355,10 @@ def driver_withdrawal_request(request):
     # nothing is paid out meanwhile. Neutral wording: nothing about why.
     from servers.fraud import money as fraud_money
 
-    if fraud_money.active_payout_hold(driver) is not None:
+    from servers.payments.payout_conflict import has_open_conflict
+
+    # A payout waiting for a Finance decision (AUDIT 27.75) holds every other payout too.
+    if fraud_money.active_payout_hold(driver) is not None or has_open_conflict(driver.id):
         return error_response(
             code='PAYOUT_ON_HOLD',
             message='Your payouts are on hold right now. Please contact support.',

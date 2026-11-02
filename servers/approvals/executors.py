@@ -81,6 +81,12 @@ def _approve_one(withdrawal_id, reason):
         )
         if withdrawal is None or withdrawal.status != 'pending':
             return None
+        from servers.payments.payout_conflict import has_open_conflict
+
+        # Another payout to this driver is waiting for a Finance decision (AUDIT 27.75): it stays
+        # pending and nothing is released.
+        if has_open_conflict(withdrawal.driver_id):
+            return None
         before = {'status': withdrawal.status, 'amount': str(withdrawal.amount)}
         withdrawal.status = 'approved'
         withdrawal.processed_at = timezone.now()

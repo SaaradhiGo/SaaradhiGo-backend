@@ -117,6 +117,13 @@ def approve_one(request, row, reason=''):
     if withdrawal.status != 'pending':
         raise ActionError('INVALID_STATUS', 'Only pending withdrawals can be approved',
                           field='status')
+    from servers.payments.payout_conflict import has_open_conflict
+
+    if has_open_conflict(withdrawal.driver_id):
+        raise ActionError(
+            'PAYOUT_CONFLICT_OPEN',
+            "Another payout to this driver is waiting for a Finance decision; resolve it first.",
+            field='withdrawal_id', http=status.HTTP_409_CONFLICT)
     country = payout_country(withdrawal)
     if country is None:
         raise ActionError(

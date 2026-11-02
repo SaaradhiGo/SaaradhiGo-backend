@@ -15,6 +15,12 @@ decided automatically.
   is written and the alert is cleared, all in one transaction.
 * If the provider instead reverses the payout (the money came back), it returns to `failed` and
   the original refund stands; nothing else moves.
+
+While a payout is in conflict nothing more is paid to that driver (independent review HIGH-1,
+AUDIT 27.75): a driver withdrawal is refused, a pending one cannot be approved or released, and the
+weekly run skips them (`conflict` is an open status). The resolution debit may take the balance
+below zero, because the refund may already have been withdrawn before the late "paid" arrived; the
+negative balance is then recovered from later earnings, as a cash driver's commission owed is.
 """
 
 import logging
@@ -29,6 +35,13 @@ CONFLICT = 'conflict'
 ALERT_SOURCE_TYPE = 'withdrawal_conflict'
 REASON = 'The provider reported this payout paid after it had failed and been refunded'
 REFUNDED_STATUSES = ('failed', 'rejected')
+
+
+def has_open_conflict(driver_id):
+    """True while any payout of this driver is waiting for a Finance decision."""
+    from servers.driver.models import WithdrawalRequest
+
+    return WithdrawalRequest.objects.filter(driver_id=driver_id, status=CONFLICT).exists()
 
 
 def freeze(withdrawal, *, provider_status=None, provider='', payout_id=''):

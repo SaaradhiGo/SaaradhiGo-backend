@@ -7,6 +7,7 @@ Hyderabad (`IN-TG-HYD`) unless a test says otherwise; Super Admin is at Global;
 """
 
 import json
+import re
 from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
@@ -1210,7 +1211,6 @@ class TestSeedCommand:
 class TestNothingAssumesACountry:
     def test_no_hardcoded_country_in_the_safety_code(self):
         import pathlib
-        import re
 
         offenders = []
         for path in pathlib.Path('servers/safety').rglob('*.py'):
@@ -1229,25 +1229,62 @@ class TestNothingAssumesACountry:
 
 @pytest.mark.postgres
 class TestQueryPlans:
+    """The signal sweep's candidate query is served by the indexes made for it.
+
+    The planner's choice depends on the table statistics, and those are
+    whatever autovacuum last saw: in CI that is often rows left behind by an
+    earlier transactional test, or nothing at all, and with near-empty
+    statistics every index containing requested_at costs the same, so the
+    planner sometimes took trip_zone_recent_idx and the test failed. So the
+    test builds the shape the index exists for (many recent trips, few of
+    them in progress) and ANALYZEs inside its own transaction. The fresh
+    statistics replace whatever was there before, and roll back with the
+    test, so nothing leaks into the next one.
+    """
+
     def test_the_candidate_trips_use_the_status_index_and_the_trail_index(self, geo, world):
         from django.db import connection
         from django.db.models import OuterRef, Subquery
 
         from servers.ride.models import TripStatus
 
+        now = timezone.now()
+        done = _status('completed')
+        template = world['hyd_trip']
+        Trip.objects.bulk_create([
+            Trip(user_id=template.user_id, driver_id=template.driver_id, status_id=done,
+                 zone=template.zone if i % 2 else world['aus_zone'],
+                 pickup_lat=template.pickup_lat, pickup_long=template.pickup_long,
+                 destination_lat=template.destination_lat,
+                 destination_long=template.destination_long,
+                 requested_at=now - timedelta(minutes=i % 600), started_at=now)
+            for i in range(400)
+        ])
         status_id = TripStatus.objects.get(status_code='in_progress').id
         last = TripLocationPoint.objects.filter(trip=OuterRef('pk')).order_by('-recorded_at')
         qs = (Trip.objects.filter(status_id=status_id, started_at__isnull=False,
-                                  requested_at__gte=timezone.now() - timedelta(hours=24))
+                                  requested_at__gte=now - timedelta(hours=24))
               .annotate(last_at=Subquery(last.values('recorded_at')[:1])).order_by('started_at')[:2000])
         sql, params = qs.query.sql_with_params()
         with connection.cursor() as cursor:
-            cursor.execute('SET enable_seqscan = off')
+            cursor.execute('ANALYZE ride_trip')
+            cursor.execute('ANALYZE ride_triplocationpoint')
+            # SET LOCAL ends with the test's transaction. With sequential
+            # scans off the question is only "which index", never "index or
+            # scan", which a table this small could answer either way.
+            cursor.execute('SET LOCAL enable_seqscan = off')
             cursor.execute('EXPLAIN ' + sql, params)
             plan = chr(10).join(row[0] for row in cursor.fetchall())
-        # Which status index the planner picks depends on table size (the FK
-        # index on an empty table, the composite one on a full one); what
-        # matters is that the trips are read through an index, never a scan.
+        # The trips are found through an index that leads on status (the
+        # composite one, or the plain FK index, which the planner may prefer
+        # on a table this small) -- not one on zone, rider or driver that
+        # would read every recent trip -- and each trail's last point comes
+        # from the trail index.
+        trip_indexes = set(re.findall(r'using (\w+) on ride_trip\b', plan))
+        trip_indexes |= {name for name in re.findall(r'Bitmap Index Scan on (\w+)', plan)
+                         if not name.startswith(('triploc_', 'ride_triplocationpoint'))}
+        assert trip_indexes, plan
+        assert all(name == 'trip_status_recent_idx' or name.startswith('ride_trip_status_id')
+                   for name in trip_indexes), plan
         assert 'Seq Scan' not in plan, plan
-        assert 'ride_trip_status' in plan or 'trip_status_recent_idx' in plan, plan
         assert 'triploc_trip_time_idx' in plan, plan

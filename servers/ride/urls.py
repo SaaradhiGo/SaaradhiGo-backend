@@ -12,7 +12,7 @@ from .admin_stale import (
 )
 from .admin_trips import (
     admin_adjust_fare, admin_bulk_trips, admin_cancel_trip, admin_flag_trip,
-    admin_note_trip, admin_refund_trip, admin_unflag_trip,
+    admin_note_trip, admin_refund_trip, admin_resend_pickup_code, admin_unflag_trip,
 )
 
 urlpatterns = [
@@ -48,6 +48,7 @@ urlpatterns = [
     path('admin/trips/<int:trip_id>/flag/', admin_flag_trip),
     path('admin/trips/<int:trip_id>/unflag/', admin_unflag_trip),
     path('admin/trips/<int:trip_id>/note/', admin_note_trip),
+    path('admin/trips/<int:trip_id>/resend-pickup-code/', admin_resend_pickup_code),
     path('admin/trips/<int:trip_id>/stale/mark-reviewed/', admin_stale_mark_reviewed),
     path('admin/trips/<int:trip_id>/stale/release-driver/', admin_stale_release_driver),
     path('admin/trips/<int:trip_id>/stale/release-preview/', admin_stale_release_preview),

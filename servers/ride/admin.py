@@ -64,9 +64,9 @@ class TripAdmin(admin.ModelAdmin):
     list_display = ('id', 'user_id', 'driver_id', 'status_id', 'requested_at', 'completed_at')
     list_filter = ('status_id',)
     search_fields = ('id', 'user_id__phone_number')
-    # The OTP is the rider's secret, read aloud to the driver at pickup. It has
-    # no business being typed into an admin form.
-    readonly_fields = ('otp',)
+    # The OTP is the rider's secret, read aloud to the driver at pickup. No admin sees
+    # it, not even read-only (owner ruling, AUDIT 27.74).
+    exclude = ('otp',)
 admin.site.register(FarePricing)
 admin.site.register(VehicleFarePricing)
 admin.site.register(Rating)

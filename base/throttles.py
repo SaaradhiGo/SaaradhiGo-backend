@@ -9,7 +9,7 @@ specific listed numbers is safe — they're operator-controlled.
 """
 
 from django.conf import settings
-from rest_framework.throttling import SimpleRateThrottle
+from rest_framework.throttling import SimpleRateThrottle, UserRateThrottle
 
 
 class _PhoneNumberRateThrottle(SimpleRateThrottle):
@@ -130,7 +130,7 @@ class GuestMapsThrottle(SimpleRateThrottle):
     scope = 'guest_maps'
 
     def get_ident(self, request):
-        """The client IP, taken as the FIRST entry of X-Forwarded-For.
+        """The client IP from the trusted end of X-Forwarded-For.
 
         DRF's own `get_ident` joins the whole XFF chain when `NUM_PROXIES`
         is unset. Behind Railway's edge that chain carries a hop that
@@ -138,17 +138,16 @@ class GuestMapsThrottle(SimpleRateThrottle):
         the throttle counted nothing -- measured at 65 anonymous requests in
         a row, all 200, against a 60/hour cap.
 
-        The leftmost entry is the original client and is stable. It is also
-        client-supplied and therefore spoofable, which is why this is not the
-        only cap: `GuestMapsGlobalThrottle` bounds total anonymous spend
-        regardless of what any one caller claims its address is.
+        This used to take the LEFTMOST entry, which is stable but written by
+        the client, so rotating it bought a fresh bucket every request.
+        `base.client_ip` reads from the right past the trusted proxies (and
+        past internal platform hops), which is both stable and not the
+        caller's to choose (AUDIT 27.78, M1). `GuestMapsGlobalThrottle` still
+        bounds total anonymous spend whatever any one caller does.
         """
-        xff = request.META.get('HTTP_X_FORWARDED_FOR')
-        if xff:
-            first = xff.split(',')[0].strip()
-            if first:
-                return first
-        return request.META.get('REMOTE_ADDR', '')
+        from base.client_ip import client_ip
+
+        return client_ip(request, default='')
 
     def get_cache_key(self, request, view):
         user = getattr(request, 'user', None)
@@ -197,7 +196,7 @@ class GuestFareThrottle(GuestMapsThrottle):
     has spent their place-search budget can still be quoted a price for the
     trip they already built, and so the two budgets can be tuned apart.
 
-    Everything else -- the leftmost-XFF client key, and signed-in riders
+    Everything else -- the trusted-XFF client key, and signed-in riders
     skipping the cap entirely -- is inherited.
     """
 
@@ -232,7 +231,7 @@ class GuestRouteThrottle(GuestMapsThrottle):
     lookup, the budgets want tuning apart, and a visitor who has spent
     their search budget should still see the trip they already built.
 
-    Everything else -- the leftmost-XFF client key, and signed-in riders
+    Everything else -- the trusted-XFF client key, and signed-in riders
     skipping the cap entirely -- is inherited.
     """
 
@@ -249,3 +248,15 @@ class GuestRouteGlobalThrottle(GuestMapsGlobalThrottle):
     """
 
     scope = 'guest_route_global'
+
+
+class UploadPresignThrottle(UserRateThrottle):
+    """Per-account cap on `/uploads/presign/` (AUDIT 27.78, Low 5).
+
+    Any signed-in account could mint presigned PUTs without limit -- an avatar
+    needs nothing more than a rider account -- and each one is a slot in the
+    bucket. Keyed on the user id, so it holds however the caller's address
+    changes.
+    """
+
+    scope = 'upload_presign'

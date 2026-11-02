@@ -130,6 +130,12 @@ ROOT_URLCONF = 'base.urls'
 # driven by CSRF into authorising DRF writes — approving KYC, refunding a
 # trip, releasing a payout. Tests authenticate with `force_authenticate`
 # or a real JWT instead.
+# HOW MANY PROXIES APPEND TO X-Forwarded-For in front of the app (AUDIT 27.78, M1).
+# `base/client_ip.py` reads the client address from the right of the chain,
+# past this many trusted hops; the left end is client-written and ignored.
+# Railway's edge is one proxy, hence 1. Put a CDN in front and this is 2.
+TRUSTED_PROXY_COUNT = int(os.environ.get('TRUSTED_PROXY_COUNT', '1'))
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
@@ -161,6 +167,10 @@ REST_FRAMEWORK = {
         'otp_request': '5/hour',
         'otp_request_burst': '2/min',
         'otp_verify': '10/hour',
+        # Presigned uploads, per account (AUDIT 27.78, Low 5). Every presign is
+        # a write slot in the bucket; onboarding needs about ten documents and
+        # a few retries, so 60 an hour is generous and stops a scripted fill.
+        'upload_presign': '60/hour',
         # Email+password. Deliberately tighter than the OTP rates: an OTP is
         # a one-time code the user is waiting for, whereas a password attempt
         # is a guess.
@@ -1066,6 +1076,22 @@ AWS_S3_CLIENT_CONFIG = _BotoConfig(
 # document storage, whose URLs are presigned against the API endpoint; see
 # base/storage_backends.py.
 AWS_S3_PUBLIC_BASE_URL=os.environ.get("AWS_S3_PUBLIC_BASE_URL", "").strip().rstrip("/")
+
+# A SEPARATE BUCKET FOR KYC DOCUMENTS (AUDIT 27.78). Public objects are served
+# from the bucket's public hostname, and public read on a bucket is
+# all-or-nothing: with documents in the same bucket, every licence is readable
+# unsigned at <public host>/license_docs/<key> by anyone holding the key. Set
+# this to a bucket with NO public access; unset keeps the shared bucket, and
+# `manage.py check_storage` reports that as a failure while a public host is
+# configured. Existing documents must be copied across when it is first set.
+AWS_S3_PRIVATE_BUCKET_NAME=os.environ.get("AWS_S3_PRIVATE_BUCKET_NAME", "").strip()
+
+# How long a signed link to a KYC document lives, in seconds. Capped at 300 in
+# code (servers/driver/document_access.py) whatever this says.
+DOCUMENT_URL_TTL_SECONDS=int(os.environ.get("DOCUMENT_URL_TTL_SECONDS", "300"))
+
+# How long an email sign-up's phone proof lives (servers/auth_user/phone_proof.py).
+PHONE_PROOF_TTL_SECONDS=int(os.environ.get("PHONE_PROOF_TTL_SECONDS", "600"))
 
 # Razorpay (India payments, adapter: integrations/payments/razorpay.py) and RazorpayX (India
 # payouts, adapter: integrations/payouts/razorpayx.py). Names only; values live in the environment.

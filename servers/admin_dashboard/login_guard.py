@@ -64,10 +64,11 @@ def _lockout_seconds():
 
 
 def _client_ip(request):
-    forwarded = (request.META.get('HTTP_X_FORWARDED_FOR') or '').split(',')
-    if forwarded and forwarded[0].strip():
-        return forwarded[0].strip()
-    return request.META.get('REMOTE_ADDR') or 'unknown'
+    # Not the first X-Forwarded-For entry: that one is client-written, so a
+    # fresh fake address per attempt reset the per-IP counter (AUDIT 27.78, M1).
+    from base.client_ip import client_ip
+
+    return client_ip(request, default='unknown')
 
 
 def _counts(phone, ip):

@@ -211,6 +211,60 @@ def request_otp(request):
             issue=str(e),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+def _consume_otp(phone_number, otp):
+    """Check `otp` for `phone_number` and spend it: (role, None) or (None, error).
+
+    The one place an SMS code is checked, shared by the OTP sign-in and the
+    phone-proof step of email sign-up, so both have the same expiry, the same
+    per-code attempt counter and the same single use.
+    """
+    # Get OTP data from cache
+    cache_key = f'otp_role_{phone_number}'
+    cache_data = cache.get(cache_key, {})
+    role = cache_data.get('role', 'rider')
+    sent_otp = cache_data.get('otp', None)
+    attempts = cache_data.get('attempts', 0)
+    
+    # Check if OTP has expired
+    if sent_otp is None:
+        logger.warning(f"OTP expired or not found for: {phone_number[:5]}***")
+        return None, error_response(
+            code='AUTH_OTP_EXPIRED',
+            message='OTP has expired',
+            field='otp',
+            issue='OTP not found or expired',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Check attempt limit
+    if attempts >= MAX_OTP_ATTEMPTS:
+        logger.warning(f"Too many login attempts for: {phone_number[:5]}***")
+        return None, error_response(
+            code='AUTH_TOO_MANY_ATTEMPTS',
+            message="Too many failed attempts. Please request a new OTP.",
+            field='otp',
+            issue='Maximum login attempts exceeded',
+            status=status.HTTP_429_TOO_MANY_REQUESTS
+        )
+    
+    # Verify OTP
+    if otp != sent_otp:
+        cache_data['attempts'] = attempts + 1
+        cache.set(cache_key, cache_data, OTP_EXPIRY)
+        logger.warning(f"Invalid OTP attempt ({attempts + 1}/{MAX_OTP_ATTEMPTS}) for: {phone_number[:5]}***")
+        return None, error_response(
+            code="AUTH_INVALID_OTP",
+            message='OTP is incorrect',
+            field='otp',
+            issue='Provided OTP does not match',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Spent: a code is good for one sign-in or one phone proof, not both.
+    cache.delete(cache_key)
+    return role, None
+
+
 @api_view(['POST'])
 @throttle_classes([OtpVerifyThrottle])
 def login(request):
@@ -262,50 +316,9 @@ def login(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Get OTP data from cache
-        cache_key = f'otp_role_{phone_number}'
-        cache_data = cache.get(cache_key, {})
-        role = cache_data.get('role', 'rider')
-        sent_otp = cache_data.get('otp', None)
-        attempts = cache_data.get('attempts', 0)
-        
-        # Check if OTP has expired
-        if sent_otp is None:
-            logger.warning(f"OTP expired or not found for: {phone_number[:5]}***")
-            return error_response(
-                code='AUTH_OTP_EXPIRED',
-                message='OTP has expired',
-                field='otp',
-                issue='OTP not found or expired',
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Check attempt limit
-        if attempts >= MAX_OTP_ATTEMPTS:
-            logger.warning(f"Too many login attempts for: {phone_number[:5]}***")
-            return error_response(
-                code='AUTH_TOO_MANY_ATTEMPTS',
-                message="Too many failed attempts. Please request a new OTP.",
-                field='otp',
-                issue='Maximum login attempts exceeded',
-                status=status.HTTP_429_TOO_MANY_REQUESTS
-            )
-        
-        # Verify OTP
-        if otp != sent_otp:
-            cache_data['attempts'] = attempts + 1
-            cache.set(cache_key, cache_data, OTP_EXPIRY)
-            logger.warning(f"Invalid OTP attempt ({attempts + 1}/{MAX_OTP_ATTEMPTS}) for: {phone_number[:5]}***")
-            return error_response(
-                code="AUTH_INVALID_OTP",
-                message='OTP is incorrect',
-                field='otp',
-                issue='Provided OTP does not match',
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Clear OTP from cache after successful verification
-        cache.delete(cache_key)
+        role, otp_error = _consume_otp(phone_number, otp)
+        if otp_error is not None:
+            return otp_error
         
         try:
             with transaction.atomic():
@@ -413,6 +426,20 @@ def login(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # After the operator check, so an operator's number still gets only the
+        # generic refusal. A deactivated account cannot sign itself back in by SMS: deactivation
+        # revokes its refresh tokens (session_revocation), and this is the door
+        # that would otherwise hand out new ones (AUDIT 27.78, Low 3).
+        if not user.is_active:
+            logger.warning('sms_login_refused_inactive user_id=%s', user.id)
+            return error_response(
+                code='AUTH_ACCOUNT_INACTIVE',
+                message='This account is not active. Contact support.',
+                field='phone_number',
+                issue='The account is deactivated',
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         # Register this device for push, if the client had a token to give.
         #
         # This used to be `user.fcm_token = device_token; user.save()`, which had
@@ -484,6 +511,60 @@ def login(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 @api_view(['POST'])
+@throttle_classes([OtpVerifyThrottle])
+def verify_phone(request):
+    """Prove a phone number with its SMS code, without signing in (AUDIT 27.78, H4).
+
+    The first half of email sign-up. `/auth/email/register/` requires the
+    returned `phone_proof`, so an account can no longer be registered on a
+    number the registrant cannot receive SMS on.
+
+    Same code, same rules as the OTP sign-in: the code comes from `/auth/otp/`
+    (QA test phones keep their fixed codes), is checked by `_consume_otp` with
+    its expiry and attempt counter, is spent on success, and the per-phone
+    `otp_verify` throttle applies. It creates no account and its answer is the
+    same whether the number is registered or not.
+
+    Expected: {"phone_number": str, "otp": str}
+    Returns:  {"phone_proof": str, "expires_in": int}
+    """
+    from . import phone_proof
+
+    phone_number = request.data.get('phone_number')
+    otp = request.data.get('otp')
+    if not phone_number or not isinstance(phone_number, str):
+        return error_response(
+            code='AUTH_PHONE_REQUIRED', message='Phone number is required',
+            field='phone_number', issue='Missing required field',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not otp:
+        return error_response(
+            code='AUTH_OTP_REQUIRED', message='OTP is required',
+            field='otp', issue='Missing required field',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    role, otp_error = _consume_otp(phone_number, str(otp).strip())
+    if otp_error is not None:
+        return otp_error
+    if role not in SELF_SERVICE_ROLES:
+        # A proof is only ever for a role that may be self-served.
+        return error_response(
+            code='AUTH_INVALID_ROLE', message=f'Role must be one of {SELF_SERVICE_ROLES}',
+            field='role', issue='Invalid role specified',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    logger.info('phone_verified_for_signup phone=%s*** role=%s', phone_number[:5], role)
+    return success_response(
+        data={
+            'phone_proof': phone_proof.issue(phone_number, role),
+            'expires_in': phone_proof.ttl_seconds(),
+        },
+        status_code=status.HTTP_200_OK,
+    )
+
+
+@api_view(['POST'])
 def refresh(request):
     """
     Refresh access token using refresh token.
@@ -526,8 +607,23 @@ def refresh(request):
                     "is not installed."
                 )
 
+            # A DEACTIVATED ACCOUNT GETS NO NEW TOKENS (AUDIT 27.78, Low 3).
+            # This used to mint a pair for any user id in a valid token, so a
+            # suspended driver or a removed operator kept a working session for
+            # the refresh token's 14 days. The presented token is already
+            # blacklisted above, so it cannot be retried either.
+            user = user_model.objects.filter(pk=user_id).first()
+            if user is None or not user.is_active:
+                logger.warning('refresh_refused reason=inactive user_id=%s', user_id)
+                return error_response(
+                    code='AUTH_ACCOUNT_INACTIVE',
+                    message='This account is not active.',
+                    field='refresh_token',
+                    issue='The account this token belongs to is deactivated',
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
             # Mint a fresh refresh + access token pair for the same user.
-            user = user_model.objects.get(pk=user_id)
             new_refresh_obj = RefreshToken.for_user(user)
             new_refresh_token = str(new_refresh_obj)
             new_access_token = str(new_refresh_obj.access_token)
@@ -859,7 +955,9 @@ def update_user(request):
             user_serializer = UserModelSerializer(
                 user,
                 data=update_data,
-                partial=True
+                partial=True,
+                # An avatar key must be this account's own upload.
+                context={'upload_owner': request.user},
             )
             
             if not user_serializer.is_valid():

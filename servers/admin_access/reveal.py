@@ -141,13 +141,11 @@ def _account_fields(user):
 
 
 def _document_url(field):
-    if not field:
-        return None
-    try:
-        return field.url
-    except Exception:  # noqa: BLE001 - a missing link beats a failed reveal
-        logger.exception('reveal_document_url_failed name=%s', getattr(field, 'name', '?'))
-        return None
+    # The one document signer: at most 300 s, signed storage only, never
+    # logged (AUDIT 27.78). The reveal's own audit row records the open.
+    from servers.driver.document_access import signed_url
+
+    return signed_url(field)
 
 
 def _bank_account(driver):

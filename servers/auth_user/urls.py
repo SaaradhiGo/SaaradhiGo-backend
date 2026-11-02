@@ -2,6 +2,7 @@ from django.conf import settings
 from django.urls import path
 from .views import (
     request_otp,
+    verify_phone,
     login as token,
     refresh,
     logout,
@@ -26,6 +27,8 @@ from .registration_views import register_with_email
 
 urlpatterns = [
     path('otp/', request_otp),
+    # Proves a number for email sign-up; creates nothing (AUDIT 27.78, H4).
+    path('otp/verify/', verify_phone),
     path('login/', token),
     path('refresh/', refresh),
     path('logout/', logout),

@@ -493,6 +493,9 @@ INVENTORY = {
     # are the list's rows, and test_drivers_module checks them masked.
     'api/v1/driver/admin/kyc-queue/': False,
     'api/v1/driver/admin/<int:driver_id>/vehicles/': False,
+    # One document on demand (AUDIT 27.78): `pii.view` at the driver's city or
+    # 403, and the body is only {url, expires_in} -- no person in it.
+    'api/v1/driver/admin/<int:driver_id>/documents/<str:key>/view/': False,
     'api/v1/driver/admin/withdrawals/': True,
     # Riders module (console module 4): list rows and the detail name the rider.
     'api/v1/rider/admin/': True,
@@ -844,8 +847,16 @@ class TestEveryEndpointAsEveryRole:
         world['driver'].save(update_fields=['approved'])
         url = f'/api/v1/driver/admin/{world["driver"].id}/full/'
 
-        assert 'license_docs/' in body_of(kyc.get(url))
-        assert analyst.get(url).json()['data']['license_doc_url'] is None
+        # Documents are opened on demand since AUDIT 27.78: the detail says
+        # which may be opened, and the view endpoint enforces it.
+        kyc_docs = kyc.get(url).json()['data']['documents']
+        analyst_docs = analyst.get(url).json()['data']['documents']
+        assert any(d['viewable'] for d in kyc_docs)
+        assert not any(d['viewable'] for d in analyst_docs)
+        assert any(d['url_withheld'] for d in analyst_docs)
+        assert 'license_docs/' not in body_of(kyc.get(url))
+        view = f'/api/v1/driver/admin/{world["driver"].id}/documents/license_front/view/'
+        assert analyst.get(view).status_code == 403
 
     def test_gateway_metadata_is_not_returned_at_all_by_the_finance_payments(self, geo, world):
         """Cashfree echoes the customer's phone and email into the metadata the

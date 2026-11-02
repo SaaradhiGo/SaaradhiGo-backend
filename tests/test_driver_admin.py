@@ -235,13 +235,15 @@ def test_admin_driver_detail_offers_a_link_for_every_document(
 
     assert resp.status_code == 200, resp.content.decode()
     data = resp.json()['data']
-    assert 'license_doc_url' in data
-    assert 'license_doc_back_url' in data
-    vehicle = data['vehicles'][0]
-    for key in ('rc_doc_url', 'insurance_doc_url', 'permit_doc_url',
-                'fitness_doc_url', 'puc_doc_url', 'inspection_doc_url',
-                'vehicle_pic_url'):
-        assert key in vehicle, f'{key} missing — an operator cannot open it'
+    # Since AUDIT 27.78 a document is opened on demand through
+    # /documents/<key>/view/, never from a link carried in this payload: every
+    # document on file must be marked openable instead.
+    on_file = {(d['owner'], d['key']) for d in data['documents'] if d['present']}
+    assert {('driver', 'license_front'), ('driver', 'license_back')} <= on_file
+    assert any(owner == 'vehicle' for owner, _ in on_file)
+    assert all(d['viewable'] for d in data['documents'] if d['present'])
+    assert not any(k.endswith('_doc_url') for k in data)
+    assert not any(k.endswith('_url') for k in data['vehicles'][0])
 
 
 class TestTheDocumentLinkHelper:
@@ -261,9 +263,18 @@ class TestTheDocumentLinkHelper:
     def test_a_usable_field_returns_its_url(self):
         from servers.driver.admin_views import _document_url
 
+        class Storage:
+            querystring_auth = True
+            custom_domain = None
+
+            def url(self, name, expire=None):
+                # Signed for five minutes at most (AUDIT 27.78).
+                assert expire is not None and expire <= 300
+                return f'https://bucket.example/{name}?X-Amz-Signature=abc'
+
         class Field:
             name = 'license_docs/x.jpg'
-            url = 'https://bucket.example/license_docs/x.jpg?X-Amz-Signature=abc'
+            storage = Storage()
 
             def __bool__(self):
                 return True
@@ -273,15 +284,19 @@ class TestTheDocumentLinkHelper:
     def test_a_storage_failure_becomes_no_link_not_an_exception(self):
         from servers.driver.admin_views import _document_url
 
+        class Storage:
+            querystring_auth = True
+            custom_domain = None
+
+            def url(self, name, expire=None):
+                raise ValueError('Invalid endpoint')
+
         class Broken:
             name = 'license_docs/x.jpg'
+            storage = Storage()
 
             def __bool__(self):
                 return True
-
-            @property
-            def url(self):
-                raise ValueError('Invalid endpoint')
 
         assert _document_url(Broken()) is None
 
@@ -317,7 +332,8 @@ def test_a_missing_document_is_reported_missing_not_hidden(
     resp = client.get(f'/api/v1/driver/admin/{driver.id}/full/')
 
     data = resp.json()['data']
-    assert data['license_doc_url'] is None
+    front = next(d for d in data['documents'] if d['key'] == 'license_front')
+    assert front['present'] is False and front['viewable'] is False
     assert 'license_front' in data['compliance']['missing']
 
 

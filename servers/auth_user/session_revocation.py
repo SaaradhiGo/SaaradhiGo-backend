@@ -115,3 +115,56 @@ def revoke_after_credential_change(user, request=None, *, reason=''):
         )
 
     return revoked
+
+
+# ---------------------------------------------------------------------------
+# Deactivation ends every session (AUDIT 27.78, Low 3)
+# ---------------------------------------------------------------------------
+#
+# Deactivating an account set `is_active=False` and left its refresh tokens
+# alive. JWTAuthentication refuses an inactive user's ACCESS token, but
+# `/auth/refresh/` did not look, and a refresh token is good for 14 days.
+# Connected to the model's save, so it holds for every path that deactivates
+# -- the driver deactivation workflow, erasure, an operator, a shell -- and not
+# only for callers who remember. (A queryset `.update(is_active=False)` skips
+# signals; nothing in the codebase deactivates users that way, and the refresh
+# and login doors refuse an inactive account regardless.)
+
+_WAS_ACTIVE = '_session_revocation_was_active'
+REVOKED_ON_DEACTIVATION = '_sessions_revoked_on_deactivation'
+
+
+def _remember_previous_state(sender, instance, update_fields=None, **kwargs):
+    if not instance.pk or instance.is_active:
+        return
+    if update_fields is not None and 'is_active' not in update_fields:
+        return
+    previous = sender.objects.filter(pk=instance.pk).values_list('is_active', flat=True).first()
+    setattr(instance, _WAS_ACTIVE, bool(previous))
+
+
+def _revoke_on_deactivation(sender, instance, created=False, **kwargs):
+    if created or not getattr(instance, _WAS_ACTIVE, False):
+        return
+    setattr(instance, _WAS_ACTIVE, False)
+    try:
+        revoked = revoke_all_refresh_tokens(instance)
+    except Exception as exc:                             # noqa: BLE001
+        logger.error('deactivation_revocation_failed user_id=%s error=%s',
+                     instance.pk, type(exc).__name__)
+        return
+    # Kept on the instance for a caller that reports the count (erasure's
+    # audit row): by the time it revokes, this has already done it.
+    setattr(instance, REVOKED_ON_DEACTIVATION, revoked)
+    logger.info('deactivated_sessions_revoked user_id=%s count=%s', instance.pk, revoked)
+
+
+def connect():
+    from django.contrib.auth import get_user_model
+    from django.db.models.signals import post_save, pre_save
+
+    model = get_user_model()
+    pre_save.connect(_remember_previous_state, sender=model,
+                     dispatch_uid='session_revocation.pre_save')
+    post_save.connect(_revoke_on_deactivation, sender=model,
+                      dispatch_uid='session_revocation.post_save')

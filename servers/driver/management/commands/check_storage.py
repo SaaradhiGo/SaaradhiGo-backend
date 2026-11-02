@@ -173,6 +173,20 @@ class Command(BaseCommand):
         else:
             self._ok('private document URLs', 'presigned, no custom domain')
 
+        # A public hostname serves EVERY object in its bucket (AUDIT 27.78).
+        private_bucket = getattr(settings, 'AWS_S3_PRIVATE_BUCKET_NAME', '') or ''
+        if public_host and (not private_bucket
+                            or private_bucket == settings.AWS_S3_BUCKET_NAME):
+            self._bad(
+                'private document bucket',
+                'KYC documents share the bucket that is served publicly from '
+                f'{public_host}, so each is readable unsigned by key. Set '
+                'AWS_S3_PRIVATE_BUCKET_NAME to a bucket with no public access '
+                'and copy the existing documents across.',
+            )
+        elif private_bucket:
+            self._ok('private document bucket', f'{private_bucket} (no public host)')
+
     def _check_client(self, settings):
         from integrations.storage.errors import StorageClientError as ClientError, StorageTransportError as BotoCoreError
 
@@ -256,7 +270,9 @@ class Command(BaseCommand):
         from integrations.storage.s3 import generate_presigned_put
 
         try:
-            signed = generate_presigned_put('license_doc', 'image/jpeg')
+            # A stand-in owner: this object is deleted again below.
+            from types import SimpleNamespace
+            signed = generate_presigned_put('license_doc', 'image/jpeg', SimpleNamespace(pk=0))
         except Exception as exc:
             self._bad('presign', f'{type(exc).__name__}: {exc}')
             return

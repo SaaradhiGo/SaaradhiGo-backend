@@ -11,6 +11,8 @@ django-storages file fields already use (AWS_ACCESS_KEY_ID,
 AWS_SECRET_ACCESS_KEY, AWS_S3_REGION_NAME, AWS_S3_BUCKET_NAME), loaded from
 .env.local at settings import — no duplicate configuration surface.
 """
+import hashlib
+import hmac
 import os
 import re
 import uuid
@@ -90,18 +92,67 @@ def build_s3_client():
     )
 
 
-def _bucket():
+def _bucket(kind=None):
+    """The bucket `kind` lives in: private documents may have their own.
+
+    `AWS_S3_PRIVATE_BUCKET_NAME` (AUDIT 27.78): avatars and vehicle photos are
+    served from the bucket's PUBLIC hostname, and a bucket with public read
+    serves every object in it -- KYC documents included -- to anyone holding a
+    key. Unset, documents stay in the shared bucket, as before.
+    """
+    if kind is not None and UPLOAD_KINDS.get(kind, {}).get("visibility") == "private":
+        private = getattr(settings, "AWS_S3_PRIVATE_BUCKET_NAME", "") or ""
+        if private:
+            return private
     if not settings.AWS_S3_BUCKET_NAME:
         raise ValidationError("S3 bucket is not configured.")
     return settings.AWS_S3_BUCKET_NAME
 
 
-def generate_presigned_put(kind, content_type):
-    """Mint {key, upload_url, expires_in} for one direct PUT of `kind`.
+def _owner_tag(owner_id, prefix, nonce):
+    """16 hex of an HMAC binding a key to the account that asked for it."""
+    message = f"upload-key:{owner_id}:{prefix}:{nonce}".encode()
+    return hmac.new(settings.SECRET_KEY.encode(), message, hashlib.sha256).hexdigest()[:16]
+
+
+def owned_key(kind, owner, extension):
+    """`<prefix>/<16-hex nonce><16-hex owner tag>.<ext>` for `owner`.
+
+    BOUND TO THE ACCOUNT THAT PRESIGNED IT (AUDIT 27.78, Low 5). A key used to
+    be a bare uuid, and `verify_uploaded_key` accepted any existing key from
+    anyone: a driver who learned another driver's key (from a log, a support
+    screenshot, a shared device) could attach that driver's licence to their
+    own profile. The tag is an HMAC under SECRET_KEY, so the binding needs no
+    storage, survives restarts, and keeps the key the same 32-hex shape every
+    client and every stored row already has.
+    """
+    spec = kind_spec(kind)
+    nonce = uuid.uuid4().hex[:16]
+    return f"{spec['prefix']}/{nonce}{_owner_tag(owner.pk, spec['prefix'], nonce)}.{extension}"
+
+
+def key_belongs_to(key, kind, owner):
+    spec = kind_spec(kind)
+    stem = (key or "").rsplit("/", 1)[-1].split(".", 1)[0]
+    if owner is None or not getattr(owner, "pk", None) or len(stem) != 32:
+        return False
+    return hmac.compare_digest(stem[16:], _owner_tag(owner.pk, spec["prefix"], stem[:16]))
+
+
+def generate_presigned_put(kind, content_type, owner):
+    """Mint {key, upload_url, expires_in} for one direct PUT of `kind` by `owner`.
 
     The content type is baked into the signature: the client MUST send this
     exact Content-Type header on the PUT or S3 rejects the request with 403,
     which keeps e.g. an executable from being stored under rc_docs/.
+
+    THE SIZE IS NOT. A presigned PUT cannot carry a size range (only a
+    presigned POST policy can), and switching to POST would break the shipped
+    driver app and the website, which PUT with the headers returned here. So
+    the 5 MB limit is enforced at `verify_uploaded_key`, which also deletes an
+    oversized object rather than leaving it in the bucket; an object that is
+    uploaded and never submitted is left for the bucket lifecycle rule (expire
+    unreferenced uploads; an owner action on the bucket, AUDIT 27.78).
     """
     spec = kind_spec(kind)
     extension = CONTENT_TYPE_EXTENSIONS.get(content_type)
@@ -110,12 +161,12 @@ def generate_presigned_put(kind, content_type):
             f"Unsupported content type '{content_type}' for '{kind}'. "
             f"Allowed: {sorted(spec['types'])}."
         )
-    key = f"{spec['prefix']}/{uuid.uuid4().hex}.{extension}"
+    key = owned_key(kind, owner, extension)
     expires_in = settings.AWS_QUERYSTRING_EXPIRE
     url = build_s3_client().generate_presigned_url(
         "put_object",
         Params={
-            "Bucket": _bucket(),
+            "Bucket": _bucket(kind),
             "Key": key,
             "ContentType": content_type,
         },
@@ -133,16 +184,19 @@ def kind_spec(kind):
         )
 
 
-def verify_uploaded_key(kind, key):
-    """Validate a client-supplied key against its kind and S3 state.
+def verify_uploaded_key(kind, key, owner):
+    """Validate a client-supplied key against its kind, its owner and S3 state.
 
     Checks, in order:
       1. kind exists in UPLOAD_KINDS
       2. key shape matches `<prefix>/<32-hex>.<ext>` (blocks traversal and
          cross-kind reuse, e.g. pointing vehicle_pic at license_docs/)
       3. extension maps to a content type allowed for the kind
-      4. object exists in the bucket (HEAD)
-      5. size within MAX_UPLOAD_SIZE and stored content type allowed
+      4. the key was presigned for `owner` (`owned_key`); anybody else's key
+         is refused as if it did not exist
+      5. object exists in the bucket (HEAD)
+      6. size within MAX_UPLOAD_SIZE (an oversized object is deleted) and
+         stored content type allowed
 
     Raises ValidationError with user-safe messages; unexpected boto/network
     failures propagate as real errors (500) rather than masquerading as
@@ -168,9 +222,17 @@ def verify_uploaded_key(kind, key):
     if content_type not in spec["types"]:
         raise ValidationError(f"'{kind}' does not allow .{extension} files.")
 
+    if not key_belongs_to(key, kind, owner):
+        # The same words as a key that was never uploaded: a refusal that
+        # said "this belongs to someone else" would confirm the key exists.
+        raise ValidationError(
+            f"No uploaded object found at '{key}'. Complete the direct "
+            "PUT before submitting the form."
+        )
+
     try:
         metadata = build_s3_client().head_object(
-            Bucket=_bucket(), Key=key
+            Bucket=_bucket(kind), Key=key
         )
     except ClientError as exc:
         code = str(exc.response.get("Error", {}).get("Code", ""))
@@ -183,6 +245,12 @@ def verify_uploaded_key(kind, key):
 
     size = metadata.get("ContentLength") or 0
     if size > MAX_UPLOAD_SIZE:
+        # Removed, not just refused: the PUT could not be capped, so this is
+        # where an oversized upload stops occupying the bucket.
+        try:
+            build_s3_client().delete_object(Bucket=_bucket(kind), Key=key)
+        except Exception:  # noqa: BLE001 - the refusal matters more than the cleanup
+            pass
         raise ValidationError("File size exceeds the 5MB limit.")
 
     stored_type = (metadata.get("ContentType") or "").split(";", 1)[0]

@@ -14,7 +14,10 @@ from servers.admin_access.scoping import (
     ScopeNotHeld, scoped, scoped_or_none, scoped_to_request,
 )
 from servers.driver.models import Driver, DriverSuspension, Vehicle
-from servers.driver.serializers import DriverAdminListSerializer, DriverAdminDetailSerializer, KYCApprovalSerializer, VehicleSerializer
+from servers.driver.serializers import (
+    AdminVehicleSerializer, DriverAdminDetailSerializer, DriverAdminListSerializer,
+    KYCApprovalSerializer,
+)
 from rest_framework.pagination import PageNumberPagination
 
 logger = logging.getLogger(__name__)
@@ -114,6 +117,7 @@ def retrieve_driver_admin(request, driver_id):
             issue=f"No driver matches id {driver_id}",
             status=status.HTTP_404_NOT_FOUND
         )
+    # Documents as on-file flags, never links (AUDIT 27.78).
     serializer = DriverAdminDetailSerializer(driver)
     return success_response(serializer.data, status.HTTP_200_OK)
 
@@ -160,22 +164,14 @@ def _compliance_payload(driver):
 
 
 def _document_url(field):
-    """A time-limited link to a private document, or None.
+    """A presigned link to a private document, at most 300 s, or None.
 
-    `FileField.url` on the private storage produces a PRESIGNED url that
-    expires (AWS_QUERYSTRING_EXPIRE, 15 minutes by default). It signs
-    locally and makes no network call, so a broken bucket cannot make this
-    raise -- but a misconfigured one can, and an operator losing the whole
-    driver page because one document link could not be built would be a
-    worse outcome than a missing link.
+    Kept for the reveal path; responses no longer embed links (AUDIT 27.78).
+    See `document_access.signed_url`.
     """
-    if not field:
-        return None
-    try:
-        return field.url
-    except Exception:
-        logger.exception('document_url_failed name=%s', getattr(field, 'name', '?'))
-        return None
+    from servers.driver.document_access import signed_url
+
+    return signed_url(field)
 
 
 
@@ -264,17 +260,10 @@ def driver_full_detail_admin(request, driver_id):
             'fitness_expiry': v.fitness_expiry.isoformat() if v.fitness_expiry else None,
             'puc_expiry': v.puc_expiry.isoformat() if v.puc_expiry else None,
             'is_active_vehicle': bool(driver.active_vehicle_id and driver.active_vehicle_id == v.id),
-            # THE DOCUMENTS THEMSELVES. The console showed expiry DATES and
-            # no way to open the paperwork, so an operator was asked to
-            # approve a driver to carry paying passengers while looking at
-            # four em-dashes. Each link is presigned and short-lived.
-            'rc_doc_url': _document_url(v.rc_doc),
-            'insurance_doc_url': _document_url(v.insurance_doc),
-            'permit_doc_url': _document_url(v.permit_doc),
-            'fitness_doc_url': _document_url(v.fitness_doc),
-            'puc_doc_url': _document_url(v.puc_doc),
-            'inspection_doc_url': _document_url(v.inspection_doc),
-            'vehicle_pic_url': _document_url(v.vehicle_pic),
+            # The documents are opened from the `documents` section, one at a
+            # time, through `admin_document_view` (AUDIT 27.78). This used to
+            # carry a 15-minute link to every file, minted whether or not
+            # anybody looked and recorded nowhere.
         })
 
     # ---- fatigue status (computes live + persists lockout if breached) ----
@@ -409,8 +398,6 @@ def driver_full_detail_admin(request, driver_id):
         'ratings': str(driver.ratings),
         'total_trips': driver.total_trips,
         'license_expiry': driver.license_expiry.isoformat() if driver.license_expiry else None,
-        'license_doc_url': _document_url(driver.license_doc),
-        'license_doc_back_url': _document_url(driver.license_doc_back),
         'upi_id': driver.upi_id,
         'fatigue_lockout_until': driver.fatigue_lockout_until.isoformat() if driver.fatigue_lockout_until else None,
         'user': {
@@ -566,7 +553,8 @@ def get_vehicle_details(request, driver_id):
                           id=driver_id) is None:
             raise Vehicle.DoesNotExist
         vehicle_objects = Vehicle.objects.filter(driver_id=driver_id)
-        serializer = VehicleSerializer(vehicle_objects, many=True)
+        # A list: documents as on-file flags, never links (AUDIT 27.78).
+        serializer = AdminVehicleSerializer(vehicle_objects, many=True)
         return success_response(serializer.data, status.HTTP_200_OK)
     except Vehicle.DoesNotExist:
         return error_response(

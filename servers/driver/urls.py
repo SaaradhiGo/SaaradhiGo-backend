@@ -3,12 +3,12 @@ from .views import (
     driver_earnings, driver_earnings_summary,
     list_vehicles, create_vehicle, update_vehicle, delete_vehicle, update_driver_profile, get_driver_profile,
     driver_withdrawal_balance, driver_withdrawal_request, driver_withdrawal_history, driver_withdrawal_block_status,
-    driver_incentives, driver_elite_status
+    driver_incentives, driver_elite_status, driver_document_view,
 )
 from .onboarding_views import driver_onboarding
 from .admin_drivers import (
     admin_approve_driver, admin_bulk_drivers, admin_kyc_queue, admin_note_driver,
-    admin_reinstate_driver, admin_review_document, admin_suspend_driver, admin_vehicle_status,
+    admin_document_view, admin_reinstate_driver, admin_review_document, admin_suspend_driver, admin_vehicle_status,
 )
 from .admin_views import (
     list_drivers_admin, retrieve_driver_admin, driver_full_detail_admin,
@@ -23,6 +23,8 @@ urlpatterns = [
     # Driver
     path('driver/update/',update_driver_profile),
     path('driver/profile/',get_driver_profile),
+    # The driver's own document, through a five-minute signed ticket (AUDIT 27.78).
+    path('driver/documents/view/<str:ticket>/', driver_document_view),
     # What this driver still has to supply before an operator can approve
     # them, computed from the same compliance rules the console reviews
     # against. See onboarding_views for why it is not a second list.
@@ -54,6 +56,8 @@ urlpatterns = [
     path('admin/kyc-queue/', admin_kyc_queue),
     path('admin/bulk/', admin_bulk_drivers),
     path('admin/<int:driver_id>/documents/review/', admin_review_document),
+    # One document, on demand, audited (AUDIT 27.78).
+    path('admin/<int:driver_id>/documents/<str:key>/view/', admin_document_view),
     path('admin/<int:driver_id>/approve/', admin_approve_driver),
     path('admin/<int:driver_id>/suspend/', admin_suspend_driver),
     path('admin/<int:driver_id>/reinstate/', admin_reinstate_driver),

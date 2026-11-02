@@ -3,7 +3,10 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone
 from base.utils import success_response, error_response
 from servers.redis_client import add_driver_location,remove_driver
-from rest_framework.decorators import api_view, permission_classes, parser_classes
+from rest_framework.decorators import (
+    api_view, authentication_classes, parser_classes, permission_classes,
+)
+from rest_framework.permissions import AllowAny
 from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .serializers import DriverProfileSerializer
@@ -543,7 +546,7 @@ def list_vehicles(request):
 
     driver = request.user.driver
     vehicles = Vehicle.objects.filter(driver_id=driver).select_related('vehicle_type_id')
-    serializer = VehicleSerializer(vehicles, many=True)
+    serializer = VehicleSerializer(vehicles, many=True, context=_own_documents(request))
     return success_response(serializer.data, status.HTTP_200_OK)
 
 
@@ -567,7 +570,9 @@ def create_vehicle(request):
     from .models import Vehicle, VehicleType
     from .serializers import VehicleCreateSerializer, VehicleSerializer
 
-    serializer = VehicleCreateSerializer(data=request.data)
+    # Document keys must be this driver's own uploads (AUDIT 27.78, Low 5).
+    serializer = VehicleCreateSerializer(data=request.data,
+                                         context={'upload_owner': request.user})
     if not serializer.is_valid():
         return error_response(
             code='VALIDATION_ERROR',
@@ -626,7 +631,7 @@ def create_vehicle(request):
         )
 
     return success_response(
-        VehicleSerializer(vehicle).data,
+        VehicleSerializer(vehicle, context=_own_documents(request)).data,
         status.HTTP_201_CREATED
     )
 
@@ -711,7 +716,8 @@ def update_vehicle(request, vehicle_id):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    return success_response(VehicleSerializer(vehicle).data, status.HTTP_200_OK)
+    return success_response(VehicleSerializer(vehicle, context=_own_documents(request)).data,
+                            status.HTTP_200_OK)
 
 
 @api_view(['DELETE'])
@@ -806,7 +812,8 @@ def update_driver_profile(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    serializer = DriverProfileSerializer(driver, data=update_data, partial=True)
+    serializer = DriverProfileSerializer(driver, data=update_data, partial=True,
+                                         context=_own_documents(request, upload_owner=request.user))
     if not serializer.is_valid():
         return error_response(
             code='VALIDATION_ERROR',
@@ -842,7 +849,7 @@ def update_driver_profile(request):
 def get_driver_profile(request):
     """Get a driver profile."""
     driver = request.user.driver
-    serializer = DriverProfileSerializer(driver)
+    serializer = DriverProfileSerializer(driver, context=_own_documents(request))
     return success_response(serializer.data, status.HTTP_200_OK)
 
 
@@ -907,3 +914,57 @@ def driver_elite_status(request):
         'cancellation_rate': '0%' # Mock/Placeholder for future real calculation
     }
     return success_response(response_data, status.HTTP_200_OK)
+
+
+def _own_documents(request, **extra):
+    """Serializer context for the driver's OWN responses: KYC documents render
+    as five-minute audited view links, not bucket URLs (AUDIT 27.78)."""
+    return {'request': request, 'document_links': True, **extra}
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def driver_document_view(request, ticket):
+    """GET /driver/driver/documents/view/<ticket>/  The driver opens their own document.
+
+    The link comes from the driver's own profile or vehicle response; the
+    ticket in it is signed, names this driver and this document, and expires
+    in `document_access.url_ttl()` seconds, so it is the credential (an image
+    widget cannot send a bearer token). It writes the audit row, then
+    redirects to a bucket URL signed for the same short time. A ticket for a
+    deactivated account, another driver's file or a replaced file opens
+    nothing.
+    """
+    from django.contrib.auth import get_user_model
+    from django.http import HttpResponseRedirect, JsonResponse
+
+    from . import document_access
+    from .models import Driver
+
+    def refuse(status_code, code):
+        return JsonResponse({'success': False, 'error': {'code': code}}, status=status_code)
+
+    payload = document_access.read_ticket(ticket)
+    if payload is None:
+        return refuse(404, 'NOT_FOUND')
+    user = get_user_model().objects.filter(pk=payload.get('u'), is_active=True).first()
+    driver = Driver.objects.filter(pk=payload.get('d'), user_id=user).first() if user else None
+    if driver is None:
+        return refuse(404, 'NOT_FOUND')
+    column = payload.get('c')
+    field, vehicle = document_access.stored_document(driver, column, payload.get('v'))
+    if field is None:
+        return refuse(404, 'NOT_FOUND')
+    if document_access.record_view(request, actor=user, driver=driver, key=column,
+                                   vehicle=vehicle, via='driver_self') is None:
+        return refuse(503, 'AUDIT_UNAVAILABLE')
+    url = document_access.signed_url(field)
+    if url is None:
+        return refuse(503, 'DOCUMENT_UNAVAILABLE')
+    response = HttpResponseRedirect(url)
+    # The redirect target is a credential for five minutes: no caching, no
+    # referrer to wherever the image is shown.
+    response['Cache-Control'] = 'no-store'
+    response['Referrer-Policy'] = 'no-referrer'
+    return response

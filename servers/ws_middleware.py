@@ -27,7 +27,11 @@ def get_user_from_token(token_str):
         User = get_user_model()
         token = AccessToken(token_str)
         user_id = token['user_id']
-        return User.objects.get(id=user_id)
+        # is_active: a deactivated account's access token is still unexpired
+        # for up to 15 minutes, and a socket opened with it would stay open
+        # far longer than that -- dispatch offers to a deactivated driver
+        # (AUDIT 27.78, Low 3). The HTTP side refuses it in JWTAuthentication.
+        return User.objects.get(id=user_id, is_active=True)
     except Exception:
         logger.warning("WebSocket JWT authentication failed")
         return AnonymousUser()

@@ -63,8 +63,13 @@ class S3UploadKeyField(serializers.Field):
         if isinstance(data, str):
             from integrations.storage.s3 import verify_uploaded_key
 
+            # The account the key must belong to (AUDIT 27.78, Low 5): the
+            # view passes `upload_owner`, or the request it was given. With
+            # neither there is nobody to check against, and it is refused.
+            context = self.context or {}
+            owner = context.get("upload_owner") or getattr(context.get("request"), "user", None)
             try:
-                verify_uploaded_key(self.kind, data.strip())
+                verify_uploaded_key(self.kind, data.strip(), owner)
             except ValidationError as exc:
                 raise serializers.ValidationError(exc.messages)
             return data.strip()
@@ -74,6 +79,9 @@ class S3UploadKeyField(serializers.Field):
     def to_representation(self, value):
         if value in (None, ""):
             return None
+        if UPLOAD_KINDS[self.kind]["visibility"] == "private":
+            # A KYC document is never rendered as a bucket URL (AUDIT 27.78).
+            return private_document_representation(self, value, self.source)
 
         name = getattr(value, "name", value)
         storage = getattr(value, "storage", None) or self._model_field_storage()
@@ -93,6 +101,69 @@ class S3UploadKeyField(serializers.Field):
         elif callable(storage):
             storage = storage()
         return storage
+
+
+def _in_a_list(field):
+    from rest_framework.serializers import ListSerializer
+
+    parent = getattr(field, "parent", None)
+    return isinstance(getattr(parent, "parent", None), ListSerializer)
+
+
+def private_document_representation(field, value, column):
+    """What a response says about a private KYC document (AUDIT 27.78).
+
+    Never a bucket URL. The driver's OWN detail responses (the view sets
+    `document_links` in the context) get a five-minute view link that audits
+    the open; lists and every other caller get None, which is how "nothing to
+    show here" has always read.
+    """
+    if value in (None, "") or not getattr(value, "name", value):
+        return None
+    context = field.context or {}
+    if not context.get("document_links") or _in_a_list(field):
+        return None
+    instance = getattr(value, "instance", None)
+    from servers.driver.document_access import view_link
+    from servers.driver.models import Driver
+
+    if isinstance(instance, Driver):
+        return view_link(context.get("request"), instance, column)
+    driver = getattr(instance, "driver_id", None)
+    if driver is None:
+        return None
+    return view_link(context.get("request"), driver, column, vehicle=instance)
+
+
+class DocumentLinkField(serializers.Field):
+    """Read-only: a private document as `private_document_representation` gives it."""
+
+    def __init__(self, **kwargs):
+        kwargs["read_only"] = True
+        super().__init__(**kwargs)
+
+    def get_attribute(self, instance):
+        return getattr(instance, self.source, None)
+
+    def to_representation(self, value):
+        return private_document_representation(self, value, self.source)
+
+
+class DocumentOnFileField(serializers.Field):
+    """Read-only: True when a document is on file, else None. For operator
+    responses, which open documents through `admin_document_view` (AUDIT
+    27.78). None rather than False, so "nothing here" reads the same as a
+    document field the masking policy withheld."""
+
+    def __init__(self, **kwargs):
+        kwargs["read_only"] = True
+        super().__init__(**kwargs)
+
+    def get_attribute(self, instance):
+        return getattr(instance, self.source, None)
+
+    def to_representation(self, value):
+        return True if getattr(value, "name", value) else None
 
 
 class MoneyField(serializers.DecimalField):

@@ -4,7 +4,7 @@ from rest_framework import serializers
 from .models import Vehicle, VehicleType, Driver, WithdrawalRequest, DriverBankAccount, IncentiveQuest
 from servers.auth_user.serializers import UserModelSerializer
 from base.serializer_fields import MoneyField
-from base.serializer_fields import S3UploadKeyField
+from base.serializer_fields import DocumentLinkField, DocumentOnFileField, S3UploadKeyField
 from django.utils import timezone
 
 
@@ -18,6 +18,16 @@ class VehicleSerializer(serializers.ModelSerializer):
     vehicle_type_id_val = serializers.IntegerField(
         source='vehicle_type_id.id', read_only=True
     )
+    # KYC documents: a five-minute audited view link in the driver's own
+    # detail responses, None everywhere else -- never a bucket URL, and
+    # never a link in a list (AUDIT 27.78). `vehicle_pic` is a public photo
+    # and keeps its plain URL.
+    rc_doc = DocumentLinkField()
+    permit_doc = DocumentLinkField()
+    insurance_doc = DocumentLinkField()
+    fitness_doc = DocumentLinkField()
+    puc_doc = DocumentLinkField()
+    inspection_doc = DocumentLinkField()
 
     class Meta:
         model = Vehicle
@@ -147,8 +157,24 @@ class VehicleCreateSerializer(serializers.Serializer):
 
 # --- Admin Serializers ---
 
+class AdminVehicleSerializer(VehicleSerializer):
+    """A vehicle for an operator: documents as on-file flags (AUDIT 27.78).
+
+    Opened one at a time through `admin_document_view`, which checks
+    `pii.view` at the driver's city and writes the audit row.
+    """
+
+    rc_doc = DocumentOnFileField()
+    permit_doc = DocumentOnFileField()
+    insurance_doc = DocumentOnFileField()
+    fitness_doc = DocumentOnFileField()
+    puc_doc = DocumentOnFileField()
+    inspection_doc = DocumentOnFileField()
+
+
 class DriverAdminListSerializer(serializers.ModelSerializer):
     user_details = UserModelSerializer(source='user_id', read_only=True)
+    license_doc = DocumentOnFileField()
 
     class Meta:
         model = Driver
@@ -258,7 +284,10 @@ class KYCApprovalSerializer(serializers.ModelSerializer):
 
 class DriverAdminDetailSerializer(serializers.ModelSerializer):
     user_details = UserModelSerializer(source='user_id', read_only=True)
-    vehicles = VehicleSerializer(source='vehicle_set', many=True, read_only=True)
+    vehicles = AdminVehicleSerializer(source='vehicle_set', many=True, read_only=True)
+    # On-file flags, never links (AUDIT 27.78).
+    license_doc = DocumentOnFileField()
+    license_doc_back = DocumentOnFileField()
 
     class Meta:
         model = Driver

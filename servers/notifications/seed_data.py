@@ -8,6 +8,7 @@
     promotions.incentive_progress   a driver's quest moved on (driver, in_app + push)
     promotions.incentive_completed  a driver finished a quest and the reward is on its way
     promotions.referral_reward      a referral reward was earned (rider or driver)
+    trips.pickup_code_reminder      support re-sent the pickup code: open the app (no code in it)
     payout.reversed                 a payout was reversed by the bank and is back in the balance
                                     (driver, in_app + push, AUDIT 27.71)
     promotions.promo_available      a new offer (PROMOTIONAL: only to people who opted in, held by
@@ -36,6 +37,7 @@ INCENTIVE_COMPLETED = 'promotions.incentive_completed'
 REFERRAL_REWARD = 'promotions.referral_reward'
 PROMO_AVAILABLE = 'promotions.promo_available'
 PAYOUT_REVERSED = 'payout.reversed'
+PICKUP_CODE_REMINDER = 'trips.pickup_code_reminder'
 
 _COMMISSION_VARS = ['effective_date', 'scope', 'old_rate', 'new_rate']
 _COMMISSION_SAMPLE = {'effective_date': '12 November 2026', 'scope': 'Sedan in Hyderabad',
@@ -152,6 +154,17 @@ COPY = {
         title='Your payout was returned',
         body='Your bank returned {amount}. It is back in your balance.',
         variables=['amount'], sample={'amount': 'Rs. 2,400.00'}),
+    # Support re-sends the pickup code (AUDIT 27.74). The notice never contains the code: the
+    # rider's app shows it from the rider's own trip API.
+    (PICKUP_CODE_REMINDER, 'in_app'): dict(
+        title='Your pickup code',
+        body='Your pickup code for trip #{trip_id} is on the ride screen in the app. Share it '
+             'with your driver only when you get in.',
+        variables=['trip_id'], sample={'trip_id': '1042'}),
+    (PICKUP_CODE_REMINDER, 'push'): dict(
+        title='Your pickup code',
+        body='Open SaaradhiGo to see your pickup code for trip #{trip_id}.',
+        variables=['trip_id'], sample={'trip_id': '1042'}),
     (PROMO_AVAILABLE, 'in_app'): dict(
         title='A new offer for you', body='{offer}', category='promotional',
         variables=['offer'], sample={'offer': '20% off your next ride this weekend.'}),
@@ -168,7 +181,8 @@ KEY_CHANNELS = {OPERATOR_CANCELLED: ('in_app', 'push'),
                 INCENTIVE_COMPLETED: ('in_app', 'push'),
                 REFERRAL_REWARD: ('in_app', 'push'),
                 PROMO_AVAILABLE: ('in_app', 'push'),
-                PAYOUT_REVERSED: ('in_app', 'push')}
+                PAYOUT_REVERSED: ('in_app', 'push'),
+                PICKUP_CODE_REMINDER: ('in_app', 'push')}
 
 COUNTRIES = ('IN', 'US')
 CHANNELS = ('in_app', 'push', 'sms', 'email')
@@ -184,7 +198,7 @@ def seed_rows():
     rows = []
     for key in (COMMISSION, PAYOUT, OPERATOR_CANCELLED, OPERATOR_ENDED_RIDER,
                 OPERATOR_ENDED_DRIVER, INCENTIVE_PROGRESS, INCENTIVE_COMPLETED, REFERRAL_REWARD,
-                PROMO_AVAILABLE, PAYOUT_REVERSED):
+                PROMO_AVAILABLE, PAYOUT_REVERSED, PICKUP_CODE_REMINDER):
         for country in COUNTRIES:
             for channel in KEY_CHANNELS.get(key, CHANNELS):
                 copy = dict(COPY[(key, channel)])

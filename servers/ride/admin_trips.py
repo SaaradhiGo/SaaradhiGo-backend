@@ -59,6 +59,9 @@ TARGET = 'trip'
 ACTIVE_STATUSES = ('requested', 'accepted', 'reached', 'in_progress')
 #: Where an operator may cancel. Not in_progress: see the module docstring.
 CANCELLABLE_STATUSES = ('requested', 'accepted', 'reached')
+#: A driver is assigned and the trip has not started: the rider still needs their pickup code.
+PICKUP_CODE_STATUSES = ('accepted', 'reached')
+PICKUP_CODE_TEMPLATE = 'trips.pickup_code_reminder'
 
 CANCEL_REASONS = {
     'rider_request': 'Rider asked support to cancel',
@@ -579,6 +582,7 @@ def allowed_actions(user, trip, refundable=None):
                               if may_refund else None),
         'adjust': holds('finance.adjust'),
         'reveal': holds('pii.view'),
+        'resend_pickup_code': holds('support.reply') and code in PICKUP_CODE_STATUSES,
         'cancellable_statuses': list(CANCELLABLE_STATUSES),
         'cancel_reasons': CANCEL_REASONS,
         'flag_reasons': FLAG_REASONS,
@@ -1321,6 +1325,43 @@ def admin_note_trip(request, trip_id):
                         reason='internal note')
     return success_response({'trip_id': trip.id, 'note_id': note.id, 'created': True},
                             status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('support.reply')])
+def admin_resend_pickup_code(request, trip_id):
+    """POST /ride/admin/trips/<id>/resend-pickup-code/  {reason}
+
+    The pickup code (`Trip.otp`) is the rider's alone: no admin role sees it (owner ruling,
+    AUDIT 27.74). Support can only prompt the RIDER: an in-app and push notice that the code is in
+    the app. The notice does not contain the code, so no notification record, log or audit row
+    holds it; the rider's app shows it from the rider's own trip API, which returns it to that rider
+    only. Allowed while a driver is assigned and the trip has not started.
+    """
+    trip, refusal = _trip_for_write(request, trip_id, 'support.reply')
+    if refusal:
+        return refusal
+    code = trip.status_id.status_code if trip.status_id else ''
+    if code not in PICKUP_CODE_STATUSES:
+        return error_response(
+            code='INVALID_STATE', message='The pickup code is only needed before the trip starts.',
+            field='trip_id', issue=code or 'no status', status=status.HTTP_409_CONFLICT)
+    try:
+        reason = _text(request.data, 'reason', required=True, limit=500)
+    except BadInput as exc:
+        return exc.response()
+    from servers.notifications import dispatcher
+
+    sent_at = timezone.now()
+    rows = dispatcher.notify(
+        PICKUP_CODE_TEMPLATE, trip.user_id, {'trip_id': str(trip.id)}, channels=('in_app', 'push'),
+        idempotency_key=f'{PICKUP_CODE_TEMPLATE}:{trip.id}:{int(sent_at.timestamp())}')
+    record_admin_action(request, action='trip_pickup_code_resent', target_type=TARGET,
+                        target_id=trip.id, after={'channels': ['in_app', 'push'],
+                                                  'messages': len(rows)},
+                        reason=reason)
+    return success_response({'trip_id': trip.id, 'sent': True, 'messages': len(rows)},
+                            status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------

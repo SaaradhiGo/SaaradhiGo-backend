@@ -322,7 +322,8 @@ def admin_trip_detail(request, trip_id):
             'sos_events': sos_payload,
             'promo': promo_payload,
             'zone': zone_payload,
-            'otp': trip.otp,
+            # No 'otp': the pickup code is the rider's alone, never shown to any admin role
+            # (owner ruling, AUDIT 27.74). Support re-sends it with resend-pickup-code.
             # Trips module (console module 2): timeline, fare in minor units,
             # payment summary, tickets, flags, notes, money actions, audit.
             **detail_extras(request, trip),

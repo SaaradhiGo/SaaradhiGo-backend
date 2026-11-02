@@ -29,6 +29,7 @@ Fixture passwords are not used: tokens and tickets are minted directly.
 
 import asyncio
 import json
+import re
 import time
 from datetime import timedelta
 from decimal import Decimal
@@ -201,7 +202,14 @@ def driver_ids(data):
     return sorted(d['driver_id'] for d in data.get('drivers', []))
 
 
+#: The socket's `session` id is 12 random hex characters (`consumer.py`): about one run in 60 it
+#: holds ten digits in a row and reads as a phone number to the digit-run pattern. It is ours, not a
+#: person's, so it is taken out before the scan.
+_SESSION_ID = re.compile(r'"session": ?"[0-9a-f]{12}"')
+
+
 def assert_no_pii(text):
+    text = _SESSION_ID.sub('"session": ""', text)
     for name, pattern in RAW_PII_PATTERNS.items():
         assert not pattern.search(text), (name, pattern.search(text).group(0))
     for secret in (DRIVER_NAME, PLATE, RIDER_NAME, 'Jubilee', DRIVER_PHONE_LAST,

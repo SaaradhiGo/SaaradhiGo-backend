@@ -296,6 +296,21 @@ def retry_attempts(withdrawal_id):
         idempotency_key__startswith=f'withdrawal_retry_{withdrawal_id}_').count()
 
 
+def failed_refund_reference(withdrawal_id):
+    """The reference (and idempotency key) of the refund for a failed payout attempt.
+
+    A retry debits the wallet again (`withdrawal_retry_<id>_<n>`), so each attempt that fails is
+    refunded once under its own key: the first keeps `refund_withdrawal_<id>`, later ones are
+    `refund_withdrawal_<id>_r<n>`. Every refund path (the dispatch failure in driver.services and the
+    provider's failed/reversed webhook) uses this, so a retried payout that fails at the provider is
+    refunded instead of being skipped as already refunded.
+    """
+    attempts = retry_attempts(withdrawal_id)
+    if attempts:
+        return f'refund_withdrawal_{withdrawal_id}_r{attempts}'
+    return f'refund_withdrawal_{withdrawal_id}'
+
+
 def retry_failed(request, row, reason):
     """Send an approved-but-failed payout back through the existing trigger.
 

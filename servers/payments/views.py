@@ -1057,12 +1057,12 @@ def _handle_cashfree_payout_webhook(payload, gateway):
         The wallet was already debited when the withdrawal request
         was created.
         """
-        refund_reference = (
-            f"refund_withdrawal_{withdrawal_obj.id}"
-        )
-        refund_idempotency_key = (
-            f"refund_withdrawal_{withdrawal_obj.id}"
-        )
+        # Attempt-aware (AUDIT 27.75): a payout Finance retried was debited again,
+        # so its failure at the provider is refunded again under its own key.
+        from servers.payments.payout_actions import failed_refund_reference
+
+        refund_reference = failed_refund_reference(withdrawal_obj.id)
+        refund_idempotency_key = refund_reference
 
         wallet = Wallet.objects.select_for_update().get(
             user_id=withdrawal_obj.driver.user_id,

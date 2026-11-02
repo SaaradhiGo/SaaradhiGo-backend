@@ -417,7 +417,9 @@ def settle_trip(trip, driver_wallet, *, is_cash):
 
 def release_for_trip(trip):
     """A trip that will never settle gives its reservation back. Idempotent; returns the amount."""
-    from servers.ride.models import PromoRedemption
+    from django.db.models import F
+
+    from servers.ride.models import PromoCode, PromoRedemption
 
     released = 0
     with transaction.atomic():
@@ -425,6 +427,10 @@ def release_for_trip(trip):
                 trip=trip, state=PromoRedemption.STATE_COMMITTED):
             if redemption.campaign_id is not None:
                 budget.release(redemption.campaign_id, redemption.discount_amount_minor)
+            # A released redemption no longer counts against the code's total (AUDIT 27.78):
+            # `max_total_redemptions` counted cancelled trips.
+            PromoCode.objects.filter(pk=redemption.promo_id, redemption_count__gt=0).update(
+                redemption_count=F('redemption_count') - 1)
             redemption.state = PromoRedemption.STATE_RELEASED
             redemption.released_at = timezone.now()
             redemption.save(update_fields=['state', 'released_at'])

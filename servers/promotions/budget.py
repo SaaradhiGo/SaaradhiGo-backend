@@ -160,10 +160,23 @@ def adjust_reservation(campaign_id, old_minor, new_minor):
 
 @transaction.atomic
 def release(campaign_id, amount_minor):
-    """A reservation that will never settle (a cancelled trip) goes back to the budget."""
+    """A reservation that will never settle (a cancelled trip) goes back to the budget.
+
+    A campaign that stopped because its budget ran out is live again once the money given back
+    can fund the smallest amount it hands out, inside its window (review B2 low 1, AUDIT 27.78):
+    otherwise the returned budget sat unusable until somebody raised the budget.
+    """
     campaign = Campaign.objects.select_for_update().get(pk=campaign_id)
     campaign.committed_minor = max(0, campaign.committed_minor - amount_minor)
-    campaign.save(update_fields=['committed_minor', 'updated_at'])
+    fields = ['committed_minor', 'updated_at']
+    remaining = campaign.budget_minor - campaign.committed_minor - campaign.spent_minor
+    now = timezone.now()
+    if (campaign.state == EXHAUSTED and remaining >= min_viable_minor(campaign)
+            and (campaign.ends_at is None or campaign.ends_at > now)):
+        campaign.state = LIVE
+        campaign.exhausted_at = None
+        fields += ['state', 'exhausted_at']
+    campaign.save(update_fields=fields)
     return campaign
 
 

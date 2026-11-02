@@ -1691,6 +1691,22 @@ def refund_payment(request):
                 status=status.HTTP_409_CONFLICT
             )
 
+        # Never more than was paid less every refund already issued (AUDIT 27.76): Support or
+        # Finance may have refunded part of it, or an operator end may have returned the excess.
+        from servers.ride.admin_trips import refundable_minor
+        from servers.ride.models import TripMoneyAction
+
+        refund_minor = min(locked_payment.amount_minor, refundable_minor(trip))
+        if refund_minor <= 0:
+            return error_response(
+                code='ALREADY_REFUNDED',
+                message='This trip has already been refunded',
+                field='trip_id',
+                issue='Nothing is left to refund',
+                status=status.HTTP_409_CONFLICT
+            )
+        refund_amount = from_minor(refund_minor, locked_payment.currency)
+
         credit_result = None
         refund = None
         if refund_mode == 'credit':
@@ -1700,7 +1716,7 @@ def refund_payment(request):
             from servers.rider.credits import issue_refund_credit
             credit_result = issue_refund_credit(
                 user=request.user,
-                amount=locked_payment.amount,
+                amount=refund_amount,
                 trip_id=trip.id,
                 idempotency_key=f'refund-credit:payment={locked_payment.pk}',
             )
@@ -1715,7 +1731,7 @@ def refund_payment(request):
                 refund_mode = 'original'
         if refund_mode == 'original':
             refund = gateway.create_refund(
-                refund_order_id, amount_minor=locked_payment.amount_minor,
+                refund_order_id, amount_minor=refund_minor,
                 currency=locked_payment.currency)
             if not refund:
                 return error_response(
@@ -1726,41 +1742,42 @@ def refund_payment(request):
                     status=status.HTTP_502_BAD_GATEWAY
                 )
 
-        locked_payment.status = 'refunded'
-        locked_payment.save(update_fields=['status', 'updated_at'])
+        # The refund is a money action on the trip like every other, so the next refund (from
+        # here, Support or Finance) sees it.
+        TripMoneyAction.objects.create(
+            trip=trip, kind=TripMoneyAction.REFUND, amount_minor=refund_minor,
+            currency=locked_payment.currency,
+            method=(TripMoneyAction.WALLET_CREDIT if refund_mode == 'credit'
+                    else TripMoneyAction.GATEWAY),
+            status=(TripMoneyAction.COMPLETED if refund_mode == 'credit'
+                    else TripMoneyAction.PENDING_GATEWAY),
+            wallet_transaction_id=credit_result.transaction_id if refund_mode == 'credit' else None,
+            reason='Rider refund on a cancelled trip', created_by=request.user)
 
-        trip.payment_status = 'refunded'
-        trip.save(update_fields=['payment_status'])
+        # Refunded in full only when nothing is left to refund.
+        fully_refunded = refundable_minor(trip) == 0
+        if fully_refunded:
+            locked_payment.status = 'refunded'
+            locked_payment.save(update_fields=['status', 'updated_at'])
 
-        # If we previously credited the driver for this trip, reverse that
-        # credit now. Without this, the platform pays out the driver AND
-        # refunds the rider, leaking the full net amount on every cancel.
+            trip.payment_status = 'refunded'
+            trip.save(update_fields=['payment_status'])
+
+        # The whole trip went back to the rider: take back what it added to the driver's
+        # balance, as one append-only ledger line (never a bare balance edit), once.
         driver = locked_payment.trip_id.driver_id
-        credit_txn = TransactionHistory.objects.filter(
-            trip_id=trip,
-            driver_id=driver,
-            txn_type='credit',
-            status='completed',
-        ).order_by('-created_at').first() if driver else None
+        reversal = None
+        if driver and fully_refunded:
+            from servers.driver.utils import reverse_trip_earnings
 
-        if credit_txn:
-            credit_amount = Decimal(str(credit_txn.amount))
-            driver_wallet = (
-                Wallet.objects.select_for_update()
-                .filter(user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER)
-                .first()
-            )
-            if driver_wallet:
-                driver_wallet.balance_minor = (
-                    driver_wallet.balance_minor - credit_txn.amount_minor
-                )
-                driver_wallet.save(update_fields=['balance_minor'])
+            reversal = reverse_trip_earnings(trip)
 
+        if reversal is not None:
             TransactionHistory.objects.create(
                 trip_id=trip,
                 user_id=request.user,
                 driver_id=driver,
-                amount=credit_amount,
+                amount=reversal.amount,
                 method='online',
                 payment_gateway=gateway_name,
                 gateway_payment_id=locked_payment.cashfree_payment_id or locked_payment.gateway_payment_id,
@@ -1788,7 +1805,7 @@ def refund_payment(request):
                 trip_id=trip,
                 user_id=request.user,
                 driver_id=driver,
-                amount=locked_payment.amount,
+                amount=refund_amount,
                 method='online',
                 payment_gateway=gateway_name,
                 gateway_payment_id=locked_payment.cashfree_payment_id or locked_payment.gateway_payment_id,
@@ -1811,7 +1828,7 @@ def refund_payment(request):
                     # Formatted in the payment's own currency; this was a
                     # literal "Rs." on every refund notice.
                     f"Your refund of "
-                    f"{format_money(locked_payment.amount, locked_payment.currency)} "
+                    f"{format_money(refund_amount, locked_payment.currency)} "
                     f"for Trip #{trip.id} has been initiated. It may take 5-7 "
                     f"business days to reflect in your account."
                 ),
@@ -1821,7 +1838,7 @@ def refund_payment(request):
         return success_response({
             'message': f'Refund credited as {settings.PLATFORM_BRAND_NAME} Credits',
             'mode': 'credit',
-            'amount': str(locked_payment.amount),
+            'amount': str(refund_amount),
             'trip_id': trip.id,
             'credit_transaction_id': credit_result.transaction_id if credit_result else None,
             'new_credit_balance': str(credit_result.new_balance) if credit_result else None,
@@ -1830,7 +1847,7 @@ def refund_payment(request):
         'message': 'Refund initiated successfully',
         'mode': 'original',
         'refund_id': (refund or {}).get('refund_id') or (refund or {}).get('id'),
-        'amount': str(locked_payment.amount),
+        'amount': str(refund_amount),
         'trip_id': trip.id,
         'gateway': gateway.get_name(),
     }, status.HTTP_200_OK)

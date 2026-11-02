@@ -134,6 +134,52 @@ def settle_paid_by_platform(trip, amount_minor, currency=None):
     return txn
 
 
+#: Every ledger purpose a trip's settlement can write on the driver's balance (keyed `TRIP_<id>`).
+TRIP_LEDGER_PURPOSES = (
+    'trip_earnings', 'trip_commission', PURPOSE_TAX_COLLECTED, PURPOSE_FEE_COLLECTED,
+    'promo_discount_platform_funded', PURPOSE_FARE_COLLECTED_BY_PLATFORM, 'platform_funded_trip_end',
+)
+#: The rider was refunded the whole trip: what the driver's balance gained from it is taken back.
+PURPOSE_TRIP_REFUND_REVERSAL = 'trip_refund_reversal'
+
+
+def reverse_trip_earnings(trip):
+    """Take back, once, what the driver's balance gained from this trip (AUDIT 27.76).
+
+    Used when the rider is refunded the whole trip. The amount is read from the driver's own ledger
+    lines for the trip (credits less debits), never from a report row, and taken back as ONE
+    append-only debit keyed per trip (`TRIP_<id>_REFUND_REVERSAL`), so a retried refund takes nothing
+    more. Nothing is taken when the trip left the driver nothing (or owing). Inside a transaction.
+    """
+    from django.db import IntegrityError, transaction
+
+    from servers.rider.models import Wallet, WalletTransaction, get_wallet
+
+    if not trip.driver_id:
+        return None
+    user = trip.driver_id.user_id
+    wallet = get_wallet(user, Wallet.SCOPE_DRIVER, lock=True)
+    net = 0
+    for txn_type, amount in (WalletTransaction.objects
+                             .filter(user_id=user, reference_id=f'TRIP_{trip.id}',
+                                     purpose__in=TRIP_LEDGER_PURPOSES, status='completed')
+                             .values_list('txn_type', 'amount_minor')):
+        net += amount if txn_type == 'credit' else -amount
+    if net <= 0:
+        return None
+    try:
+        with transaction.atomic():
+            txn = WalletTransaction.objects.create(
+                user_id=user, currency=wallet.currency, amount_minor=net, txn_type='debit',
+                status='completed', purpose=PURPOSE_TRIP_REFUND_REVERSAL,
+                reference_id=f'TRIP_{trip.id}', idempotency_key=f'TRIP_{trip.id}_REFUND_REVERSAL')
+    except IntegrityError:
+        return None
+    wallet.balance_minor = wallet.balance_minor - net
+    wallet.save(update_fields=['balance_minor'])
+    return txn
+
+
 def settle_or_defer(trip):
     """Settle a completed trip, but never let a missing commission rule strand the ride.
 

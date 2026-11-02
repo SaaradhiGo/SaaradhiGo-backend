@@ -71,6 +71,8 @@ DRIVER_LEDGER_PURPOSES = (
     # A cash trip the rider then paid from the wallet (AUDIT 27.71): the platform collected the
     # fare the cash settlement assumed the driver held, and credits it to the driver.
     'fare_collected_by_platform',
+    # The rider was refunded the whole trip and its earnings were taken back (AUDIT 27.76).
+    'trip_refund_reversal',
 )
 
 #: `model label -> ORM lookup(s) reaching GeoNode.path`. One table, so a view

@@ -221,13 +221,18 @@ def credit_driver_wallet(trip):
 
     if not trip.driver_id:
         return
+    # An operator ended it under the platform-funded rule: the driver was paid their earnings by
+    # the platform then (`operator_end._credit_driver`); there is no rider payment to settle.
+    if trip.end_rule == 'platform_funded':
+        return
 
     # The ledger is integers in the trip's currency. The one rounding is the
     # commission, done by the money helper; the driver's net is then an exact
     # subtraction, so gross = commission + net holds to the paisa by
     # construction rather than by luck.
     currency = currency_for_trip(trip)
-    gross_minor = trip.final_fare_minor or trip.estimated_fare_minor or 0
+    gross_minor = (trip.final_fare_minor if trip.final_fare_minor is not None
+                   else trip.estimated_fare_minor or 0)
 
     # US (additive-tax) trips: sales tax and the per-trip regulatory fee are PASS-THROUGH (owner
     # ruling, AUDIT 27.62 item 1). They are collected from the rider and remitted by SaaradhiGo,

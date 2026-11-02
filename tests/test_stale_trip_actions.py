@@ -350,7 +350,7 @@ class TestCaseB:
                                gateway_payment_id='pay_test')
 
         class Gateway:
-            def create_refund(self, payment_id):
+            def create_refund(self, payment_id, amount_minor=None, currency='INR'):
                 return {'id': 'rfnd_test'}
 
         client, _ = operator('city_ops_manager', geo)

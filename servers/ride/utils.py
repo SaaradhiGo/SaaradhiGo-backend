@@ -483,9 +483,18 @@ def process_refund_on_cancel(trip):
     if not payment or not payment.gateway_payment_id:
         return {'refunded': False, 'amount': None}
 
+    # Never more than was paid less every refund already issued (AUDIT 27.76).
+    from base.money import format_money, from_minor
+    from servers.ride.admin_trips import refundable_minor
+
+    refund_minor = min(payment.amount_minor, refundable_minor(trip))
+    if refund_minor <= 0:
+        return {'refunded': False, 'amount': None}
+
     # Refund through the provider the payment was taken on (recorded on the row).
     gateway = get_payment_gateway(payment.payment_gateway or 'cashfree')
-    refund = gateway.create_refund(payment.gateway_payment_id)
+    refund = gateway.create_refund(payment.gateway_payment_id, amount_minor=refund_minor,
+                                   currency=payment.currency)
     if refund:
         payment.status = 'refunded'
         payment.save(update_fields=['status'])
@@ -497,11 +506,11 @@ def process_refund_on_cancel(trip):
             user_id=trip.user_id,
             title='Refund Processed',
             message=(
-                f'Your refund of ₹{payment.amount} has been initiated '
-                f'due to cancellation.'
+                f'Your refund of {format_money(from_minor(refund_minor, payment.currency), payment.currency)} '
+                f'has been initiated due to cancellation.'
             ),
         )
-        return {'refunded': True, 'amount': payment.amount}
+        return {'refunded': True, 'amount': from_minor(refund_minor, payment.currency)}
 
     return {'refunded': False, 'amount': None}
 

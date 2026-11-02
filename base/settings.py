@@ -1083,6 +1083,10 @@ RAZORPAYX_ACCOUNT_NUMBER=os.environ.get("RAZORPAYX_ACCOUNT_NUMBER", "")
 RAZORPAYX_KEY_ID=os.environ.get("RAZORPAYX_KEY_ID", "")
 RAZORPAYX_KEY_SECRET=os.environ.get("RAZORPAYX_KEY_SECRET", "")
 RAZORPAYX_WEBHOOK_SECRET=os.environ.get("RAZORPAYX_WEBHOOK_SECRET", "")
+# Webhooks (both endpoints) whose signed `created_at` is older than this are ignored as replays.
+# Razorpay retries a failed delivery for 24 hours after the event is created
+# (razorpay.com/docs/webhooks/best-practices/); the default is that plus 5 minutes.
+RAZORPAY_WEBHOOK_MAX_AGE_SECONDS=int(os.environ.get("RAZORPAY_WEBHOOK_MAX_AGE_SECONDS") or 24 * 3600 + 300)
 
 # Cashfree. ONE consistent set of names (adapter: integrations/payments/cashfree.py).
 #   Payment gateway  CASHFREE_APP_ID, CASHFREE_SECRET_KEY, CASHFREE_ENVIRONMENT (sandbox|production)

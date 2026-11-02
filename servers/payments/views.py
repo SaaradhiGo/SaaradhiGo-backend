@@ -385,11 +385,30 @@ def verify_payment(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Mark payment as completed
+    # Mark payment as completed: under the row lock (a concurrent webhook or poll may be settling the
+    # same order), and never for an order the trip no longer stands on (AUDIT 27.75).
+    verified_ids = (payment.gateway_payment_id, payment.gateway_signature)
     with transaction.atomic():
+        payment = Payment.objects.select_for_update(of=('self',)).select_related(
+            'trip_id', 'trip_id__driver_id').get(pk=payment.pk)
+        if payment.status == 'completed':
+            return success_response({
+                'message': 'Payment already verified',
+                'payment_id': payment.id,
+                'status': 'completed',
+            }, status.HTTP_200_OK)
+        payment.gateway_payment_id, payment.gateway_signature = verified_ids
+        from servers.payments.late_paid import record as record_late_paid, superseded
+
+        if superseded(payment):
+            record_late_paid(payment, gateway_name=gateway.get_name(),
+                             gateway_payment_id=verified_ids[0], source='verify')
+            return error_response(
+                code='ALREADY_PAID',
+                message='This trip was already paid. This payment will be refunded to you.',
+                field='payment', issue='The trip was paid another way first',
+                status=status.HTTP_409_CONFLICT)
         payment.status = 'completed'
-        
-        
         payment.save()
 
         # Update replaced payment if exists (for switched payments)
@@ -755,6 +774,13 @@ def _handle_cashfree_webhook(payload, gateway):
             ).get(pk=payment.pk)
             if payment.status == 'completed':
                 return JsonResponse({'status': 'already_completed'}, status=200)
+            from servers.payments.late_paid import record as record_late_paid, superseded
+
+            # The trip was paid another way first (AUDIT 27.75): record, alert, refund.
+            if superseded(payment):
+                record_late_paid(payment, gateway_name=provider, gateway_payment_id=payment_id,
+                                 source='webhook')
+                return JsonResponse({'status': 'superseded_refunding'}, status=200)
 
             payment.status = 'completed'
             if is_cf:
@@ -1842,6 +1868,13 @@ def _settle_payment_if_paid_at_gateway(trip_id_value, gateway):
         ).get(pk=payment.pk)
         if p.status == 'completed':
             return True
+        from servers.payments.late_paid import record as record_late_paid, superseded
+
+        if superseded(p):
+            record_late_paid(p, gateway_name=gateway.get_name(),
+                             gateway_payment_id=info.get('cf_payment_id') or info.get('payment_id'),
+                             source='poll')
+            return False
 
         p.status = 'completed'
         p.save(update_fields=['status', 'updated_at'])

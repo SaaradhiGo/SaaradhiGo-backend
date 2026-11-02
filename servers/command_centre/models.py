@@ -101,9 +101,13 @@ FINANCE_PAYOUT_REVERSED = 'finance.payout_reversed'
 #: frozen as `conflict` until Finance resolves it with a maker-checker adjustment. Critical, one per
 #: payout, Finance and Super Admin; it clears itself when resolved (or when the provider reverses it).
 FINANCE_PAYOUT_CONFLICT = 'finance.payout_conflict'
+#: An old online order was paid after the trip had been paid another way (AUDIT 27.75): never
+#: settled, refunded in full automatically. Critical, one per payment; the title says whether the
+#: refund went through or must be made by hand.
+FINANCE_PAID_AFTER_SETTLED = 'finance.paid_after_settled'
 FINANCE_ALERT_KINDS = frozenset({SETTLEMENT_NO_COMMISSION_RULE, FINANCE_PLATFORM_FUNDED_END,
                                  PROMOTION_BUDGET_OVERSHOOT, FINANCE_PAYOUT_REVERSED,
-                                 FINANCE_PAYOUT_CONFLICT})
+                                 FINANCE_PAYOUT_CONFLICT, FINANCE_PAID_AFTER_SETTLED})
 #: Module 11: a notification provider's failure rate over the last 15 minutes is above its
 #: threshold (warning). Platform health, not operations: visible to Super Admin only, which
 #: is to say holders of `platform.settings`. It clears itself when the rate recovers, and can

@@ -1307,17 +1307,13 @@ def trigger_payout_creation(withdrawal):
         """
         Refund the wallet exactly once for a failed payout attempt.
         """
-        refund_reference = f"refund_withdrawal_{withdrawal_obj.id}"
-        refund_idempotency_key = f"refund_withdrawal_{withdrawal_obj.id}"
         # A payout Finance retried (payout_actions.retry_failed) debits the wallet
         # again, so its next failure must be refunded again: one refund per
         # attempt, the first keeping the reference it always had.
-        from servers.payments.payout_actions import retry_attempts
+        from servers.payments.payout_actions import failed_refund_reference
 
-        attempts = retry_attempts(withdrawal_obj.id)
-        if attempts:
-            refund_reference = f"refund_withdrawal_{withdrawal_obj.id}_r{attempts}"
-            refund_idempotency_key = refund_reference
+        refund_reference = failed_refund_reference(withdrawal_obj.id)
+        refund_idempotency_key = refund_reference
 
         with transaction.atomic():
             wallet = Wallet.objects.select_for_update().get(

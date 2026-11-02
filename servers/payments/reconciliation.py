@@ -281,6 +281,12 @@ def _check_payments_and_webhooks(r, country, currency, gateway, start, end):
                 for o in (p.gateway_order_id, p.cashfree_order_id):
                     if o:
                         known[o] = p
+            # An earlier order a payment was issued (AUDIT 27.76) belongs to that payment too.
+            from servers.payments.models import PaymentOrder
+
+            for row in (PaymentOrder.objects.filter(order_id__in=chunk)
+                        .select_related('payment__trip_id__zone__geo_node')):
+                known.setdefault(row.order_id, row.payment)
             topups.update(WalletTransaction.objects.filter(gateway_order_id__in=chunk)
                           .values_list('gateway_order_id', flat=True))
     unattributable = 0

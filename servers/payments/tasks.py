@@ -124,7 +124,10 @@ def reconcile_stuck_payments():
     )
 
     for payment in stuck_payments:
-        order_id = payment.cashfree_order_id or payment.gateway_order_id
+        from servers.payments.orders import order_ids
+
+        candidates = order_ids(payment)
+        order_id = candidates[0] if candidates else None
         if not order_id:
             skipped += 1
             continue
@@ -132,18 +135,18 @@ def reconcile_stuck_payments():
         if not gateway:
             skipped += 1
             continue
-        try:
-            info = gateway.get_order_status(order_id)
-        except Exception as e:
-            logger.warning(f"recon: get_order_status failed for {order_id}: {e}")
-            skipped += 1
-            continue
-        if not info:
-            skipped += 1
-            continue
-
-        order_status = info.get('order_status')
-        if order_status != 'PAID':
+        # Every order the payment was issued (AUDIT 27.76), newest first: the first PAID one settles.
+        info = None
+        for candidate in candidates:
+            try:
+                seen = gateway.get_order_status(candidate)
+            except Exception as e:
+                logger.warning(f"recon: get_order_status failed for {candidate}: {e}")
+                continue
+            if seen and seen.get('order_status') == 'PAID':
+                order_id, info = candidate, seen
+                break
+        if info is None:
             # Cashfree may converge later; skip until then. We do not flip
             # 'pending' → 'failed' here because the rider could still be
             # mid-checkout.
@@ -166,10 +169,15 @@ def reconcile_stuck_payments():
                 if superseded(p):
                     record_late_paid(p, gateway_name=p.payment_gateway,
                                      gateway_payment_id=info.get('cf_payment_id')
-                                     or info.get('payment_id'), source='recon')
+                                     or info.get('payment_id'), source='recon',
+                                     order_id=order_id)
                     continue
+                from servers.payments.orders import settled_by
+
+                settled_by(p, order_id)
                 p.status = 'completed'
-                p.save(update_fields=['status', 'updated_at'])
+                p.save(update_fields=['status', 'updated_at', 'gateway_order_id',
+                                      'cashfree_order_id'])
                 trip = p.trip_id
                 trip.payment_status = 'completed'
                 trip.payment_method = 'online'

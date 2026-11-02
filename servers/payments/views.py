@@ -225,6 +225,11 @@ def create_order(request):
             cashfree_order_id=str(order.get('order_id') or order.get('gateway_order_id', '')),
             cashfree_payment_session_id=order.get('payment_session_id'),
         )
+    # Every order this payment is issued is kept (AUDIT 27.76): a rider who opened checkout twice and
+    # paid the first one is still matched.
+    from servers.payments.orders import remember
+
+    remember(payment, payment.gateway_order_id, gateway.get_name())
     logger.info(f"Payment created/updated: {payment}")
 
     # Prepare response based on gateway
@@ -290,30 +295,24 @@ def verify_payment(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Find the payment - try multiple fields for backward compatibility
-    try:
-        # First try gateway_order_id (new field)
-        payment = Payment.objects.select_related('trip_id', 'trip_id__driver_id').get(
-            gateway_order_id=gateway_order_id,
-            user_id=request.user
-        )
-    except Payment.DoesNotExist:
-        try:
-            # Try cashfree_order_id
-            payment = Payment.objects.select_related('trip_id', 'trip_id__driver_id').get(
-                cashfree_order_id=gateway_order_id,
-                user_id=request.user
-            )
-        except Payment.DoesNotExist:
-            return error_response(
-                code='NOT_FOUND',
-                message='Payment not found for this order',
-                field='gateway_order_id',
-                issue=f'No payment found for order {gateway_order_id}',
-                status=status.HTTP_404_NOT_FOUND
-            )
+    # Find the payment by ANY order it was issued (AUDIT 27.76), not only the latest.
+    from servers.payments.orders import payment_for_order
 
-    if payment.status == 'completed':
+    payment = payment_for_order(gateway_order_id, user=request.user)
+    if payment is None:
+        return error_response(
+            code='NOT_FOUND',
+            message='Payment not found for this order',
+            field='gateway_order_id',
+            issue=f'No payment found for order {gateway_order_id}',
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    from servers.payments.orders import is_late_capture
+
+    if payment.status == 'completed' and not is_late_capture(
+            payment, gateway_order_id, request.data.get('razorpay_payment_id')
+            or request.data.get('gateway_payment_id')):
         return success_response({
             'message': 'Payment already verified',
             'payment_id': payment.id,
@@ -391,6 +390,18 @@ def verify_payment(request):
     with transaction.atomic():
         payment = Payment.objects.select_for_update(of=('self',)).select_related(
             'trip_id', 'trip_id__driver_id').get(pk=payment.pk)
+        from servers.payments.late_paid import record as record_late_paid, superseded
+        from servers.payments.orders import is_late_capture, settled_by
+
+        if is_late_capture(payment, gateway_order_id, verified_ids[0]):
+            record_late_paid(payment, gateway_name=gateway.get_name(),
+                             gateway_payment_id=verified_ids[0], source='verify',
+                             order_id=gateway_order_id)
+            return error_response(
+                code='ALREADY_PAID',
+                message='This trip was already paid. This payment will be refunded to you.',
+                field='payment', issue='The trip was paid by another checkout first',
+                status=status.HTTP_409_CONFLICT)
         if payment.status == 'completed':
             return success_response({
                 'message': 'Payment already verified',
@@ -398,16 +409,17 @@ def verify_payment(request):
                 'status': 'completed',
             }, status.HTTP_200_OK)
         payment.gateway_payment_id, payment.gateway_signature = verified_ids
-        from servers.payments.late_paid import record as record_late_paid, superseded
 
         if superseded(payment):
             record_late_paid(payment, gateway_name=gateway.get_name(),
-                             gateway_payment_id=verified_ids[0], source='verify')
+                             gateway_payment_id=verified_ids[0], source='verify',
+                             order_id=gateway_order_id)
             return error_response(
                 code='ALREADY_PAID',
                 message='This trip was already paid. This payment will be refunded to you.',
                 field='payment', issue='The trip was paid another way first',
                 status=status.HTTP_409_CONFLICT)
+        settled_by(payment, gateway_order_id)
         payment.status = 'completed'
         payment.save()
 
@@ -717,18 +729,15 @@ def _handle_cashfree_webhook(payload, gateway):
         # webhook, which Cashfree then retries forever — whenever two rows
         # ended up carrying the same order id (retry_payment + switch method
         # both write these columns). Take the newest deterministically.
-        payment = (
-            Payment.objects
-            .select_related('trip_id', 'trip_id__driver_id')
-            .filter(models.Q(cashfree_order_id=order_id) | models.Q(gateway_order_id=order_id))
-            .order_by('-created_at', '-id')
-            .first()
-        )
+        # Matched on ANY order the payment was issued (AUDIT 27.76), newest row on a tie.
+        from servers.payments.orders import is_late_capture, payment_for_order, settled_by
+
+        payment = payment_for_order(order_id)
         if payment is None:
             logger.warning(f"Cashfree Webhook: No payment/wallet matching order {order_id}")
             return JsonResponse({'status': 'skipped', 'reason': 'payment not found'}, status=200)
 
-        if payment.status == 'completed':
+        if payment.status == 'completed' and not is_late_capture(payment, order_id, payment_id):
             return JsonResponse({'status': 'already_completed'}, status=200)
 
         # Confirm with the gateway before moving money, exactly as the wallet
@@ -772,16 +781,19 @@ def _handle_cashfree_webhook(payload, gateway):
             payment = Payment.objects.select_for_update(of=('self',)).select_related(
                 'trip_id', 'trip_id__driver_id',
             ).get(pk=payment.pk)
-            if payment.status == 'completed':
-                return JsonResponse({'status': 'already_completed'}, status=200)
             from servers.payments.late_paid import record as record_late_paid, superseded
 
-            # The trip was paid another way first (AUDIT 27.75): record, alert, refund.
-            if superseded(payment):
+            # Paid by another checkout first (AUDIT 27.76), or the trip was paid another way first
+            # (AUDIT 27.75): record, alert, refund this capture.
+            if is_late_capture(payment, order_id, payment_id) or (
+                    payment.status != 'completed' and superseded(payment)):
                 record_late_paid(payment, gateway_name=provider, gateway_payment_id=payment_id,
-                                 source='webhook')
+                                 source='webhook', order_id=order_id)
                 return JsonResponse({'status': 'superseded_refunding'}, status=200)
+            if payment.status == 'completed':
+                return JsonResponse({'status': 'already_completed'}, status=200)
 
+            settled_by(payment, order_id)
             payment.status = 'completed'
             if is_cf:
                 payment.cashfree_payment_id = str(payment_id)
@@ -1850,16 +1862,20 @@ def _settle_payment_if_paid_at_gateway(trip_id_value, gateway):
     if payment.status == 'completed':
         return True
 
-    order_id = payment.cashfree_order_id or payment.gateway_order_id
-    if not order_id:
-        return False
+    # Every order the payment was issued (AUDIT 27.76), newest first: the first PAID one settles.
+    from servers.payments.orders import order_ids, settled_by
 
-    try:
-        info = gateway.get_order_status(order_id)
-    except Exception as e:
-        logger.warning(f"Gateway status check failed for order {order_id}: {e}")
-        return False
-    if not info or info.get('order_status') != 'PAID':
+    order_id, info = None, None
+    for candidate in order_ids(payment):
+        try:
+            seen = gateway.get_order_status(candidate)
+        except Exception as e:
+            logger.warning(f"Gateway status check failed for order {candidate}: {e}")
+            continue
+        if seen and seen.get('order_status') == 'PAID':
+            order_id, info = candidate, seen
+            break
+    if order_id is None:
         return False
 
     with transaction.atomic():
@@ -1873,11 +1889,12 @@ def _settle_payment_if_paid_at_gateway(trip_id_value, gateway):
         if superseded(p):
             record_late_paid(p, gateway_name=gateway.get_name(),
                              gateway_payment_id=info.get('cf_payment_id') or info.get('payment_id'),
-                             source='poll')
+                             source='poll', order_id=order_id)
             return False
 
+        settled_by(p, order_id)
         p.status = 'completed'
-        p.save(update_fields=['status', 'updated_at'])
+        p.save(update_fields=['status', 'updated_at', 'gateway_order_id', 'cashfree_order_id'])
 
         trip = p.trip_id
         trip.payment_status = 'completed'

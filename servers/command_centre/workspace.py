@@ -36,7 +36,7 @@ from collections import defaultdict
 from datetime import datetime, time, timedelta, timezone as dt_timezone
 
 from django.core.cache import cache
-from django.db.models import Count, Q
+from django.db.models import Count, Min, Q
 from django.utils import timezone
 
 from base import refs
@@ -263,7 +263,7 @@ def places(user, cities, node, window='today', now=None, include_money=False):
         'health_counts': dict(counts),
         'children': rows,
         'quiet': quiet,
-        'cities': [{**per_city[c.id], 'country': str(c.path).split('/')[2] if len(str(c.path).split('/')) > 2 else None}
+        'cities': [{**per_city[c.id], 'country': _country_code(c)}
                    for c in sorted(cities, key=lambda c: (HEALTH_RANK[per_city[c.id]['health']], c.name))],
     }
 
@@ -283,6 +283,11 @@ def home_node(cities):
     code = common[-1] if common else None
     node = GeoNode.objects.filter(code=code).first() if code else None
     return node or GeoNode.objects.filter(kind=GLOBAL).first()
+
+
+def _country_code(city):
+    parts = [p for p in str(city.path).split('/') if p and p != 'GLOBAL']
+    return parts[0] if parts else None
 
 
 def _breadcrumb(node):
@@ -460,7 +465,8 @@ def needs_action(request, limit=50, now=None):
             drivers = drivers.filter(home_city__path__startswith=node.path)
         day_ago = now - timedelta(hours=24)
         for row in (drivers.values('home_city_id', 'home_city__code', 'home_city__name')
-                    .annotate(n=Count('id'), old=Count('id', filter=Q(uploaded_timestamp__lt=day_ago)))
+                    .annotate(n=Count('id'), old=Count('id', filter=Q(uploaded_timestamp__lt=day_ago)),
+                              oldest=Min('uploaded_timestamp'))
                     .order_by('-n')[:50]):
             if not row['n']:
                 continue
@@ -468,8 +474,8 @@ def needs_action(request, limit=50, now=None):
             items.append(_item(
                 'kyc', WAITING, f"{row['n']} driver{'s' if row['n'] > 1 else ''} waiting for KYC"
                 + (f" ({row['old']} over 24 h)" if row['old'] else ''),
-                where=where, now=now, count=row['n'],
-                link='/drivers?view=kyc' + (f"&scope={row['home_city__code']}" if where else '')))
+                where=where, at=row['oldest'], now=now, count=row['n'],
+                link='/kyc' + (f"?scope={row['home_city__code']}" if where else '')))
 
     # ---- Failed payouts today ----------------------------------------------------
     if granted(user, 'finance.read')[0]:

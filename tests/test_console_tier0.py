@@ -222,3 +222,17 @@ def test_the_mistake_flag_is_on_the_case(world):
     data = client.get(f'{INCIDENTS}{incident.id}/').json()['data']
     assert data['rider_reports_false_alarm'] is True
     assert data['sos_events'][0]['raiser_reported_mistake_at']
+
+
+def test_the_safety_board_puts_each_case_in_its_lane(world):
+    seed_config('IN')
+    event = raise_sos(world['hyd_rider'], trip_id=world['hyd_trip'].id)
+    incident = incident_of(event)
+    client, _ = world['hyd_safety']
+    board = client.get('/api/v1/safety/admin/board/').json()['data']
+    assert [r['ref'] for r in board['lanes']['not_acknowledged']] == [f'SOS-{incident.id}']
+    post(client, f'{INCIDENTS}{incident.id}/acknowledge/')
+    board = client.get('/api/v1/safety/admin/board/').json()['data']
+    assert [r['id'] for r in board['lanes']['responding']] == [incident.id]
+    assert board['last_24h']['raised'] == 1
+    assert board['last_24h']['acknowledged_within_target'] == 1

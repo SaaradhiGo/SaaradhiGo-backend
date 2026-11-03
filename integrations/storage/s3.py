@@ -36,7 +36,7 @@ _KEY_PATTERN = r"{prefix}/[0-9a-f]{{32}}\.(?P<ext>{exts})"
 _MISSING_OBJECT_CODES = {"404", "NoSuchKey", "NotFound"}
 
 
-def build_s3_client():
+def build_s3_client(kind=None):
     """A sigv4 S3 client for the configured bucket region.
 
     Kept as a module-level function (rather than a cached singleton) so
@@ -54,6 +54,13 @@ def build_s3_client():
     # Threaded through here because this function builds its own client for
     # presigning; the django-storages backends already read the same setting.
     endpoint_url = getattr(settings, "AWS_S3_ENDPOINT_URL", None) or None
+    access_key = settings.AWS_ACCESS_KEY_ID
+    secret_key = settings.AWS_SECRET_ACCESS_KEY
+    # A private kind may live behind its own credentials; empty = the main ones.
+    if _is_private(kind):
+        endpoint_url = getattr(settings, "AWS_S3_PRIVATE_ENDPOINT_URL", None) or endpoint_url
+        access_key = getattr(settings, "AWS_S3_PRIVATE_ACCESS_KEY_ID", "") or access_key
+        secret_key = getattr(settings, "AWS_S3_PRIVATE_SECRET_ACCESS_KEY", "") or secret_key
 
     region = (
         settings.AWS_S3_REGION_NAME
@@ -82,14 +89,18 @@ def build_s3_client():
         "s3",
         region_name=region,
         endpoint_url=endpoint_url,
-        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
         config=Config(
             signature_version="s3v4",
             s3={"addressing_style": addressing_style},
             **object_store.client_config_kwargs(endpoint_url),
         ),
     )
+
+
+def _is_private(kind):
+    return kind is not None and UPLOAD_KINDS.get(kind, {}).get("visibility") == "private"
 
 
 def _bucket(kind=None):
@@ -100,7 +111,7 @@ def _bucket(kind=None):
     serves every object in it -- KYC documents included -- to anyone holding a
     key. Unset, documents stay in the shared bucket, as before.
     """
-    if kind is not None and UPLOAD_KINDS.get(kind, {}).get("visibility") == "private":
+    if _is_private(kind):
         private = getattr(settings, "AWS_S3_PRIVATE_BUCKET_NAME", "") or ""
         if private:
             return private
@@ -163,7 +174,7 @@ def generate_presigned_put(kind, content_type, owner):
         )
     key = owned_key(kind, owner, extension)
     expires_in = settings.AWS_QUERYSTRING_EXPIRE
-    url = build_s3_client().generate_presigned_url(
+    url = build_s3_client(kind).generate_presigned_url(
         "put_object",
         Params={
             "Bucket": _bucket(kind),
@@ -231,7 +242,7 @@ def verify_uploaded_key(kind, key, owner):
         )
 
     try:
-        metadata = build_s3_client().head_object(
+        metadata = build_s3_client(kind).head_object(
             Bucket=_bucket(kind), Key=key
         )
     except ClientError as exc:
@@ -248,7 +259,7 @@ def verify_uploaded_key(kind, key, owner):
         # Removed, not just refused: the PUT could not be capped, so this is
         # where an oversized upload stops occupying the bucket.
         try:
-            build_s3_client().delete_object(Bucket=_bucket(kind), Key=key)
+            build_s3_client(kind).delete_object(Bucket=_bucket(kind), Key=key)
         except Exception:  # noqa: BLE001 - the refusal matters more than the cleanup
             pass
         raise ValidationError("File size exceeds the 5MB limit.")

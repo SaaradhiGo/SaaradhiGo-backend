@@ -497,7 +497,8 @@ class TestSuperAdmin:
             assert row['estimated_fare'] == str(trip.estimated_fare)
             assert row['driver_name'] and 'QA US seed' in row['driver_name']
             assert row['vehicle_info']['vehicle_number'].startswith('QAUS')
-            assert 'Austin' in row['pickup_address']
+            # Lists carry the locality only; the full address is behind the reveal.
+            assert 'pickup_address' not in row and 'pickup_locality' in row
         done = [t for t in seeded['trips'] if t.status_id.status_code == 'completed'][0]
         assert rows[done.id]['estimated_fare'] == '24.50'
 

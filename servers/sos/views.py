@@ -345,6 +345,11 @@ def _admin_transition(request, sos_id, target):
     # between the two reads can only end in a refusal, never in an action.
     if _scoped_event_or_none(request, sos_id) is None:
         return _not_found(sos_id)
+    # A false alarm closes an emergency, so it always says why (owner, 2026-11-03).
+    if target == 'false_alarm' and not note.strip():
+        return error_response(
+            code='REASON_REQUIRED', message='Say why this is a false alarm.',
+            field='note', issue='A reason is required', status=status.HTTP_400_BAD_REQUEST)
 
     return _apply_transition(sos_id, target, request.user, note)
 
@@ -407,27 +412,50 @@ def _apply_transition(sos_id, target, actor, note, refuse_if_resolved=False):
 
 
 #: Written on the update row when the raiser says the alert was a mistake.
-RAISER_MISTAKE_NOTE = 'The person who raised this alert reported it was a mistake.'
+RAISER_MISTAKE_NOTE = 'Rider reports false alarm: the person who raised this alert says it was a mistake. An operator must confirm.'
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def raiser_mistake_sos(request, sos_id):
-    """The raiser's "Tap if this was a mistake" (owner decision D4, 2026-11-02).
+    """The raiser's "Tap if this was a mistake" (D4, 2026-11-02; revised 2026-11-03).
 
-    The alert is sent the moment the hold completes; this is the way back. It
-    goes through the same transition as an operator's false alarm, so the
-    append-only update row and the case-file note say who closed it and why.
-    Only the raiser may call it, and only while the alert is still active: an
-    alert ops have resolved stays resolved.
+    The alert is sent the moment the hold completes. This is a REPORT, not a
+    close: the owner ruled that an operator must confirm a false alarm, so the
+    alert stays where it is, the console shows "rider reports false alarm", and
+    the append-only update row and the case file say who reported it and when.
+    Only the raiser may call it. An alert ops have already closed is answered
+    as it stands. Repeating it is a no-op.
     """
     if not SOSEvent.objects.filter(id=sos_id, user=request.user).exists():
         return _not_found(sos_id)
+    with transaction.atomic():
+        event = SOSEvent.objects.select_for_update().get(id=sos_id)
+        if event.status == 'resolved':
+            return error_response(
+                code='SOS_ALREADY_RESOLVED',
+                message='This alert has already been resolved by the safety team.',
+                field='sos_id', issue=f'SOS {sos_id} is resolved',
+                status=status.HTTP_409_CONFLICT)
+        if event.status == 'false_alarm':
+            return success_response(
+                {'sos_id': event.id, 'status': event.status, 'reported_mistake': False},
+                status.HTTP_200_OK)
+        if event.raiser_reported_mistake_at is None:
+            event.raiser_reported_mistake_at = timezone.now()
+            event.save(update_fields=['raiser_reported_mistake_at'])
+            SOSEventUpdate.objects.create(
+                event=event, actor=request.user, actor_label=_user_label(request.user),
+                new_status=event.status, note=RAISER_MISTAKE_NOTE)
+            from servers.safety.services import note_on_sos_transition
+
+            note_on_sos_transition(event, event.status, request.user, RAISER_MISTAKE_NOTE)
     logger.warning('sos_raiser_mistake', extra={
         'event': 'sos_raiser_mistake', 'sos_id': sos_id, 'user_id': request.user.id,
     })
-    return _apply_transition(sos_id, 'false_alarm', request.user, RAISER_MISTAKE_NOTE,
-                             refuse_if_resolved=True)
+    return success_response(
+        {'sos_id': event.id, 'status': event.status, 'reported_mistake': True},
+        status.HTTP_200_OK)
 
 
 @api_view(['GET'])

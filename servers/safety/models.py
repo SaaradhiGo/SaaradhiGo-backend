@@ -168,6 +168,14 @@ class SafetyCountryConfig(models.Model):
     # minimum". `servers.admin_access.readiness` and the coverage sweep.
     min_safety_officers = models.PositiveSmallIntegerField(null=True, blank=True)
 
+    # STUCK TRIPS (owner, 2026-11-03): a running trip over this percentage of its
+    # estimated duration (200 = twice as long), an active trip with no driver
+    # location for this many minutes, or an accepted trip not started after this
+    # many minutes. Shown in Needs action and the Trips "Stuck" view. NULL = off.
+    stuck_overrun_percent = models.PositiveSmallIntegerField(null=True, blank=True)
+    stuck_no_location_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
+    stuck_not_started_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
+
     #: `[{"label": "unified", "number": "..."}]`. From the country registry at
     #: seed time; edited here, not in code.
     emergency_numbers = models.JSONField(default=list, blank=True)
@@ -186,6 +194,7 @@ class SafetyCountryConfig(models.Model):
         'eta_overrun_incident_percent', 'eta_overrun_incident_minutes',
         'route_deviation_meters', 'route_deviation_minutes',
         'min_safety_officers',
+        'stuck_overrun_percent', 'stuck_no_location_minutes', 'stuck_not_started_minutes',
     )
 
     class Meta:

@@ -308,12 +308,18 @@ def active_sos_count(incident):
 
 def note_on_sos_transition(event, new_status, actor, note=''):
     """Called by the SOS acknowledge / resolve / false-alarm views so the
-    case file shows what the responders did to the alarm."""
+    case file shows what the responders did to the alarm.
+
+    An alert ends with its cause (owner, 2026-11-03): once someone has the SOS
+    (acknowledged, resolved, or a false alarm) its "not acknowledged" and
+    "could not be routed" alerts close themselves."""
     incident = event.incident
+    if new_status in ('acknowledged', 'resolved', 'false_alarm'):
+        _clear_sos_alerts(event, incident)
     if incident is None:
         return
     add_update(incident, U_SOS, actor=actor,
-               note=f'SOS #{event.id} {new_status.replace("_", " ")}' + (f': {note}' if note else ''),
+               note=f'SOS alert {new_status.replace("_", " ")}' + (f': {note}' if note else ''),
                data={'sos_id': event.id, 'sos_status': new_status})
     if new_status == 'acknowledged' and incident.status == OPEN:
         before = incident.status
@@ -366,6 +372,16 @@ def refer_to_police(incident, *, actor, reference='', note=''):
     return result
 
 
+def _clear_sos_alerts(event, incident):
+    from servers.command_centre.models import SAFETY_SOS_ESCALATED, SOS_UNANCHORED
+    from servers.command_centre.services import clear_alerts
+
+    clear_alerts('sos_event', event.id, note='Taken by a responder')
+    if incident is not None and not incident.sos_events.filter(status='open').exists():
+        clear_alerts('safety_incident', incident.id, note='Taken by a responder',
+                     kinds=(SAFETY_SOS_ESCALATED, SOS_UNANCHORED))
+
+
 def close_incident(incident, *, actor, summary, outcome):
     now = timezone.now()
     before = incident.status
@@ -374,6 +390,12 @@ def close_incident(incident, *, actor, summary, outcome):
     incident.save(update_fields=['status', 'closed_at', 'outcome', 'closing_summary', 'updated_at'])
     add_update(incident, U_CLOSED, actor=actor, from_status=before, to_status=CLOSED,
                note=summary, data={'outcome': outcome})
+    # The case is closed, so every alert about it has ended too.
+    from servers.command_centre.services import clear_alerts
+
+    clear_alerts('safety_incident', incident.id, note='Case closed')
+    for sos_id in incident.sos_events.values_list('id', flat=True):
+        clear_alerts('sos_event', sos_id, note='Case closed')
 
 
 def assign(incident, assignee, *, actor):
@@ -383,6 +405,12 @@ def assign(incident, assignee, *, actor):
     add_update(incident, U_ASSIGNED, actor=actor,
                note=(f'Assigned to {actor_label(assignee)}' if assignee else 'Unassigned'),
                data={'from': before, 'to': assignee.id if assignee else None})
+    if assignee is not None:
+        from servers.command_centre.models import SAFETY_INCIDENT_UNASSIGNED
+        from servers.command_centre.services import clear_alerts
+
+        clear_alerts('safety_incident', incident.id, note=f'Assigned to {actor_label(assignee)}',
+                     kinds=(SAFETY_INCIDENT_UNASSIGNED,))
 
 
 def link_added(incident, kind, target_id, actor):

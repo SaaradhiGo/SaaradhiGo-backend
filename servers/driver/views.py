@@ -315,6 +315,12 @@ def driver_withdrawal_balance(request):
         # app never has to choose a symbol.
         'currency': config.currency if config else None,
     }
+    # Payout details are checked before the country's config: a driver can fix them.
+    from servers.payments.payout_destination import MISSING_MESSAGE, has_payout_destination
+    response_data['payout_details_on_file'] = has_payout_destination(driver)
+    if not response_data['payout_details_on_file']:
+        response_data['withdrawals_available'] = False
+        response_data['message'] = MISSING_MESSAGE
     if config is None:
         response_data['withdrawals_available'] = False
         response_data['message'] = NOT_AVAILABLE_MESSAGE
@@ -366,6 +372,16 @@ def driver_withdrawal_request(request):
             code='PAYOUT_ON_HOLD',
             message='Your payouts are on hold right now. Please contact support.',
             field='withdrawal', issue='Payouts on hold',
+            status=status.HTTP_400_BAD_REQUEST)
+
+    # Nowhere to send the money: refused before anything is locked (owner, 2026-11-03).
+    from servers.payments.payout_destination import (
+        MISSING_CODE, MISSING_MESSAGE, has_payout_destination,
+    )
+    if not has_payout_destination(driver):
+        return error_response(
+            code=MISSING_CODE, message=MISSING_MESSAGE, field='payout_details',
+            issue='No UPI ID or bank account on file',
             status=status.HTTP_400_BAD_REQUEST)
 
     # Validate block period

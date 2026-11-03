@@ -69,6 +69,10 @@ def batch_key(withdrawal_ids):
     return f'withdrawal_batch:{digest}'
 
 
+#: `_approve_one`'s answer for a withdrawal whose driver has no payout details.
+NO_DESTINATION = 'no_destination'
+
+
 def _approve_one(withdrawal_id, reason):
     """Lock, re-check, flip, audit. Returns the row, or None if not pending."""
     from servers.driver.models import WithdrawalRequest
@@ -81,6 +85,11 @@ def _approve_one(withdrawal_id, reason):
         )
         if withdrawal is None or withdrawal.status != 'pending':
             return None
+        from servers.payments.payout_destination import has_payout_destination
+
+        # Nowhere to send it: nothing is released (owner, 2026-11-03).
+        if not has_payout_destination(withdrawal.driver):
+            return NO_DESTINATION
         from servers.payments.payout_conflict import has_open_conflict
 
         # Another payout to this driver is waiting for a Finance decision (AUDIT 27.75): it stays
@@ -116,11 +125,24 @@ def execute_payout(request):
         ids = [payload.get('withdrawal_id')]
     reason = request.decision_reason or request.request_reason or 'maker-checker approval'
 
-    approved, skipped = [], []
+    approved, skipped, no_destination = [], [], []
     for wid in ids:
         row = _approve_one(wid, reason)
-        (approved if row is not None else skipped).append(row if row is not None else wid)
+        if row == NO_DESTINATION:
+            no_destination.append(wid)
+            skipped.append(wid)
+        elif row is None:
+            skipped.append(wid)
+        else:
+            approved.append(row)
 
+    if single and no_destination:
+        from servers.payments.payout_destination import MISSING_CODE, MISSING_FOR_OPERATORS
+
+        raise ExecutionRefused(
+            MISSING_CODE,
+            f'{MISSING_FOR_OPERATORS}: withdrawal {ids[0]} was not released. Reject the request.',
+        )
     if single and not approved:
         raise ExecutionRefused(
             'WITHDRAWAL_NOT_PENDING',

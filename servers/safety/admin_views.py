@@ -48,6 +48,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 
+from base import refs
 from base.countries import COUNTRIES
 from base.utils import error_response, success_response
 from servers.admin_access.bridge import AnyOfScopedPermission, ScopedPermission, granted
@@ -61,7 +62,7 @@ from . import config as cfg
 from . import services
 from .models import (
     CATEGORIES, CLOSED, LINK_DRIVER, LINK_KINDS, LINK_RIDER, LINK_SOS, LINK_TICKET, LINK_TRIP,
-    LIVE_STATUSES, OUTCOMES, SEVERITIES, SEVERITY_RANK, SOURCES, SRC_MANUAL, STATUSES,
+    LIVE_STATUSES, OPEN, OUTCOMES, SEVERITIES, SEVERITY_RANK, SOURCES, SRC_MANUAL, STATUSES,
     U_NOTE, U_STATUS, SafetyCountryConfig, SafetyIncident, SafetyIncidentLink, SafetyIncidentUpdate,
     SafetySignal,
 )
@@ -235,6 +236,9 @@ def _annotate(queryset):
         unack_sos=Count('sos_events', filter=unack, distinct=True),
         oldest_unack=Min('sos_events__created_at', filter=unack),
         oldest_active=Min('sos_events__created_at', filter=active),
+        any_sos=Count('sos_events', distinct=True),
+        reported_mistake=Count('sos_events', distinct=True, filter=active & Q(
+            sos_events__raiser_reported_mistake_at__isnull=False)),
         sos_first=Case(When(active_sos__gt=0, then=Value(0)), default=Value(1),
                        output_field=IntegerField()),
         sev_rank=Case(*[When(severity=s, then=Value(r)) for s, r in SEVERITY_RANK.items()],
@@ -242,11 +246,22 @@ def _annotate(queryset):
     )
 
 
+def _node_tz(node):
+    """The IANA zone a place keeps its clock in, so the console shows the
+    city's own time, labelled, and never the viewer's."""
+    if node is None or node.kind != 'city':
+        return None
+    from servers.command_centre.overview import city_contexts
+
+    return str(city_contexts([node])[node.id].tz)
+
+
 def _place(incident):
     node = incident.anchor_node
     return {'source': incident.anchor_source,
             'node': node.code if node is not None else None,
-            'node_name': node.name if node is not None else None}
+            'node_name': node.name if node is not None else None,
+            'timezone': _node_tz(node)}
 
 
 def _unacknowledged_ids(incidents):
@@ -262,8 +277,15 @@ def _unacknowledged_ids(incidents):
 
 
 def _row(incident, unacknowledged=None):
+    any_sos = getattr(incident, 'any_sos', None)
+    if any_sos is not None:
+        incident._has_sos = any_sos > 0 or incident.source == 'sos'
     return {
         'id': incident.id,
+        'ref': refs.incident_ref(incident),
+        'trip_ref': refs.ref(refs.TRIP, incident.trip_id),
+        # The raiser tapped "this was a mistake": an operator must confirm it.
+        'rider_reports_false_alarm': bool(getattr(incident, 'reported_mistake', 0)),
         'title': incident.title,
         'category': incident.category,
         'severity': incident.severity,
@@ -515,6 +537,7 @@ def _sos_rows(incident):
         'user_phone': mask_phone(getattr(e.user, 'phone_number', None)),
         'created_at': _iso(e.created_at), 'escalated_at': _iso(e.escalated_at),
         'active': e.status in ACTIVE_SOS,
+        'raiser_reported_mistake_at': _iso(e.raiser_reported_mistake_at),
     } for e in incident.sos_events.select_related('user').order_by('created_at')]
 
 
@@ -541,6 +564,11 @@ def allowed_actions(user, incident, people, blockers):
         'block_rider': live and any(r['can_block'] for r in people['riders']),
         'reveal_sos': live and any(s['active'] for s in _sos_rows(incident)),
         'edit_config': granted(user, 'safety.config')[0],
+        # The one-step case actions (owner, 2026-11-03).
+        'acknowledge': live and incident.sos_events.filter(status='open').exists(),
+        'assign_me': live and incident.assigned_to_id != user.pk,
+        'resolve': live,
+        'false_alarm': live,
     }
 
 
@@ -548,6 +576,7 @@ READ_ONLY_ACTIONS = {
     'assign': False, 'note': False, 'status': False, 'link': False, 'unlink': False,
     'refer_police': False, 'close': False, 'close_blockers': [], 'suspend_driver': False,
     'block_rider': False, 'reveal_sos': False, 'edit_config': False,
+    'acknowledge': False, 'assign_me': False, 'resolve': False, 'false_alarm': False,
 }
 
 
@@ -1229,3 +1258,111 @@ def safety_config_update(request, country):
                               issue=exc.message, status=status.HTTP_400_BAD_REQUEST)
     return success_response({'changed': changed, **_config_row(code, request.user)},
                             status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# One-step actions on the whole case (owner, 2026-11-03)
+#
+# An operator answers the SOS, not each press of it: Acknowledge, Resolve and
+# Mark false alarm act on every active SOS in the incident through the SOS's
+# own write path (`sos.views._apply_transition`: row lock, append-only update,
+# case-file note), then on the incident. Each is one button (Resolve and False
+# alarm open one dialog for the reason), from the list row and the case page.
+# ---------------------------------------------------------------------------
+
+_ACTIVE_SOS = ('open', 'acknowledged')
+
+
+def _transition_active_sos(incident, target, actor, note, only_open=False):
+    """Move every active SOS in the incident to `target`. Returns the ids moved,
+    or raises BadInput with the SOS write path's own refusal."""
+    from servers.sos.views import _apply_transition
+
+    wanted = ('open',) if only_open else _ACTIVE_SOS
+    moved = []
+    for sos_id in incident.sos_events.filter(status__in=wanted).values_list('id', flat=True):
+        response = _apply_transition(sos_id, target, actor, note)
+        if response.status_code >= 400:
+            raise BadInput('SOS_TRANSITION_REFUSED', 'An SOS on this case could not be updated.',
+                           'status')
+        moved.append(sos_id)
+    return moved
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission(CAPABILITY)])
+def safety_acknowledge(request, incident_id):
+    """POST incidents/<id>/acknowledge/  Someone has it: every open SOS on the
+    case is acknowledged and the case moves to investigating."""
+    incident, refusal = _incident_for(request, incident_id, writable=True)
+    if refusal:
+        return refusal
+    before = _snapshot(incident)
+    try:
+        with transaction.atomic():
+            moved = _transition_active_sos(incident, 'acknowledged', request.user, '', only_open=True)
+            locked = _locked(incident.id)
+            if locked.status == OPEN:
+                locked.status = 'investigating'
+                locked.save(update_fields=['status', 'updated_at'])
+                services.add_update(locked, U_STATUS, actor=request.user, from_status=OPEN,
+                                    to_status='investigating', note='Acknowledged')
+            if moved or before['status'] != locked.status:
+                _audit(request, 'safety_incident_acknowledged', locked, before, _snapshot(locked))
+    except BadInput as exc:
+        return exc.response()
+    return success_response({'incident_id': locked.id, 'changed': bool(moved) or before['status'] != locked.status,
+                             'acknowledged_sos': len(moved), **_snapshot(locked)}, status.HTTP_200_OK)
+
+
+def _finish(request, incident_id, *, sos_target, outcome, summary, audit_action):
+    incident, refusal = _incident_for(request, incident_id, writable=True)
+    if refusal:
+        return refusal
+    before = _snapshot(incident)
+    try:
+        with transaction.atomic():
+            _transition_active_sos(incident, sos_target, request.user, summary)
+            locked = _locked(incident.id)
+            blockers = services.close_blockers(locked)
+            if blockers:
+                return error_response(
+                    code=blockers[0]['code'], message=blockers[0]['message'], field='status',
+                    issue='active SOS', status=status.HTTP_409_CONFLICT)
+            services.close_incident(locked, actor=request.user, summary=summary, outcome=outcome)
+            _audit(request, audit_action, locked, before,
+                   {**_snapshot(locked), 'closed_at': _iso(locked.closed_at)}, reason=summary)
+    except BadInput as exc:
+        return exc.response()
+    return success_response({'incident_id': locked.id, 'changed': True, **_snapshot(locked)},
+                            status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission(CAPABILITY)])
+def safety_resolve(request, incident_id):
+    """POST incidents/<id>/resolve/  {outcome, summary}  Both required. Resolves
+    every active SOS on the case, then closes it with that outcome."""
+    try:
+        summary = _text(request.data, 'summary', required=True, limit=MAX_NOTE)
+        outcome = _text(request.data, 'outcome', required=True, limit=20)
+        if outcome not in OUTCOME_CODES:
+            raise BadInput('INVALID_OUTCOME', f'outcome must be one of {sorted(OUTCOME_CODES)}.',
+                           'outcome')
+    except BadInput as exc:
+        return exc.response()
+    return _finish(request, incident_id, sos_target='resolved', outcome=outcome, summary=summary,
+                   audit_action='safety_incident_resolved')
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission(CAPABILITY)])
+def safety_false_alarm(request, incident_id):
+    """POST incidents/<id>/false-alarm/  {reason}  Required. Every active SOS on
+    the case becomes a false alarm and the case closes with no action needed."""
+    try:
+        reason = _text(request.data, 'reason', required=True, limit=MAX_NOTE)
+    except BadInput as exc:
+        return exc.response()
+    return _finish(request, incident_id, sos_target='false_alarm', outcome='no_action',
+                   summary=f'False alarm: {reason}', audit_action='safety_incident_false_alarm')

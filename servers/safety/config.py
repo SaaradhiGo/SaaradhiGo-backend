@@ -43,6 +43,9 @@ LIMITS = {
     'route_deviation_meters': (10, 50000),
     'route_deviation_minutes': (1, 720),
     'min_safety_officers': (0, 500),
+    'stuck_overrun_percent': (110, 1000),
+    'stuck_no_location_minutes': (2, 240),
+    'stuck_not_started_minutes': (5, 480),
 }
 
 _NUMBER = re.compile(r'^[0-9+*#() -]{2,20}$')

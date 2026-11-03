@@ -34,7 +34,9 @@ from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission
 
 from . import service
-from .actions import ACTIONS
+from base import refs
+
+from .actions import ACTIONS, FINANCE_PAYOUT
 from .models import ALL_STATUSES, REQUESTED, ApprovalPolicy, ApprovalRequest
 from .registry import registered_actions
 from .scope import may_act, visible
@@ -46,8 +48,56 @@ def _paginate(request, queryset, page_size=20, max_page_size=100):
     paginator.page_size_query_param = 'page_size'
     paginator.max_page_size = max_page_size
     page = paginator.paginate_queryset(queryset, request)
-    body = paginator.get_paginated_response([row.as_dict() for row in page]).data
+    body = paginator.get_paginated_response([shown(row, request.user) for row in page]).data
     return success_response(body, status.HTTP_200_OK)
+
+
+def _withdrawal_facts(row):
+    """The payout a `finance.payout` request would release, and what stops it."""
+    from servers.driver.models import WithdrawalRequest
+    from servers.payments.payout_destination import (
+        MISSING_FOR_OPERATORS, has_payout_destination,
+    )
+
+    payload = row.payload or {}
+    ids = payload.get('withdrawal_ids') or [payload.get('withdrawal_id')]
+    ids = [int(i) for i in ids if str(i or '').isdigit()]
+    rows = (WithdrawalRequest.objects.filter(id__in=ids[:50])
+            .select_related('driver', 'driver__user_id'))
+    subjects, blockers = [], []
+    for w in rows:
+        name = (w.driver.user_id.full_name or '').strip()
+        subjects.append({
+            'ref': refs.ref(refs.PAYOUT, w.id), 'withdrawal_id': w.id,
+            'driver_id': w.driver_id, 'driver_ref': refs.ref(refs.DRIVER, w.driver_id),
+            'driver_name': name or f'Driver #{w.driver_id}',
+            'amount_minor': w.amount_minor, 'currency': w.currency, 'status': w.status,
+        })
+        if not has_payout_destination(w.driver):
+            blockers.append(f'{MISSING_FOR_OPERATORS} for {refs.ref(refs.DRIVER, w.driver_id)}')
+    return subjects, blockers
+
+
+def shown(row, user):
+    """A request as the console shows it: the row, plus what it is about, what
+    stops it, and whether THIS caller may decide it (and if not, why not)."""
+    data = row.as_dict()
+    action = ACTIONS.get(row.action_key)
+    data['ref'] = refs.ref(refs.APPROVAL, row.id)
+    data['title'] = action.description if action else row.action_key
+    data['subjects'], data['blockers'] = [], []
+    if row.action_key == FINANCE_PAYOUT:
+        data['subjects'], data['blockers'] = _withdrawal_facts(row)
+    if row.status == REQUESTED:
+        problem = service.checker_problem(row, user)
+        data['can_decide'] = problem is None
+        data['cannot_decide_reason'] = problem
+        data['can_cancel'] = row.maker_id == user.pk
+    else:
+        data['can_decide'] = False
+        data['cannot_decide_reason'] = None
+        data['can_cancel'] = False
+    return data
 
 
 def _load(request, request_id, permission):
@@ -121,7 +171,7 @@ def request_detail(request, request_id):
     row = _load(request, request_id, 'report.read')
     if row is None:
         return _not_found(request_id)
-    return success_response(row.as_dict(), status.HTTP_200_OK)
+    return success_response(shown(row, request.user), status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -139,7 +189,7 @@ def approve_request(request, request_id):
         )
     except service.ApprovalError as exc:
         return exc.response()
-    return success_response(row.as_dict(), status.HTTP_200_OK)
+    return success_response(shown(row, request.user), status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -155,7 +205,7 @@ def reject_request(request, request_id):
         )
     except service.ApprovalError as exc:
         return exc.response()
-    return success_response(row.as_dict(), status.HTTP_200_OK)
+    return success_response(shown(row, request.user), status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -172,7 +222,7 @@ def cancel_request(request, request_id):
         )
     except service.ApprovalError as exc:
         return exc.response()
-    return success_response(row.as_dict(), status.HTTP_200_OK)
+    return success_response(shown(row, request.user), status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------

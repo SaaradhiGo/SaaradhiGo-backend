@@ -728,7 +728,10 @@ class TestWorkingAnIncident:
         assert data['sos']['unacknowledged_ids'] == [event.id]
         assert data['sos_events'][0]['user_phone'].endswith('0001') and '9876700001' not in data['sos_events'][0]['user_phone']
         assert data['anchor'] == {'source': 'trip', 'node': 'IN-TG-HYD',
-                                  'node_name': incident.anchor_node.name}
+                                  'node_name': incident.anchor_node.name,
+                                  'timezone': data['anchor']['timezone']}
+        assert data['anchor']['timezone']  # the city's own clock, never the viewer's
+        assert data['ref'] == f'SOS-{incident.id}'
         assert data['emergency'] == {'country': 'IN', 'configured': True, 'numbers': IN_NUMBERS}
         assert [p['id'] for p in data['people']['drivers']] == [world['hyd_driver'].id]
         assert data['people']['riders'][0]['in_scope'] is True

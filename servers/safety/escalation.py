@@ -34,11 +34,13 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 
+from base import refs
+
 from servers.admin_audit.services import record_admin_action
 from servers.command_centre.models import (
     CRITICAL, SAFETY_INCIDENT_UNASSIGNED, SAFETY_SOS_ESCALATED,
 )
-from servers.command_centre.services import raise_alert
+from servers.command_centre.services import clear_alerts, raise_alert
 
 from . import services
 from .config import active_configs
@@ -85,16 +87,24 @@ def escalate_sos(event, config, now):
             pk=event.pk, status='open', escalated_at__isnull=True).update(escalated_at=now)
         if not won:
             return False
+        # One alert per emergency: keyed by the incident when there is one, and an
+        # earlier "could not be routed" alert for this SOS folds into it.
+        key = (('safety_incident', event.incident_id) if event.incident_id
+               else ('sos_event', event.id))
+        name = refs.incident_ref(event.incident) if event.incident_id else 'An SOS'
         raise_alert(
             SAFETY_SOS_ESCALATED, severity=CRITICAL,
-            title=f'SOS #{event.id} not acknowledged after {minutes} min',
+            title=f'{name} not acknowledged after {minutes} min',
             payload={'sos_id': event.id, 'incident_id': event.incident_id,
+                     'ref': name if event.incident_id else None,
                      'minutes': minutes, 'country': config.country},
-            source_type='sos_escalation', source_id=event.id, city=event.anchor_node)
+            source_type=key[0], source_id=key[1], city=event.anchor_node)
+        if event.incident_id:
+            clear_alerts('sos_event', event.id, note=f'Merged into the alert for {name}')
         if event.incident_id:
             services.add_update(
                 event.incident, U_ESCALATED, label=services.SYSTEM,
-                note=f'SOS #{event.id} not acknowledged after {minutes} minutes: escalated',
+                note=f'SOS not acknowledged after {minutes} minutes: escalated',
                 data={'sos_id': event.id, 'minutes': minutes})
         record_admin_action(
             None, action='safety_sos_escalated', target_type='sos_event', target_id=event.id,
@@ -104,7 +114,7 @@ def escalate_sos(event, config, now):
     users = audience(event.anchor_node)
     transaction.on_commit(lambda: notify(
         users, 'SOS still unacknowledged',
-        f'SOS #{event.id} has had no response for {minutes} minutes',
+        f'{name} has had no response for {minutes} minutes',
         {'type': 'sos_escalation', 'sos_id': str(event.id)}))
     return True
 
@@ -117,11 +127,13 @@ def escalate_incident(incident, config, now):
             severity=CRITICAL).exclude(status=CLOSED).update(assign_escalated_at=now)
         if not won:
             return False
+        name = refs.incident_ref(incident)
         raise_alert(
             SAFETY_INCIDENT_UNASSIGNED, severity=CRITICAL,
-            title=f'Critical incident #{incident.id} unassigned after {minutes} min',
-            payload={'incident_id': incident.id, 'minutes': minutes, 'country': config.country},
-            source_type='incident_escalation', source_id=incident.id, city=incident.anchor_node)
+            title=f'{name}: critical, nobody assigned after {minutes} min',
+            payload={'incident_id': incident.id, 'ref': name, 'minutes': minutes,
+                     'country': config.country},
+            source_type='safety_incident', source_id=incident.id, city=incident.anchor_node)
         services.add_update(
             incident, U_ESCALATED, label=services.SYSTEM,
             note=f'Critical and unassigned for {minutes} minutes: escalated',

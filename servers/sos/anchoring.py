@@ -87,7 +87,7 @@ def alert_unanchored(event):
     alert = raise_alert(
         SOS_UNANCHORED,
         severity=CRITICAL,
-        title=f'SOS #{event.id} could not be routed to a city',
+        title='An SOS could not be routed to a city',
         payload={
             'sos_id': event.id,
             'initiated_by': event.initiated_by,
@@ -98,7 +98,7 @@ def alert_unanchored(event):
         source_id=event.id,
     )
     logger.warning('sos_unanchored', extra={
-        'event': 'sos_unanchored', 'sos_id': event.id, 'alert_id': alert.id,
+        'event': 'sos_unanchored', 'sos_id': event.id, 'alert_id': getattr(alert, 'id', None),
         'initiated_by': event.initiated_by,
     })
     return alert

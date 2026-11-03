@@ -130,6 +130,38 @@ def test_the_rider_is_told(rider):
     assert Notification.objects.filter(user_id=rider).count() == 1
 
 
+def test_the_riders_open_socket_hears_it(rider):
+    """The frame both apps wait on. Without it they showed "Finding your ride"
+    after the server had already given up (PRODUCT_AUDIT §2)."""
+    trip = _trip(rider, 'requested', age_seconds=600)
+
+    with mock.patch('channels.layers.get_channel_layer') as get_layer:
+        sent = []
+        layer = mock.Mock()
+
+        async def group_send(group, event):
+            sent.append((group, event))
+
+        layer.group_send = group_send
+        get_layer.return_value = layer
+        sweep_unaccepted_trips.apply().get()
+
+    assert sent == [(f'rider_{rider.id}', {
+        'type': 'trip_update', 'trip_id': trip.id, 'status': 'cancel',
+        'reason': 'no_driver_accepted',
+        'message': 'No driver accepted your request. Please try again.',
+        'driver_id': None, 'driver_name': '',
+    })]
+
+
+def test_an_accepted_trip_sends_no_cancel_frame(rider, driver):
+    """The stand-down path must stay silent, or a matched rider is told to rebook."""
+    trip = _trip(rider, 'requested', age_seconds=600, driver=driver)
+    with mock.patch('servers.ride.tasks._tell_rider_nobody_accepted') as tell:
+        auto_cancel_trip.apply(args=(trip.id,)).get()
+    tell.assert_not_called()
+
+
 def test_it_is_safe_to_run_twice(rider):
     """Beat runs it every two minutes, and a redelivery can run it again."""
     trip = _trip(rider, 'requested', age_seconds=600)

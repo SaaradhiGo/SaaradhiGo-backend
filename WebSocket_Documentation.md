@@ -156,6 +156,20 @@ Triggered when the driver accepts the ride, marks reached, starts, or completes 
 }
 ```
 
+**Event: Nobody accepted (terminal)**
+Sent when the accept deadline (`TRIP_ACCEPT_TIMEOUT_SECONDS`, 90 s) passes with no driver. The trip is already `cancelled`; the app should leave the search screen, show `message` and offer a new request.
+```json
+{
+    "type": "trip_update",
+    "trip_id": 101,
+    "status": "cancel",
+    "reason": "no_driver_accepted",
+    "message": "No driver accepted your request. Please try again.",
+    "driver_id": null,
+    "driver_name": ""
+}
+```
+
 **Event: Driver Live Tracking Update**
 Once a trip is accepted, the specific driver's location updates stream out dynamically here.
 ```json

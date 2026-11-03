@@ -17,6 +17,7 @@ symbol and minor units, the service-area box and onboarding city list, the emerg
 the version gate and the maintenance banner.
 """
 
+from django.conf import settings
 from django.utils import timezone
 
 from base import money
@@ -75,6 +76,9 @@ def country_block(country):
             'numbers': [{'kind': kind, 'number': number} for kind, number in country.emergency_numbers],
             'label': EMERGENCY_LABELS.get(country.emergency_numbers[0][0], 'Emergency services')
             if country.emergency_numbers else None},
+        # Additive. SaaradhiGo's support line, or null while none is configured:
+        # the apps hide the call row rather than show a number nobody answers.
+        'support': {'phone': settings.SUPPORT_PHONE_NUMBERS.get(country.code) or None},
     }
 
 

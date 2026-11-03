@@ -6,6 +6,7 @@ from .views import (
     admin_sos_detail,
     false_alarm_sos,
     raise_sos,
+    raiser_mistake_sos,
     resolve_sos,
     reveal_sos_contact,
 )
@@ -13,6 +14,8 @@ from .views import (
 
 urlpatterns = [
     path('', raise_sos),
+    # The raiser's own "this was a mistake" (D4). Not an operator path.
+    path('<int:sos_id>/mistake/', raiser_mistake_sos),
 
     # The operator surface, under `admin/` like every other operator API
     # so the structural guard (`tests/test_admin_namespace_is_gated.py`)

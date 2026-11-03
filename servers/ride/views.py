@@ -1476,7 +1476,9 @@ def proxy_geocode(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    cache_key = f"maps:geocode:{search_text.lower().strip()}:{location or ''}"
+    # v2: entries cached before predictions carried `structured_formatting`
+    # would serve blank rows for 30 days.
+    cache_key = f"maps:geocode:v2:{search_text.lower().strip()}:{location or ''}"
     cached_data = get_cached_map_data(cache_key)
     if cached_data:
         return success_response(cached_data, status.HTTP_200_OK)

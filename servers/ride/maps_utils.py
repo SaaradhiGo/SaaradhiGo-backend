@@ -300,7 +300,8 @@ def _autocomplete_new(search_text, location, radius, country, session_token):
                 'X-Goog-Api-Key': _api_key(),
                 'X-Goog-FieldMask': (
                     'suggestions.placePrediction.placeId,'
-                    'suggestions.placePrediction.text'
+                    'suggestions.placePrediction.text,'
+                    'suggestions.placePrediction.structuredFormat'
                 ),
                 'Content-Type': 'application/json',
             },
@@ -319,9 +320,23 @@ def _autocomplete_new(search_text, location, radius, country, session_token):
         place_id = prediction.get('placeId')
         description = ((prediction.get('text') or {}).get('text') or '').strip()
         if place_id and description:
+            # The two-line row (place name, then area) both apps draw. Without
+            # it the rider app rendered every result as a blank row
+            # (PRODUCT_AUDIT §2, "Where to"), because the legacy API it was
+            # written against always sent `structured_formatting`.
+            fmt = prediction.get('structuredFormat') or {}
+            main = ((fmt.get('mainText') or {}).get('text') or '').strip()
+            secondary = ((fmt.get('secondaryText') or {}).get('text') or '').strip()
+            if not main:
+                main, _, rest = description.partition(',')
+                main, secondary = main.strip(), secondary or rest.strip()
             predictions.append({
                 'description': description,
                 'place_id': place_id,
+                'structured_formatting': {
+                    'main_text': main,
+                    'secondary_text': secondary,
+                },
             })
 
     # ZERO_RESULTS rather than OK when empty, mirroring the legacy vocabulary

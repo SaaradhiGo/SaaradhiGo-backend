@@ -166,6 +166,29 @@ def dispatch_wave(self, trip_id, wave_index, dispatch_epoch, radii):
         raise self.retry(exc=exc)
 
 
+#: Sent with the rider's "nobody accepted" frame. The apps show it as is.
+NO_DRIVER_MESSAGE = 'No driver accepted your request. Please try again.'
+
+
+def _tell_rider_nobody_accepted(rider_id, trip_id):
+    """Push the terminal "no driver" frame to the rider's sockets."""
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        layer = get_channel_layer()
+        if layer is None:
+            return
+        event = {
+            'type': 'trip_update', 'trip_id': trip_id, 'status': 'cancel',
+            'reason': 'no_driver_accepted', 'message': NO_DRIVER_MESSAGE,
+            'driver_id': None, 'driver_name': '',
+        }
+        async_to_sync(layer.group_send)(f'rider_{rider_id}', event)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('auto-cancel rider frame failed for %s: %s', trip_id, exc)
+
+
 @shared_task(bind=True, max_retries=0)
 def auto_cancel_trip(self, trip_id):
     """Cancel a trip that no driver accepted inside the accept timeout.
@@ -258,6 +281,12 @@ def auto_cancel_trip(self, trip_id):
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning('auto-cancel notification failed for %s: %s', trip_id, exc)
+
+        # The live frame. Without it the rider's open socket never heard that
+        # the search was over: both apps sat on "Finding your ride" after the
+        # server had already cancelled (PRODUCT_AUDIT §2, finding driver).
+        # Best effort and after commit, like the notification above.
+        _tell_rider_nobody_accepted(rider.id, trip_pk)
 
         logger.info(
             'dispatch_terminal',

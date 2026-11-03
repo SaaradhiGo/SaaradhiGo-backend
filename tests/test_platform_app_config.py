@@ -66,6 +66,18 @@ class TestConfigPerCountry:
         assert body['languages'] == ['en']
         assert [c['code'] for c in body['cities']] == ['US-TX-AUS']
 
+    def test_no_support_number_is_null_never_a_placeholder(self, markets, settings):
+        """The apps showed 1800-000-0000; now they hide the row until one is set."""
+        settings.SUPPORT_PHONE_NUMBERS = {}
+        cache.clear()
+        assert data(get('?country=IN'))['country']['support'] == {'phone': None}
+
+    def test_support_number_is_per_country(self, markets, settings):
+        settings.SUPPORT_PHONE_NUMBERS = {'IN': '+914000000001'}
+        cache.clear()
+        assert data(get('?country=IN'))['country']['support'] == {'phone': '+914000000001'}
+        assert data(get('?country=US'))['country']['support'] == {'phone': None}
+
     def test_a_draft_city_is_not_offered_and_a_live_one_without_a_zone_is_not_either(self, markets):
         GeoNode.objects.filter(code='US-TX-AUS').update(status='draft')
         assert data(get('?country=US'))['cities'] == []

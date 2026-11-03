@@ -83,7 +83,10 @@ NEW_AUTOCOMPLETE_OK = {
         {'placePrediction': {'placeId': 'abc123',
                              'text': {'text': 'Benz Circle, Vijayawada'}}},
         {'placePrediction': {'placeId': 'def456',
-                             'text': {'text': 'MG Road, Vijayawada'}}},
+                             'text': {'text': 'MG Road, Vijayawada'},
+                             'structuredFormat': {
+                                 'mainText': {'text': 'MG Road'},
+                                 'secondaryText': {'text': 'Labbipet, Vijayawada'}}}},
     ]
 }
 
@@ -198,9 +201,15 @@ def test_new_autocomplete_is_normalised_to_the_legacy_shape(vijayawada):
 
     assert result['status'] == 'OK'
     assert result['predictions'] == [
-        {'description': 'Benz Circle, Vijayawada', 'place_id': 'abc123'},
-        {'description': 'MG Road, Vijayawada', 'place_id': 'def456'},
-    ], 'the website and both apps read predictions[].description/place_id'
+        # No structuredFormat from Google: split the description.
+        {'description': 'Benz Circle, Vijayawada', 'place_id': 'abc123',
+         'structured_formatting': {'main_text': 'Benz Circle',
+                                   'secondary_text': 'Vijayawada'}},
+        {'description': 'MG Road, Vijayawada', 'place_id': 'def456',
+         'structured_formatting': {'main_text': 'MG Road',
+                                   'secondary_text': 'Labbipet, Vijayawada'}},
+    ], ('the website reads description/place_id; the rider app draws its '
+        'two-line row from structured_formatting, and showed blank rows without it')
 
 
 @override_settings(GOOGLE_MAPS_API_KEY=KEY, GOOGLE_PLACES_API_VERSION='new')

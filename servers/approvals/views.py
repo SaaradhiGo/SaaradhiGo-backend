@@ -26,6 +26,7 @@ identical to a missing id.
 """
 
 from django.conf import settings
+from django.db.models import F
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.pagination import PageNumberPagination
@@ -204,8 +205,11 @@ def list_requests(request):
             issue=f'ordering must be one of {", ".join(sorted(SORTS))} (prefix - for descending)',
             status=status.HTTP_400_BAD_REQUEST,
         )
-    prefix = '-' if ordering.startswith('-') else ''
-    return _paginate(request, rows.order_by(f'{prefix}{SORTS[key]}', f'{prefix}id'))
+    # Empty values (no amount, not decided yet) go last both ways: PostgreSQL puts
+    # NULLs FIRST when descending, which filled "largest amount" with blanks.
+    field = F(SORTS[key])
+    first = field.desc(nulls_last=True) if ordering.startswith('-') else field.asc(nulls_last=True)
+    return _paginate(request, rows.order_by(first, '-id' if ordering.startswith('-') else 'id'))
 
 
 @api_view(['GET'])

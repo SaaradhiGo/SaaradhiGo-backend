@@ -28,7 +28,6 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from botocore.exceptions import ClientError
 from django.apps import apps
 from django.conf import settings
 from django.db import models
@@ -94,10 +93,12 @@ def sweep_unattached_uploads(now=None, dry_run=False, limit=5000):
 
 
 def _exists(storage, name):
+    # A store error reads as "there": an outage must never make every file
+    # look missing and let --apply clear records that are fine.
     try:
         return storage.exists(name)
-    except ClientError:
-        return False
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def files_missing_from_storage():

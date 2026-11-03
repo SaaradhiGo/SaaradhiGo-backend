@@ -185,6 +185,11 @@ def _tell_rider_nobody_accepted(rider_id, trip_id):
             'driver_id': None, 'driver_name': '',
         }
         async_to_sync(layer.group_send)(f'rider_{rider_id}', event)
+        # The website watches the trip's own socket from the moment the trip
+        # is created, not the rider's booking socket.
+        async_to_sync(layer.group_send)(f'trip_{trip_id}', {
+            **event, 'type': 'trip_status_update',
+        })
     except Exception as exc:  # noqa: BLE001
         logger.warning('auto-cancel rider frame failed for %s: %s', trip_id, exc)
 

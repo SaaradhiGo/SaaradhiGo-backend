@@ -146,12 +146,16 @@ def test_the_riders_open_socket_hears_it(rider):
         get_layer.return_value = layer
         sweep_unaccepted_trips.apply().get()
 
-    assert sent == [(f'rider_{rider.id}', {
-        'type': 'trip_update', 'trip_id': trip.id, 'status': 'cancel',
-        'reason': 'no_driver_accepted',
+    frame = {
+        'trip_id': trip.id, 'status': 'cancel', 'reason': 'no_driver_accepted',
         'message': 'No driver accepted your request. Please try again.',
         'driver_id': None, 'driver_name': '',
-    })]
+    }
+    assert sent == [
+        (f'rider_{rider.id}', {'type': 'trip_update', **frame}),
+        # The website listens on the trip's socket.
+        (f'trip_{trip.id}', {'type': 'trip_status_update', **frame}),
+    ]
 
 
 def test_an_accepted_trip_sends_no_cancel_frame(rider, driver):

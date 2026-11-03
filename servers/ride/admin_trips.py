@@ -315,6 +315,13 @@ def filter_trips(params, queryset, now=None):
         if wanted is not None:
             queryset = queryset.filter(**{name: wanted})
 
+    # Unfulfilled = cancelled before any driver accepted (the overview's definition).
+    accepted = _bool(params, 'accepted')
+    if accepted is True:
+        queryset = queryset.filter(accepted_at__isnull=False)
+    elif accepted is False:
+        queryset = queryset.filter(accepted_at__isnull=True)
+
     stale = _bool(params, 'stale')
     if stale is True:
         queryset = queryset.filter(stale_q(now))

@@ -547,6 +547,13 @@ INVENTORY = {
     # Command Centre (#80): per-city counts, rates and thresholds; no person.
     'api/v1/command-centre/admin/overview/': False,
     'api/v1/command-centre/admin/thresholds/': False,
+    # Workspaces (console rebuild, 2026-11-03): rollup counts per place, the ranked
+    # Needs action (readable IDs, places and staff names only) and the hourly pulse.
+    'api/v1/command-centre/admin/places/': False,
+    'api/v1/command-centre/admin/needs-action/': False,
+    'api/v1/command-centre/admin/pulse/': False,
+    # The Safety board: the incident queue's own masked rows, by lane.
+    'api/v1/safety/admin/board/': False,
     # Maker-checker. `maker` / `checker` blocks are staff attribution and
     # are left alone (OPERATOR_IDENTITY_KEYS); the payload is masked.
     'api/v1/approvals/admin/requests/': True,

@@ -6,6 +6,7 @@ from . import admin_views as v
 # guard (`tests/test_admin_namespace_is_gated.py`) finds it by path.
 urlpatterns = [
     path('admin/incidents/', v.safety_incidents),
+    path('admin/board/', v.safety_board),
     path('admin/incidents/<int:incident_id>/', v.safety_incident_detail),
     path('admin/incidents/<int:incident_id>/assignees/', v.safety_assignees),
     path('admin/incidents/<int:incident_id>/assign/', v.safety_assign),

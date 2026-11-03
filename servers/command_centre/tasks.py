@@ -33,3 +33,27 @@ def evaluate_alert_thresholds():
         logger.info('command_centre threshold sweep: raised=%s cleared=%s cities=%s',
                     raised, cleared, len(summary))
     return {'cities': summary, 'raised': raised, 'cleared': cleared}
+
+
+@shared_task(name='command_centre.refresh_city_rollups')
+def refresh_city_rollups():
+    """Recount the last two hours of five-minute city buckets (`rollups`).
+
+    Every minute (beat), plus the previous day once a night (`backfill_rollups`).
+    acks_late is safe: the task replaces the rows of the buckets it recounts
+    inside one transaction, from the source tables, so a redelivered or doubled
+    run writes the same rows; a cache lock keeps two runs from overlapping. No
+    retry: the next minute is the retry. Writes `CityRollup` rows only.
+    """
+    from .rollups import refresh_recent
+
+    return refresh_recent()
+
+
+@shared_task(name='command_centre.backfill_city_rollups')
+def backfill_city_rollups(days=1):
+    """Recount whole days of buckets (nightly: yesterday, for outcomes that
+    landed after the minute task's two-hour window). Same idempotency."""
+    from .rollups import backfill
+
+    return backfill(int(days))

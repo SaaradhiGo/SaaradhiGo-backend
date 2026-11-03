@@ -418,3 +418,103 @@ def change_threshold(request):
         {'approval_request': outcome.request.as_dict(), 'duplicate': outcome.duplicate},
         status.HTTP_202_ACCEPTED,
     )
+
+
+# ---------------------------------------------------------------------------
+# Workspaces (owner, 2026-11-03): places, needs action, a city's pulse, viewers
+# ---------------------------------------------------------------------------
+
+#: Anyone who works in the console reads the workspaces; each part inside asks
+#: its own capability (`workspace.needs_action`), so the gate only says "an operator".
+WORKSPACE_GATE = AnyOfScopedPermission(
+    'report.read', 'trip.read', 'driver.read', 'rider.read', 'support.read', 'safety.read',
+    'safety.respond', 'finance.read', 'promo.read', 'zone.read')
+
+
+def _window(request):
+    window = (request.query_params.get('window') or 'today').strip()
+    if window not in OVERVIEW_WINDOWS:
+        raise ValueError(window)
+    return window
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, ScopedPermission('report.read')])
+def admin_places(request):
+    """GET admin/places/?scope=&window=  One row per child of the place, from
+    the five-minute rollups; quiet places folded; every city's health square.
+    Money only for `finance.read`. Cached 20 s per (caller's scope, node, window)."""
+    from .workspace import places
+
+    try:
+        window = _window(request)
+        cities, node = _cities_for(request)
+    except ValueError:
+        return error_response(code='INVALID_WINDOW', message='window must be today, 24h or 7d',
+                              field='window', issue='bad window', status=status.HTTP_400_BAD_REQUEST)
+    except ScopeNotHeld as exc:
+        return _scope_refused(exc)
+    include_money, _how = granted(request.user, 'finance.read')
+    key = _cache_key(request, f'places:{window}', include_money, node)
+    body = cache.get(key)
+    if body is None:
+        body = places(request.user, cities, node, window, include_money=include_money)
+        cache.set(key, body, getattr(settings, 'COMMAND_CENTRE_PLACES_CACHE_SECONDS', 20))
+    return success_response(body, status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, WORKSPACE_GATE])
+def admin_needs_action(request):
+    """GET admin/needs-action/?scope=&limit=  What needs a person, worst first."""
+    from .workspace import needs_action
+
+    try:
+        limit = max(1, min(int(request.query_params.get('limit') or 50), 200))
+        body = needs_action(request, limit=limit)
+    except ScopeNotHeld as exc:
+        return _scope_refused(exc)
+    except ValueError:
+        return error_response(code='INVALID_LIMIT', message='limit must be a number',
+                              field='limit', issue='bad limit', status=status.HTTP_400_BAD_REQUEST)
+    return success_response(body, status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, ScopedPermission('report.read')])
+def admin_pulse(request):
+    """GET admin/pulse/?scope=<city or wider>  The last hour against the same
+    hour on the last four weekdays like today, and today's hourly line."""
+    from .workspace import sparkline, usual_range
+
+    try:
+        cities, node = _cities_for(request)
+    except ScopeNotHeld as exc:
+        return _scope_refused(exc)
+    if node is not None:
+        cities = [c for c in cities if str(c.path).startswith(node.path)]
+    ids = [c.id for c in cities]
+    from .overview import city_contexts
+
+    ctx = city_contexts(cities[:1]) if cities else {}
+    tz = next(iter(ctx.values())).tz if ctx else None
+    body = {'scope': node.code if node else None, **usual_range(ids)}
+    body['timezone'] = str(tz) if tz else None
+    body['hourly'] = sparkline(ids, tz) if tz else []
+    return success_response(body, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, WORKSPACE_GATE])
+def admin_viewing(request):
+    """POST admin/viewing/ {path}  "I have this record open", renewed every 30 s,
+    so the next person sees who is already on it. Returns the others."""
+    from .workspace import mark_viewing, viewing_now
+
+    path = str(request.data.get('path') or '')[:200]
+    if not path.startswith('/'):
+        return error_response(code='INVALID_PATH', message='path must be a console path',
+                              field='path', issue='bad path', status=status.HTTP_400_BAD_REQUEST)
+    mark_viewing(path, request.user)
+    return success_response({'path': path, 'others': viewing_now([path], request.user).get(path, [])},
+                            status.HTTP_200_OK)

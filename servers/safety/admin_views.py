@@ -38,6 +38,7 @@ RULES THIS FILE KEEPS
 """
 
 import logging
+from collections import defaultdict
 from datetime import datetime, time, timedelta, timezone as dt_timezone
 
 from django.contrib.auth import get_user_model
@@ -1366,3 +1367,105 @@ def safety_false_alarm(request, incident_id):
         return exc.response()
     return _finish(request, incident_id, sos_target='false_alarm', outcome='no_action',
                    summary=f'False alarm: {reason}', audit_action='safety_incident_false_alarm')
+
+
+# ---------------------------------------------------------------------------
+# The Safety board (owner, 2026-11-03; design board F)
+# ---------------------------------------------------------------------------
+
+LANE_UNACKED, LANE_RESPONDING, LANE_EMERGENCY, LANE_WATCHING = (
+    'not_acknowledged', 'responding', 'emergency_services', 'watching')
+_RUNNING = ('accepted', 'reached', 'in_progress')
+
+
+def _lane(incident):
+    """Which column a live case sits in, from what is recorded on it."""
+    if getattr(incident, 'unack_sos', 0):
+        return LANE_UNACKED
+    if incident.police_referred_at:
+        return LANE_EMERGENCY
+    trip_code = getattr(getattr(incident.trip, 'status_id', None), 'status_code', None) if incident.trip_id else None
+    if incident.status == 'action_taken' and trip_code in _RUNNING:
+        return LANE_WATCHING
+    return LANE_RESPONDING
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, READ_GATE])
+def safety_board(request):
+    """GET board/  Every live case with an SOS, by lane, plus who is answering,
+    where nobody is covering, and the last 24 hours. Same scope as the queue."""
+    from servers.command_centre.models import SAFETY_COVERAGE_GAP, OperatorAlert
+    from servers.sos.models import SOSEvent
+
+    now = timezone.now()
+    try:
+        node = requested_node(request)
+    except ScopeNotHeld as exc:
+        return _scope_refused(exc)
+    visible = incidents_visible_to(request.user, node, _annotate(INCIDENT_QUERYSET))
+    live = list(visible.exclude(status=CLOSED).filter(active_sos__gt=0)
+                .select_related('trip__status_id').order_by('oldest_active')[:300])
+    unack = _unacknowledged_ids(live)
+    lanes = {LANE_UNACKED: [], LANE_RESPONDING: [], LANE_EMERGENCY: [], LANE_WATCHING: []}
+    countries = defaultdict(int)
+    for case in live:
+        lanes[_lane(case)].append(_row(case, unack))
+        if case.country:
+            countries[case.country] += 1
+
+    # Who is answering: open cases per assignee, from the cases themselves.
+    responders = defaultdict(lambda: {'open': 0, 'places': set()})
+    for case in visible.exclude(status=CLOSED).exclude(assigned_to__isnull=True).select_related('assigned_to', 'anchor_node')[:500]:
+        r = responders[case.assigned_to_id]
+        r['label'] = _actor(case.assigned_to)['label'] if case.assigned_to else ''
+        r['open'] += 1
+        if case.anchor_node_id:
+            r['places'].add(case.anchor_node.name)
+
+    gaps = OperatorAlert.objects.filter(kind=SAFETY_COVERAGE_GAP, acknowledged_at__isnull=True)
+    if node is not None:
+        gaps = gaps.filter(city__path__startswith=node.path)
+    from servers.admin_access.access import scope_paths
+
+    paths = scope_paths(request.user)
+    if paths is not None:
+        cover = Q(pk__in=[])
+        for p in paths:
+            cover |= Q(city__path__startswith=p)
+        gaps = gaps.filter(cover)
+
+    day = now - timedelta(hours=24)
+    events = SOSEvent.objects.filter(created_at__gte=day, incident__in=visible.values('pk'))
+    raised = events.count()
+    acked_fast = 0
+    target_minutes = None
+    from .config import active_configs
+
+    cfgs = active_configs()
+    for ev in events.prefetch_related('updates')[:2000]:
+        first = next((u.created_at for u in ev.updates.all() if u.new_status != 'open'), None)
+        cfg = cfgs.get((ev.incident.country if ev.incident_id else '') or '')
+        minutes = cfg.sos_ack_minutes if cfg and cfg.sos_ack_minutes else None
+        target_minutes = target_minutes or minutes
+        if first and minutes and (first - ev.created_at) <= timedelta(minutes=minutes):
+            acked_fast += 1
+    closed_day = visible.filter(closed_at__gte=day)
+    return success_response({
+        'generated_at': now.isoformat(),
+        'lanes': lanes,
+        'countries': dict(countries),
+        'responders': sorted(({'id': k, 'label': v['label'], 'open': v['open'],
+                               'places': sorted(v['places'])[:3]} for k, v in responders.items()),
+                             key=lambda r: -r['open']),
+        'coverage_gaps': [{'city': a.city.name if a.city_id else None, 'title': a.title} for a in gaps.select_related('city')[:50]],
+        'last_24h': {
+            'raised': raised,
+            'acknowledged_within_target': acked_fast,
+            'target_minutes': target_minutes,
+            'police_referred': closed_day.filter(police_referred_at__isnull=False).count()
+            + visible.filter(police_referred_at__gte=day, closed_at__isnull=True).count(),
+            'false_alarms_confirmed': closed_day.filter(closing_summary__startswith='False alarm').count(),
+        },
+    }, status.HTTP_200_OK)
+

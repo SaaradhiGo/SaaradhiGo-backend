@@ -328,3 +328,56 @@ def plain_number(value):
         return None
     d = Decimal(str(value))
     return str(d.quantize(Decimal(1))) if d == d.to_integral() else str(d.normalize())
+
+
+# ---------------------------------------------------------------------------
+# City rollups: five-minute buckets the overview reads instead of the trip table
+# ---------------------------------------------------------------------------
+
+class CityRollup(models.Model):
+    """One city's numbers for one five-minute bucket, in one currency.
+
+    WHY (owner, 2026-11-03: 120 cities, 2M trips). The overview used to count
+    the trip table per city on every load; at that size a page could not open in
+    two seconds. A Celery task (`rollups.refresh`, every minute) recounts the
+    recent buckets from the source tables and the overview, the place tables
+    and the Needs action counts read these rows: one row per city per five
+    minutes, summed along the place path for a state, a country or Global.
+
+    The definitions are the overview's, unchanged (`overview.measure_trips`):
+      * requested, accepted, cancelled, unfulfilled (cancelled before any driver
+        accepted), the ETA (accepted -> reached) -- in the REQUESTED bucket;
+      * completed and collected (`charged_fare()`, integer minor units) -- in the
+        COMPLETED bucket.
+    Money stays per currency: a row carries one currency and nothing adds two.
+    """
+
+    city = models.ForeignKey('admin_access.GeoNode', on_delete=models.CASCADE,
+                             related_name='rollups')
+    bucket_start = models.DateTimeField()
+    currency = models.CharField(max_length=3, default='')
+
+    requested = models.PositiveIntegerField(default=0)
+    accepted = models.PositiveIntegerField(default=0)
+    cancelled = models.PositiveIntegerField(default=0)
+    unfulfilled = models.PositiveIntegerField(default=0)
+    completed = models.PositiveIntegerField(default=0)
+    eta_seconds_sum = models.BigIntegerField(default=0)
+    eta_count = models.PositiveIntegerField(default=0)
+    collected_minor = models.BigIntegerField(default=0)
+    sos_raised = models.PositiveIntegerField(default=0)
+    tickets_raised = models.PositiveIntegerField(default=0)
+
+    refreshed_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['city', 'bucket_start', 'currency'],
+                                    name='cityrollup_city_bucket_cur'),
+        ]
+        indexes = [
+            models.Index(fields=['bucket_start', 'city'], name='cityrollup_bucket_city_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.city_id} {self.bucket_start:%Y-%m-%d %H:%M} {self.currency}'

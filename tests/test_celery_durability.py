@@ -297,6 +297,13 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # no-op). No retry: the next hour is the retry. Touches object storage
         # only; no record, money or status.
         'driver.sweep_unattached_uploads',
+        # City rollups (every minute and nightly, beat). acks_late is safe: each run
+        # replaces the rows of the buckets it recounts, in one transaction, from the
+        # source tables, so a redelivered or doubled run writes the same rows; a cache
+        # lock stops two minute-runs overlapping. No retry: the next run is the retry.
+        # Writes CityRollup rows only; no trip, money or status.
+        'command_centre.refresh_city_rollups',
+        'command_centre.backfill_city_rollups',
     }
     actual = set(tasks)
     added = actual - expected

@@ -68,7 +68,9 @@ jobs:
     # The suite takes 6-7 min and runs slower on a PR's merge commit while the
     # push run of the same SHA is going; at 10 min the PR run hit the timeout
     # (GitHub reports that as "cancelled") on #79 and #81. 25 leaves headroom.
-    timeout-minutes: 25
+    # The suite takes about 24 minutes now; at 25 a slow runner cancels it
+    # (run 41563435325 was cancelled at 25m03s on a green commit).
+    timeout-minutes: 40
 
     services:
       redis:

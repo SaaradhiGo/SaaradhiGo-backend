@@ -44,7 +44,7 @@ from servers.admin_access.bridge import granted
 from servers.admin_access.models import ACTIVE, CITY, COUNTRY, GLOBAL, STATE, GeoNode
 
 from . import rollups
-from .overview import city_contexts, online_driver_ids
+from .overview import city_contexts
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +101,11 @@ def live_counts(cities, user):
                  'alerts_critical': 0, 'alerts_warning': 0, 'kyc_waiting': 0, 'stuck_trips': 0}
            for cid in ids}
 
-    online = online_driver_ids()
-    drivers = Driver.objects.filter(home_city_id__in=ids)
-    drivers = drivers.filter(id__in=list(online)) if online is not None else drivers.filter(status='online')
+    # The Drivers list's own "Online now" (its status column), so the overview and
+    # the list never disagree about the same drivers.
+    from servers.driver.admin_drivers import ONLINE_STATUSES
+
+    drivers = Driver.objects.filter(home_city_id__in=ids, status__in=ONLINE_STATUSES)
     for row in drivers.values('home_city_id').annotate(n=Count('id')):
         out[row['home_city_id']]['drivers_online'] = row['n']
     for row in (Driver.objects.filter(home_city_id__in=ids, approved=False)

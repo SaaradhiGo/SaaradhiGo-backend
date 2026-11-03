@@ -154,7 +154,12 @@ def list_requests(request):
     if request.query_params.get('mine') in ('1', 'true'):
         rows = rows.filter(maker_id=request.user.pk)
     if request.query_params.get('pending_for_me') in ('1', 'true'):
+        # Only what THIS caller can decide: a request they would be refused on is
+        # not waiting for them (owner's new-hire run, 2026-11-03).
         rows = rows.filter(status=REQUESTED).exclude(maker_id=request.user.pk)
+        decidable = [r.pk for r in rows.select_related('scope_node', 'policy')[:500]
+                     if service.checker_problem(r, request.user) is None]
+        rows = rows.filter(pk__in=decidable)
     target_type = (request.query_params.get('target_type') or '').strip()
     if target_type:
         rows = rows.filter(target_type=target_type)

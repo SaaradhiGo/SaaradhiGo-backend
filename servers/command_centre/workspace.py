@@ -276,7 +276,7 @@ def home_node(cities):
     if not paths:
         return GeoNode.objects.filter(kind=GLOBAL).first()
     common = []
-    for parts in zip(*paths):
+    for parts in zip(*paths, strict=False):
         if len(set(parts)) != 1:
             break
         common.append(parts[0])

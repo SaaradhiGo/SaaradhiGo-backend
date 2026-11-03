@@ -72,6 +72,7 @@ from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import make_password
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.db.models.functions import Coalesce
@@ -145,6 +146,10 @@ def _apportion(total, weights, floor):
         parts[j] -= 1
         diff += 1
     return parts
+
+
+#: Synthetic accounts never sign in with a password.
+UNUSABLE_PASSWORD = make_password(None)
 
 
 class Command(BaseCommand):
@@ -367,7 +372,7 @@ class Command(BaseCommand):
                                          else '')},
             ))
         created = ServiceZone.objects.bulk_create(zones)
-        for c, z in zip(cities, created):
+        for c, z in zip(cities, created, strict=True):
             c['zone_id'] = z.pk
         self.zone_city = {c['zone_id']: c for c in cities}
 
@@ -453,19 +458,19 @@ class Command(BaseCommand):
 
         def flush():
             created = User.objects.bulk_create(buf, batch_size=USER_BATCH)
-            for u, ci in zip(created, buf_city):
+            for u, ci in zip(created, buf_city, strict=True):
                 ids[ci].append(u.pk)
             buf.clear()
             buf_city.clear()
 
-        for c, count in zip(self.cities, per_city):
+        for c, count in zip(self.cities, per_city, strict=True):
             for _ in range(count):
                 n += 1
                 phone = f"+{c['calling']}0{phone_base + n:09d}"
                 joined = now - timedelta(days=rng.randint(HISTORY_DAYS + 1, 540),
                                          seconds=rng.randint(0, 86399))
                 buf.append(User(
-                    username=phone, phone_number=phone, password='!', role=role,
+                    username=phone, phone_number=phone, password=UNUSABLE_PASSWORD, role=role,
                     full_name=f'Synthetic {label} {n}',
                     email=f'{email_tag}{n}@{SYN_DOMAIN}', city=c['name'],
                     ops_role='', is_active=True, date_joined=joined,
@@ -550,7 +555,7 @@ class Command(BaseCommand):
                     meta.append(kind)
                 created = Driver.objects.bulk_create(drivers, batch_size=USER_BATCH)
                 vehicles = []
-                for d, kind, uid in zip(created, meta, uids):
+                for d, _kind, uid in zip(created, meta, uids, strict=True):
                     self.driver_user[d.pk] = uid
                     self.synthetic_driver_pks.append(d.pk)
                     brand, model, vt = rng.choice(
@@ -568,7 +573,7 @@ class Command(BaseCommand):
                     ))
                 vcreated = Vehicle.objects.bulk_create(vehicles, batch_size=USER_BATCH)
                 susp = []
-                for d, v, kind, vehicle in zip(created, vcreated, meta, vehicles):
+                for d, v, kind, vehicle in zip(created, vcreated, meta, vehicles, strict=True):
                     if kind in ('online', 'off'):
                         self.approved_by_city[c['idx']].append(
                             (d.pk, d.user_id_id, v.pk, vehicle.vehicle_type_id_id))
@@ -722,7 +727,7 @@ class Command(BaseCommand):
         with _real_timestamps(Trip):
             # --- currently active trips (some stuck) ------------------------
             kinds = (['requested'] * 20 + ['accepted'] * 25 + ['reached'] * 10 + ['in_progress'] * 45)
-            for i in range(n_active):
+            for _i in range(n_active):
                 c = rng.choices(live, weights=live_w)[0]
                 kind = rng.choice(kinds)
                 stuck = rng.random() < 0.2 and kind in ('accepted', 'in_progress')

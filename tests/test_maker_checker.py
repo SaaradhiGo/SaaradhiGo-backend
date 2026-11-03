@@ -27,6 +27,7 @@ asserted against the service AND, where there is a route, over HTTP:
 Only the executor's call count is trusted as evidence that something ran.
 """
 
+import json
 import threading
 from decimal import Decimal
 from io import StringIO
@@ -1053,3 +1054,66 @@ class TestPayoutEndToEnd:
         w.refresh_from_db()
         assert w.status == 'rejected'
         assert not ApprovalRequest.objects.exists()
+
+
+class TestPayoutNeedsPayoutDetails:
+    """Owner, 2026-11-03: a payout with nowhere to go is refused, and the
+    console shows why and who may decide it."""
+
+    def test_the_inbox_says_who_may_decide_and_what_blocks_it(
+            self, policies, geo, hyd_finance, hyd_checker):
+        d = _driver('+919800000951', geo['IN-TG-HYD'])
+        w = _withdrawal(d)
+        with mock.patch(PAYOUT_PATCH, return_value=True):
+            req = client(hyd_finance).post(f'{PAYOUT}/{w.id}/approve/', {}, format='json'
+                                           ).json()['data']['approval_request']
+        Driver.objects.filter(pk=d.pk).update(upi_id='')
+
+        mine = client(hyd_finance).get(f"{API}/requests/{req['id']}/").json()['data']
+        assert mine['ref'] == f"APR-{req['id']}"
+        assert mine['can_decide'] is False and 'different person' in mine['cannot_decide_reason']
+        assert mine['can_cancel'] is True
+        theirs = client(hyd_checker).get(f"{API}/requests/{req['id']}/").json()['data']
+        assert theirs['can_decide'] is True and theirs['cannot_decide_reason'] is None
+        assert theirs['blockers'] == [f'No payout details on file for D-{d.pk}']
+        assert theirs['subjects'][0]['driver_ref'] == f'D-{d.pk}'
+
+        with mock.patch(PAYOUT_PATCH, return_value=True) as dispatch:
+            refused = client(hyd_checker).post(f"{API}/requests/{req['id']}/approve/", {},
+                                               format='json')
+        assert dispatch.call_count == 0
+        w.refresh_from_db()
+        assert w.status == 'pending'
+        assert 'No payout details on file' in json.dumps(refused.json())
+
+    def test_reject_with_a_reason(self, policies, geo, hyd_finance, hyd_checker):
+        w = _withdrawal(_driver('+919800000952', geo['IN-TG-HYD']))
+        with mock.patch(PAYOUT_PATCH, return_value=True):
+            req = client(hyd_finance).post(f'{PAYOUT}/{w.id}/approve/', {}, format='json'
+                                           ).json()['data']['approval_request']
+        r = client(hyd_checker).post(f"{API}/requests/{req['id']}/reject/",
+                                     {'reason': 'No payout details on file'}, format='json')
+        assert r.status_code == 200, r.content
+        assert r.json()['data']['status'] == 'rejected'
+        assert r.json()['data']['decision_reason'] == 'No payout details on file'
+
+
+def test_a_driver_with_no_payout_details_cannot_withdraw(geo):
+    from io import StringIO
+
+    from conftest import seed_actor
+    call_command('seed_payout_config', country=['IN'], actor_email=seed_actor().email,
+                 stdout=StringIO())
+    d = _driver('+919800000953', geo['IN-TG-HYD'], balance='900.00')
+    d.upi_id = ''
+    d.save(update_fields=['upi_id'])
+    c = APIClient()
+    c.force_authenticate(user=d.user_id)
+    r = c.post('/api/v1/driver/withdrawals/request/', {'amount': '600.00'}, format='json')
+    assert r.status_code == 400
+    assert r.json()['error']['code'] == 'PAYOUT_DETAILS_MISSING'
+    assert 'UPI ID or bank account' in r.json()['error']['message']
+    balance = c.get('/api/v1/driver/withdrawals/balance/').json()['data']
+    assert balance['payout_details_on_file'] is False
+    assert balance['withdrawals_available'] is False
+    assert not WithdrawalRequest.objects.filter(driver=d).exists()

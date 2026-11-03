@@ -57,9 +57,12 @@ DEFAULTS = {
     'eta_overrun_incident_percent': 100, 'eta_overrun_incident_minutes': 30,
     'route_deviation_meters': 300, 'route_deviation_minutes': 3,
     'min_safety_officers': 1,
+    # Owner ruling 2026-11-03: twice the estimate, 10 min silent, 30 min not started.
+    'stuck_overrun_percent': 200, 'stuck_no_location_minutes': 10, 'stuck_not_started_minutes': 30,
 }
 #: The numbers added after the first seed; see the module docstring.
-ADDED_LATER = ('route_deviation_meters', 'route_deviation_minutes', 'min_safety_officers')
+ADDED_LATER = ('route_deviation_meters', 'route_deviation_minutes', 'min_safety_officers',
+               'stuck_overrun_percent', 'stuck_no_location_minutes', 'stuck_not_started_minutes')
 SEED_PREFIX = 'Seed:'
 
 

@@ -497,6 +497,30 @@ def _check_checker(row, checker):
         )
 
 
+_CHECKER_WORDS = {
+    'SELF_APPROVAL': 'You raised this request, so a different person must decide it.',
+    'CHECKER_LACKS_CAPABILITY': 'Your role cannot approve requests.',
+    'CHECKER_LACKS_ACTION_CAPABILITY': 'Your role cannot approve this kind of request here.',
+}
+
+
+def checker_problem(row, user):
+    """Why `user` may not decide `row`, in words for the console, or None if they may.
+
+    The same three questions `_check_checker` asks when they press the button,
+    asked early so the console can show the buttons only to someone who can use them.
+    """
+    if user.pk == row.maker_id:
+        return _CHECKER_WORDS['SELF_APPROVAL']
+    try:
+        _check_checker(row, user)
+    except NotInScope:
+        return 'This request is outside your area.'
+    except ApprovalError as exc:
+        return _CHECKER_WORDS.get(exc.code, exc.message)
+    return None
+
+
 def _expire_if_due(row):
     """Mark a locked, open, overdue row expired. Returns whether it did."""
     if row.status == REQUESTED and row.is_past_expiry:

@@ -76,6 +76,10 @@ class SOSEvent(models.Model):
     location_accuracy_m = models.FloatField(null=True, blank=True)
 
     note = models.TextField(blank=True, help_text='Optional free-text from the caller.')
+    # The raiser tapped "this was a mistake" (owner, 2026-11-03): the alert stays
+    # active and the console shows "rider reports false alarm" until an operator
+    # confirms it with Mark false alarm. A report never closes an SOS by itself.
+    raiser_reported_mistake_at = models.DateTimeField(null=True, blank=True)
 
     # Request context (helps ops triage).
     ip_address = models.GenericIPAddressField(null=True, blank=True)

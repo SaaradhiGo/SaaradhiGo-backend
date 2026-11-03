@@ -1,9 +1,9 @@
-"""The raiser's "Tap if this was a mistake" (owner decision D4, 2026-11-02).
+"""The raiser's "Tap if this was a mistake" (D4, 2026-11-02; revised 2026-11-03).
 
 The alert goes out the moment the 2-second hold completes; there is no cancel
-delay. The way back is this endpoint, which takes the same audited transition
-as an operator's false alarm. These tests pin who may use it and what it may
-undo.
+delay. Tapping "mistake" is a REPORT: the alert stays active, the console shows
+"rider reports false alarm", and an operator must confirm it (owner,
+2026-11-03). These tests pin who may report it and that a report closes nothing.
 """
 
 from decimal import Decimal
@@ -58,11 +58,27 @@ def test_the_raiser_can_mark_it_a_mistake():
     r = _mistake(rider, ev.id)
 
     assert r.status_code == 200, r.content
+    assert r.json()['data']['reported_mistake'] is True
     ev.refresh_from_db()
-    assert ev.status == 'false_alarm'
+    assert ev.status == 'open', 'a report never closes an SOS: an operator confirms'
+    assert ev.raiser_reported_mistake_at is not None
     update = SOSEventUpdate.objects.get(event=ev)
-    assert update.actor_id == rider.id and update.new_status == 'false_alarm'
+    assert update.actor_id == rider.id and update.new_status == 'open'
     assert update.note == RAISER_MISTAKE_NOTE
+
+
+def test_the_operator_sees_it_and_confirms_it():
+    from servers.safety.admin_views import _annotate, _row
+    from servers.safety.models import SafetyIncident
+
+    rider = _rider()
+    ev = _raise(rider)
+    _mistake(rider, ev.id)
+    ev.refresh_from_db()
+    if ev.incident_id:
+        row = _row(_annotate(SafetyIncident.objects.all()).get(pk=ev.incident_id))
+        assert row['rider_reports_false_alarm'] is True
+        assert row['ref'] == f'SOS-{ev.incident_id}'
 
 
 def test_twice_is_harmless():

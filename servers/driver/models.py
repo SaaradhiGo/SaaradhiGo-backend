@@ -107,6 +107,14 @@ class Driver(models.Model):
         "+91..." (product phase 1 emulator run). Contacts stay masked.
         """
         return (self.user_id.full_name or '').strip() or 'Your driver'
+
+    @property
+    def console_name(self) -> str:
+        """The driver's name as an operator sees it: the real name, else
+        "Driver #18". Never a placeholder, never a phone number."""
+        return (self.user_id.full_name or '').strip() or f'Driver #{self.pk}'
+
+
 class VehicleType(models.Model):
     type=models.CharField(max_length=50,unique=True)
     description=models.TextField(blank=True,null=True)

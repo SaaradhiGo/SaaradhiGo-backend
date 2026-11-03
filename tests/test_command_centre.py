@@ -596,6 +596,9 @@ class TestSweep:
 
 @pytest.fixture
 def alerts(geo, world):
+    # Operational alerts are raised only for live cities (owner, 2026-11-03).
+    GeoNode.objects.filter(code='US-TX-AUS').update(status='active')
+    geo['US-TX-AUS'].refresh_from_db()
     _seed_thresholds()
     evaluate_alert_thresholds()
     unplaced = raise_alert('sos_unanchored', title='SOS #0 could not be routed', severity='critical',

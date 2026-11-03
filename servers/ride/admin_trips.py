@@ -38,6 +38,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 
+from base import refs
+from base.locality import locality
 from base.money import from_minor
 from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission, granted, node_of
@@ -319,6 +321,12 @@ def filter_trips(params, queryset, now=None):
     elif stale is False:
         queryset = queryset.exclude(stale_q(now))
 
+    # The operator's "Stuck" view (owner rule, `ride.stuck`): the active set only.
+    if _bool(params, 'stuck') is True:
+        from .stuck import stuck_trips
+
+        queryset = queryset.filter(id__in=[t.id for t, _r, _m in stuck_trips(queryset, now)])
+
     ordering = (params.get('ordering') or DEFAULT_SORT).strip()
     key = ordering.lstrip('-')
     if key not in SORTS:
@@ -367,22 +375,46 @@ def list_response(request, queryset):
     page = paginator.paginate_queryset(queryset, request)
     rows = TripListSerializer(page, many=True).data
     now = timezone.now()
+    from servers.safety.config import active_configs
+
+    from .stuck import _country_of, stuck_reason
+
+    configs = active_configs()
+    stuck = {}
+    for trip in page:
+        reason, minutes = stuck_reason(trip, configs.get(_country_of(trip)), now)
+        if reason:
+            stuck[trip.id] = (reason, minutes)
     results = []
     for trip, row in zip(page, rows, strict=True):
         row = dict(row)
         reason = stale_reason(trip, now)
+        city = _city(trip)
+        city_name = city['name'] if city else None
+        # Lists show the locality; the full address is behind the logged reveal on
+        # the trip page (owner, 2026-11-03).
+        row.pop('pickup_address', None)
+        row.pop('destination_address', None)
         row.update({
+            'ref': refs.ref(refs.TRIP, trip.id),
+            'pickup_locality': locality(trip.pickup_address, city_name),
+            'drop_locality': locality(trip.destination_address, city_name),
+            'driver_name': trip.driver_id.console_name if trip.driver_id else None,
+            'driver_ref': refs.ref(refs.DRIVER, trip.driver_id_id),
+            'rider_ref': refs.ref(refs.RIDER, trip.user_id_id),
             'rider_id': trip.user_id_id,
             'driver_id': trip.driver_id_id,
             'estimated_fare_minor': trip.estimated_fare_minor,
             'final_fare_minor': trip.final_fare_minor,
             'charged_fare_minor': charged_minor(trip),
-            'city': _city(trip),
+            'city': city,
             'has_sos': bool(getattr(trip, 'has_sos', False)),
             'has_ticket': bool(getattr(trip, 'has_ticket', False)),
             'flagged': bool(getattr(trip, 'flagged', False)),
             'stale': bool(reason),
             'stale_reason': reason or None,
+            'stuck_reason': stuck.get(trip.id, (None, None))[0],
+            'stuck_minutes': stuck.get(trip.id, (None, None))[1],
             'cancelled_by': trip.cancelled_by or None,
         })
         results.append(row)

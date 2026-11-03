@@ -56,6 +56,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import OuterRef, Subquery
 from django.utils import timezone
 
+from base import refs
 from servers.command_centre.models import SAFETY_SIGNAL, WARNING
 from servers.command_centre.services import raise_alert
 
@@ -238,10 +239,10 @@ def _promote(signal, config):
         locked.save(update_fields=['incident'])
         raise_alert(
             SAFETY_SIGNAL, severity=WARNING,
-            title=f'{locked.get_kind_display()} on trip {locked.trip_id}',
+            title=f'{refs.incident_ref(incident)}: {locked.get_kind_display()} on {refs.ref(refs.TRIP, locked.trip_id)}',
             payload={'signal_id': locked.id, 'incident_id': incident.id, 'kind': locked.kind,
                      'trip_id': locked.trip_id, **locked.measured},
-            source_type='safety_signal', source_id=locked.id, city=locked.anchor_node)
+            source_type='safety_incident', source_id=incident.id, city=locked.anchor_node)
     signal.incident = incident
     return True
 

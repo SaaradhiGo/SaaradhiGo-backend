@@ -499,7 +499,11 @@ def needs_action(request, limit=50, now=None):
         alerts = alerts.filter(Q(city__path__startswith=node.path) | Q(city__isnull=True))
     by_place = defaultdict(list)
     # An SOS alert duplicates the SOS item above, which already says it is late.
-    for alert in alerts.exclude(source_type='safety_incident').select_related('city')[:300]:
+    # A threshold on open or late SOS restates the SOS items above; one item per event.
+    from .models import THRESHOLD_KINDS
+    sos_thresholds = [k for k in THRESHOLD_KINDS if 'sos' in k]
+    for alert in (alerts.exclude(source_type='safety_incident').exclude(kind__in=sos_thresholds)
+                  .select_related('city')[:300]):
         by_place[alert.city_id].append(alert)
     sev = {'critical': CRITICAL, 'warning': HIGH, 'info': WAITING}
     for rows in by_place.values():

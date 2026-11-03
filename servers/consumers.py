@@ -2137,13 +2137,13 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             send_push_notification(
                 trip.user_id, 
                 "Ride Accepted", 
-                f"Driver {driver.user_id.full_name} has accepted your ride.",
+                f"{driver.public_name} has accepted your ride.",
                 {"trip_id": str(trip.id), "type": "ride_accepted"}
             )
 
             # Prepare driver and vehicle info for response
             driver_info = {
-                'name': driver.user_id.full_name,
+                'name': driver.public_name,
                 'id': driver.id,
                 'phone_number': driver.user_id.phone_number,
                 'stars': str(driver.ratings),
@@ -2161,7 +2161,7 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 'success': True,
                 'message': 'Trip accepted',
                 'driver_id': driver.id,
-                'driver_name': str(driver),
+                'driver_name': driver.public_name,
                 'rider_id': trip.user_id_id,
                 'otp': trip.otp,
                 'driver_info': driver_info,

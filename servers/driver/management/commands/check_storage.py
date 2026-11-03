@@ -148,15 +148,20 @@ class Command(BaseCommand):
         """Public objects must not be served from the private API endpoint."""
         from base.storage_backends import PrivateDocumentStorage, PublicMediaStorage
 
-        public_host = PublicMediaStorage().custom_domain
+        public = PublicMediaStorage()
+        public_host = public.custom_domain
         if object_store.is_r2(endpoint) and not public_host:
-            self._bad(
-                'public file URLs',
-                'AWS_S3_PUBLIC_BASE_URL is unset. On R2 the API endpoint is '
-                'not publicly readable, so avatars and vehicle pictures will '
-                'answer 401. Set it to the bucket\'s r2.dev address or a '
-                'custom domain.',
-            )
+            # The R2 API endpoint is not publicly readable. Since 2026-11-02
+            # public media is SIGNED when no public host is set, so this is a
+            # working configuration, not a failure; a public domain only adds
+            # caching and stable URLs.
+            if public.querystring_auth:
+                self._ok('public file URLs',
+                         f'signed ({public.querystring_expire}s); no public host set')
+            else:
+                self._bad('public file URLs',
+                          'AWS_S3_PUBLIC_BASE_URL is unset and URLs are not signed: '
+                          'avatars and vehicle pictures will not load on R2.')
         elif public_host:
             self._ok('public file URLs', f'served from {public_host}')
         else:

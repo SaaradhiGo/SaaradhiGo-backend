@@ -544,6 +544,12 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'ride.sweep_unaccepted_trips',
         'schedule': _crontab(minute='*/2'),
     },
+    'sweep-unattached-uploads-hourly': {
+        # Presigned uploads never attached to a record, older than
+        # UNATTACHED_UPLOAD_MAX_AGE_HOURS (24): deleted. servers/driver/upload_sweep.py.
+        'task': 'driver.sweep_unattached_uploads',
+        'schedule': _crontab(minute=17),
+    },
     'gps-trail-drain-every-minute': {
         # Drains driver_location_stream into TripLocationPoint. A no-op while
         # GPS_TRAIL_ENABLED is False, so scheduling it is safe before the
@@ -1086,6 +1092,23 @@ AWS_S3_PUBLIC_BASE_URL=os.environ.get("AWS_S3_PUBLIC_BASE_URL", "").strip().rstr
 # `manage.py check_storage` reports that as a failure while a public host is
 # configured. Existing documents must be copied across when it is first set.
 AWS_S3_PRIVATE_BUCKET_NAME=os.environ.get("AWS_S3_PRIVATE_BUCKET_NAME", "").strip()
+
+# Separate credentials for the private bucket, when it needs them. Empty means
+# "use the main AWS_* credentials", which is the R2 case: one API token
+# scoped to both buckets (owner decision 2026-11-02, QA storage on R2).
+AWS_S3_PRIVATE_ACCESS_KEY_ID=os.environ.get("AWS_S3_PRIVATE_ACCESS_KEY_ID", "").strip()
+AWS_S3_PRIVATE_SECRET_ACCESS_KEY=os.environ.get("AWS_S3_PRIVATE_SECRET_ACCESS_KEY", "").strip()
+AWS_S3_PRIVATE_ENDPOINT_URL=os.environ.get("AWS_S3_PRIVATE_ENDPOINT_URL", "").strip() or None
+
+# How long a SIGNED link to public media (avatars, vehicle photos) lives, in
+# seconds, while no public hostname is configured (AWS_S3_PUBLIC_BASE_URL
+# unset). R2's API endpoint is not publicly readable, so without a public
+# domain an unsigned avatar URL answers 400. SigV4 caps this at 7 days.
+PUBLIC_MEDIA_URL_TTL_SECONDS=min(int(os.environ.get("PUBLIC_MEDIA_URL_TTL_SECONDS", "21600")), 604800)
+
+# Uploads presigned but never attached to a record are deleted after this
+# many hours (servers/driver/upload_sweep.py, Celery beat, hourly).
+UNATTACHED_UPLOAD_MAX_AGE_HOURS=int(os.environ.get("UNATTACHED_UPLOAD_MAX_AGE_HOURS", "24"))
 
 # How long a signed link to a KYC document lives, in seconds. Capped at 300 in
 # code (servers/driver/document_access.py) whatever this says.

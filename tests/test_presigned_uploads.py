@@ -120,7 +120,7 @@ def storage_fields(settings, monkeypatch):
 @pytest.fixture
 def fake_s3(monkeypatch):
     client = FakeS3Client()
-    monkeypatch.setattr("integrations.storage.s3.build_s3_client", lambda: client)
+    monkeypatch.setattr("integrations.storage.s3.build_s3_client", lambda kind=None: client)
     return client
 
 

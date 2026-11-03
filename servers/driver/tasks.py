@@ -122,3 +122,19 @@ def sweep_stale_driver_presence():
     if evicted:
         logger.info('Presence sweep evicted %s stale driver(s)', evicted)
     return {'evicted': evicted}
+
+
+@shared_task(name='driver.sweep_unattached_uploads')
+def sweep_unattached_uploads():
+    """Delete uploads never attached to a record within 24 hours (hourly beat).
+
+    See servers/driver/upload_sweep.py. A storage outage logs and returns:
+    the next hour tries again, and nothing is deleted on an error.
+    """
+    from servers.driver.upload_sweep import sweep_unattached_uploads as sweep
+
+    try:
+        return sweep()
+    except Exception:  # noqa: BLE001
+        logger.exception('unattached upload sweep failed')
+        return None

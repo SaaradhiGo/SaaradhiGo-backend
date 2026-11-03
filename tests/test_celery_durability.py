@@ -290,6 +290,13 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # retries into the maps quota. Rate limited 60/m per worker. Writes
         # three observation columns on the trip; no fare, status or dispatch.
         'ride.store_planned_route',
+        # Unattached-upload sweep (hourly, beat). acks_late is safe: it lists
+        # objects and deletes only those older than 24 h that no file field
+        # references, re-checked per object on every run, so a redelivered or
+        # doubled run deletes nothing twice (a delete of a missing object is a
+        # no-op). No retry: the next hour is the retry. Touches object storage
+        # only; no record, money or status.
+        'driver.sweep_unattached_uploads',
     }
     actual = set(tasks)
     added = actual - expected

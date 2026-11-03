@@ -47,6 +47,14 @@ from django.conf import settings
 from storages.backends.s3boto3 import S3Boto3Storage
 
 
+#: Private-bucket settings and the django-storages argument each one feeds.
+PRIVATE_CREDENTIAL_SETTINGS = (
+    ('AWS_S3_PRIVATE_ACCESS_KEY_ID', 'access_key'),
+    ('AWS_S3_PRIVATE_SECRET_ACCESS_KEY', 'secret_key'),
+    ('AWS_S3_PRIVATE_ENDPOINT_URL', 'endpoint_url'),
+)
+
+
 def _public_host():
     """The hostname public objects are served from, or None.
 
@@ -71,7 +79,18 @@ class PublicMediaStorage(S3Boto3Storage):
     querystring_auth = False
 
     def __init__(self, *args, **kwargs):
-        kwargs.setdefault('custom_domain', _public_host())
+        host = _public_host()
+        kwargs.setdefault('custom_domain', host)
+        if not host:
+            # No public hostname (QA on R2, 2026-11-02): the API endpoint is
+            # not publicly readable, so an unsigned URL would answer 400.
+            # Sign it instead, for longer than a document link: an avatar is
+            # not sensitive and is cached by the apps.
+            kwargs.setdefault('querystring_auth', True)
+            kwargs.setdefault(
+                'querystring_expire',
+                getattr(settings, 'PUBLIC_MEDIA_URL_TTL_SECONDS', 21600),
+            )
         super().__init__(*args, **kwargs)
 
 
@@ -92,6 +111,11 @@ class PrivateDocumentStorage(S3Boto3Storage):
         private_bucket = getattr(settings, 'AWS_S3_PRIVATE_BUCKET_NAME', '') or ''
         if private_bucket:
             kwargs.setdefault('bucket_name', private_bucket)
+        # Its own credentials when they are set; empty = the main ones.
+        for setting, kwarg in PRIVATE_CREDENTIAL_SETTINGS:
+            value = getattr(settings, setting, None)
+            if value:
+                kwargs.setdefault(kwarg, value)
         super().__init__(*args, **kwargs)
 
 

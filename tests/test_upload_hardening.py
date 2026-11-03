@@ -54,7 +54,7 @@ class FakeS3:
 def fake_s3(settings, monkeypatch):
     settings.AWS_S3_BUCKET_NAME = "test-bucket"
     client = FakeS3()
-    monkeypatch.setattr("integrations.storage.s3.build_s3_client", lambda: client)
+    monkeypatch.setattr("integrations.storage.s3.build_s3_client", lambda kind=None: client)
     return client
 
 

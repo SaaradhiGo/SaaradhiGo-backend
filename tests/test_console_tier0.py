@@ -247,3 +247,13 @@ def test_the_trip_list_finds_unfulfilled_trips(world, geo):
     assert world['hyd_trip'].id in [r['id'] for r in rows]
     rows = client.get('/api/v1/ride/admin/trips/?accepted=true').json()['data']['results']
     assert world['hyd_trip'].id not in [r['id'] for r in rows]
+
+
+def test_the_trip_list_filters_by_rider_phone(world, geo):
+    from test_sos_support_zones_matrix import operator as op
+
+    client, _ = op('super_admin', geo)
+    phone = world['hyd_rider'].phone_number
+    rows = client.get(f'/api/v1/ride/admin/trips/?rider_phone={phone[-10:]}').json()['data']['results']
+    assert rows and all(r['rider_id'] == world['hyd_rider'].id for r in rows)
+    assert client.get('/api/v1/ride/admin/trips/?rider_phone=12').status_code == 400

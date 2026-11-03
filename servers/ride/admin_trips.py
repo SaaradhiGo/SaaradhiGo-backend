@@ -289,6 +289,14 @@ def filter_trips(params, queryset, now=None):
     if driver_id:
         queryset = queryset.filter(driver_id=_int(driver_id, 'driver_id'))
 
+    # A rider's phone, in any form: the last ten digits match the stored number
+    # (the new-hire run found the box accepted a phone and filtered nothing).
+    phone = ''.join(ch for ch in (params.get('rider_phone') or '') if ch.isdigit())
+    if phone:
+        if len(phone) < 6:
+            raise BadInput('INVALID_FILTER', 'rider_phone needs at least 6 digits.', 'rider_phone')
+        queryset = queryset.filter(user_id__phone_number__endswith=phone[-10:])
+
     rider_id = params.get('rider_id') or params.get('user_id')
     if rider_id:
         queryset = queryset.filter(user_id=_int(rider_id, 'rider_id'))

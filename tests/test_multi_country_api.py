@@ -251,7 +251,8 @@ def _driver_client(vt, calling_code='91', currency='INR', balance='50.00'):
     user = User.objects.create_user(
         phone_number=f'+{calling_code}8{i:09d}'[:16], role='driver',
         username=f'ad{i}')
-    driver = Driver.objects.create(user_id=user, approved=True, status='online')
+    # A withdrawal needs somewhere to send the money (owner, 2026-11-03).
+    driver = Driver.objects.create(user_id=user, approved=True, status='online', upi_id='qa@upi')
     vehicle = Vehicle.objects.create(driver_id=driver, vehicle_type_id=vt,
                                      vehicle_number=f'AC{i:05d}')
     driver.active_vehicle = vehicle

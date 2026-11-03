@@ -260,6 +260,9 @@ class ApprovalRequest(models.Model):
     checker_role = models.CharField(max_length=64, blank=True, default='')
     decision_reason = models.TextField(blank=True, default='')
     decided_at = models.DateTimeField(null=True, blank=True)
+    #: The maker decided it themselves under APPROVALS_SOLO_SUPER_ADMIN
+    #: (`service.self_approval_allowed`): the one way checker == maker.
+    self_approved = models.BooleanField(default=False)
 
     executed_at = models.DateTimeField(null=True, blank=True)
     result = models.JSONField(default=dict, blank=True)
@@ -278,8 +281,11 @@ class ApprovalRequest(models.Model):
                 name='approvals_request_status_enum',
             ),
             # The rule the whole framework exists for, held by the database.
+            # The one exception is a row marked self-approved, which only the
+            # service writes, under APPROVALS_SOLO_SUPER_ADMIN.
             models.CheckConstraint(
-                condition=Q(checker_id__isnull=True) | ~Q(checker_id=F('maker_id')),
+                condition=(Q(checker_id__isnull=True) | ~Q(checker_id=F('maker_id'))
+                           | Q(self_approved=True)),
                 name='approvals_checker_is_not_maker',
             ),
             models.UniqueConstraint(
@@ -362,6 +368,7 @@ class ApprovalRequest(models.Model):
             } if self.checker_id else None,
             'decision_reason': self.decision_reason,
             'decided_at': self.decided_at.isoformat() if self.decided_at else None,
+            'self_approved': self.self_approved,
             'executed_at': self.executed_at.isoformat() if self.executed_at else None,
             'result': self.result,
             'error_code': self.error_code,

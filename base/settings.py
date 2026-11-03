@@ -868,6 +868,18 @@ ADMIN_ACCESS_STRICT = os.environ.get(
     'ADMIN_ACCESS_STRICT', 'false'
 ).strip().lower() in {'1', 'true', 'yes'}
 
+# THE SOLE SUPER ADMIN MAY CHECK THEIR OWN REQUESTS (owner, 2026-11-03).
+# Until launch there is one person who can approve anything, and a maker can
+# never be their own checker, so every payout and maker-checker action waited
+# forever. With this on, a Super Admin may approve or reject a request they
+# raised, with a reason, recorded as self-approved -- but ONLY while nobody
+# else could check it (`servers.approvals.service.self_approval_allowed`), so
+# the exception ends by itself the day a second real checker is assigned.
+# Default False: off unless the environment says otherwise.
+APPROVALS_SOLO_SUPER_ADMIN = os.environ.get(
+    'APPROVALS_SOLO_SUPER_ADMIN', 'false'
+).strip().lower() in {'1', 'true', 'yes'}
+
 # A rider belongs to every city where they took a trip in this many months
 # (operator scope; see servers/rider/scope.py).
 RIDER_SCOPE_TRIP_MONTHS = int(os.environ.get('RIDER_SCOPE_TRIP_MONTHS', '12'))

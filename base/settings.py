@@ -544,6 +544,17 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'ride.sweep_unaccepted_trips',
         'schedule': _crontab(minute='*/2'),
     },
+    'command-centre-city-rollups-every-minute': {
+        # Five-minute city buckets the overviews read (servers/command_centre/rollups.py).
+        'task': 'command_centre.refresh_city_rollups',
+        'schedule': _crontab(minute='*'),
+    },
+    'command-centre-city-rollups-nightly': {
+        # Yesterday again, for trip outcomes after the two-hour window.
+        'task': 'command_centre.backfill_city_rollups',
+        'schedule': _crontab(minute=40, hour=0),
+        'kwargs': {'days': 2},
+    },
     'sweep-unattached-uploads-hourly': {
         # Presigned uploads never attached to a record, older than
         # UNATTACHED_UPLOAD_MAX_AGE_HOURS (24): deleted. servers/driver/upload_sweep.py.

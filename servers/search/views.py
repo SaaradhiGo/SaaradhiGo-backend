@@ -168,6 +168,19 @@ def admin_search_trips(request):
         trip = trips.filter(pk=term.trip_id).first()
         if trip is not None:
             rows.append(_trip_row(trip))
+    if term.searches_phones:
+        # A rider's phone finds their latest trips (owner task: "find a trip by
+        # rider phone"). Same scope; the phone stays masked in every row.
+        try:
+            trips = scoped_to_request(request, Trip.objects.select_related(
+                'status_id', 'zone__geo_node', 'user_id', 'driver_id__user_id',
+            ))
+        except ScopeNotHeld as exc:
+            return _scope_refused(exc)
+        seen = {r['id'] for r in rows}
+        found = (trips.annotate(phone_tail=phone_tail('user_id__phone_number'))
+                 .filter(_phone_q(term)).order_by('-requested_at')[:_limit(request)])
+        rows.extend(_trip_row(t) for t in found if t.id not in seen)
     return _answer(request, term, 'trips', rows)
 
 
@@ -176,6 +189,7 @@ def _trip_row(trip):
     return {
         'type': 'trip',
         'id': trip.id,
+        'ref': f'T-{trip.id}',
         'status': trip.status_id.status_code if trip.status_id else 'pending',
         'city_code': _city_code(zone.geo_node if zone else None),
         'requested_at': trip.requested_at.isoformat() if trip.requested_at else None,
@@ -201,6 +215,8 @@ def admin_search_drivers(request):
         q |= _phone_q(term)
     if term.name:
         q |= Q(user_id__full_name__icontains=term.name)
+    if term.ref_kind == 'driver':
+        q |= Q(pk=term.ref_id)
     if q:
         try:
             drivers = for_kyc_view(request.user, scoped_to_request(
@@ -220,6 +236,7 @@ def _driver_row(driver):
     return {
         'type': 'driver',
         'id': driver.id,
+        'ref': f'D-{driver.id}',
         'status': driver.status,
         'approved': driver.approved,
         'doc_status': driver.doc_status,
@@ -245,6 +262,9 @@ def admin_search_riders(request):
         q |= _phone_q(term)
     if term.name:
         q |= Q(user_id__full_name__icontains=term.name)
+    if term.ref_kind == 'rider':
+        # R- is the rider's account id (the console's /riders/<id> key).
+        q |= Q(user_id_id=term.ref_id)
     if q:
         riders = (
             riders_visible_to(request.user)

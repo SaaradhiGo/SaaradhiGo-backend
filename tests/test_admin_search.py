@@ -408,7 +408,7 @@ class TestDrivers:
 
     def test_a_driver_row_carries_what_the_console_needs_and_nothing_more(self, super_admin, world):
         row = results(super_admin.get(DRIVERS, {'q': HYD_DRIVER_PHONE}))[0]
-        assert set(row) == {'type', 'id', 'status', 'approved', 'doc_status', 'city_code', 'user'}
+        assert set(row) == {'type', 'id', 'ref', 'status', 'approved', 'doc_status', 'city_code', 'user'}
         assert row['city_code'] == 'IN-TG-HYD'
         assert set(row['user']) == {'id', 'full_name', 'phone'}
 
@@ -700,3 +700,15 @@ class TestIndexes:
                     assert wanted in plan, (label, plan)
             finally:
                 cursor.execute('RESET enable_seqscan')
+
+
+class TestReadableIds:
+    """Owner, 2026-11-03: the IDs an operator is told ("T-12", "D-3") find the record."""
+
+    def test_refs_parse_to_their_record(self):
+        from servers.search.terms import parse_term
+
+        t = parse_term('T-12')
+        assert (t.kind, t.ref_kind, t.trip_id) == ('ref', 'trip', 12)
+        d = parse_term('d-2231')
+        assert (d.kind, d.ref_kind, d.ref_id) == ('ref', 'driver', 2231)

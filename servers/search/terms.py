@@ -72,6 +72,9 @@ class Term:
     plate: str | None = None        # exact and prefix on the normalised plate
     name: str | None = None         # icontains on full_name
     digits: str = field(default='')
+    # A human-readable record ID ("T-881230", "D-2231", "SOS-1042"; base.refs).
+    ref_kind: str | None = None
+    ref_id: int | None = None
 
     @property
     def searches_phones(self):
@@ -94,6 +97,14 @@ def parse_term(raw):
 
     if _DIGITS_ONLY.match(text):
         return _number(text)
+
+    from base.refs import parse as parse_ref
+
+    ref = parse_ref(text)
+    if ref is not None:
+        kind, pk = ref
+        return Term(raw=text, kind='ref', ref_kind=kind, ref_id=pk,
+                    trip_id=pk if kind == 'trip' else None)
 
     if _PHONE_SHAPE.match(text):
         return _phone(text)

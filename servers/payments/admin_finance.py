@@ -28,7 +28,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from django.conf import settings
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, F as DbF, Q, Sum
 from django.db.models.functions import TruncDate
 from django.http import HttpResponse
 from django.utils import timezone
@@ -425,8 +425,11 @@ def sorted_by(request, queryset, sorts, default):
     if key not in sorts:
         raise BadParam('ordering', f'ordering must be one of {", ".join(sorted(sorts))} '
                                    f'(prefix - for descending).')
-    prefix = '-' if ordering.startswith('-') else ''
-    return queryset.order_by(f'{prefix}{sorts[key]}', f'{prefix}id')
+    # Empty values (not processed yet, no city) go last both ways.
+    field = DbF(sorts[key])
+    if ordering.startswith('-'):
+        return queryset.order_by(field.desc(nulls_last=True), '-id')
+    return queryset.order_by(field.asc(nulls_last=True), 'id')
 
 
 def payouts_queryset(request, permission=READ, *, apply_status=True):

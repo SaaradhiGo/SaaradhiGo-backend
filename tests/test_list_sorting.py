@@ -16,6 +16,7 @@ from finance_world import build_world, operator
 from servers.admin_access.models import GeoNode
 from servers.approvals import service
 from servers.approvals.actions import SUPPORT_REFUND
+from servers.approvals.models import ApprovalRequest
 from servers.driver.models import WithdrawalRequest
 
 pytestmark = pytest.mark.django_db
@@ -98,6 +99,14 @@ class TestApprovals:
         down = [r['amount'] for r in results(client.get(f'{APPROVALS}?ordering=-amount'))]
         assert up == [5_000_000, 7_000_000, 9_000_000]
         assert down == list(reversed(up))
+
+    def test_requests_with_no_amount_go_last_both_ways(self, rows, geo):
+        client, made = rows
+        ApprovalRequest.objects.filter(pk=made[1].pk).update(amount=None)
+        down = [r['amount'] for r in results(client.get(f'{APPROVALS}?ordering=-amount'))]
+        up = [r['amount'] for r in results(client.get(f'{APPROVALS}?ordering=amount'))]
+        assert down == [7_000_000, 5_000_000, None]
+        assert up == [5_000_000, 7_000_000, None]
 
     def test_an_unknown_sort_is_refused(self, rows):
         client, _ = rows

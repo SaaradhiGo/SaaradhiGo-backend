@@ -43,6 +43,20 @@ from .registry import registered_actions
 from .scope import may_act, visible
 
 
+#: `?ordering=` on the request list: the console's column sorts, done by the database.
+SORTS = {
+    'id': 'id',
+    'requested': 'requested_at',
+    'decided': 'decided_at',
+    'expires': 'expires_at',
+    'amount': 'amount',
+    'status': 'status',
+    'action': 'action_key',
+    'maker': 'maker_label',
+}
+DEFAULT_SORT = '-requested'
+
+
 def _paginate(request, queryset, page_size=20, max_page_size=100):
     paginator = PageNumberPagination()
     paginator.page_size = page_size
@@ -140,7 +154,8 @@ def _not_found(request_id):
 def list_requests(request):
     """Requests in the caller's scope.
 
-    Filters: `?status=`, `?action=`, `?mine=1` (I am the maker),
+    Sorted by `?ordering=` (one of `SORTS`, prefix `-` for descending;
+    newest first by default). Filters: `?status=`, `?action=`, `?mine=1` (I am the maker),
     `?pending_for_me=1` (open and decidable by the caller -- the checker's
     queue), `?self_approved=1` (decided by their own maker under
     APPROVALS_SOLO_SUPER_ADMIN), `?target_type=&target_id=`.
@@ -181,7 +196,16 @@ def list_requests(request):
     if target_id:
         rows = rows.filter(target_id=target_id)
 
-    return _paginate(request, rows.order_by('-requested_at', '-id'))
+    ordering = (request.query_params.get('ordering') or DEFAULT_SORT).strip()
+    key = ordering.lstrip('-')
+    if key not in SORTS:
+        return error_response(
+            code='INVALID_ORDERING', message='Unknown sort', field='ordering',
+            issue=f'ordering must be one of {", ".join(sorted(SORTS))} (prefix - for descending)',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    prefix = '-' if ordering.startswith('-') else ''
+    return _paginate(request, rows.order_by(f'{prefix}{SORTS[key]}', f'{prefix}id'))
 
 
 @api_view(['GET'])

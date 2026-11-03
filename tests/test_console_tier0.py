@@ -236,3 +236,14 @@ def test_the_safety_board_puts_each_case_in_its_lane(world):
     assert [r['id'] for r in board['lanes']['responding']] == [incident.id]
     assert board['last_24h']['raised'] == 1
     assert board['last_24h']['acknowledged_within_target'] == 1
+
+
+def test_the_trip_list_finds_unfulfilled_trips(world, geo):
+    from test_sos_support_zones_matrix import operator as op
+
+    client, _ = op('super_admin', geo)
+    Trip.objects.filter(pk=world['hyd_trip'].pk).update(status_id=_status('cancelled'), accepted_at=None)
+    rows = client.get('/api/v1/ride/admin/trips/?status=cancelled&accepted=false').json()['data']['results']
+    assert world['hyd_trip'].id in [r['id'] for r in rows]
+    rows = client.get('/api/v1/ride/admin/trips/?accepted=true').json()['data']['results']
+    assert world['hyd_trip'].id not in [r['id'] for r in rows]

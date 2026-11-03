@@ -59,6 +59,8 @@ flipped to approved) carry the checker, not nobody.
 import logging
 from dataclasses import dataclass
 
+from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework import status as http
@@ -67,7 +69,10 @@ from base.countries import COUNTRIES, get_country
 from base.money import is_supported
 from base.permissions import is_operator
 from base.utils import error_response
+from servers.admin_access import breakglass
+from servers.admin_access.access import is_super_admin
 from servers.admin_access.bridge import granted
+from servers.admin_access.models import AdminAssignment
 from servers.admin_audit.context import audit_context
 from servers.admin_audit.services import record_admin_action
 
@@ -258,6 +263,7 @@ def _facts(row):
         'policy_version': row.policy.version if row.policy_id else None,
         'maker_limit': row.policy.maker_limit if row.policy_id else None,
         'idempotency_key': row.idempotency_key,
+        'self_approved': row.self_approved,
     }
 
 
@@ -470,13 +476,8 @@ def _lock(request_or_id):
     return ApprovalRequest.objects.select_for_update().get(pk=pk)
 
 
-def _check_checker(row, checker):
-    """The three questions, in the order that leaks least.
-
-    Capability anywhere? (403.) In this request's scope? (404 -- the row
-    does not exist for this checker.) The action's own capability there?
-    (403.) Not the maker? (403.)
-    """
+def _may_check(row, checker):
+    """The three authority questions of `_check_checker`, raising as it does."""
     allowed, _how = granted(checker, 'approval.check')
     if not allowed:
         raise NotPermitted('You do not hold approval.check.',
@@ -490,11 +491,68 @@ def _check_checker(row, checker):
             f'request\'s scope, as well as approval.check.',
             code='CHECKER_LACKS_ACTION_CAPABILITY',
         )
-    if checker.pk == row.maker_id:
+
+
+def _check_checker(row, checker):
+    """The three questions, in the order that leaks least.
+
+    Capability anywhere? (403.) In this request's scope? (404 -- the row
+    does not exist for this checker.) The action's own capability there?
+    (403.) Not the maker? (403, unless `self_approval_allowed`.)
+    """
+    _may_check(row, checker)
+    if checker.pk == row.maker_id and not self_approval_allowed(row, checker):
         raise NotPermitted(
             'The checker must be a different admin from the maker.',
             code='SELF_APPROVAL',
         )
+
+
+#: Shortest reason a self-approval may carry; no second person is looking.
+SELF_APPROVAL_MIN_REASON = 10
+
+
+def _possible_checkers(row):
+    """Active, non-break-glass operators other than the maker who may check `row`.
+
+    Candidates are superusers and holders of an active assignment whose role
+    carries `approval.check` (nobody else can pass the first question); each
+    is then asked the same three questions a checker is asked at the button.
+    """
+    holders = {
+        a.admin_id for a in AdminAssignment.objects
+        .filter(is_active=True, role__is_active=True, admin__is_active=True)
+        .select_related('role')
+        if 'approval.check' in (a.role.permissions or [])
+    }
+    users = get_user_model().objects.filter(is_active=True).exclude(pk=row.maker_id)
+    candidates = users.filter(pk__in=holders) | users.filter(is_superuser=True)
+    for user in candidates.distinct().order_by('pk'):
+        if breakglass.is_break_glass(user):
+            continue
+        try:
+            _may_check(row, user)
+        except ApprovalError:
+            continue
+        yield user
+
+
+def self_approval_allowed(row, user):
+    """May `user` decide a request they raised themselves? (owner, 2026-11-03)
+
+    Only while `APPROVALS_SOLO_SUPER_ADMIN` is on, only for a Super Admin who
+    is not a break-glass account, and only while NO other active operator
+    could check this row, so the exception stops applying on its own the day
+    a second real checker is assigned. Everything else a checker is asked
+    (`approval.check`, scope, the action's capability) still applies.
+    """
+    if not getattr(settings, 'APPROVALS_SOLO_SUPER_ADMIN', False):
+        return False
+    if user is None or user.pk != row.maker_id:
+        return False
+    if not is_super_admin(user) or breakglass.is_break_glass(user):
+        return False
+    return next(_possible_checkers(row), None) is None
 
 
 _CHECKER_WORDS = {
@@ -510,7 +568,7 @@ def checker_problem(row, user):
     The same three questions `_check_checker` asks when they press the button,
     asked early so the console can show the buttons only to someone who can use them.
     """
-    if user.pk == row.maker_id:
+    if user.pk == row.maker_id and not self_approval_allowed(row, user):
         return _CHECKER_WORDS['SELF_APPROVAL']
     try:
         _check_checker(row, user)
@@ -550,14 +608,30 @@ def _is_overdue(row):
     return row.status == REQUESTED and row.is_past_expiry
 
 
+def _require_self_reason(row, own, reason):
+    """A maker deciding their own open request must say why (owner, 2026-11-03)."""
+    if own and row.status == REQUESTED and len((reason or '').strip()) < SELF_APPROVAL_MIN_REASON:
+        raise InvalidRequest(
+            f'Deciding your own request needs a reason of at least '
+            f'{SELF_APPROVAL_MIN_REASON} characters.',
+            code='REASON_REQUIRED', field='reason',
+        )
+
+
 def approve(request, checker, reason='', http_request=None):
     """The checker says yes; the executor runs once; the row records both.
 
-    Returns the row. Raises on any refusal; see `_check_checker`.
+    Returns the row. Raises on any refusal; see `_check_checker`. A maker
+    deciding their own request (`self_approval_allowed`) must give a reason,
+    and the row and its audit say self-approved. Blockers are not skipped:
+    the executor refuses a payout with no destination exactly as it does
+    for a second checker.
     """
     with transaction.atomic():
         row = _lock(request)
         _check_checker(row, checker)
+        own = checker.pk == row.maker_id
+        _require_self_reason(row, own, reason)
         overdue = _is_overdue(row)
         if overdue:
             pass  # expired outside this block, see `_expired`
@@ -572,11 +646,17 @@ def approve(request, checker, reason='', http_request=None):
             before = _facts(row)
             row.status = APPROVED
             row.set_checker(checker)
+            row.self_approved = own
             row.decided_at = timezone.now()
             row.decision_reason = (reason or '')[:10000]
             row.save()
-            _audit(row, 'approval_approved', actor=checker, http_request=http_request,
-                   before=before, reason=reason)
+            if own:
+                _audit(row, 'approval_self_approved', actor=checker,
+                       http_request=http_request, before=before, reason=reason,
+                       after={**_facts(row), 'APPROVALS_SOLO_SUPER_ADMIN': True})
+            else:
+                _audit(row, 'approval_approved', actor=checker, http_request=http_request,
+                       before=before, reason=reason)
     if overdue:
         raise _expired(row)
 
@@ -600,6 +680,8 @@ def reject(request, checker, reason, http_request=None):
     with transaction.atomic():
         row = _lock(request)
         _check_checker(row, checker)
+        own = checker.pk == row.maker_id
+        _require_self_reason(row, own, reason)
         overdue = _is_overdue(row)
         if overdue:
             pass  # expired outside this block, see `_expired`
@@ -614,6 +696,7 @@ def reject(request, checker, reason, http_request=None):
             before = _facts(row)
             row.status = REJECTED
             row.set_checker(checker)
+            row.self_approved = own
             row.decided_at = timezone.now()
             row.decision_reason = reason[:10000]
             row.save()

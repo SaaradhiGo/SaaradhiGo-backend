@@ -25,6 +25,7 @@ a single request is decided inside the service: out of scope is 404,
 identical to a missing id.
 """
 
+from django.conf import settings
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.pagination import PageNumberPagination
@@ -49,6 +50,9 @@ def _paginate(request, queryset, page_size=20, max_page_size=100):
     paginator.max_page_size = max_page_size
     page = paginator.paginate_queryset(queryset, request)
     body = paginator.get_paginated_response([shown(row, request.user) for row in page]).data
+    # Whether the sole-Super-Admin exception is switched on here, so the
+    # Command Centre can say so (owner, 2026-11-03).
+    body['self_approval_on'] = bool(settings.APPROVALS_SOLO_SUPER_ADMIN)
     return success_response(body, status.HTTP_200_OK)
 
 
@@ -93,7 +97,11 @@ def shown(row, user):
         data['can_decide'] = problem is None
         data['cannot_decide_reason'] = problem
         data['can_cancel'] = row.maker_id == user.pk
+        # Decidable only through the sole-Super-Admin exception: the console
+        # asks for a reason and says it will be recorded as self-approved.
+        data['self_approval'] = problem is None and row.maker_id == user.pk
     else:
+        data['self_approval'] = False
         data['can_decide'] = False
         data['cannot_decide_reason'] = None
         data['can_cancel'] = False
@@ -133,9 +141,9 @@ def list_requests(request):
     """Requests in the caller's scope.
 
     Filters: `?status=`, `?action=`, `?mine=1` (I am the maker),
-    `?pending_for_me=1` (open, raised by somebody else -- the checker's
-    queue; whether the caller may actually check each one is decided when
-    they try), `?target_type=&target_id=`.
+    `?pending_for_me=1` (open and decidable by the caller -- the checker's
+    queue), `?self_approved=1` (decided by their own maker under
+    APPROVALS_SOLO_SUPER_ADMIN), `?target_type=&target_id=`.
     """
     rows = visible(request.user, ApprovalRequest.objects.select_related('scope_node', 'policy'))
 
@@ -156,10 +164,16 @@ def list_requests(request):
     if request.query_params.get('pending_for_me') in ('1', 'true'):
         # Only what THIS caller can decide: a request they would be refused on is
         # not waiting for them (owner's new-hire run, 2026-11-03).
-        rows = rows.filter(status=REQUESTED).exclude(maker_id=request.user.pk)
+        # Their own requests count only under the sole-Super-Admin exception,
+        # which `checker_problem` decides per row.
+        rows = rows.filter(status=REQUESTED)
+        if not settings.APPROVALS_SOLO_SUPER_ADMIN:
+            rows = rows.exclude(maker_id=request.user.pk)
         decidable = [r.pk for r in rows.select_related('scope_node', 'policy')[:500]
                      if service.checker_problem(r, request.user) is None]
         rows = rows.filter(pk__in=decidable)
+    if request.query_params.get('self_approved') in ('1', 'true'):
+        rows = rows.filter(self_approved=True)
     target_type = (request.query_params.get('target_type') or '').strip()
     if target_type:
         rows = rows.filter(target_type=target_type)

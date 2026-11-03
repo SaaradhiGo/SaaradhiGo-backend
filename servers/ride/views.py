@@ -638,7 +638,7 @@ def trip_driver_details(request,trip_id):
     data = {
         'id': trip.id,
         'status': trip.status_id.status_code if trip.status_id else 'pending',
-        'driver_name': str(trip.driver_id) if trip.driver_id else None,
+        'driver_name': trip.driver_id.public_name if trip.driver_id else None,
         'driver_phone': trip.driver_id.user_id.phone_number if trip.driver_id and trip.driver_id.user_id else None,
         'driver_rating': str(trip.driver_id.ratings) if trip.driver_id else None,
         'vehicle_info': None,

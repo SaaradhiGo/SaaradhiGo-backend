@@ -97,6 +97,16 @@ class Driver(models.Model):
 
     def __str__(self) -> str:
         return self.user_id.full_name if self.user_id.full_name else self.user_id.phone_number
+
+    @property
+    def public_name(self) -> str:
+        """The driver's name as a rider may see it: never a phone number.
+
+        `str(driver)` falls back to the phone number when no name is on file,
+        and the rider-facing payloads used it, so a rider's driver card read
+        "+91..." (product phase 1 emulator run). Contacts stay masked.
+        """
+        return (self.user_id.full_name or '').strip() or 'Your driver'
 class VehicleType(models.Model):
     type=models.CharField(max_length=50,unique=True)
     description=models.TextField(blank=True,null=True)

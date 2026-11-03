@@ -58,7 +58,7 @@ class TripListSerializer(serializers.ModelSerializer):
 
     def get_driver_name(self, obj):
         if obj.driver_id:
-            return str(obj.driver_id)
+            return obj.driver_id.public_name
         return None
 
     def get_vehicle_info(self, obj):

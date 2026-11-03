@@ -400,6 +400,35 @@ def settlements_queryset(request, permission=READ):
     return qs.order_by('-settled_at', '-id'), filters, None
 
 
+#: `?ordering=` on the payouts list: the console's column sorts, done by the
+#: database over every page, never in the browser. Prefix `-` for descending.
+PAYOUT_SORTS = {
+    'id': 'id',
+    'requested': 'requested_at',
+    'processed': 'processed_at',
+    'amount': 'amount_minor',
+    'status': 'status',
+    'driver': 'driver__user_id__full_name',
+    'city': 'driver__home_city__name',
+}
+PAYOUT_DEFAULT_SORT = '-requested'
+
+
+def sorted_by(request, queryset, sorts, default):
+    """`queryset` in the `?ordering=` the caller asked for, ties broken by id.
+
+    An unknown field is refused (BadParam -> 400) rather than ignored, so a
+    console column can never look sorted when it is not.
+    """
+    ordering = (request.query_params.get('ordering') or default).strip()
+    key = ordering.lstrip('-')
+    if key not in sorts:
+        raise BadParam('ordering', f'ordering must be one of {", ".join(sorted(sorts))} '
+                                   f'(prefix - for descending).')
+    prefix = '-' if ordering.startswith('-') else ''
+    return queryset.order_by(f'{prefix}{sorts[key]}', f'{prefix}id')
+
+
 def payouts_queryset(request, permission=READ, *, apply_status=True):
     node, refusal = _scope_node(request)
     if refusal:
@@ -432,7 +461,7 @@ def payouts_queryset(request, permission=READ, *, apply_status=True):
     if state and apply_status:
         qs = qs.filter(status=state)
         filters['status'] = state
-    return qs.order_by('-requested_at', '-id'), filters, None, counted
+    return sorted_by(request, qs, PAYOUT_SORTS, PAYOUT_DEFAULT_SORT), filters, None, counted
 
 
 # ---------------------------------------------------------------------------

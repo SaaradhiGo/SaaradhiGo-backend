@@ -346,6 +346,17 @@ def _admin_transition(request, sos_id, target):
     if _scoped_event_or_none(request, sos_id) is None:
         return _not_found(sos_id)
 
+    return _apply_transition(sos_id, target, request.user, note)
+
+
+def _apply_transition(sos_id, target, actor, note, refuse_if_resolved=False):
+    """The one write path for an SOS status change, for operators and raisers.
+
+    Locks the row, records the append-only update and notes it on the case
+    file. Re-sending the current status is a no-op answered 200.
+    `refuse_if_resolved` is checked under the lock, so a raiser cannot undo a
+    resolution an operator committed a moment earlier.
+    """
     try:
         with transaction.atomic():
             try:
@@ -358,21 +369,29 @@ def _admin_transition(request, sos_id, target):
                     {'sos_id': event.id, 'status': event.status},
                     status.HTTP_200_OK,
                 )
+            if refuse_if_resolved and event.status == 'resolved':
+                return error_response(
+                    code='SOS_ALREADY_RESOLVED',
+                    message='This alert has already been resolved by the safety team.',
+                    field='sos_id',
+                    issue=f'SOS {sos_id} is resolved',
+                    status=status.HTTP_409_CONFLICT,
+                )
             event.status = target
             event.save(update_fields=['status'])
             SOSEventUpdate.objects.create(
                 event=event,
-                actor=request.user,
-                actor_label=_user_label(request.user),
+                actor=actor,
+                actor_label=_user_label(actor),
                 new_status=target,
                 note=note,
             )
             # The case file shows what the responders did to the alarm.
             from servers.safety.services import note_on_sos_transition
 
-            note_on_sos_transition(event, target, request.user, note)
+            note_on_sos_transition(event, target, actor, note)
     except Exception as e:
-        logger.exception(f"_admin_transition: failed: {e}")
+        logger.exception(f"_apply_transition: failed: {e}")
         return error_response(
             code='INTERNAL_ERROR',
             message='Failed to update SOS event',
@@ -385,6 +404,30 @@ def _admin_transition(request, sos_id, target):
         {'sos_id': event.id, 'status': event.status},
         status.HTTP_200_OK,
     )
+
+
+#: Written on the update row when the raiser says the alert was a mistake.
+RAISER_MISTAKE_NOTE = 'The person who raised this alert reported it was a mistake.'
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def raiser_mistake_sos(request, sos_id):
+    """The raiser's "Tap if this was a mistake" (owner decision D4, 2026-11-02).
+
+    The alert is sent the moment the hold completes; this is the way back. It
+    goes through the same transition as an operator's false alarm, so the
+    append-only update row and the case-file note say who closed it and why.
+    Only the raiser may call it, and only while the alert is still active: an
+    alert ops have resolved stays resolved.
+    """
+    if not SOSEvent.objects.filter(id=sos_id, user=request.user).exists():
+        return _not_found(sos_id)
+    logger.warning('sos_raiser_mistake', extra={
+        'event': 'sos_raiser_mistake', 'sos_id': sos_id, 'user_id': request.user.id,
+    })
+    return _apply_transition(sos_id, 'false_alarm', request.user, RAISER_MISTAKE_NOTE,
+                             refuse_if_resolved=True)
 
 
 @api_view(['GET'])

@@ -1,5 +1,6 @@
 
 from pathlib import Path
+import json
 import os
 import logging
 logger = logging.getLogger(__name__)
@@ -1176,6 +1177,19 @@ PAYOUT_PROVIDERS = _provider_table("PAYOUT_PROVIDERS_JSON", {"IN": "razorpay", "
 # rider stared at "finding a driver" for ten minutes; the rolling fanout
 # below has fully played out well before 90s.
 TRIP_ACCEPT_TIMEOUT_SECONDS=int(os.environ.get("TRIP_ACCEPT_TIMEOUT_SECONDS", "90"))
+
+# SaaradhiGo's own support line per country, as JSON: {"IN": "+91...", "US": "+1..."}.
+# Published in app-config (`country.support.phone`); the apps hide the support
+# call row while a country has none. Never a placeholder: a number that rings
+# nobody is worse than no number (PRODUCT_AUDIT §8, go-live #27).
+try:
+    SUPPORT_PHONE_NUMBERS = {
+        str(k).upper(): str(v).strip()
+        for k, v in json.loads(os.environ.get("SUPPORT_PHONE_NUMBERS") or "{}").items()
+        if str(v).strip()
+    }
+except (ValueError, AttributeError):
+    SUPPORT_PHONE_NUMBERS = {}
 
 # Grace on top of the accept timeout before the durable sweep steps in, so the
 # normal countdown path wins and the sweep stays a backstop rather than a race.

@@ -918,7 +918,10 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             'driver_id': event.get('driver_id'),
             'driver_name': event.get('driver_name', ''),
         }
-        
+        # Why a trip was cancelled (e.g. `no_driver_accepted`). Additive.
+        if event.get('reason'):
+            response_data['reason'] = event['reason']
+
         # Add driver info and OTP if the ride was accepted
         if event['status'] == 'accept':
             if 'otp' in event:
@@ -1793,6 +1796,9 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             'message': event.get('message', ''),
             'driver_id': event.get('driver_id'),
         }
+        # Why a trip was cancelled (e.g. `no_driver_accepted`). Additive.
+        if event.get('reason'):
+            payload['reason'] = event['reason']
 
         if getattr(self, 'participation', None) == 'rider':
             otp = event.get('otp')

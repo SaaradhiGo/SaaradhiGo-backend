@@ -356,7 +356,10 @@ def encode(points):
 
 LINE = [(17.30, 78.30), (17.49, 78.49)]
 POLYLINE = encode(LINE)
-DIRECTIONS = {'status': 'OK', 'routes': [{'overview_polyline': {'points': POLYLINE}}]}
+DIRECTIONS = {'status': 'OK', 'routes': [{
+    'legs': [{'distance': {'value': 1000}, 'duration': {'value': 120}}],
+    'overview_polyline': {'points': POLYLINE}}]}
+ROUTE = {'distance_m': 1000.0, 'duration_s': 120.0, 'polyline': POLYLINE, 'route': DIRECTIONS['routes'][0]}
 
 
 class TestGeometry:
@@ -585,13 +588,13 @@ class TestPlannedRouteOnAccept:
         trip, driver_user = accepting
         with mock.patch('servers.ride.maps_utils.google_directions') as maps, \
                 mock.patch('servers.redis_client.get_cached_map_data',
-                           return_value=DIRECTIONS) as cache:
+                           return_value=ROUTE) as cache:
             with django_capture_on_commit_callbacks(execute=True):
                 accept(trip, driver_user)
 
         trip.refresh_from_db()
         assert maps.call_count == 0
-        assert cache.call_args.args[0] == 'maps:directions:17.3,78.3:17.49,78.49'
+        assert cache.call_args.args[0] == 'maps:route:v1:17.3,78.3:17.49,78.49'
         assert trip.planned_route_polyline == POLYLINE and trip.planned_route_source == 'maps_cache'
 
     def test_a_trip_that_already_has_a_route_is_not_fetched_again(self, accepting):

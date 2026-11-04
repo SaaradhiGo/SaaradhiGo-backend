@@ -31,6 +31,9 @@ class _Resp:
     status_code = 200
     text = ''
 
+    def raise_for_status(self):
+        pass
+
     def json(self):
         return {'routes': [{'distanceMeters': 2400, 'duration': '420s'}]}
 

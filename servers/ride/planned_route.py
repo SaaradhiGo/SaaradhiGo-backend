@@ -11,18 +11,15 @@ wrapped: a broker that is down is logged, never raised.
 
 WHAT IT CALLS
 -------------
-Pickup to drop, through the existing `maps_utils.google_directions` (the same
+Pickup to drop, through `route_cache.get_route` (which wraps `maps_utils.google_directions`) (the same
 adapter, key, Routes/Directions switch and failure reporting every maps call
 uses). No new vendor, no new API product, no new key.
 
 REUSE, NOT A SECOND CALL
 ------------------------
-The booking flow's `/ride/maps/directions/` proxy caches its answer for five
-minutes under `maps:directions:<lat>,<lng>:<lat>,<lng>` (four decimals). If
-that entry is there for this trip's pickup and drop, its polyline is used and
-the source is recorded as `maps_cache`; otherwise one Directions call is made
-and the source is `directions`. (The fare estimate caches only distance and
-duration, never a polyline, so it cannot be reused for this.)
+The quote, `/ride/maps/directions/` and this task share one cached route per
+rounded pickup/drop pair (`route_cache`). A hit records source `maps_cache`;
+a miss makes the one call and records `directions`.
 
 FAILURE IS A NULL
 -----------------
@@ -51,20 +48,6 @@ SOURCE_DIRECTIONS = 'directions'
 PLANNED_ROUTE_RATE = '60/m'
 
 
-def directions_cache_key(o_lat, o_lng, d_lat, d_lng):
-    """The key `ride.views.proxy_directions` writes (4 decimal places)."""
-    o_lat, o_lng, d_lat, d_lng = (round(float(v), 4) for v in (o_lat, o_lng, d_lat, d_lng))
-    return f'maps:directions:{o_lat},{o_lng}:{d_lat},{d_lng}'
-
-
-def polyline_of(result):
-    """The encoded polyline in a (legacy-shaped) directions result, or ''."""
-    try:
-        return (result['routes'][0]['overview_polyline']['points'] or '').strip()
-    except (KeyError, IndexError, TypeError):
-        return ''
-
-
 def schedule_planned_route(trip_id):
     """Register the fetch to run after the surrounding transaction commits.
 
@@ -87,29 +70,20 @@ def schedule_planned_route(trip_id):
 
 def fetch_planned_route(trip):
     """`(polyline, source)` for the trip, or `(None, reason)` on any failure."""
-    from servers.redis_client import get_cached_map_data
-
-    o_lat, o_lng = trip.pickup_lat, trip.pickup_long
-    d_lat, d_lng = trip.destination_lat, trip.destination_long
-    try:
-        cached = get_cached_map_data(directions_cache_key(o_lat, o_lng, d_lat, d_lng))
-    except Exception:  # noqa: BLE001 - the cache is advisory
-        cached = None
-    line = polyline_of(cached) if isinstance(cached, dict) else ''
-    if line:
-        return line, SOURCE_CACHE
-
     from servers.ride import maps_utils
+    from servers.ride.route_cache import get_route
 
-    result = maps_utils.google_directions(
-        round(float(o_lat), 4), round(float(o_lng), 4),
-        round(float(d_lat), 4), round(float(d_lng), 4))
-    if result is None:
+    try:
+        route, from_cache = get_route(
+            trip.pickup_lat, trip.pickup_long, trip.destination_lat, trip.destination_long)
+    except Exception:  # noqa: BLE001
+        return None, 'no_result'
+    if route is None:
         return None, maps_utils.MapsFailure.reason() or 'no_result'
-    line = polyline_of(result)
+    line = (route.get('polyline') or '').strip()
     if not line:
         return None, 'empty_route'
-    return line, SOURCE_DIRECTIONS
+    return line, SOURCE_CACHE if from_cache else SOURCE_DIRECTIONS
 
 
 def store_planned_route_for(trip_id):

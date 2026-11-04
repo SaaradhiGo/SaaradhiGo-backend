@@ -1408,6 +1408,9 @@ from servers.ride.maps_utils import (
 )
 
 
+AUTOCOMPLETE_CACHE_TTL_SECONDS = 3600
+
+
 def _maps_error_response():
     """Turn the adapter's failure reason into an answer that explains itself.
 
@@ -1483,12 +1486,14 @@ def proxy_geocode(request):
     if cached_data:
         return success_response(cached_data, status.HTTP_200_OK)
 
-    result = google_places_autocomplete(search_text, location=location)
+    session_token = request.query_params.get('session_token') or request.data.get('session_token')
+    result = google_places_autocomplete(
+        search_text, location=location, session_token=session_token)
     if result is None:
         return _maps_error_response()
 
-    # Cache for 30 days
-    cache_map_data(cache_key, result, ttl_seconds=30*24*60*60)
+    # Short TTL: predictions go stale, and the key ignores the session token.
+    cache_map_data(cache_key, result, ttl_seconds=AUTOCOMPLETE_CACHE_TTL_SECONDS)
     return success_response(result, status.HTTP_200_OK)
 
 
@@ -1565,7 +1570,7 @@ def proxy_place_details(request):
         )
 
     place_id = request.data.get('place_id')
-    session_token = request.data.get('session_token')
+    session_token = request.query_params.get('session_token') or request.data.get('session_token')
 
     if not place_id:
         return error_response(
@@ -1658,15 +1663,10 @@ def proxy_directions(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    cache_key = f"maps:directions:{origin_lat},{origin_lng}:{dest_lat},{dest_lng}"
-    cached_data = get_cached_map_data(cache_key)
-    if cached_data:
-        return success_response(cached_data, status.HTTP_200_OK)
+    from servers.ride.route_cache import get_route
 
-    result = google_directions(origin_lat, origin_lng, dest_lat, dest_lng)
-    if result is None:
+    route, _ = get_route(origin_lat, origin_lng, dest_lat, dest_lng)
+    if route is None:
         return _maps_error_response()
 
-    # Cache for 5 minutes
-    cache_map_data(cache_key, result, ttl_seconds=300)
-    return success_response(result, status.HTTP_200_OK)
+    return success_response({'status': 'OK', 'routes': [route['route']]}, status.HTTP_200_OK)

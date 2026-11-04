@@ -57,6 +57,8 @@ import threading
 import requests
 from django.conf import settings
 
+from servers.ride import maps_meter
+
 logger = logging.getLogger(__name__)
 
 # Read lazily. This used to be a module-level constant, so a key supplied
@@ -259,6 +261,7 @@ def _autocomplete_legacy(search_text, location, radius, country, session_token):
         params['sessiontoken'] = session_token
 
     try:
+        maps_meter.record('places_autocomplete_session' if session_token else 'places_autocomplete')
         response = requests.get(
             'https://maps.googleapis.com/maps/api/place/autocomplete/json',
             params=params, timeout=5,
@@ -293,6 +296,7 @@ def _autocomplete_new(search_text, location, radius, country, session_token):
         body['sessionToken'] = session_token
 
     try:
+        maps_meter.record('places_autocomplete_session' if session_token else 'places_autocomplete')
         response = requests.post(
             'https://places.googleapis.com/v1/places:autocomplete',
             json=body,
@@ -379,6 +383,7 @@ def _place_details_legacy(place_id, session_token):
         params['sessiontoken'] = session_token
 
     try:
+        maps_meter.record('places_details')
         response = requests.get(
             'https://maps.googleapis.com/maps/api/place/details/json',
             params=params, timeout=5,
@@ -411,6 +416,7 @@ def _place_details_new(place_id, session_token):
         params['sessionToken'] = session_token
 
     try:
+        maps_meter.record('places_details')
         response = requests.get(
             f'https://places.googleapis.com/v1/{name}',
             params=params,
@@ -472,6 +478,7 @@ def google_geocode(address=None, latlng=None, country=None):
         return _fail(INVALID_REQUEST, 'neither address nor latlng given')
 
     try:
+        maps_meter.record('geocoding')
         response = requests.get(
             'https://maps.googleapis.com/maps/api/geocode/json',
             params=params, timeout=5,
@@ -484,17 +491,21 @@ def google_geocode(address=None, latlng=None, country=None):
         return _fail(UPSTREAM_ERROR, f'unparseable response: {exc}')
 
 
-def google_directions(origin_lat, origin_lng, dest_lat, dest_lng):
+def google_directions(origin_lat, origin_lng, dest_lat, dest_lng,
+                       routing_preference='TRAFFIC_AWARE'):
+    """Route call. Preference sets the SKU: TRAFFIC_UNAWARE bills Routes Essentials,
+    TRAFFIC_AWARE (and _OPTIMAL) bill Routes Pro. Quotes need traffic; plain map lines do not."""
     MapsFailure.clear()
     if not maps_configured():
         return _fail(NOT_CONFIGURED, 'GOOGLE_MAPS_API_KEY is not set')
 
     if _routing_api_version() == 'legacy':
         return _directions_legacy(origin_lat, origin_lng, dest_lat, dest_lng)
-    return _directions_new(origin_lat, origin_lng, dest_lat, dest_lng)
+    return _directions_new(origin_lat, origin_lng, dest_lat, dest_lng, routing_preference)
 
 
-def _directions_new(origin_lat, origin_lng, dest_lat, dest_lng):
+def _directions_new(origin_lat, origin_lng, dest_lat, dest_lng,
+                    routing_preference='TRAFFIC_AWARE'):
     """Routes API, normalised into the shape the apps already parse.
 
     Directions (Legacy) cannot be enabled on a Google Cloud project created
@@ -510,7 +521,11 @@ def _directions_new(origin_lat, origin_lng, dest_lat, dest_lng):
     so the translation is lossless for everything a client actually uses, and
     no app needs changing.
     """
+    if routing_preference not in ('TRAFFIC_AWARE', 'TRAFFIC_UNAWARE', 'TRAFFIC_AWARE_OPTIMAL'):
+        routing_preference = 'TRAFFIC_AWARE'
     try:
+        maps_meter.record('routes_essentials' if routing_preference == 'TRAFFIC_UNAWARE'
+                          else 'routes_pro')
         response = requests.post(
             'https://routes.googleapis.com/directions/v2:computeRoutes',
             headers={
@@ -531,7 +546,7 @@ def _directions_new(origin_lat, origin_lng, dest_lat, dest_lng):
                     'latitude': float(dest_lat), 'longitude': float(dest_lng),
                 }}},
                 'travelMode': 'DRIVE',
-                'routingPreference': 'TRAFFIC_AWARE',
+                'routingPreference': routing_preference,
             },
             timeout=5,
         )
@@ -605,6 +620,7 @@ def _duration_seconds(value):
 def _directions_legacy(origin_lat, origin_lng, dest_lat, dest_lng):
     """Directions (Legacy), for projects that still have it enabled."""
     try:
+        maps_meter.record('directions_legacy')
         response = requests.get(
             'https://maps.googleapis.com/maps/api/directions/json',
             params={

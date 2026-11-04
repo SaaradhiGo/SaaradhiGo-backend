@@ -258,9 +258,11 @@ def rows():
 
 def status_page():
     from servers.notifications import config as nconfig
+    from servers.ride import maps_meter
 
     return {
         'rows': rows(),
+        'maps_calls': maps_meter.snapshot(7),
         'live_send': nconfig.live_send_enabled(),
         'production': bool(getattr(settings, 'IS_PRODUCTION', False)),
         'live_providers_required': live_providers_required(),

@@ -39,6 +39,9 @@ class _Resp:
     status_code = 200
     text = ''
 
+    def raise_for_status(self):
+        pass
+
     def __init__(self, km, minutes):
         self._km = km
         self._minutes = minutes

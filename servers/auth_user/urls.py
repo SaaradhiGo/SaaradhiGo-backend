@@ -11,6 +11,7 @@ from .views import (
     update_bank_details,
 )
 from .admin_views import admin_list_users, admin_login
+from . import data_request_views as data_requests
 from .dpdp_views import me_export, me_delete
 from .email_auth_views import email_login
 from .invite_views import invite_operator, invite_test_driver, invite_test_rider
@@ -54,6 +55,13 @@ urlpatterns = [
     # Operator invites: `admin.manage` plus a fresh second factor. No
     # password is ever generated or returned -- see invite_views.
     path('admin/invite/', invite_operator),
+
+    # Data export and erasure requests (privacy.manage); see data_request_views.
+    path('admin/data-requests/', data_requests.data_requests),
+    path('admin/data-requests/<int:pk>/', data_requests.data_request_detail),
+    path('admin/data-requests/<int:pk>/export/', data_requests.data_request_export),
+    path('admin/data-requests/<int:pk>/erase/', data_requests.data_request_erase),
+    path('admin/data-requests/<int:pk>/refuse/', data_requests.data_request_refuse),
 
     # The signed-in operator's OWN second factor: status, and a fresh set
     # of recovery codes against a live authenticator code. Self-service,

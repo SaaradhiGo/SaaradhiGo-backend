@@ -167,3 +167,48 @@ class customUser(AbstractUser):
 
         erasure.refuse_if_undeletable(self)
         return super().delete(*args, **kwargs)
+
+
+class DataRequest(models.Model):
+    """A rider's or driver's request to export or erase their data (DPDP / CCPA).
+
+    Self-service requests from the app are logged here already completed;
+    ones arriving by email or ticket are handled from the console. Erasure
+    always runs through a second approver (`privacy.erasure`).
+    """
+
+    EXPORT, ERASURE = 'export', 'erasure'
+    KIND_CHOICES = [(EXPORT, 'Export'), (ERASURE, 'Erasure')]
+    APP, EMAIL, TICKET, OTHER = 'app', 'email', 'ticket', 'other'
+    CHANNEL_CHOICES = [(APP, 'In the app'), (EMAIL, 'Email'), (TICKET, 'Support ticket'),
+                       (OTHER, 'Other')]
+    OPEN, WAITING, COMPLETED, REFUSED = 'open', 'waiting_approval', 'completed', 'refused'
+    STATUS_CHOICES = [(OPEN, 'Open'), (WAITING, 'Waiting for approval'),
+                      (COMPLETED, 'Completed'), (REFUSED, 'Refused')]
+
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES)
+    subject = models.ForeignKey('auth_user.customUser', on_delete=models.PROTECT,
+                                related_name='data_requests')
+    subject_role = models.CharField(max_length=10)
+    country = models.CharField(max_length=2, blank=True, default='')
+    channel = models.CharField(max_length=10, choices=CHANNEL_CHOICES)
+    reference = models.CharField(max_length=128, blank=True, default='')
+    note = models.TextField(blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=OPEN,
+                              db_index=True)
+    received_at = models.DateTimeField(db_index=True)
+    due_at = models.DateTimeField()
+    closed_at = models.DateTimeField(null=True, blank=True)
+    outcome = models.TextField(blank=True, default='')
+    approval_request = models.ForeignKey('approvals.ApprovalRequest', on_delete=models.PROTECT,
+                                         null=True, blank=True, related_name='+')
+    created_by = models.ForeignKey('auth_user.customUser', on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='+')
+    handled_by = models.ForeignKey('auth_user.customUser', on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='+')
+
+    class Meta:
+        ordering = ['-received_at', '-id']
+
+    def __str__(self):
+        return f'DataRequest {self.pk} {self.kind} user={self.subject_id} {self.status}'

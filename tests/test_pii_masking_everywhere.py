@@ -641,6 +641,9 @@ INVENTORY = {
     'api/v1/payments/admin/refunds/': False,
     # Vehicle classes: catalogue and zone coverage; no person.
     'api/v1/pricing/admin/vehicle-classes/': False,
+    # Data requests (privacy.manage, Super Admin): names the rider, phone masked.
+    'api/v1/auth/admin/data-requests/': False,
+    'api/v1/auth/admin/data-requests/<int:pk>/': False,
     # Staff and roles (Super Admin only): operators, phone and email masked.
     'api/v1/admin-access/staff/': False,
     'api/v1/admin-access/staff/options/': False,

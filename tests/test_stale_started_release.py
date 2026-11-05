@@ -32,6 +32,7 @@ from decimal import Decimal
 from io import StringIO
 from unittest import mock
 
+from base.money import round_fare
 import pytest
 from django.core.management import call_command
 from django.db import connection, connections
@@ -223,8 +224,9 @@ class TestStandardRule:
         client, _ = operator('city_ops_manager', geo)
         data = release(client, trip).json()['data']
         # 30 + 20 km * 8 + 60 min: about 250.00, far above the 53.00 quote
-        expected = int((Decimal('90') + 8 * Decimal(data['distance_km'])) * 100)
-        assert data['uncapped_fare_minor'] == expected and expected > 25_000
+        # Whole rupees, like every INR fare (owner, 2026-11-05).
+        expected = int(round_fare(Decimal('90') + 8 * Decimal(data['distance_km']), 'INR') * 100)
+        assert data['uncapped_fare_minor'] == expected and expected >= 25_000
         assert data['upfront_price_minor'] == 5_300 and data['capped_fare_minor'] == 5_300
         assert data['cap_applied'] is True and data['rider_pays_minor'] == 5_300
         assert data['commission_minor'] == 1_060 and data['driver_earnings_minor'] == 4_240
@@ -291,7 +293,7 @@ class TestStandardRule:
         trip = started(world, card, km=2, surge_multiplier=Decimal('1.20'))
         client, _ = operator('city_ops_manager', geo)
         data = release(client, trip).json()['data']
-        assert data['uncapped_fare_minor'] == 5_880  # 49.00 * 1.20
+        assert data['uncapped_fare_minor'] == 5_900  # 49.00 * 1.20 = 58.80, a whole 59
         assert data['capped_fare_minor'] == 5_300     # still never above the quote
 
     def test_the_fare_snapshot_records_everything(self, geo, world, card):  # noqa: F811

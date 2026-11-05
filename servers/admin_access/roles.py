@@ -126,6 +126,8 @@ PERMISSIONS = {
     'platform.city_pause': 'Request that a live city is paused (a checker approves)',
     'platform.integrations.read': 'View the integrations status page (no secrets)',
     'approval.check': 'Act as the second approver on a maker-checker request',
+    # Super Admin only: handles data export and erasure requests (erasure needs a checker).
+    'privacy.manage': 'Handle rider and driver data export and erasure requests',
 }
 
 ALL_PERMISSIONS = frozenset(PERMISSIONS)

@@ -45,9 +45,15 @@ def me_export(request):
     handled by a follow-up job for users with deep history. For Phase-0
     riders this is fine; trip volume per rider is small.
     """
-    user = request.user
+    payload = export_payload(request.user)
+    from .data_request_views import log_self_service
+    log_self_service(request.user, 'export')
+    return success_response(payload, status.HTTP_200_OK)
 
-    payload = {
+
+def export_payload(user):
+    """Everything we hold about `user`, one key per domain (also used by the console)."""
+    return {
         'user': _serialize_user(user),
         'rider': _serialize_rider(user),
         'driver': _serialize_driver(user),
@@ -57,7 +63,6 @@ def me_export(request):
         'wallet_transactions': _serialize_wallet_transactions(user),
         'notifications': _serialize_notifications(user),
     }
-    return success_response(payload, status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -87,6 +92,8 @@ def me_delete(request):
 
     try:
         with transaction.atomic():
+            from .data_request_views import log_self_service
+            log_self_service(user, 'erasure')
             anonymise_user(
                 user,
                 reason=reason or 'self-service DPDP delete',

@@ -67,6 +67,7 @@ PLATFORM_CITY_STATUS = 'platform.city_status'
 PLATFORM_FLAG_CHANGE = 'platform.flag_change'
 PLATFORM_APP_VERSION = 'platform.app_version'
 PLATFORM_SETTING_CHANGE = 'platform.setting_change'
+PRIVACY_ERASURE = 'privacy.erasure'
 
 ACTIONS = {
     action.key: action for action in (
@@ -128,6 +129,10 @@ ACTIONS = {
         Action(PLATFORM_APP_VERSION, 'Raise the minimum supported app version',
                'platform.settings'),
         Action(PLATFORM_SETTING_CHANGE, 'Change a sensitive platform setting', 'platform.settings'),
+        # A rider's or driver's data erased on request (DPDP / CCPA). Irreversible, so always a
+        # checker who also holds privacy.manage: a second Super Admin.
+        Action(PRIVACY_ERASURE, 'Erase a rider or driver account on request', 'privacy.manage',
+               always_checker=True),
     )
 }
 

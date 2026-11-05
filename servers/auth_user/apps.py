@@ -18,3 +18,6 @@ class AuthUserConfig(AppConfig):
         from . import session_revocation
 
         session_revocation.connect()
+
+        # The approved-erasure executor (`privacy.erasure`) registers on import.
+        from . import data_request_views  # noqa: F401

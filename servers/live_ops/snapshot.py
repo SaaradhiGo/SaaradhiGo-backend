@@ -15,6 +15,7 @@ the capped dot list, so the status bar is true even when the map says "zoom in".
 
 import logging
 from collections import defaultdict
+from datetime import timedelta
 from django.db.models import Count, Min, Q
 from django.utils import timezone
 
@@ -189,20 +190,31 @@ def _alerts(user, scope, cities, selected, exact):
 
     sos_ids = [a.payload.get('sos_id') for a in alerts
                if a.kind in SOS_ALERT_KINDS and isinstance(a.payload, dict) and a.payload.get('sos_id')]
-    where_is = {
-        e['id']: (e['latitude'], e['longitude'])
-        for e in SOSEvent.objects.filter(id__in=sos_ids).values('id', 'latitude', 'longitude')
+    events = {
+        e['id']: e for e in SOSEvent.objects.filter(id__in=sos_ids).values(
+            'id', 'latitude', 'longitude', 'status', 'created_at', 'incident_id',
+            'incident__country')
     } if sos_ids else {}
+    from servers.safety.config import active_configs
+
+    cfgs = active_configs() if events else {}
     out = []
     for a in alerts:
         is_sos = a.kind in SOS_ALERT_KINDS
         lat = lng = None
-        if is_sos and isinstance(a.payload, dict):
-            lat, lng = where_is.get(a.payload.get('sos_id'), (None, None))
+        sos = None
+        e = events.get(a.payload.get('sos_id')) if is_sos and isinstance(a.payload, dict) else None
+        if e:
+            lat, lng = e['latitude'], e['longitude']
+            cfg = cfgs.get(e['incident__country'] or '')
+            minutes = cfg.sos_ack_minutes if cfg and cfg.sos_ack_minutes else None
+            sos = {'sos_id': e['id'], 'sos_status': e['status'], 'incident_id': e['incident_id'],
+                   'ack_due_at': (e['created_at'] + timedelta(minutes=minutes)
+                                  if minutes and e['status'] == 'open' else None)}
         out.append(build_alert(
             alert_id=a.id, kind=a.kind, severity=a.severity, title=a.title,
             city=a.city.code if a.city_id else None, created_at=a.created_at, is_sos=is_sos,
-            lat=lat, lng=lng, exact=exact))
+            lat=lat, lng=lng, exact=exact, sos=sos))
     return out
 
 

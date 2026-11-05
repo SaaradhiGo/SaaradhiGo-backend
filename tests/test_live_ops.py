@@ -465,6 +465,30 @@ class TestTripsAlertsAndStatus:
         pins = [a for a in body(snap(world.ops['safety_officer'][0]))['alerts'] if a['is_sos']]
         assert pins[0]['lat'] == 17.43 or pins[0]['lat'] == 17.430   # 3 decimals, masked by role
 
+    def test_sos_pin_carries_its_case_and_the_countrys_ack_deadline(self, world):
+        from datetime import timedelta
+
+        from servers.safety.models import SafetyCountryConfig
+
+        SafetyCountryConfig.objects.filter(country='IN').update(is_active=False)
+        SafetyCountryConfig.objects.create(country='IN', sos_ack_minutes=2, is_active=True)
+        trip = make_trip(world, world.hyd_zone, state='in_progress', driver=world.drivers.hyd)
+        event = SOSEvent.objects.create(
+            user=world.rider, initiated_by='rider', trip=trip, latitude=Decimal('17.43012'),
+            longitude=Decimal('78.40034'))
+        OperatorAlert.objects.create(
+            kind=SAFETY_SOS_ESCALATED, severity=CRITICAL, title=f'SOS #{event.id} not acknowledged',
+            payload={'sos_id': event.id}, source_type='sos_event', source_id=str(event.id),
+            city=world.geo['IN-TG-HYD'])
+        event.refresh_from_db()
+        pin = next(a for a in body(snap(world.ops['safety_officer'][0]))['alerts'] if a['is_sos'])
+        assert set(pin) <= ALERT_KEYS
+        assert (pin['sos_id'], pin['sos_status']) == (event.id, 'open')
+        assert pin['incident_id'] == event.incident_id
+        assert event.incident_id and event.incident.country == 'IN'
+        due = event.created_at + timedelta(minutes=2)
+        assert pin['ack_due_at'][:19] == due.isoformat()[:19]
+
     def test_finance_alert_kinds_never_appear_on_the_map(self, world):
         OperatorAlert.objects.create(
             kind=SETTLEMENT_NO_COMMISSION_RULE, severity=CRITICAL, title='Trip 9 unsettled',

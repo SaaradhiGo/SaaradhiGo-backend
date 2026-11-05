@@ -1,4 +1,6 @@
 from django.urls import path
+
+from .admin_refunds import finance_refunds
 from .views import (
     create_order, verify_payment, payment_webhook, payout_webhook, payment_history, refund_payment,
     switch_payment_method, retry_payment, pending_payments
@@ -48,6 +50,7 @@ urlpatterns = [
     path('admin/payout-holds/<int:hold_id>/release/', payout_hold_release),
     path('admin/drivers/<int:driver_id>/ledger/', finance_driver_ledger),
     path('admin/overview/', finance_overview),
+    path('admin/refunds/', finance_refunds),
     path('admin/unsettled/<int:trip_id>/retry/', finance_unsettled_retry),
     path('admin/reconciliation/', finance_reconciliation),
     path('admin/reconciliation/items/', finance_reconciliation_items),

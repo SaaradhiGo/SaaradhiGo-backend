@@ -176,8 +176,15 @@ def estimate_fare(request):
         rider_id=getattr(request.user, 'id', None),
     )
 
+    from .pickup_eta import pickup_eta
+    eta_min, drivers_nearby = pickup_eta(pickup_lat, pickup_long, fare['vehicle_type'])
+
     return success_response({
         'estimated_fare': str(fare['total_fare']),
+        # Minutes to the nearest free driver of this class, or None with
+        # drivers_nearby False. Never a position (pickup_eta).
+        'pickup_eta_min': eta_min,
+        'drivers_nearby': drivers_nearby,
         # The market this quote was priced in. A client that cannot see this
         # does not know whether 135.22 is rupees or dollars, and `distance_unit`
         # is what stops a US rider being quoted a per-kilometre rate.

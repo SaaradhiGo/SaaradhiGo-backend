@@ -124,14 +124,15 @@ def test_a_minimum_fare_ride_closes_and_says_why():
 # Properties of the adjustment lines
 # ---------------------------------------------------------------------------
 
-def test_rounding_is_never_more_than_a_paisa():
-    """If it is, something other than rounding is hiding in that line."""
+def test_rounding_is_never_more_than_half_a_rupee():
+    """INR fares are whole rupees (owner, 2026-11-05), so the rounding line is at
+    most half a rupee; more means something other than rounding is hiding in it."""
     for km, minutes in (('2.4', '8'), ('3.33', '11'), ('7.77', '23'),
                         ('33.333', '95'), ('12.5', '40')):
         fare = _fare(km, minutes)
         for adj in fare.get('fare_adjustments', []):
             if adj['code'] == 'rounding':
-                assert abs(Decimal(str(adj['amount']))) <= Decimal('0.01'), (
+                assert abs(Decimal(str(adj['amount']))) <= Decimal('0.50'), (
                     f'{km} km: rounding line is {adj["amount"]}, which is not '
                     'rounding'
                 )

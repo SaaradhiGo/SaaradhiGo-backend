@@ -260,13 +260,13 @@ def operator_end_discount_minor(trip, capped_minor):
     promo's own terms (a percentage of the capped fare up to its maximum; a flat amount up to the
     capped fare). 0 if the trip holds none."""
     from base.money import from_minor as _fm, to_minor as _tm
-    from servers.ride.promos import _compute_discount
+    from servers.ride.promos import payable_discount
 
     total = 0
     for r in _held(trip):
         promo = r.promo
         fare = _fm(capped_minor, promo.currency)
-        total += _tm(_compute_discount(promo, fare), promo.currency)
+        total += _tm(payable_discount(promo, fare), promo.currency)
     return min(total, capped_minor)
 
 
@@ -299,10 +299,10 @@ def apply_operator_end(trip, capped_minor, rule, plan_discount_minor=None):
 
 def operator_end_discount_minor_one(redemption, capped_minor):
     from base.money import from_minor as _fm, to_minor as _tm
-    from servers.ride.promos import _compute_discount
+    from servers.ride.promos import payable_discount
 
     promo = redemption.promo
-    return _tm(_compute_discount(promo, _fm(capped_minor, promo.currency)), promo.currency)
+    return _tm(payable_discount(promo, _fm(capped_minor, promo.currency)), promo.currency)
 
 
 def payable(trip):

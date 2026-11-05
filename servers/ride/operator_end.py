@@ -57,7 +57,7 @@ from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 
-from base.money import currency_for_trip, format_money, from_minor, quantize, to_minor
+from base.money import currency_for_trip, format_money, from_minor, quantize, round_fare, to_minor
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +191,7 @@ def metered_fare(trip, distance_km, minutes):
     min_applied = False
     if subtotal < card.min_fare:
         subtotal, min_applied = card.min_fare, True
-    total = quantize(subtotal, currency)
+    total = round_fare(subtotal, currency)
     pretax = total
     zone = getattr(trip, 'zone', None)
     additive = (getattr(zone, 'tax_mode', '') or 'inclusive') == 'additive'

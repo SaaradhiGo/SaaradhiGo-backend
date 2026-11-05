@@ -604,11 +604,15 @@ class TestPlannedRouteOnAccept:
             assert store_planned_route_for(trip.id) is None
         assert maps.call_count == 0
 
-    def test_nothing_rider_or_driver_facing_carries_the_route(self):
+    def test_only_trip_details_carry_the_route(self):
+        # Owner, Maps M1 (2026-11-04): the apps draw the stored route from trip
+        # details; every other rider/driver payload stays as it was.
         from servers.ride import serializers
 
         source = Path(serializers.__file__).read_text(encoding='utf-8')
-        assert 'planned_route' not in source
+        assert source.count('planned_route') == 1
+        assert 'planned_route_polyline' in serializers.TripDetailSerializer.Meta.fields
+        assert 'planned_route_polyline' not in serializers.TripListSerializer.Meta.fields
 
 
 # ===========================================================================

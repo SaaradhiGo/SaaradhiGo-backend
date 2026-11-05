@@ -33,6 +33,8 @@ from rest_framework.permissions import AllowAny
 from base.utils import error_response, success_response
 
 from .models import RateCard
+from base.money import round_fare
+
 from .services import find_zone_for_point
 
 
@@ -71,8 +73,10 @@ def list_vehicle_types(request):
         .filter(zone=zone, is_active=True, effective_from__lte=now)
         .filter(models_q_effective_to(now))
         .select_related('vehicle_type')
-        .order_by('vehicle_type__type')
+        # The newest live version first, so `seen` keeps it.
+        .order_by('vehicle_type__type', '-effective_from')
     )
+    currency = zone.currency or zone.country_profile.currency
 
     seen = {}
     for card in cards:
@@ -82,6 +86,8 @@ def list_vehicle_types(request):
         seen[vt.type] = {
             'type': vt.type,
             'description': vt.description or '',
+            # "from ₹X" on the public site: the card's minimum fare, rounded as fares are.
+            'min_fare': str(round_fare(card.min_fare, currency)) if card.min_fare is not None else None,
         }
 
     return success_response(
@@ -96,7 +102,7 @@ def list_vehicle_types(request):
                 # its country, and a client reading the blank would have no
                 # currency at all. `/pricing/zones/` resolves them the same
                 # way; the two must not disagree about the same zone.
-                'currency': zone.currency or zone.country_profile.currency,
+                'currency': currency,
                 'distance_unit': (
                     zone.distance_unit or zone.country_profile.distance_unit
                 ),

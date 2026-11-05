@@ -252,6 +252,9 @@ ROLE_TEMPLATES = [
             'rider.note',
             # Budgets and spend, read-only (module 12).
             'promo.read',
+            # Second approver on finance requests only: a checker also needs the
+            # action's own capability (approvals.actions), owner 2026-11-04.
+            'approval.check',
         ],
     },
     {

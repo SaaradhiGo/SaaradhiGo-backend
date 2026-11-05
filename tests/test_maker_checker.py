@@ -496,11 +496,14 @@ class TestTheChecker:
             with transaction.atomic():
                 pending.save()
 
-    def test_a_checker_without_approval_check_is_403(self, pending, hyd_finance):
-        resp = client(hyd_finance).post(f'{API}/requests/{pending.id}/approve/', {}, format='json')
+    def test_a_checker_without_approval_check_is_403(self, pending, geo):
+        # Finance holds approval.check since 2026-11-04; an analyst never does.
+        analyst = make_admin('analyst.hyd@saaradhigo.test')
+        assign(analyst, 'analyst', geo['IN-TG-HYD'])
+        resp = client(analyst).post(f'{API}/requests/{pending.id}/approve/', {}, format='json')
         assert resp.status_code == 403
         with pytest.raises(service.NotPermitted) as exc:
-            service.approve(pending, hyd_finance)
+            service.approve(pending, analyst)
         assert exc.value.code == 'CHECKER_LACKS_CAPABILITY'
         assert CALLS == []
 

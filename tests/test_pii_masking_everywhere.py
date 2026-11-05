@@ -637,6 +637,8 @@ INVENTORY = {
     'api/v1/admin-audit/admin/entries/': False,
     'api/v1/admin-audit/admin/entries/export/': False,
     'api/v1/admin-audit/admin/entries/<int:entry_id>/': False,
+    # Refunds list: trip ids, amounts and operator labels; no rider named.
+    'api/v1/payments/admin/refunds/': False,
     # Staff and roles (Super Admin only): operators, phone and email masked.
     'api/v1/admin-access/staff/': False,
     'api/v1/admin-access/staff/options/': False,

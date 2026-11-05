@@ -503,7 +503,18 @@ def test_money_path_matches_the_pre_migration_golden_file(market, settings):
     rule rounds the other way, and must differ by exactly one minor unit.
     """
     settings.PRICING_ALLOW_DEFAULT_FARE = False
+    # This proves the minor-units migration, so it runs without the later
+    # whole-rupee fare rule (owner, 2026-11-05; tests/test_inr_whole_rupee_fares.py).
+    # The golden file is NOT regenerated.
+    whole = mock.patch('base.money.WHOLE_UNIT_FARE_CURRENCIES', frozenset())
+    whole.start()
+    try:
+        _compare_with_golden(market)
+    finally:
+        whole.stop()
 
+
+def _compare_with_golden(market):
     if CAPTURE:
         observed = _observe(market)
         GOLDEN.parent.mkdir(exist_ok=True)

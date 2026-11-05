@@ -29,7 +29,7 @@ from django.utils import timezone
 from shapely.geometry import Point, Polygon, shape as shapely_shape
 
 from base.market_time import zone_timezone
-from base.money import quantize
+from base.money import quantize, round_fare
 from servers.pricing.models import PlatformSettings, RateCard, ServiceZone
 
 logger = logging.getLogger(__name__)
@@ -598,7 +598,9 @@ def quote_fare(
     # It moves a fare only when the subtotal lands exactly on a half paisa with
     # an even paisa before it (60.125 was 60.12, is 60.13); see
     # tests/test_money_minor_units_parity.py.
-    total_fare = quantize(subtotal, currency)
+    # INR fares are whole rupees (owner, 2026-11-05); the residual below names
+    # the difference as "Rounding", at most half a rupee.
+    total_fare = round_fare(subtotal, currency)
 
     # --- Make the displayed decomposition add up exactly ---------------------
     #

@@ -30,7 +30,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from base.money import quantize
+from base.money import quantize, round_fare
 from servers.admin_audit.services import record_admin_action
 from servers.approvals import registry
 from servers.approvals.actions import PRICING_CHANGE
@@ -262,7 +262,7 @@ def quote_from_values(zone, values, km, minutes, *, night):
         subtotal, min_applied = min_fare, True
     country = get_country(getattr(zone, 'country', None))
     currency = getattr(zone, 'currency', None) or country.currency
-    total = quantize(subtotal, currency)
+    total = round_fare(subtotal, currency)  # the same whole-rupee rule as quote_fare
     tax_mode = getattr(zone, 'tax_mode', '') or 'inclusive'
     tax = Decimal('0.00')
     fee = quantize(Decimal(str(getattr(zone, 'per_trip_fee', None) or '0')), currency)

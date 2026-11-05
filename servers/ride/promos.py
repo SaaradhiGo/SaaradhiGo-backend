@@ -43,7 +43,7 @@ from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 
-from base.money import quantize
+from base.money import quantize, round_fare
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,13 @@ class PromoResult:
 
 def _two(v: Decimal, currency) -> Decimal:
     return quantize(v, currency)
+
+
+def payable_discount(promo, fare: Decimal) -> Decimal:
+    """The discount that leaves a whole-rupee payable for INR (owner, 2026-11-05)."""
+    raw = _compute_discount(promo, fare)
+    final = max(Decimal('0.00'), round_fare(fare - raw, promo.currency))
+    return fare - final
 
 
 def _compute_discount(promo, fare: Decimal) -> Decimal:
@@ -162,9 +169,11 @@ def apply_promo(code: str, user, fare: Decimal, zone=None, at=None, tax=None) ->
     if refusal:
         return PromoResult(ok=False, code=code, reason=refusal)
 
-    final = max(Decimal('0.00'), _two(fare - discount, promo.currency))
+    final = max(Decimal('0.00'), round_fare(fare - discount, promo.currency))
     if adj is not None:
         final = adj['payable']
+    else:
+        discount = fare - final
     return PromoResult(
         ok=True, code=promo.code,
         discount_amount=_two(discount, promo.currency), final_fare=final,
@@ -229,9 +238,12 @@ def redeem_promo(code: str, user, trip, fare: Decimal, zone=None, at=None, tax=N
         adj = _tax_adjust(promo, zone, fare, discount, tax)
         if adj is not None:
             discount = adj['discount']
-        final = max(Decimal('0.00'), _two(fare - discount, promo.currency))
+        final = max(Decimal('0.00'), round_fare(fare - discount, promo.currency))
         if adj is not None:
             final = adj['payable']
+        else:
+            # A whole-rupee fare means the discount is what the rounding left.
+            discount = fare - final
 
         # Module 12: the campaign behind the code (state, place, budget). The reservation is
         # atomic with the redemption row: both commit, or neither does.

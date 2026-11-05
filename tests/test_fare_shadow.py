@@ -25,6 +25,7 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 
+from base.money import round_fare
 from servers.driver.models import Driver, Vehicle, VehicleType
 from servers.pricing.fare_shadow import (
     compute_shadow, record_shadow, summarise, sweep_shadow,
@@ -207,10 +208,12 @@ def test_metric_delta_reflects_distance_and_duration_only(trip, no_surge):
         card.min_fare,
     )
 
-    assert row.shadow_estimate == round(expected_estimate, 2)
-    assert row.shadow_actual == round(expected_actual, 2)
-    # 2 extra km and 5 extra minutes, and nothing else.
-    assert row.metric_delta == round(card.per_km_fare * 2 + card.per_min_fare * 5, 2)
+    # Both are rider-facing INR fares, so whole rupees (owner, 2026-11-05).
+    assert row.shadow_estimate == round_fare(expected_estimate, 'INR')
+    assert row.shadow_actual == round_fare(expected_actual, 'INR')
+    # 2 extra km and 5 extra minutes, and nothing else but the rupee rounding.
+    assert row.metric_delta == row.shadow_actual - row.shadow_estimate
+    assert abs(row.metric_delta - (card.per_km_fare * 2 + card.per_min_fare * 5)) <= 1
 
 
 @pytest.mark.django_db

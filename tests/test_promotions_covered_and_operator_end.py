@@ -88,20 +88,20 @@ class TestOperatorEnd:
 
     def test_the_discount_is_re_worked_under_the_promos_own_terms(self, geo, world, card):  # noqa: F811
         campaign = live_promo('HALF', discount_type='percent', percent=D('50.00'))
-        trip = started(world, card, km=2, method='cash')          # reserved 50% of 53.00 = 26.50
+        trip = started(world, card, km=2, method='cash')          # 50% of 53.00 = 26.50; the rider pays a whole 27, so 26.00 off
         promo_on(trip, 'HALF')
-        assert PromoRedemption.objects.get(trip=trip).discount_amount_minor == 2_650
+        assert PromoRedemption.objects.get(trip=trip).discount_amount_minor == 2_600
         campaign.refresh_from_db()
-        assert campaign.committed_minor == 2_650
+        assert campaign.committed_minor == 2_600
         client, _ = operator('city_ops_manager', geo)
-        assert preview(client, trip, 'other').json()['data']['promo_discount_minor'] == 2_450
+        assert preview(client, trip, 'other').json()['data']['promo_discount_minor'] == 2_400
         release(client, trip, 'other')
         redemption = PromoRedemption.objects.get(trip=trip)
-        assert (redemption.discount_amount_minor, redemption.state) == (2_450, 'settled')   # 50% of 49.00
+        assert (redemption.discount_amount_minor, redemption.state) == (2_400, 'settled')   # 50% of 49.00 = 24.50; pays a whole 25
         campaign.refresh_from_db()
-        assert (campaign.committed_minor, campaign.spent_minor) == (0, 2_450)
+        assert (campaign.committed_minor, campaign.spent_minor) == (0, 2_400)
         trip.refresh_from_db()
-        assert rider_promos.payable_minor(trip) == 2_450
+        assert rider_promos.payable_minor(trip) == 2_500
 
     def test_an_online_prepaid_amount_above_what_is_owed_is_refunded(self, geo, world, card):  # noqa: F811
         live_promo('END20', flat=2_000)

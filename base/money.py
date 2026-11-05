@@ -228,6 +228,20 @@ def quantize(amount, currency=DEFAULT_CURRENCY):
     return from_minor(to_minor(amount, currency), currency)
 
 
+#: Currencies whose ride fares are charged in whole units (owner, 2026-11-05):
+#: the locked fare, the payment and the receipt are one whole-rupee number.
+WHOLE_UNIT_FARE_CURRENCIES = frozenset({'INR'})
+
+
+def round_fare(amount, currency=DEFAULT_CURRENCY):
+    """A rider-facing fare: whole units, half up, for INR; the minor unit otherwise."""
+    if amount is None:
+        return None
+    if str(currency).upper() in WHOLE_UNIT_FARE_CURRENCIES:
+        return quantize(Decimal(str(amount)).quantize(Decimal('1'), rounding=ROUNDING), currency)
+    return quantize(amount, currency)
+
+
 def to_major_string(minor, currency):
     """'135.68' -- the API's existing string shape for a money value."""
     value = from_minor(minor, currency)

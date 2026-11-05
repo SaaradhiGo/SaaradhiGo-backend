@@ -26,7 +26,7 @@ def promo(world):
     return launch(world.mkt[0], promo_payload())
 
 
-def _promo_trip(world, method, tag, fare='159.72'):
+def _promo_trip(world, method, tag, fare='160.00'):
     from servers.ride.promos import redeem_promo
 
     trip = completed_trip(world, make_rider(tag, '91'), hyd_driver(world, tag), fare=fare,
@@ -38,13 +38,13 @@ def _promo_trip(world, method, tag, fare='159.72'):
 class TestPromoTrips:
     def test_a_promo_cash_trip_reads_as_the_money_moved(self, world, promo):
         trip = _promo_trip(world, 'cash', 'C')
-        Payment.objects.create(trip_id=trip, user_id=trip.user_id, amount_minor=10_972,
+        Payment.objects.create(trip_id=trip, user_id=trip.user_id, amount_minor=11_000,
                                method='cash', status='completed')
         card = fare_card(trip)
-        assert _kinds(card) == [('fare', 15_972), ('promo', -5_000), ('rider_paid', 10_972)]
+        assert _kinds(card) == [('fare', 16_000), ('promo', -5_000), ('rider_paid', 11_000)]
         promo_line = card['lines'][1]
         assert promo_line['funded_by'] == 'SaaradhiGo' and promo_line['note'] == 'paid by SaaradhiGo'
-        assert card['cash'] == {'collected': True, 'amount_minor': 10_972,
+        assert card['cash'] == {'collected': True, 'amount_minor': 11_000,
                                 'label': 'Driver collected in cash',
                                 'platform_pays_driver_minor': 5_000}
         assert [line['kind'] for line in card['summary']] == ['fare', 'promo', 'rider_paid']
@@ -56,16 +56,16 @@ class TestPromoTrips:
         card = fare_card(trip)
         assert card['cash']['collected'] is False
         assert card['cash']['label'] == 'Driver to collect in cash'
-        assert _kinds(card)[-1] == ('rider_owes', 10_972)
+        assert _kinds(card)[-1] == ('rider_owes', 11_000)
 
     def test_an_online_promo_trip_has_no_cash_line(self, world, promo):
         trip = _promo_trip(world, 'online', 'O')
-        Payment.objects.create(trip_id=trip, user_id=trip.user_id, amount_minor=10_972,
+        Payment.objects.create(trip_id=trip, user_id=trip.user_id, amount_minor=11_000,
                                method='online', status='completed')
         card = fare_card(trip)
         assert card['cash'] is None
         assert card['lines'][-1] == {'kind': 'rider_paid', 'label': 'Rider paid',
-                                     'amount_minor': 10_972, 'method': 'online'}
+                                     'amount_minor': 11_000, 'method': 'online'}
 
 
 class TestOtherTrips:

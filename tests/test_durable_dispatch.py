@@ -230,6 +230,10 @@ def test_wave_delivers_offer_to_nearby_driver(
     offers = [m for g, m in channel_recorder if m.get('type') == 'ride_request']
     assert len(offers) == 1
     assert offers[0]['trip_id'] == searching_trip.id
+    # The driver's own distance and ETA to the pickup, and when the offer lapses.
+    assert float(offers[0]['pickup_distance_km']) >= 0
+    assert int(offers[0]['pickup_eta_min']) >= 1
+    assert offers[0]['expires_at']
     assert (f'driver_{geo_driver.id}', offers[0]) in [
         (g, m) for g, m in channel_recorder if m.get('type') == 'ride_request'
     ]

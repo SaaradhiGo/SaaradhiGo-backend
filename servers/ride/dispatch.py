@@ -59,11 +59,14 @@ schema with no reader.
 """
 
 import logging
+import math
 import uuid
+from datetime import timedelta
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +265,7 @@ def start_dispatch(trip_id, *, radius=None, reason='initial', epoch=None):
 # Wave execution
 # ---------------------------------------------------------------------------
 
-def _candidate_driver_ids(trip, radius, epoch):
+def _candidate_driver_ids(trip, radius, epoch, distances=None):
     """Nearby driver ids for this radius, minus those this generation already
     offered. Vehicle-type geo isolation is preserved by passing the trip's
     requested type straight through to `nearby_drivers`.
@@ -291,6 +294,9 @@ def _candidate_driver_ids(trip, radius, epoch):
         if driver_id in already or driver_id in ids:
             continue
         ids.append(driver_id)
+        if distances is not None and isinstance(entry, (list, tuple)) and len(entry) > 1:
+            # Metres to the pickup, for that driver's own offer (pickup distance and ETA).
+            distances[driver_id] = float(entry[1])
 
     # The geo index is a cache of who is online, not of who may be offered a
     # ride: a suspended driver's open socket could re-add them between the
@@ -326,6 +332,18 @@ def _offer_payload(trip, rider_name, vehicle_type):
         'duration_min': str(trip.estimated_duration_min) if trip.estimated_duration_min is not None else '',
         'payment_method': str(trip.payment_method) if trip.payment_method else '',
         'vehicle_type': str(vehicle_type) if vehicle_type else '',
+    }
+
+
+def _pickup_fields(metres):
+    """How far this driver is from the pickup, for their own offer card. Straight
+    line at the city speed the fare quote uses; empty when unknown."""
+    if metres is None:
+        return {'pickup_distance_km': '', 'pickup_eta_min': ''}
+    kmh = float(getattr(settings, 'PICKUP_ETA_CITY_KMH', 18))
+    return {
+        'pickup_distance_km': f'{metres / 1000:.1f}',
+        'pickup_eta_min': str(max(1, math.ceil(metres / (kmh * 1000 / 60)))),
     }
 
 
@@ -454,7 +472,8 @@ def execute_wave(trip_id, wave_index, epoch, radii):
          wave_index=wave_index, radius=radius)
 
     try:
-        candidates = _candidate_driver_ids(trip, radius, epoch)
+        distances = {}
+        candidates = _candidate_driver_ids(trip, radius, epoch, distances=distances)
     except Exception as exc:  # noqa: BLE001
         # Redis GEO unavailable. Nothing durable is wrong; let the successor
         # wave (or the durable timeout) carry the trip forward.
@@ -483,13 +502,15 @@ def execute_wave(trip_id, wave_index, epoch, radii):
             if trip.requested_vehicle_type is not None else None
         )
         payload = _offer_payload(trip, rider_name, vehicle_type)
+        # The driver's countdown runs to when this wave hands the trip on.
+        payload['expires_at'] = (timezone.now() + timedelta(seconds=wave_gap_seconds())).isoformat()
 
         channel_layer = get_channel_layer()
         if channel_layer is not None:
             group_send = async_to_sync(channel_layer.group_send)
             for driver_id in candidates:
                 try:
-                    group_send(f'driver_{driver_id}', dict(payload))
+                    group_send(f'driver_{driver_id}', {**payload, **_pickup_fields(distances.get(driver_id))})
                     delivered += 1
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(

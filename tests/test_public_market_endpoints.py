@@ -12,6 +12,8 @@ run in more than one country. These tests pin the read that removes the
 excuse, and pin that the registry -- not the client -- decides.
 """
 
+from decimal import Decimal
+
 import pytest
 from rest_framework.test import APIClient
 
@@ -160,6 +162,11 @@ class TestVehicleTypesAtAPoint:
         assert card.vehicle_type.type in offered, (
             'a category with an active card must be offered'
         )
+        # "from ₹X" on the public site: the live card's minimum fare, whole rupees in INR.
+        entry = next(v for v in data['vehicle_types'] if v['type'] == card.vehicle_type.type)
+        assert entry['min_fare'] is not None
+        if data['zone']['currency'] == 'INR':
+            assert Decimal(entry['min_fare']) == Decimal(entry['min_fare']).to_integral_value()
 
     def test_only_categories_with_an_active_card_are_offered(self, db):
         from servers.driver.models import VehicleType

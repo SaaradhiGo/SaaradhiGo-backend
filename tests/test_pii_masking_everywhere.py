@@ -637,6 +637,10 @@ INVENTORY = {
     'api/v1/admin-audit/admin/entries/': False,
     'api/v1/admin-audit/admin/entries/export/': False,
     'api/v1/admin-audit/admin/entries/<int:entry_id>/': False,
+    # Staff and roles (Super Admin only): operators, phone and email masked.
+    'api/v1/admin-access/staff/': False,
+    'api/v1/admin-access/staff/options/': False,
+    'api/v1/admin-access/staff/<int:pk>/': False,
 }
 
 #: GET routes in the namespace that are deliberately not swept. The DRF

@@ -430,6 +430,10 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             'duration_min': event.get('duration_min', ''),
             'payment_method': event.get('payment_method', ''),
             'vehicle_type': event.get('vehicle_type', ''),
+            # Per-driver distance to the pickup and the offer's expiry (dispatch).
+            'pickup_distance_km': event.get('pickup_distance_km', ''),
+            'pickup_eta_min': event.get('pickup_eta_min', ''),
+            'expires_at': event.get('expires_at', ''),
         }))
 
     # -- Database helpers --

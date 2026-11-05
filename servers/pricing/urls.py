@@ -14,6 +14,7 @@ from .commission_views import (
     rule_detail, rule_preview, rule_submit, rules,
 )
 from .market_views import list_countries
+from .vehicle_admin import vehicle_class_detail, vehicle_classes
 from .vehicle_views import list_vehicle_types
 
 router = DefaultRouter()
@@ -36,6 +37,8 @@ urlpatterns = [
     path('admin/commission/config/', config_list, name='commission-config'),
     path('admin/commission/config/<str:country>/', config_update,
          name='commission-config-update'),
+    path('admin/vehicle-classes/', vehicle_classes, name='vehicle-classes'),
+    path('admin/vehicle-classes/<int:pk>/', vehicle_class_detail, name='vehicle-class'),
     path('admin/fare-cards/overview/', fare_cards_overview, name='fare-cards-overview'),
     path('admin/fare-cards/preview/', fare_cards_preview, name='fare-cards-preview'),
     path('', include(router.urls)),

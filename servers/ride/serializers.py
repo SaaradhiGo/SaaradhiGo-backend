@@ -106,6 +106,8 @@ class TripDetailSerializer(TripListSerializer):
         fields = TripListSerializer.Meta.fields + [
             'accepted_at', 'started_at',
             'fare_breakdown', 'ratings', 'otp', 'promo_discount', 'rider_payable',
+            # The apps draw this instead of buying a route per location ping (Maps M1).
+            'planned_route_polyline',
         ]
 
     def get_promo_discount(self, obj):

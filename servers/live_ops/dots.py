@@ -28,6 +28,8 @@ TRIP_KEYS = frozenset({
 })
 ALERT_KEYS = frozenset({
     'id', 'kind', 'severity', 'title', 'city', 'created_at', 'is_sos', 'lat', 'lng',
+    # SOS only: the event, its status, its case, and when the country's ack timer runs out.
+    'sos_id', 'sos_status', 'incident_id', 'ack_due_at',
 })
 #: Reaching a browser with any of these in a payload is a bug.
 FORBIDDEN_KEYS = frozenset({
@@ -110,9 +112,14 @@ def build_trip(*, trip_id, state, pickup_lat, pickup_lng, drop_lat, drop_lng,
 
 
 def build_alert(*, alert_id, kind, severity, title, city, created_at, is_sos,
-                lat=None, lng=None, exact=True):
+                lat=None, lng=None, exact=True, sos=None):
     places = TRIP_COORD_DECIMALS if exact else 2
+    sos = sos or {}
     return {
+        'sos_id': sos.get('sos_id'),
+        'sos_status': sos.get('sos_status'),
+        'incident_id': sos.get('incident_id'),
+        'ack_due_at': iso(sos['ack_due_at']) if sos.get('ack_due_at') else None,
         'id': int(alert_id),
         'kind': kind,
         'severity': severity,

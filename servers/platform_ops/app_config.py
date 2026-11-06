@@ -36,6 +36,22 @@ EMERGENCY_LABELS = {'unified': 'Emergency services', 'police': 'Police', 'ambula
                     'fire': 'Fire'}
 APPS = ('rider', 'driver')
 
+#: Rider and driver policies the apps state in words (2026-11-06). TODAY'S REAL BEHAVIOUR ONLY:
+#: - No cancellation fee is ever charged (`Trip.cancellation_fee_minor` is never set above 0), so
+#:   `charges_fee` is False and there is no window: `free_cancel_seconds` stays None.
+#: - No free-wait time at pickup has been decided: `free_wait_minutes` is None.
+#: - A refund "may take 5-7 business days" (the refund notice in payments/views.py): the upper
+#:   bound, 7 business days.
+#: A None value means "not decided": the apps hide that line rather than guess.
+POLICIES = {
+    'IN': {'cancel_policy': {'charges_fee': False, 'free_cancel_seconds': None},
+           'free_wait_minutes': None, 'refund_days': 7},
+    'US': {'cancel_policy': {'charges_fee': False, 'free_cancel_seconds': None},
+           'free_wait_minutes': None, 'refund_days': 7},
+}
+_NO_POLICY = {'cancel_policy': {'charges_fee': None, 'free_cancel_seconds': None},
+              'free_wait_minutes': None, 'refund_days': None}
+
 
 def _coords(value, out):
     if isinstance(value, (list, tuple)):
@@ -79,7 +95,16 @@ def country_block(country):
         # Additive. SaaradhiGo's support line, or null while none is configured:
         # the apps hide the call row rather than show a number nobody answers.
         'support': {'phone': settings.SUPPORT_PHONE_NUMBERS.get(country.code) or None},
+        # Additive (2026-11-06): cancel_policy, free_wait_minutes and refund_days, or None when
+        # not decided for the country. `refund_days` counts business days.
+        **_policy(country.code),
     }
+
+
+def _policy(code):
+    src = POLICIES.get(code, _NO_POLICY)
+    return {'cancel_policy': dict(src['cancel_policy']),
+            'free_wait_minutes': src['free_wait_minutes'], 'refund_days': src['refund_days']}
 
 
 def _live_cities(country_code):

@@ -75,3 +75,18 @@ def test_no_driver_yet_is_none():
     data = TripDetailSerializer(trip, context=_as(rider)).data
     assert data['driver_total_trips'] is None
     assert data['driver_photo_url'] is None
+
+
+def test_the_driver_sees_their_own_earning_from_settlement():
+    from servers.driver.utils import settlement_amounts
+
+    trip, _, driver_user = _trip()
+    trip.commission_percent_snapshot = Decimal('15.00')
+    trip.save(update_fields=['commission_percent_snapshot'])
+    data = TripDetailSerializer(trip, context=_as(driver_user)).data
+    assert Decimal(data['driver_earning']) == Decimal(settlement_amounts(trip)['net_minor']) / 100
+
+
+def test_the_rider_never_sees_the_driver_earning():
+    trip, rider, _ = _trip()
+    assert TripDetailSerializer(trip, context=_as(rider)).data['driver_earning'] is None

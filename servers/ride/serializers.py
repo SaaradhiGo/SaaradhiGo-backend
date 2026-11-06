@@ -105,6 +105,10 @@ class TripDetailSerializer(TripListSerializer):
     # rider (or its driver) gets them; anyone else sees None.
     driver_photo_url = serializers.SerializerMethodField()
     driver_total_trips = serializers.SerializerMethodField()
+    # What the trip's DRIVER keeps (2026-11-06), for their on-trip sheet: the settlement's own
+    # arithmetic (`settlement_amounts`), never a second calculation. None for anyone else, and
+    # None when no commission rule governs the trip.
+    driver_earning = serializers.SerializerMethodField()
 
     class Meta(TripListSerializer.Meta):
         fields = TripListSerializer.Meta.fields + [
@@ -112,7 +116,7 @@ class TripDetailSerializer(TripListSerializer):
             'fare_breakdown', 'ratings', 'otp', 'promo_discount', 'rider_payable',
             # The apps draw this instead of buying a route per location ping (Maps M1).
             'planned_route_polyline',
-            'driver_photo_url', 'driver_total_trips',
+            'driver_photo_url', 'driver_total_trips', 'driver_earning',
         ]
 
     def _party(self, obj):
@@ -129,6 +133,21 @@ class TripDetailSerializer(TripListSerializer):
             return None
         from servers.driver.document_access import signed_url
         return signed_url(obj.driver_id.user_id.avatar)
+
+    def get_driver_earning(self, obj):
+        request = self.context.get('request') if hasattr(self, 'context') else None
+        uid = getattr(getattr(request, 'user', None), 'id', None)
+        if uid is None or not obj.driver_id or uid != obj.driver_id.user_id_id:
+            return None
+        from base.money import currency_for_trip, from_minor
+        from servers.driver.utils import settlement_amounts
+        from servers.pricing.commission import CommissionNotConfigured
+
+        try:
+            amounts = settlement_amounts(obj)
+        except CommissionNotConfigured:
+            return None
+        return str(from_minor(amounts['net_minor'], currency_for_trip(obj)))
 
     def get_driver_total_trips(self, obj):
         # Completed trips, incremented when a trip completes (consumers.py).

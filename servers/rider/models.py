@@ -44,6 +44,10 @@ class FavoritePlace(models.Model):
     address_text=models.CharField(max_length=512,blank=True,null=True)
     latitude=models.DecimalField(max_digits=20,decimal_places=10)
     longitude=models.DecimalField(max_digits=20,decimal_places=10)
+    # What the rider calls the place (2026-11-06): the home screen prices Home and Work first.
+    # Nullable; places saved before this stay unlabelled.
+    LABEL_CHOICES = [('home', 'Home'), ('work', 'Work'), ('other', 'Other')]
+    label = models.CharField(max_length=8, choices=LABEL_CHOICES, null=True, blank=True)
     def __str__(self):
         return f'{self.user_id} - {self.address_text}'
 class Wallet(models.Model):

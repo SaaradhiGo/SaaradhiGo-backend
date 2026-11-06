@@ -12,7 +12,7 @@ class RiderSerializer(serializers.ModelSerializer):
 class FavoritePlaceSerializer(serializers.ModelSerializer):
     class Meta:
         model = FavoritePlace
-        fields = ['id', 'user_id', 'address_text', 'latitude', 'longitude']
+        fields = ['id', 'user_id', 'address_text', 'latitude', 'longitude', 'label']
         read_only_fields = ['user_id']
 
 

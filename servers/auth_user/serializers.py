@@ -1,16 +1,24 @@
-from rest_framework.serializers import ModelSerializer
+from rest_framework.serializers import ModelSerializer, SerializerMethodField
 from django.contrib.auth import get_user_model
 from base.serializer_fields import S3UploadKeyField
 
 class UserModelSerializer(ModelSerializer):
     avatar = S3UploadKeyField(kind="avatar", required=False, allow_null=True)
+    #: The app language the user picked (UserPreference), or None. Written by
+    #: PATCH /auth/update/ via views._preferred_language, read here.
+    preferred_language = SerializerMethodField()
+
+    def get_preferred_language(self, obj):
+        pref = getattr(obj, 'preference', None)
+        return getattr(pref, 'preferred_language', None)
 
     class Meta:
         model = get_user_model()
         fields = [
             'id', 'username', 'full_name', 'phone_number', 'email', 
             'gender', 'dob', 'house_no', 'street', 'city', 'zip_code',
-            'emergency_contact', 'role', 'avatar', 'fcm_token', 'updated_at', 'created_at','is_updated'
+            'emergency_contact', 'role', 'avatar', 'fcm_token', 'updated_at', 'created_at','is_updated',
+            'preferred_language',
         ]
         # phone_number is the user's identity for OTP-based auth; allowing
         # /auth/update/ to overwrite it lets a stolen access token hijack

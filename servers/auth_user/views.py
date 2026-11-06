@@ -779,6 +779,35 @@ def _truthy(value):
     return str(value).strip().lower() in ('true', '1', 'yes', 'on')
 
 
+_NO_LANGUAGE = object()
+
+
+def _preferred_language(update_data):
+    """`(value, error)` for `preferred_language`, popped out of `update_data` (2026-11-06).
+
+    `_NO_LANGUAGE` when the key was not sent; None clears it. Only the apps' languages count.
+    """
+    from .models import UserPreference
+
+    if 'preferred_language' not in update_data:
+        return _NO_LANGUAGE, None
+    value = update_data.pop('preferred_language')
+    if isinstance(value, list):
+        value = value[0] if value else None
+    value = (str(value).strip().lower() or None) if value is not None else None
+    if value is not None and value not in dict(UserPreference.LANGUAGE_CHOICES):
+        return _NO_LANGUAGE, 'preferred_language must be en, te or hi.'
+    return value, None
+
+
+def _save_preferred_language(user, value):
+    from .models import UserPreference
+
+    UserPreference.objects.update_or_create(user=user, defaults={'preferred_language': value})
+    if hasattr(user, '_state') and 'preference' in getattr(user._state, 'fields_cache', {}):
+        del user._state.fields_cache['preference']
+
+
 def _home_city(user, update_data):
     """The rider's or driver's chosen city, popped out of `update_data`.
 
@@ -927,6 +956,18 @@ def update_user(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        language, language_error = _preferred_language(update_data)
+        if language_error:
+            return error_response(
+                code='AUTH_VALIDATION_ERROR',
+                message=language_error,
+                field='preferred_language',
+                issue=language_error,
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if language is not _NO_LANGUAGE:
+            _save_preferred_language(user, language)
+
         name_error = _driver_name_error(user, update_data)
         if name_error:
             return error_response(
@@ -939,6 +980,9 @@ def update_user(request):
 
         if not update_data and home_city is not None:
             _save_home_city(user, home_city)
+            return success_response(UserModelSerializer(user).data, status.HTTP_200_OK)
+
+        if not update_data and language is not _NO_LANGUAGE:
             return success_response(UserModelSerializer(user).data, status.HTTP_200_OK)
 
         if not update_data:

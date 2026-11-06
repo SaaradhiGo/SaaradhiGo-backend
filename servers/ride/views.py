@@ -1519,6 +1519,17 @@ def proxy_geocode(request):
 
     search_text = request.data.get('input')
     location = request.data.get('location')
+    # `zone`: a service-zone code. Suggestions are then RESTRICTED to that zone's
+    # area and country, so "for" typed in Hyderabad cannot offer Vijayawada (2026-11-06).
+    zone_code = str(request.data.get('zone') or '').strip()
+    bounds = country = None
+    if zone_code:
+        from servers.pricing.models import ServiceZone
+        from servers.ride.maps_utils import zone_bounds
+        zone = ServiceZone.objects.filter(code=zone_code, is_active=True).first()
+        if zone is not None:
+            bounds = zone_bounds(zone.polygon_geojson)
+            country = zone.country
 
     if not search_text:
         return error_response(
@@ -1532,14 +1543,16 @@ def proxy_geocode(request):
     # v2: entries cached before predictions carried `structured_formatting`
     # would serve blank rows for 30 days.
     # v3: v2 entries were cached for 30 days; the 1 h cap (M4) applies only to new keys.
-    cache_key = f"maps:geocode:v3:{search_text.lower().strip()}:{location or ''}"
+    cache_key = (f"maps:geocode:v3:{search_text.lower().strip()}:{location or ''}"
+                 f"{':' + zone_code if bounds else ''}")
     cached_data = get_cached_map_data(cache_key)
     if cached_data:
         return success_response(cached_data, status.HTTP_200_OK)
 
     session_token = request.query_params.get('session_token') or request.data.get('session_token')
     result = google_places_autocomplete(
-        search_text, location=location, session_token=session_token)
+        search_text, location=location, session_token=session_token,
+        bounds=bounds, country=country)
     if result is None:
         return _maps_error_response()
 

@@ -934,6 +934,9 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         if event.get('reason'):
             response_data['reason'] = event['reason']
 
+        # The trip's start time and planned duration, on the start event (2026-11-06).
+        response_data.update(_arrival_fields(event))
+
         # Add driver info and OTP if the ride was accepted
         if event['status'] == 'accept':
             if 'otp' in event:
@@ -1302,6 +1305,16 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             send_push_notification(driver.user_id, title, body, data)
         except Exception as e:
             logger.error(f"Failed to send push to driver {driver_id}: {str(e)}")
+
+
+def _arrival_fields(source):
+    """`started_at` and `estimated_duration_min` from a start result or event, when present.
+
+    The handlers rebuild each frame key by key, so a field the trip update carries is lost
+    unless it is named; this names these two in one place.
+    """
+    return {k: source[k] for k in ('started_at', 'estimated_duration_min')
+            if source.get(k) is not None}
 
 
 def _driver_photo_url(driver):
@@ -1707,6 +1720,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'driver_info': result.get('driver_info'),
                         'vehicle_info': result.get('vehicle_info'),
                     })
+                if action == 'start':
+                    status_event.update(_arrival_fields(result))
 
                 await self.channel_layer.group_send(self.trip_group, status_event)
 
@@ -1728,6 +1743,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                             'driver_info': result.get('driver_info'),
                             'vehicle_info': result.get('vehicle_info'),
                         })
+                    if action == 'start':
+                        rider_event.update(_arrival_fields(result))
 
                     await self.channel_layer.group_send(f'rider_{rider_id}', rider_event)
 
@@ -1829,6 +1846,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             for key in ('driver_info', 'vehicle_info'):
                 if event.get(key):
                     payload[key] = event[key]
+        # The trip's start time and planned duration, on the start event (2026-11-06).
+        payload.update(_arrival_fields(event))
 
         await self.send(text_data=json.dumps(payload))
 
@@ -2513,6 +2532,13 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     'driver_id': trip.driver_id_id if trip.driver_id else None,
                     'rider_id': trip.user_id_id,
                 }
+                # The rider's on-trip screen says "Arriving about HH:MM" from these two
+                # (2026-11-06). Both already exist on the trip; they were never sent.
+                if status_code == 'in_progress':
+                    result['started_at'] = trip.started_at.isoformat() if trip.started_at else None
+                    result['estimated_duration_min'] = (
+                        str(trip.estimated_duration_min)
+                        if trip.estimated_duration_min is not None else None)
 
                 # Include payment info for completed trips
                 if status_code == 'completed':

@@ -478,8 +478,11 @@ def test_offer_pushes_use_one_bulk_query(
     searching_trip, geo_driver, channel_recorder, captured_enqueues,
     django_assert_max_num_queries,
 ):
-    """The old loop issued Driver.objects.get() per driver per wave."""
-    with django_assert_max_num_queries(6):
+    """The old loop issued Driver.objects.get() per driver per wave.
+
+    8, not 6, since the offer carries the settlement's earning and the rider's rating
+    (2026-11-06): two queries per WAVE, built once with the payload, never per driver."""
+    with django_assert_max_num_queries(8):
         dispatch_mod.execute_wave(searching_trip.id, 0, 'e1', [1500])
 
 

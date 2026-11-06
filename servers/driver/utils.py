@@ -209,22 +209,20 @@ def settle_or_defer(trip):
         return False
 
 
-def credit_driver_wallet(trip):
-    """Settle a completed trip against the driver's settlement balance."""
-    from servers.payments.models import TransactionHistory, TripSettlement
-    from servers.rider.models import Wallet, WalletTransaction, get_wallet
-    from django.utils import timezone
-    from servers.pricing.services import commission_percent_for_trip
-    from decimal import Decimal
-    from django.db import transaction, IntegrityError
-    from base.money import currency_for_trip, from_minor, to_minor
+def settlement_amounts(trip):
+    """The settlement's arithmetic for a trip, with no side effects.
 
-    if not trip.driver_id:
-        return
-    # An operator ended it under the platform-funded rule: the driver was paid their earnings by
-    # the platform then (`operator_end._credit_driver`); there is no rider payment to settle.
-    if trip.end_rule == 'platform_funded':
-        return
+    `credit_driver_wallet` settles with exactly these numbers; the driver's
+    ride offer shows them (2026-11-06), so the offer's "You earn" is the
+    settlement's own result, not a second calculation. Raises
+    `CommissionNotConfigured` when no commission rule governs the trip.
+
+    Returns `{gross_minor, tax_minor, fee_minor, commission_rate,
+    commission_minor, net_minor}` in the trip's currency's minor units.
+    """
+    from decimal import Decimal
+    from base.money import currency_for_trip, from_minor, to_minor
+    from servers.pricing.services import commission_percent_for_trip
 
     # The ledger is integers in the trip's currency. The one rounding is the
     # commission, done by the money helper; the driver's net is then an exact
@@ -257,6 +255,38 @@ def credit_driver_wallet(trip):
     commission_minor = to_minor(
         from_minor(gross_minor, currency) * commission_rate / Decimal('100'), currency)
     net_minor = gross_minor - commission_minor
+    return {'gross_minor': gross_minor, 'tax_minor': tax_minor, 'fee_minor': fee_minor,
+            'commission_rate': commission_rate, 'commission_minor': commission_minor,
+            'net_minor': net_minor}
+
+
+def credit_driver_wallet(trip):
+    """Settle a completed trip against the driver's settlement balance."""
+    from servers.payments.models import TransactionHistory, TripSettlement
+    from servers.rider.models import Wallet, WalletTransaction, get_wallet
+    from django.utils import timezone
+    from servers.pricing.services import commission_percent_for_trip
+    from decimal import Decimal
+    from django.db import transaction, IntegrityError
+    from base.money import currency_for_trip, from_minor, to_minor
+
+    if not trip.driver_id:
+        return
+    # An operator ended it under the platform-funded rule: the driver was paid their earnings by
+    # the platform then (`operator_end._credit_driver`); there is no rider payment to settle.
+    if trip.end_rule == 'platform_funded':
+        return
+
+    # The ledger is integers in the trip's currency. The one rounding is the
+    # commission, done by the money helper; the driver's net is then an exact
+    # subtraction, so gross = commission + net holds to the paisa by
+    # construction rather than by luck.
+    currency = currency_for_trip(trip)
+    amounts = settlement_amounts(trip)
+    gross_minor = amounts['gross_minor']
+    tax_minor, fee_minor = amounts['tax_minor'], amounts['fee_minor']
+    commission_rate = amounts['commission_rate']
+    commission_minor, net_minor = amounts['commission_minor'], amounts['net_minor']
 
     with transaction.atomic():
         # Driver settlement balance — a DIFFERENT row from the rider credit

@@ -37,6 +37,11 @@ class customUser(AbstractUser):
     zip_code = models.CharField(max_length=20, blank=True, null=True)
     emergency_contact = models.CharField(max_length=20, blank=True, null=True)
     role = models.CharField(max_length=20, choices=[("rider", "Rider"), ("driver", 'Driver'), ('admin', 'Admin')])
+    # The app language the user picked (2026-11-06), synced from the device so a reinstall or a
+    # second phone starts in it. Nullable: unset until the app sends it.
+    LANGUAGE_CHOICES = [('en', 'English'), ('te', 'Telugu'), ('hi', 'Hindi')]
+    preferred_language = models.CharField(max_length=5, choices=LANGUAGE_CHOICES,
+                                          null=True, blank=True)
     avatar = models.FileField(
         blank=True,
         max_length=512,

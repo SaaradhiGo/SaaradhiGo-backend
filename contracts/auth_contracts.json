@@ -26,7 +26,8 @@
             "avatar": null,
             "updated_at": "2026-01-01T00:00:00.000000+05:30",
             "created_at": "2026-01-01T00:00:00.000000+05:30",
-            "is_updated": false
+            "is_updated": false,
+            "preferred_language": null
           }
         },
         "meta": {
@@ -89,7 +90,8 @@
             "avatar": null,
             "updated_at": "2026-01-01T00:00:00.000000+05:30",
             "created_at": "2026-01-01T00:00:00.000000+05:30",
-            "is_updated": false
+            "is_updated": false,
+            "preferred_language": null
           }
         },
         "meta": {

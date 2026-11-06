@@ -51,6 +51,7 @@ WHAT CHANGED AND WHY
 
 from __future__ import annotations
 
+import math
 import logging
 import threading
 
@@ -224,7 +225,7 @@ def _resolve_country(country, location) -> str | None:
 # --------------------------------------------------------------------------
 
 def google_places_autocomplete(search_text, location=None, radius=None,
-                               country=None, session_token=None):
+                               country=None, session_token=None, bounds=None):
     """Place predictions for `search_text`, biased to the caller's market.
 
     Returns the legacy shape -- {'predictions': [{description, place_id}, ...]}
@@ -239,11 +240,34 @@ def google_places_autocomplete(search_text, location=None, radius=None,
 
     code = _resolve_country(country, location)
     if _places_api_version() == 'legacy':
-        return _autocomplete_legacy(search_text, location, radius, code, session_token)
-    return _autocomplete_new(search_text, location, radius, code, session_token)
+        return _autocomplete_legacy(search_text, location, radius, code, session_token, bounds)
+    return _autocomplete_new(search_text, location, radius, code, session_token, bounds)
 
 
-def _autocomplete_legacy(search_text, location, radius, country, session_token):
+def zone_bounds(polygon_geojson):
+    """`(south, west, north, east)` of a zone's GeoJSON Polygon or MultiPolygon, or None."""
+    try:
+        kind = polygon_geojson.get('type')
+        rings = polygon_geojson['coordinates']
+        polys = rings if kind == 'MultiPolygon' else [rings]
+        points = [pt for poly in polys for ring in poly for pt in ring]
+        lngs = [float(p[0]) for p in points]
+        lats = [float(p[1]) for p in points]
+        return min(lats), min(lngs), max(lats), max(lngs)
+    except (AttributeError, KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
+def _bounds_circle(bounds):
+    """The circle around `bounds`, for the legacy API's strictbounds: (centre, radius_m)."""
+    south, west, north, east = bounds
+    centre = ((south + north) / 2, (west + east) / 2)
+    lat_m = (north - south) / 2 * 111_320
+    lng_m = (east - west) / 2 * 111_320 * math.cos(math.radians(centre[0]))
+    return centre, int(math.hypot(lat_m, lng_m)) + 1
+
+
+def _autocomplete_legacy(search_text, location, radius, country, session_token, bounds=None):
     params = {
         'input': search_text,
         'key': _api_key(),
@@ -257,6 +281,10 @@ def _autocomplete_legacy(search_text, location, radius, country, session_token):
             f'{location[0]},{location[1]}'
     if radius:
         params['radius'] = radius
+    if bounds:
+        # Restricted, not biased: nothing outside the service area comes back.
+        centre, metres = _bounds_circle(bounds)
+        params.update(location=f'{centre[0]},{centre[1]}', radius=metres, strictbounds='true')
     if session_token:
         params['sessiontoken'] = session_token
 
@@ -274,7 +302,7 @@ def _autocomplete_legacy(search_text, location, radius, country, session_token):
         return _fail(UPSTREAM_ERROR, f'unparseable response: {exc}')
 
 
-def _autocomplete_new(search_text, location, radius, country, session_token):
+def _autocomplete_new(search_text, location, radius, country, session_token, bounds=None):
     """Places API (New): POST places:autocomplete.
 
     The field mask is pinned to the two fields the clients use. Google bills
@@ -285,7 +313,14 @@ def _autocomplete_new(search_text, location, radius, country, session_token):
     if country:
         body['includedRegionCodes'] = [country]
     point = _parse_location(location)
-    if point:
+    if bounds:
+        # Restricted, not biased: nothing outside the service area comes back.
+        south, west, north, east = bounds
+        body['locationRestriction'] = {'rectangle': {
+            'low': {'latitude': south, 'longitude': west},
+            'high': {'latitude': north, 'longitude': east},
+        }}
+    elif point:
         body['locationBias'] = {
             'circle': {
                 'center': {'latitude': point[0], 'longitude': point[1]},

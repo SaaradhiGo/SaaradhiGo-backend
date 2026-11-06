@@ -118,6 +118,10 @@ class Driver(models.Model):
 class VehicleType(models.Model):
     type=models.CharField(max_length=50,unique=True)
     description=models.TextField(blank=True,null=True)
+    # Rider seats the class carries ("4 seats" on the choose-a-ride row).
+    # Display only: pricing and dispatch never read it. Null = not set, and
+    # the apps then say nothing about seats.
+    seats = models.PositiveSmallIntegerField(null=True, blank=True)
     def __str__(self):
         return self.type
 class Vehicle(models.Model):

@@ -72,6 +72,19 @@ class TestConfigPerCountry:
         cache.clear()
         assert data(get('?country=IN'))['country']['support'] == {'phone': None}
 
+    def test_policies_state_todays_behaviour_and_leave_the_undecided_unset(self, markets):
+        """No cancellation fee exists, no free-wait time is decided, and a refund takes up to
+        7 business days (the refund notice). Undecided values are None so the apps hide them."""
+        country = data(get('?country=IN'))['country']
+        assert country['cancel_policy'] == {'charges_fee': False, 'free_cancel_seconds': None}
+        assert country['free_wait_minutes'] is None
+        assert country['refund_days'] == 7
+
+    def test_a_country_with_no_policy_says_nothing(self):
+        from servers.platform_ops.app_config import _policy
+        assert _policy('ZZ') == {'cancel_policy': {'charges_fee': None, 'free_cancel_seconds': None},
+                                 'free_wait_minutes': None, 'refund_days': None}
+
     def test_support_number_is_per_country(self, markets, settings):
         settings.SUPPORT_PHONE_NUMBERS = {'IN': '+914000000001'}
         cache.clear()

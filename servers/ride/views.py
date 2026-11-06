@@ -201,12 +201,20 @@ def estimate_fare(request):
     eta_min, drivers_nearby = pickup_eta(pickup_lat, pickup_long, fare['vehicle_type'])
     rider_reason = _rider_reason(fare)
 
+    # Seats for the choose-a-ride row; None when the class has none set.
+    from servers.driver.models import VehicleType
+    seats = (
+        VehicleType.objects.filter(type=fare['vehicle_type'])
+        .values_list('seats', flat=True).first()
+    )
+
     return success_response({
         'estimated_fare': str(fare['total_fare']),
         # Minutes to the nearest free driver of this class, or None with
         # drivers_nearby False. Never a position (pickup_eta).
         'pickup_eta_min': eta_min,
         'drivers_nearby': drivers_nearby,
+        'seats': seats,
         # One plain line for the rider when demand pricing is above 1x, or None.
         # Copy only: the multiplier itself is untouched (2026-11-06).
         'rider_reason': rider_reason,

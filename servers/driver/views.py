@@ -260,6 +260,7 @@ def driver_earnings_summary(request):
         # commission they owe on it, which is not the same thing.
         'total_net': str(totals['total_net']),
         'today_net': str(today['total_net']),
+        'today_commission': str(today['total_commission']),
         'cash_collected': str(totals['cash_collected']),
         'unresolved_trips': totals['unresolved_trips'],
         # Module 12: rider promos are paid by SaaradhiGo, shown as their own line.

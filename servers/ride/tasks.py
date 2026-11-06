@@ -183,6 +183,7 @@ def _tell_rider_nobody_accepted(rider_id, trip_id):
             'type': 'trip_update', 'trip_id': trip_id, 'status': 'cancel',
             'reason': 'no_driver_accepted', 'message': NO_DRIVER_MESSAGE,
             'driver_id': None, 'driver_name': '',
+            'cancelled_by': 'system',
         }
         async_to_sync(layer.group_send)(f'rider_{rider_id}', event)
         # The website watches the trip's own socket from the moment the trip

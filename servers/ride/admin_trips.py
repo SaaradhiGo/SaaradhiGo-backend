@@ -887,10 +887,11 @@ def _tell_rider_released(trip_id, rider_id):
             message = 'Your ride was cancelled by support.'
             async_to_sync(layer.group_send)(f'trip_{trip_id}', {
                 'type': 'trip_status_update', 'trip_id': trip_id, 'status': 'cancel',
-                'message': message, 'driver_id': None})
+                'message': message, 'driver_id': None, 'cancelled_by': 'admin'})
             async_to_sync(layer.group_send)(f'rider_{rider_id}', {
                 'type': 'trip_update', 'trip_id': trip_id, 'status': 'cancel',
-                'message': message, 'driver_id': None, 'driver_name': ''})
+                'message': message, 'driver_id': None, 'driver_name': '',
+                'cancelled_by': 'admin'})
     except Exception:  # noqa: BLE001
         logger.warning('stale release: ride socket event failed for trip %s', trip_id,
                        exc_info=True)

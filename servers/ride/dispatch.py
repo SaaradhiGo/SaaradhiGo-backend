@@ -332,7 +332,48 @@ def _offer_payload(trip, rider_name, vehicle_type):
         'duration_min': str(trip.estimated_duration_min) if trip.estimated_duration_min is not None else '',
         'payment_method': str(trip.payment_method) if trip.payment_method else '',
         'vehicle_type': str(vehicle_type) if vehicle_type else '',
+        # What the driver keeps and what the platform takes (2026-11-06), straight from the
+        # settlement's own arithmetic (`settlement_amounts`, the numbers the trip settles with
+        # at the quoted fare), and the rider's rating once they have one. Additive: an older
+        # driver build ignores them.
+        **_offer_money(trip),
     }
+
+
+def _offer_money(trip):
+    """`earning`, `commission_rate`, `commission_amount` and `rider_rating` for the offer.
+
+    The earning is the settlement's own result at the quoted fare, never a second calculation.
+    With no commission rule in force (settlement would defer) the three money fields are None
+    and the app shows the fare alone. A rider with no ratings yet has `rider_rating` None, not
+    the 5.00 default.
+    """
+    from base.money import currency_for_trip, from_minor
+    from servers.driver.utils import settlement_amounts
+    from servers.pricing.commission import CommissionNotConfigured
+
+    out = {'earning': None, 'commission_rate': None, 'commission_amount': None,
+           'rider_rating': None}
+    try:
+        amounts = settlement_amounts(trip)
+        currency = currency_for_trip(trip)
+        out['earning'] = str(from_minor(amounts['net_minor'], currency))
+        out['commission_rate'] = str(amounts['commission_rate'])
+        out['commission_amount'] = str(from_minor(amounts['commission_minor'], currency))
+    except CommissionNotConfigured:
+        pass
+    except Exception:  # noqa: BLE001 - a missing earning line must never stop an offer
+        logger.exception('offer_money_failed trip=%s', trip.id)
+    try:
+        rider = getattr(trip.user_id, 'rider', None)
+        if rider is None:
+            from servers.rider.models import Rider
+            rider = Rider.objects.filter(user_id=trip.user_id).only('rating', 'rating_count').first()
+        if rider is not None and rider.rating_count:
+            out['rider_rating'] = float(rider.rating)
+    except Exception:  # noqa: BLE001
+        logger.exception('offer_rider_rating_failed trip=%s', trip.id)
+    return out
 
 
 def _pickup_fields(metres):

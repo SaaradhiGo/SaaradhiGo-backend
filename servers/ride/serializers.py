@@ -101,6 +101,10 @@ class TripDetailSerializer(TripListSerializer):
     # say what the rider is charged: the cash a driver collects on a cash trip is `rider_payable`.
     promo_discount = serializers.SerializerMethodField()
     rider_payable = serializers.SerializerMethodField()
+    # The driver card on the rider's "driver arriving" screen (2026-11-06). Only the trip's own
+    # rider (or its driver) gets them; anyone else sees None.
+    driver_photo_url = serializers.SerializerMethodField()
+    driver_total_trips = serializers.SerializerMethodField()
 
     class Meta(TripListSerializer.Meta):
         fields = TripListSerializer.Meta.fields + [
@@ -108,7 +112,29 @@ class TripDetailSerializer(TripListSerializer):
             'fare_breakdown', 'ratings', 'otp', 'promo_discount', 'rider_payable',
             # The apps draw this instead of buying a route per location ping (Maps M1).
             'planned_route_polyline',
+            'driver_photo_url', 'driver_total_trips',
         ]
+
+    def _party(self, obj):
+        request = self.context.get('request') if hasattr(self, 'context') else None
+        uid = getattr(getattr(request, 'user', None), 'id', None)
+        if uid is None or not obj.driver_id:
+            return False
+        return uid in (obj.user_id_id, obj.driver_id.user_id_id)
+
+    def get_driver_photo_url(self, obj):
+        # A short-lived signed URL to the driver's own photo, or None (no photo, or the store
+        # cannot sign). Never a permanent link.
+        if not self._party(obj):
+            return None
+        from servers.driver.document_access import signed_url
+        return signed_url(obj.driver_id.user_id.avatar)
+
+    def get_driver_total_trips(self, obj):
+        # Completed trips, incremented when a trip completes (consumers.py).
+        if not self._party(obj):
+            return None
+        return obj.driver_id.total_trips
 
     def get_promo_discount(self, obj):
         from servers.promotions import rider_promos

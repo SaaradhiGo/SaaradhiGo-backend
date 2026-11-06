@@ -1296,6 +1296,16 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             logger.error(f"Failed to send push to driver {driver_id}: {str(e)}")
 
 
+def _driver_photo_url(driver):
+    """A short-lived signed URL to the driver's photo for the rider's card, or None."""
+    try:
+        from servers.driver.document_access import signed_url
+        return signed_url(driver.user_id.avatar)
+    except Exception:  # noqa: BLE001 - a missing photo must never break an accept
+        logger.exception('driver_photo_url_failed')
+        return None
+
+
 def rider_promos_refused():
     """The exception booking raises when a rider's promo code cannot be applied."""
     from servers.promotions.rider_promos import PromoRefused
@@ -2151,6 +2161,10 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 'id': driver.id,
                 'phone_number': driver.user_id.phone_number,
                 'stars': str(driver.ratings),
+                # The rider's "driver arriving" card (2026-11-06): a short-lived signed URL to the
+                # driver's photo or None, and completed trips. This frame goes to the trip's rider.
+                'photo_url': _driver_photo_url(driver),
+                'total_trips': driver.total_trips,
             }
             
             vehicle = driver.active_vehicle

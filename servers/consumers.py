@@ -434,6 +434,14 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             'pickup_distance_km': event.get('pickup_distance_km', ''),
             'pickup_eta_min': event.get('pickup_eta_min', ''),
             'expires_at': event.get('expires_at', ''),
+            # What the driver keeps, from the settlement's own arithmetic, and the rider's rating
+            # (dispatch._offer_money, 2026-11-06). This handler rebuilds the frame key by key, so a
+            # field the dispatcher adds is dropped here unless it is named: the first QA offer
+            # showed "Fare" because these four never left the server.
+            'earning': event.get('earning'),
+            'commission_rate': event.get('commission_rate'),
+            'commission_amount': event.get('commission_amount'),
+            'rider_rating': event.get('rider_rating'),
         }))
 
     # -- Database helpers --

@@ -179,12 +179,20 @@ def estimate_fare(request):
     from .pickup_eta import pickup_eta
     eta_min, drivers_nearby = pickup_eta(pickup_lat, pickup_long, fare['vehicle_type'])
 
+    # Seats for the choose-a-ride row; None when the class has none set.
+    from servers.driver.models import VehicleType
+    seats = (
+        VehicleType.objects.filter(type=fare['vehicle_type'])
+        .values_list('seats', flat=True).first()
+    )
+
     return success_response({
         'estimated_fare': str(fare['total_fare']),
         # Minutes to the nearest free driver of this class, or None with
         # drivers_nearby False. Never a position (pickup_eta).
         'pickup_eta_min': eta_min,
         'drivers_nearby': drivers_nearby,
+        'seats': seats,
         # The market this quote was priced in. A client that cannot see this
         # does not know whether 135.22 is rupees or dollars, and `distance_unit`
         # is what stops a US rider being quoted a per-kilometre rate.

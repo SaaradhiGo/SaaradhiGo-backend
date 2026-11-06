@@ -83,7 +83,8 @@ class TestConfigPerCountry:
     def test_a_country_with_no_policy_says_nothing(self):
         from servers.platform_ops.app_config import _policy
         assert _policy('ZZ') == {'cancel_policy': {'charges_fee': None, 'free_cancel_seconds': None},
-                                 'free_wait_minutes': None, 'refund_days': None}
+                                 'free_wait_minutes': None, 'refund_days': None,
+                                 'quote_valid_seconds': None, 'home_fare_places_max_km': None}
 
     def test_support_number_is_per_country(self, markets, settings):
         settings.SUPPORT_PHONE_NUMBERS = {'IN': '+914000000001'}

@@ -694,8 +694,12 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             # A promo code the rider applied on the fare screen (optional; additive). With none,
             # the best live auto-applied promo is used. See servers/promotions/rider_promos.py.
             promo_code = str(data.get('promo_code') or '').strip()[:32]
+            # The quote the rider was shown (ride/quotes.py). Optional: an older build sends none
+            # and the trip is priced at booking, as before.
+            quote_id = str(data.get('quote_id') or '').strip()[:64] or None
             self._promo_refusal = ''
             self._booking_refusal = None
+            self._fresh_quote = None
 
             # Validate required fields
             if not all([pickup_lat, pickup_lng, destination_lat, destination_lng, pickup_address, destination_address]):
@@ -719,14 +723,17 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 payment_method=payment_method,
                 client_request_id=client_request_id,
                 promo_code=promo_code,
+                quote_id=quote_id,
             )
 
             if not trip:
                 if getattr(self, '_booking_refusal', None):
                     code, message = self._booking_refusal
-                    await self.send(text_data=json.dumps({
-                        'type': 'error', 'code': code, 'message': message,
-                    }))
+                    frame = {'type': 'error', 'code': code, 'message': message}
+                    # QUOTE_EXPIRED: nothing was booked; here is the fare the rider can confirm.
+                    if getattr(self, '_fresh_quote', None):
+                        frame.update(self._fresh_quote)
+                    await self.send(text_data=json.dumps(frame))
                     return
                 if self._promo_refusal:
                     # The rider asked for a discount that no longer applies. Booking without
@@ -985,7 +992,8 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     def _create_trip(self, pickup_lat, pickup_lng, destination_lat, destination_lng,
                      pickup_address, destination_address,
                      distance_km=None, duration_min=None, vehicle_type=None,
-                     payment_method='deferred', client_request_id=None, promo_code=''):
+                     payment_method='deferred', client_request_id=None, promo_code='',
+                     quote_id=None):
         """Create the trip, or return the one this request already created.
 
         Returns `(trip, reused)`. `reused=True` means `client_request_id` had
@@ -1050,6 +1058,36 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             # and duration, not the client-supplied values. The client
             # numbers are advisory only (used to flag suspicious deviation
             # inside validate_distance).
+            # THE QUOTE IS THE PRICE (owner ruling, 2026-11-06). With a quote id the rider booked
+            # from, the trip is booked at exactly that quote, or refused with a fresh one: it is
+            # never re-priced here. Checked before anything records demand.
+            from servers.ride import quotes
+            quote = None
+            if quote_id:
+                quote, why = quotes.check(
+                    quote_id, rider_id=self.user.id,
+                    pickup=(pickup_lat, pickup_lng), drop=(destination_lat, destination_lng),
+                    vehicle_type=vehicle_type)
+                if quote is None:
+                    fresh = estimate_amount(
+                        validated_km, validated_min, vehicle_type=vehicle_type,
+                        pickup_lat=pickup_lat, pickup_long=pickup_lng, rider_id=self.user.id)
+                    fresh_id, fresh_expires = quotes.issue(
+                        fresh, rider_id=self.user.id,
+                        pickup=(pickup_lat, pickup_lng), drop=(destination_lat, destination_lng),
+                        validated_km=validated_km, validated_min=validated_min)
+                    self._fresh_quote = {
+                        'reason': why,
+                        'fresh_quote': quotes.public(fresh, fresh_id, fresh_expires),
+                    }
+                    self._booking_refusal = (
+                        'QUOTE_EXPIRED',
+                        'The fare changed because time passed.' if why == 'expired'
+                        else 'The fare changed because the trip changed.')
+                    logger.info('trip_quote_refused', extra={
+                        'event': 'trip_quote_refused', 'rider_id': self.user.id, 'reason': why})
+                    raise ValueError('quote expired')
+
             fare = estimate_amount(
                 validated_km,
                 validated_min,
@@ -1060,6 +1098,9 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 # This IS a booking, so it counts toward demand for surge.
                 record_demand=True,
             )
+            if quote is not None:
+                # Demand was recorded above; the price is the quote's, to the paisa.
+                fare = quote['fare']
 
             # Resolve VehicleType for storing on Trip
             requested_vt = None

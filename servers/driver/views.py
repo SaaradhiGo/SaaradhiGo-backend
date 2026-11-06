@@ -194,6 +194,48 @@ def driver_earnings(request):
 
 @api_view(['GET'])
 @permission_classes([IsDriver])
+def driver_earnings_daily(request):
+    """GET /driver/earnings/daily/?days=7  The driver's last N local days, oldest first.
+
+    Read-only aggregation of the same settlement ledger the summary reads (2026-11-06), so a
+    day's figures add up to the summary's. Days are the driver's market's calendar days; a day
+    with no settled trip is present with zeros, so the chart has every bar. `days` is 1-31,
+    default 7. Amounts are decimal strings in the driver's currency.
+    """
+    from datetime import timedelta
+
+    from base.market_time import driver_timezone, local_day_start
+    from servers.driver.earnings import settlement_rows, summarise
+
+    try:
+        days = int(request.query_params.get('days', 7))
+    except (TypeError, ValueError):
+        days = 7
+    days = max(1, min(days, 31))
+
+    driver = request.user.driver
+    today_start = local_day_start(driver_timezone(driver))
+    starts = [today_start - timedelta(days=i) for i in range(days - 1, -1, -1)]
+    rows = settlement_rows(driver, since=starts[0])
+
+    out = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else None
+        day_rows = [r for r in rows if r.created_at is not None and r.created_at >= start
+                    and (end is None or r.created_at < end)]
+        t = summarise(day_rows)
+        out.append({
+            'date': start.date().isoformat(),
+            'trips': t['total_trips'],
+            'gross': str(t['total_gross']),
+            'commission': str(t['total_commission']),
+            'net': str(t['total_net']),
+        })
+    return success_response({'days': out}, status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsDriver])
 def driver_earnings_summary(request):
     """Aggregate earnings for the driver.
 

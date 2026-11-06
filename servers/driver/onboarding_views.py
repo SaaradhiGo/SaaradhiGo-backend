@@ -75,11 +75,51 @@ TARGET_FOR = {
 }
 
 
-def _entries(checks, scope):
+def _review_states(driver, vehicle, checks, scope):
+    """`{key: (status, reason)}` from the operators' per-document reviews (2026-11-06).
+
+    The console's own rule (admin_drivers._document_rows): a review counts only for the file it
+    was about, so a re-upload is back to `in_review`. `approved` / `rejected` from that review,
+    `in_review` for a file nobody has decided on, `missing` for no file. The reason is the
+    reviewer's text on a rejection, the words the driver is meant to see.
+    """
+    from .models import DriverDocumentReview
+
+    owner = vehicle if scope == 'vehicle' else driver
+    columns = (compliance.VEHICLE_DOCUMENT_COLUMNS if scope == 'vehicle'
+               else compliance.DRIVER_DOCUMENT_COLUMNS)
+    latest = {}
+    if owner is not None:
+        for review in (DriverDocumentReview.objects
+                       .filter(driver=driver, vehicle=vehicle if scope == 'vehicle' else None)
+                       .order_by('reviewed_at', 'id')):
+            latest[review.document_key] = review
+    out = {}
+    for key in checks:
+        column = columns.get(key)
+        field = getattr(owner, column, None) if (owner is not None and column) else None
+        name = getattr(field, 'name', '') if field else ''
+        review = latest.get(key)
+        if not name:
+            out[key] = ('missing', None)
+        elif review is not None and review.file_name == name:
+            out[key] = (review.state, (review.reason or None) if review.state == 'rejected' else None)
+        else:
+            out[key] = ('in_review', None)
+    return out
+
+
+def _entries(checks, scope, states=None):
     """Turn a `compliance.evaluate_*` result into a client-facing list."""
     out = []
+    states = states or {}
     for key, check in checks.items():
+        status_, reason = states.get(key, (None, None))
         out.append({
+            # Per document (2026-11-06): approved, rejected, in_review or missing, and the
+            # reviewer's reason on a rejection.
+            'status': status_,
+            'reason': reason,
             'key': key,
             'label': check['label'],
             'description': compliance.document_description(key),
@@ -110,11 +150,15 @@ def driver_onboarding(request):
         # would tell them to add the one they just added.
         vehicle = Vehicle.objects.filter(driver_id=driver).order_by('id').first()
 
-    driver_docs = _entries(compliance.evaluate_driver(driver), 'driver')
-    vehicle_docs = (
-        _entries(compliance.evaluate_vehicle(vehicle, driver), 'vehicle')
-        if vehicle is not None else []
-    )
+    driver_checks = compliance.evaluate_driver(driver)
+    driver_docs = _entries(driver_checks, 'driver',
+                           _review_states(driver, None, driver_checks, 'driver'))
+    if vehicle is not None:
+        vehicle_checks = compliance.evaluate_vehicle(vehicle, driver)
+        vehicle_docs = _entries(vehicle_checks, 'vehicle',
+                                _review_states(driver, vehicle, vehicle_checks, 'vehicle'))
+    else:
+        vehicle_docs = []
 
     # The licence expiry is a FIELD, not a document, and the KYC gate checks
     # it separately -- a driver with a perfect photo of an expired licence is

@@ -294,6 +294,12 @@ def test_summary_endpoint_keeps_every_existing_key(rider, driver, client):
     assert Decimal(payload['total_earned']) == Decimal('300.00')
     assert payload['total_trips'] == 1
 
+    # Driver Home shows today's net and commission (owner, 2026-11-05).
+    today_net = Decimal(payload['today_net'])
+    today_commission = Decimal(payload['today_commission'])
+    assert today_net + today_commission == Decimal(payload['today_earned'])
+    assert today_commission > 0
+
 
 @pytest.mark.django_db
 def test_list_endpoint_returns_a_row_per_cash_trip(rider, driver):

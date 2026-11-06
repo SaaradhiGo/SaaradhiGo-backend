@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, time, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from base.utils import success_response, error_response
@@ -39,6 +39,27 @@ def _money_str(value):
     """
     return None if value is None else str(value)
 
+
+
+def _rider_reason(fare):
+    """"Higher demand near {area}" when the quote's demand multiplier is above 1, else None.
+
+    Rider-facing copy for the choose-a-ride screen. Never the word "surge"
+    (owner's ruling). The area is the pricing zone's name; with no zone it is
+    "Higher demand right now". Reads the multiplier, never changes it.
+    """
+    try:
+        multiplier = Decimal(str(fare.get('surge_multiplier') or '1'))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if multiplier <= 1:
+        return None
+    code = fare.get('zone_code') or ''
+    name = ''
+    if code:
+        from servers.pricing.models import ServiceZone
+        name = (ServiceZone.objects.filter(code=code).values_list('name', flat=True).first() or '').strip()
+    return f'Higher demand near {name}' if name else 'Higher demand right now'
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -178,6 +199,7 @@ def estimate_fare(request):
 
     from .pickup_eta import pickup_eta
     eta_min, drivers_nearby = pickup_eta(pickup_lat, pickup_long, fare['vehicle_type'])
+    rider_reason = _rider_reason(fare)
 
     return success_response({
         'estimated_fare': str(fare['total_fare']),
@@ -185,6 +207,9 @@ def estimate_fare(request):
         # drivers_nearby False. Never a position (pickup_eta).
         'pickup_eta_min': eta_min,
         'drivers_nearby': drivers_nearby,
+        # One plain line for the rider when demand pricing is above 1x, or None.
+        # Copy only: the multiplier itself is untouched (2026-11-06).
+        'rider_reason': rider_reason,
         # The market this quote was priced in. A client that cannot see this
         # does not know whether 135.22 is rupees or dollars, and `distance_unit`
         # is what stops a US rider being quoted a per-kilometre rate.

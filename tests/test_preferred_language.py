@@ -45,3 +45,23 @@ def test_it_can_be_sent_with_other_fields(auth_client_rider):
     user.refresh_from_db()
     assert user.full_name == 'Asha Rao'
     assert _profile(client)['preferred_language'] == 'hi'
+
+
+def test_the_theme_is_kept_the_same_way(auth_client_rider):
+    client, user = auth_client_rider
+    assert _profile(client)['preferred_theme'] is None
+    assert client.patch(UPDATE, {'preferred_theme': 'dark', 'preferred_language': 'te'},
+                        format='json').status_code == 200
+    data = _profile(client)
+    assert data['preferred_theme'] == 'dark' and data['preferred_language'] == 'te'
+    assert client.patch(UPDATE, {'preferred_theme': 'auto'}, format='json').status_code == 200
+    assert _profile(client)['preferred_theme'] == 'auto'
+    assert _profile(client)['preferred_language'] == 'te'
+
+
+def test_a_theme_the_apps_do_not_offer_saves_nothing(auth_client_rider):
+    client, user = auth_client_rider
+    r = client.patch(UPDATE, {'preferred_theme': 'sepia', 'preferred_language': 'te'}, format='json')
+    assert r.status_code == 400
+    from servers.auth_user.models import UserPreference
+    assert not UserPreference.objects.filter(user=user).exists()

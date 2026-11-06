@@ -149,7 +149,7 @@ def test_the_riders_open_socket_hears_it(rider):
     frame = {
         'trip_id': trip.id, 'status': 'cancel', 'reason': 'no_driver_accepted',
         'message': 'No driver accepted your request. Please try again.',
-        'driver_id': None, 'driver_name': '',
+        'driver_id': None, 'driver_name': '', 'cancelled_by': 'system',
     }
     assert sent == [
         (f'rider_{rider.id}', {'type': 'trip_update', **frame}),

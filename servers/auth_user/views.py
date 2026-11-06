@@ -782,30 +782,46 @@ def _truthy(value):
 _NO_LANGUAGE = object()
 
 
-def _preferred_language(update_data):
-    """`(value, error)` for `preferred_language`, popped out of `update_data` (2026-11-06).
+def _preference(update_data, field, choices, message):
+    """`(value, error)` for a UserPreference `field`, popped out of `update_data` (2026-11-06).
 
-    `_NO_LANGUAGE` when the key was not sent; None clears it. Only the apps' languages count.
+    `_NO_LANGUAGE` when the key was not sent; None clears it. Only `choices` count.
     """
-    from .models import UserPreference
-
-    if 'preferred_language' not in update_data:
+    if field not in update_data:
         return _NO_LANGUAGE, None
-    value = update_data.pop('preferred_language')
+    value = update_data.pop(field)
     if isinstance(value, list):
         value = value[0] if value else None
     value = (str(value).strip().lower() or None) if value is not None else None
-    if value is not None and value not in dict(UserPreference.LANGUAGE_CHOICES):
-        return _NO_LANGUAGE, 'preferred_language must be en, te or hi.'
+    if value is not None and value not in dict(choices):
+        return _NO_LANGUAGE, message
     return value, None
 
 
-def _save_preferred_language(user, value):
+def _preferred_language(update_data):
     from .models import UserPreference
 
-    UserPreference.objects.update_or_create(user=user, defaults={'preferred_language': value})
+    return _preference(update_data, 'preferred_language', UserPreference.LANGUAGE_CHOICES,
+                       'preferred_language must be en, te or hi.')
+
+
+def _preferred_theme(update_data):
+    from .models import UserPreference
+
+    return _preference(update_data, 'preferred_theme', UserPreference.THEME_CHOICES,
+                       'preferred_theme must be light, dark or auto.')
+
+
+def _save_preference(user, **values):
+    from .models import UserPreference
+
+    UserPreference.objects.update_or_create(user=user, defaults=values)
     if hasattr(user, '_state') and 'preference' in getattr(user._state, 'fields_cache', {}):
         del user._state.fields_cache['preference']
+
+
+def _save_preferred_language(user, value):
+    _save_preference(user, preferred_language=value)
 
 
 def _home_city(user, update_data):
@@ -965,8 +981,19 @@ def update_user(request):
                 issue=language_error,
                 status=status.HTTP_400_BAD_REQUEST
             )
+        theme, theme_error = _preferred_theme(update_data)
+        if theme_error:
+            return error_response(
+                code='AUTH_VALIDATION_ERROR',
+                message=theme_error,
+                field='preferred_theme',
+                issue=theme_error,
+                status=status.HTTP_400_BAD_REQUEST
+            )
         if language is not _NO_LANGUAGE:
             _save_preferred_language(user, language)
+        if theme is not _NO_LANGUAGE:
+            _save_preference(user, preferred_theme=theme)
 
         name_error = _driver_name_error(user, update_data)
         if name_error:
@@ -982,7 +1009,7 @@ def update_user(request):
             _save_home_city(user, home_city)
             return success_response(UserModelSerializer(user).data, status.HTTP_200_OK)
 
-        if not update_data and language is not _NO_LANGUAGE:
+        if not update_data and (language is not _NO_LANGUAGE or theme is not _NO_LANGUAGE):
             return success_response(UserModelSerializer(user).data, status.HTTP_200_OK)
 
         if not update_data:

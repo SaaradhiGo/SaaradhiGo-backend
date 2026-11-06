@@ -1063,6 +1063,28 @@ def resend_receipt(request, trip_id):
     )
 
 
+def _broadcast_cancel(trip_id, rider_id, cancelled_by, message):
+    """Tell both apps' sockets a trip was cancelled over REST (2026-11-06).
+
+    The socket cancel always broadcast; these REST cancels did not, so a rider
+    whose driver cancelled here stayed on "on the way". Same frames as the socket.
+    """
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        layer = get_channel_layer()
+        if layer is None:
+            return
+        event = {'trip_id': str(trip_id), 'status': 'cancel', 'message': message,
+                 'driver_id': None, 'cancelled_by': cancelled_by}
+        async_to_sync(layer.group_send)(f'trip_{trip_id}', {**event, 'type': 'trip_status_update'})
+        async_to_sync(layer.group_send)(f'rider_{rider_id}',
+                                        {**event, 'type': 'trip_update', 'driver_name': ''})
+    except Exception:  # noqa: BLE001
+        logger.warning('cancel socket event failed for trip %s', trip_id, exc_info=True)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, IsDriver])
 def driver_cancel_trip(request, trip_id):
@@ -1174,6 +1196,9 @@ def driver_cancel_trip(request, trip_id):
         except Exception as exc:  # noqa: BLE001
             logger.warning('Rider cancel notification failed: %s', exc)
 
+        transaction.on_commit(lambda t=trip: _broadcast_cancel(
+            t.id, t.user_id_id, 'driver', 'Your driver cancelled the trip.'))
+
         return success_response(
             {
                 'trip_id': trip.id,
@@ -1283,6 +1308,8 @@ def rider_cancel_trip(request, trip_id):
 
             # 4. Process refund if applicable
             refund_result = process_refund_on_cancel(trip)
+            transaction.on_commit(lambda t=trip: _broadcast_cancel(
+                t.id, t.user_id_id, 'rider', 'Your ride has been cancelled.'))
 
             # 5. Notification for the rider
             try:
@@ -1448,7 +1475,12 @@ def get_active_trip(request):
         )
 
     serializer = TripDetailSerializer(trip, context={'request': request})
-    return success_response(serializer.data, status.HTTP_200_OK)
+    data = dict(serializer.data)
+    # A trip completed in the last hour comes back for receipt and cash-collection
+    # recovery, not as a live trip (driver saw trip 138 named "active", 2026-11-06).
+    data['is_active'] = trip.status_id.status_code in active_statuses
+    data['recovery'] = None if data['is_active'] else 'recently_completed'
+    return success_response(data, status.HTTP_200_OK)
 
 from servers.redis_client import check_maps_rate_limit, get_cached_map_data, cache_map_data
 from servers.ride.maps_utils import (

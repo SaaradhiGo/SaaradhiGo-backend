@@ -25,6 +25,7 @@
           "wallet_balance": "0",
           "total_net": "0.00",
           "today_net": "0.00",
+          "today_commission": "0.00",
           "cash_collected": "0.00",
           "unresolved_trips": 0,
           "promo_paid_by_platform": "0.00",
@@ -116,7 +117,10 @@
           "fee_percent": 0.0,
           "fee_display": null,
           "minimum_withdrawal": 500.0,
-          "currency": "INR"
+          "currency": "INR",
+          "payout_details_on_file": false,
+          "withdrawals_available": false,
+          "message": "Add your UPI ID or bank account in Payout details before you withdraw."
         },
         "meta": {
           "timestamp": "2026-01-01T00:00:00.000000+05:30"
@@ -154,6 +158,7 @@
           "estimated_duration_min": null,
           "actual_duration_min": null,
           "user": null,
+          "cancelled_by": "",
           "accepted_at": null,
           "started_at": null,
           "fare_breakdown": {
@@ -166,7 +171,13 @@
           "ratings": [],
           "otp": null,
           "promo_discount": null,
-          "rider_payable": null
+          "rider_payable": null,
+          "planned_route_polyline": null,
+          "driver_photo_url": null,
+          "driver_total_trips": 0,
+          "driver_earning": null,
+          "is_active": false,
+          "recovery": "recently_completed"
         },
         "meta": {
           "timestamp": "2026-01-01T00:00:00.000000+05:30"
@@ -179,22 +190,39 @@
       "body": {
         "status": "success",
         "data": {
-          "estimated_fare": "214.32",
+          "estimated_fare": "268.00",
+          "pickup_eta_min": null,
+          "drivers_nearby": false,
+          "seats": 4,
+          "rider_reason": "Higher demand near Hyderabad",
+          "quote_id": "eb59da02c1474de7bf63126d17ddebfb",
+          "quote_expires_at": "2026-01-01T00:00:00.000000+05:30",
           "currency": "INR",
           "distance_unit": "km",
           "fare_breakdown": {
             "base_fare": "60.00",
             "distance_fare": "114.07",
             "time_fare": "40.25",
-            "surge_multiplier": "1.00",
+            "surge_multiplier": "1.25",
             "min_fare_applied": false,
             "tax_mode": "inclusive",
             "tax_label": "GST",
             "tax_percent": "5.000",
-            "tax_amount": "10.21",
+            "tax_amount": "12.76",
             "per_trip_fee": "0.00"
           },
-          "fare_adjustments": [],
+          "fare_adjustments": [
+            {
+              "code": "surge",
+              "label": "Busy-time surcharge",
+              "amount": "53.58"
+            },
+            {
+              "code": "rounding",
+              "label": "Rounding",
+              "amount": "0.10"
+            }
+          ],
           "vehicle_type": "sedan",
           "pricing_source": "db",
           "distance_km": 5.2,
@@ -257,7 +285,8 @@
               "cancelled_at": null,
               "estimated_duration_min": null,
               "actual_duration_min": null,
-              "user": null
+              "user": null,
+              "cancelled_by": ""
             }
           ]
         },
@@ -301,7 +330,8 @@
               "cancelled_at": null,
               "estimated_duration_min": null,
               "actual_duration_min": null,
-              "user": null
+              "user": null,
+              "cancelled_by": ""
             }
           ]
         },
@@ -405,6 +435,7 @@
           "estimated_duration_min": null,
           "actual_duration_min": null,
           "user": null,
+          "cancelled_by": "",
           "accepted_at": null,
           "started_at": null,
           "fare_breakdown": {
@@ -417,7 +448,11 @@
           "ratings": [],
           "otp": null,
           "promo_discount": null,
-          "rider_payable": null
+          "rider_payable": null,
+          "planned_route_polyline": null,
+          "driver_photo_url": null,
+          "driver_total_trips": 0,
+          "driver_earning": "163.20"
         },
         "meta": {
           "timestamp": "2026-01-01T00:00:00.000000+05:30"
@@ -455,6 +490,7 @@
           "estimated_duration_min": null,
           "actual_duration_min": null,
           "user": null,
+          "cancelled_by": "",
           "accepted_at": null,
           "started_at": null,
           "fare_breakdown": {
@@ -467,7 +503,11 @@
           "ratings": [],
           "otp": null,
           "promo_discount": null,
-          "rider_payable": null
+          "rider_payable": null,
+          "planned_route_polyline": null,
+          "driver_photo_url": null,
+          "driver_total_trips": 0,
+          "driver_earning": null
         },
         "meta": {
           "timestamp": "2026-01-01T00:00:00.000000+05:30"

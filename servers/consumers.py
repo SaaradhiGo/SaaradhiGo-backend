@@ -940,6 +940,8 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         # Why a trip was cancelled (e.g. `no_driver_accepted`). Additive.
         if event.get('reason'):
             response_data['reason'] = event['reason']
+        if event.get('cancelled_by'):
+            response_data['cancelled_by'] = event['cancelled_by']
 
         # The trip's start time and planned duration, on the start event (2026-11-06).
         response_data.update(_arrival_fields(event))
@@ -1763,6 +1765,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     })
                 if action == 'start':
                     status_event.update(_arrival_fields(result))
+                if action == 'cancel':
+                    status_event['cancelled_by'] = 'rider' if is_rider else 'driver'
 
                 await self.channel_layer.group_send(self.trip_group, status_event)
 
@@ -1786,6 +1790,8 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         })
                     if action == 'start':
                         rider_event.update(_arrival_fields(result))
+                    if action == 'cancel':
+                        rider_event['cancelled_by'] = status_event['cancelled_by']
 
                     await self.channel_layer.group_send(f'rider_{rider_id}', rider_event)
 
@@ -1879,6 +1885,9 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         # Why a trip was cancelled (e.g. `no_driver_accepted`). Additive.
         if event.get('reason'):
             payload['reason'] = event['reason']
+        # Who cancelled (rider, driver, system, admin), on cancel events (2026-11-06).
+        if event.get('cancelled_by'):
+            payload['cancelled_by'] = event['cancelled_by']
 
         if getattr(self, 'participation', None) == 'rider':
             otp = event.get('otp')

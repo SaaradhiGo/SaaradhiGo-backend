@@ -220,13 +220,17 @@ class UserPreference(models.Model):
     user table, which the migration tests rebuild at old states, is untouched.
 
     `preferred_language` is the app language the user picked, synced from the
-    device so a reinstall or a second phone starts in it. Null until sent.
+    device so a reinstall or a second phone starts in it. `preferred_theme` is the
+    app theme the same way (light, dark or auto). Both are null until sent.
     """
 
     LANGUAGE_CHOICES = [('en', 'English'), ('te', 'Telugu'), ('hi', 'Hindi')]
+    THEME_CHOICES = [('light', 'Light'), ('dark', 'Dark'), ('auto', 'Automatic')]
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
                                 related_name='preference')
     preferred_language = models.CharField(max_length=5, choices=LANGUAGE_CHOICES,
                                           null=True, blank=True)
+    preferred_theme = models.CharField(max_length=5, choices=THEME_CHOICES,
+                                       null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)

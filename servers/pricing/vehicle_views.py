@@ -86,6 +86,8 @@ def list_vehicle_types(request):
         seen[vt.type] = {
             'type': vt.type,
             'description': vt.description or '',
+            # Rider seats, or None when the class has none set.
+            'seats': vt.seats,
             # "from ₹X" on the public site: the card's minimum fare, rounded as fares are.
             'min_fare': str(round_fare(card.min_fare, currency)) if card.min_fare is not None else None,
         }

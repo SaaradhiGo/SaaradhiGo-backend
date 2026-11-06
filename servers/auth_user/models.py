@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models, transaction
 from django.db.models.functions import Lower
 
@@ -37,11 +38,6 @@ class customUser(AbstractUser):
     zip_code = models.CharField(max_length=20, blank=True, null=True)
     emergency_contact = models.CharField(max_length=20, blank=True, null=True)
     role = models.CharField(max_length=20, choices=[("rider", "Rider"), ("driver", 'Driver'), ('admin', 'Admin')])
-    # The app language the user picked (2026-11-06), synced from the device so a reinstall or a
-    # second phone starts in it. Nullable: unset until the app sends it.
-    LANGUAGE_CHOICES = [('en', 'English'), ('te', 'Telugu'), ('hi', 'Hindi')]
-    preferred_language = models.CharField(max_length=5, choices=LANGUAGE_CHOICES,
-                                          null=True, blank=True)
     avatar = models.FileField(
         blank=True,
         max_length=512,
@@ -217,3 +213,20 @@ class DataRequest(models.Model):
 
     def __str__(self):
         return f'DataRequest {self.pk} {self.kind} user={self.subject_id} {self.status}'
+
+
+class UserPreference(models.Model):
+    """App settings kept on the account (2026-11-06). Its own table so the
+    user table, which the migration tests rebuild at old states, is untouched.
+
+    `preferred_language` is the app language the user picked, synced from the
+    device so a reinstall or a second phone starts in it. Null until sent.
+    """
+
+    LANGUAGE_CHOICES = [('en', 'English'), ('te', 'Telugu'), ('hi', 'Hindi')]
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                                related_name='preference')
+    preferred_language = models.CharField(max_length=5, choices=LANGUAGE_CHOICES,
+                                          null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)

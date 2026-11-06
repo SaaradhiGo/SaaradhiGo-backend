@@ -45,12 +45,18 @@ APPS = ('rider', 'driver')
 #: A None value means "not decided": the apps hide that line rather than guess.
 POLICIES = {
     'IN': {'cancel_policy': {'charges_fee': False, 'free_cancel_seconds': None},
-           'free_wait_minutes': None, 'refund_days': 7},
+           'free_wait_minutes': None, 'refund_days': 7,
+           'quote_valid_seconds': 300, 'home_fare_places_max_km': 60},
     'US': {'cancel_policy': {'charges_fee': False, 'free_cancel_seconds': None},
-           'free_wait_minutes': None, 'refund_days': 7},
+           'free_wait_minutes': None, 'refund_days': 7,
+           'quote_valid_seconds': 300, 'home_fare_places_max_km': 60},
 }
+#: Owner rulings (2026-11-06): a shown fare can be booked at exactly that fare for
+#: `quote_valid_seconds` (ride/quotes.py); the rider home prices saved places within
+#: `home_fare_places_max_km` of the rider only.
 _NO_POLICY = {'cancel_policy': {'charges_fee': None, 'free_cancel_seconds': None},
-              'free_wait_minutes': None, 'refund_days': None}
+              'free_wait_minutes': None, 'refund_days': None,
+              'quote_valid_seconds': None, 'home_fare_places_max_km': None}
 
 
 def _coords(value, out):
@@ -104,7 +110,9 @@ def country_block(country):
 def _policy(code):
     src = POLICIES.get(code, _NO_POLICY)
     return {'cancel_policy': dict(src['cancel_policy']),
-            'free_wait_minutes': src['free_wait_minutes'], 'refund_days': src['refund_days']}
+            'free_wait_minutes': src['free_wait_minutes'], 'refund_days': src['refund_days'],
+            'quote_valid_seconds': src['quote_valid_seconds'],
+            'home_fare_places_max_km': src['home_fare_places_max_km']}
 
 
 def _live_cities(country_code):

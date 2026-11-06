@@ -201,6 +201,13 @@ def estimate_fare(request):
     eta_min, drivers_nearby = pickup_eta(pickup_lat, pickup_long, fare['vehicle_type'])
     rider_reason = _rider_reason(fare)
 
+    # The fare shown is a quote the rider can book at, exactly (owner ruling, 2026-11-06).
+    from .quotes import issue as issue_quote
+    quote_id, quote_expires_at = issue_quote(
+        fare, rider_id=getattr(request.user, 'id', None),
+        pickup=(pickup_lat, pickup_long), drop=(destination_lat, destination_long),
+        validated_km=validated_km, validated_min=validated_min)
+
     # Seats for the choose-a-ride row; None when the class has none set.
     from servers.driver.models import VehicleType
     seats = (
@@ -218,6 +225,9 @@ def estimate_fare(request):
         # One plain line for the rider when demand pricing is above 1x, or None.
         # Copy only: the multiplier itself is untouched (2026-11-06).
         'rider_reason': rider_reason,
+        # Book with this id before it expires and the trip is booked at exactly this fare.
+        'quote_id': quote_id,
+        'quote_expires_at': quote_expires_at.isoformat(),
         # The market this quote was priced in. A client that cannot see this
         # does not know whether 135.22 is rupees or dollars, and `distance_unit`
         # is what stops a US rider being quoted a per-kilometre rate.

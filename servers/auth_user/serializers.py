@@ -10,6 +10,15 @@ class UserModelSerializer(ModelSerializer):
     #: The app theme the user picked (light, dark or auto), the same way.
     preferred_theme = SerializerMethodField()
 
+    #: The areas this account can use: 'rider' and/or 'driver', from its
+    #: Rider and Driver rows (IsDriver checks the row, not `role`). Read-only;
+    #: the web routes a signed-in account by it (owner, 2026-11-08).
+    roles = SerializerMethodField()
+
+    def get_roles(self, obj):
+        roles = [r for r in ('rider', 'driver') if obj.role == r or hasattr(obj, r)]
+        return sorted(set(roles), key=('rider', 'driver').index)
+
     def get_preferred_language(self, obj):
         pref = getattr(obj, 'preference', None)
         return getattr(pref, 'preferred_language', None)
@@ -24,7 +33,7 @@ class UserModelSerializer(ModelSerializer):
             'id', 'username', 'full_name', 'phone_number', 'email', 
             'gender', 'dob', 'house_no', 'street', 'city', 'zip_code',
             'emergency_contact', 'role', 'avatar', 'fcm_token', 'updated_at', 'created_at','is_updated',
-            'preferred_language', 'preferred_theme',
+            'preferred_language', 'preferred_theme', 'roles',
         ]
         # phone_number is the user's identity for OTP-based auth; allowing
         # /auth/update/ to overwrite it lets a stolen access token hijack

@@ -33,6 +33,9 @@ class TripListSerializer(serializers.ModelSerializer):
     vehicle_info = serializers.SerializerMethodField()
     requested_vehicle_type = serializers.SerializerMethodField()
     user=serializers.SerializerMethodField()
+    #: The IANA time zone of the trip's market (its zone), so every client shows the trip's
+    #: times as they were where it happened (2026-11-08). Read-only.
+    timezone = serializers.SerializerMethodField()
     estimated_fare = MoneyField(read_only=True, allow_null=True)
     final_fare = MoneyField(read_only=True, allow_null=True)
 
@@ -53,7 +56,13 @@ class TripListSerializer(serializers.ModelSerializer):
             'requested_at', 'completed_at', 'cancelled_at','estimated_duration_min','actual_duration_min','user',
             # Who cancelled: rider, driver, system or admin ('' while not cancelled).
             'cancelled_by',
+            'timezone',
         ]
+
+    def get_timezone(self, obj):
+        from base.market_time import trip_timezone
+        tz = trip_timezone(obj)
+        return getattr(tz, 'key', None) or str(tz)
 
     def get_status(self, obj):
         return obj.status_id.status_code if obj.status_id else 'pending'

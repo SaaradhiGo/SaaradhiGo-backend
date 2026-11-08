@@ -468,7 +468,7 @@ def ride_history(request):
     trips = Trip.objects.filter(
         user_id=request.user
     ).select_related(
-        'status_id', 'driver_id', 'driver_id__user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id'
+        'status_id', 'driver_id', 'driver_id__user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
     ).order_by('-requested_at')
 
     # Optional status filter
@@ -511,7 +511,7 @@ def driver_history(request):
     trips = Trip.objects.filter(
         driver_id=driver
     ).select_related(
-        'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id'
+        'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
     ).order_by('-requested_at')
 
     # Optional status filter
@@ -1437,7 +1437,7 @@ def get_active_trip(request):
             driver_id__user_id=request.user,
             status_id__status_code__in=active_statuses
         ).select_related(
-            'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id'
+            'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
         ).order_by('-requested_at').first()
 
     # If no active trip, check for recently completed (within 1 hour)
@@ -1454,7 +1454,7 @@ def get_active_trip(request):
                 status_id__status_code='completed',
                 completed_at__gte=one_hour_ago
             ).select_related(
-                'status_id', 'driver_id', 'driver_id__user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id'
+                'status_id', 'driver_id', 'driver_id__user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
             ).order_by('-completed_at').first()
         else:
             trip = Trip.objects.filter(
@@ -1462,7 +1462,7 @@ def get_active_trip(request):
                 status_id__status_code='completed',
                 completed_at__gte=one_hour_ago
             ).select_related(
-                'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id'
+                'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
             ).order_by('-completed_at').first()
 
     if not trip:

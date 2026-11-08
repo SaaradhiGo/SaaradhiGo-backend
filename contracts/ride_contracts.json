@@ -159,6 +159,7 @@
           "actual_duration_min": null,
           "user": null,
           "cancelled_by": "",
+          "timezone": "Asia/Kolkata",
           "accepted_at": null,
           "started_at": null,
           "fare_breakdown": {
@@ -190,12 +191,12 @@
       "body": {
         "status": "success",
         "data": {
-          "estimated_fare": "268.00",
+          "estimated_fare": "214.00",
           "pickup_eta_min": null,
           "drivers_nearby": false,
           "seats": 4,
-          "rider_reason": "Higher demand near Hyderabad",
-          "quote_id": "eb59da02c1474de7bf63126d17ddebfb",
+          "rider_reason": null,
+          "quote_id": "0db79921a94546ad93e388a1cb588ca3",
           "quote_expires_at": "2026-01-01T00:00:00.000000+05:30",
           "currency": "INR",
           "distance_unit": "km",
@@ -203,24 +204,19 @@
             "base_fare": "60.00",
             "distance_fare": "114.07",
             "time_fare": "40.25",
-            "surge_multiplier": "1.25",
+            "surge_multiplier": "1.00",
             "min_fare_applied": false,
             "tax_mode": "inclusive",
             "tax_label": "GST",
             "tax_percent": "5.000",
-            "tax_amount": "12.76",
+            "tax_amount": "10.19",
             "per_trip_fee": "0.00"
           },
           "fare_adjustments": [
             {
-              "code": "surge",
-              "label": "Busy-time surcharge",
-              "amount": "53.58"
-            },
-            {
               "code": "rounding",
               "label": "Rounding",
-              "amount": "0.10"
+              "amount": "-0.32"
             }
           ],
           "vehicle_type": "sedan",
@@ -286,7 +282,8 @@
               "estimated_duration_min": null,
               "actual_duration_min": null,
               "user": null,
-              "cancelled_by": ""
+              "cancelled_by": "",
+              "timezone": "Asia/Kolkata"
             }
           ]
         },
@@ -331,7 +328,8 @@
               "estimated_duration_min": null,
               "actual_duration_min": null,
               "user": null,
-              "cancelled_by": ""
+              "cancelled_by": "",
+              "timezone": "Asia/Kolkata"
             }
           ]
         },
@@ -436,6 +434,7 @@
           "actual_duration_min": null,
           "user": null,
           "cancelled_by": "",
+          "timezone": "Asia/Kolkata",
           "accepted_at": null,
           "started_at": null,
           "fare_breakdown": {
@@ -491,6 +490,7 @@
           "actual_duration_min": null,
           "user": null,
           "cancelled_by": "",
+          "timezone": "Asia/Kolkata",
           "accepted_at": null,
           "started_at": null,
           "fare_breakdown": {

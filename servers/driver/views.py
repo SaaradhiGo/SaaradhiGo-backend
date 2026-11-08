@@ -236,6 +236,57 @@ def driver_earnings_daily(request):
 
 @api_view(['GET'])
 @permission_classes([IsDriver])
+def driver_earnings_period(request):
+    """GET /driver/earnings/period/?period=today|week|month  Totals for one local period.
+
+    Read-only, over the same settlement ledger as /summary/ and /daily/ (2026-11-08), so the
+    figures add up to theirs. The week is Monday to Sunday and the month the calendar month,
+    both in the driver's market time zone; `start` and `end` are the period's first and last
+    local dates, for labels like "Mon 2 - Sun 8 Nov". `net` = `gross` - `commission`, as the
+    ledger settled it. Tips do not exist (owner ruling D5), so none are reported.
+    """
+    from datetime import timedelta
+
+    from base.market_time import driver_timezone, local_day_start, local_month_start
+    from servers.driver.earnings import settlement_rows, summarise
+    from servers.driver.services import driver_currency
+
+    period = request.query_params.get('period', 'week')
+    if period not in ('today', 'week', 'month'):
+        return error_response('INVALID_PERIOD', 'period must be today, week or month',
+                              'period', 'invalid', status.HTTP_400_BAD_REQUEST)
+
+    driver = request.user.driver
+    tz = driver_timezone(driver)
+    today = local_day_start(tz)
+    if period == 'today':
+        start, last = today, today.date()
+    elif period == 'week':
+        start = today - timedelta(days=today.weekday())
+        last = start.date() + timedelta(days=6)
+    else:
+        start = local_month_start(tz)
+        nxt = (start.date().replace(day=28) + timedelta(days=4)).replace(day=1)
+        last = nxt - timedelta(days=1)
+
+    t = summarise(settlement_rows(driver, since=start))
+    return success_response({
+        'period': period,
+        'start': start.date().isoformat(),
+        'end': last.isoformat(),
+        'timezone': getattr(tz, 'key', str(tz)),
+        'currency': driver_currency(driver),
+        'trips': t['total_trips'],
+        'gross': str(t['total_gross']),
+        'commission': str(t['total_commission']),
+        'net': str(t['total_net']),
+        'cash_collected': str(t['cash_collected']),
+        'unresolved_trips': t['unresolved_trips'],
+    }, status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsDriver])
 def driver_earnings_summary(request):
     """Aggregate earnings for the driver.
 

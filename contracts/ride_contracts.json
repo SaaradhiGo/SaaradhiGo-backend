@@ -23,6 +23,7 @@
           "commission_percent": "0.00",
           "commission_percent_mixed": false,
           "wallet_balance": "0",
+          "currency": "INR",
           "total_net": "0.00",
           "today_net": "0.00",
           "today_commission": "0.00",
@@ -191,12 +192,12 @@
       "body": {
         "status": "success",
         "data": {
-          "estimated_fare": "214.00",
+          "estimated_fare": "268.00",
           "pickup_eta_min": null,
           "drivers_nearby": false,
           "seats": 4,
-          "rider_reason": null,
-          "quote_id": "0db79921a94546ad93e388a1cb588ca3",
+          "rider_reason": "Higher demand near Hyderabad",
+          "quote_id": "b14edb683b0d4c5d83f2412b973ff5d5",
           "quote_expires_at": "2026-01-01T00:00:00.000000+05:30",
           "currency": "INR",
           "distance_unit": "km",
@@ -204,19 +205,24 @@
             "base_fare": "60.00",
             "distance_fare": "114.07",
             "time_fare": "40.25",
-            "surge_multiplier": "1.00",
+            "surge_multiplier": "1.25",
             "min_fare_applied": false,
             "tax_mode": "inclusive",
             "tax_label": "GST",
             "tax_percent": "5.000",
-            "tax_amount": "10.19",
+            "tax_amount": "12.76",
             "per_trip_fee": "0.00"
           },
           "fare_adjustments": [
             {
+              "code": "surge",
+              "label": "Busy-time surcharge",
+              "amount": "53.58"
+            },
+            {
               "code": "rounding",
               "label": "Rounding",
-              "amount": "-0.32"
+              "amount": "0.10"
             }
           ],
           "vehicle_type": "sedan",

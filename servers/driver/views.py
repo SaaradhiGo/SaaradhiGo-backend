@@ -214,7 +214,8 @@ def driver_earnings_daily(request):
     days = max(1, min(days, 31))
 
     driver = request.user.driver
-    today_start = local_day_start(driver_timezone(driver))
+    tz = driver_timezone(driver)
+    today_start = local_day_start(tz)
     starts = [today_start - timedelta(days=i) for i in range(days - 1, -1, -1)]
     rows = settlement_rows(driver, since=starts[0])
 
@@ -231,7 +232,12 @@ def driver_earnings_daily(request):
             'commission': str(t['total_commission']),
             'net': str(t['total_net']),
         })
-    return success_response({'days': out}, status.HTTP_200_OK)
+    # Additive (2026-11-08): what the amounts are in and whose days these are, so a driver with
+    # no trips yet still gets a chart that reads "Mon 2 ... ₹0.00" without another call.
+    from servers.driver.services import driver_currency
+    return success_response({
+        'days': out, 'currency': driver_currency(driver), 'timezone': getattr(tz, 'key', str(tz)),
+    }, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -305,6 +311,7 @@ def driver_earnings_summary(request):
     from django.utils import timezone
 
     from servers.driver.earnings import settlement_rows, summarise
+    from servers.driver.services import driver_currency
     from servers.promotions.incentives import incentive_lines
     from servers.rider.models import Wallet
 
@@ -348,6 +355,9 @@ def driver_earnings_summary(request):
             else totals['effective_commission_percent']),
         'commission_percent_mixed': totals['settled_commission_percents'] is not None,
         'wallet_balance': str(wallet_balance),
+        # Additive (2026-11-08): the currency of every amount here, so a driver with no
+        # settled trips yet sees "₹0.00" rather than an amount the app cannot label.
+        'currency': driver_currency(driver),
         # Additions. `cash_collected` is the number a driver reconciles against
         # at the end of a shift; the wallet balance goes negative by the
         # commission they owe on it, which is not the same thing.

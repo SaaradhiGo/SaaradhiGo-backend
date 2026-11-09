@@ -659,7 +659,9 @@ def trip_driver_details(request,trip_id):
             'id': trip_id,
             'status': cached.get('status'),
             'driver_name': cached.get('driver_name'),
-            'driver_phone': cached.get('driver_phone'),
+            # Masked calls only (9 Nov): the rider never receives the driver's number. The key
+            # stays, always null, so installed apps parse the response as before.
+            'driver_phone': None,
             'driver_rating': cached.get('driver_rating'),
             'vehicle_info': {
                 'vehicle_number': cached.get('vehicle_number'),
@@ -689,7 +691,7 @@ def trip_driver_details(request,trip_id):
         'id': trip.id,
         'status': trip.status_id.status_code if trip.status_id else 'pending',
         'driver_name': trip.driver_id.public_name if trip.driver_id else None,
-        'driver_phone': trip.driver_id.user_id.phone_number if trip.driver_id and trip.driver_id.user_id else None,
+        'driver_phone': None,  # masked calls only (9 Nov); see the cache path above
         'driver_rating': str(trip.driver_id.ratings) if trip.driver_id else None,
         'vehicle_info': None,
         'source': 'database'

@@ -1353,7 +1353,8 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     @database_sync_to_async
     def _get_rider_name(self):
         try:
-            return self.user.full_name or self.user.phone_number
+            # A driver's offer never carries the rider's number, not even as a name.
+            return self.user.full_name or ''
         except Exception:
             return ''
 
@@ -2252,7 +2253,6 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 status='accepted',
                 driver_id=str(driver.id),
                 driver_name=driver.user_id.full_name,
-                driver_phone=driver.user_id.phone_number,
                 driver_rating=str(driver.ratings),
                 vehicle_model=vehicle.model if vehicle else 'Unknown',
                 vehicle_brand=vehicle.brand if vehicle else 'Unknown',
@@ -2283,7 +2283,9 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             driver_info = {
                 'name': driver.public_name,
                 'id': driver.id,
-                'phone_number': driver.user_id.phone_number,
+                # Masked calls only (9 Nov): never the driver's number. Null keeps the key
+                # for installed apps; they call through /calls/ instead.
+                'phone_number': None,
                 'stars': str(driver.ratings),
                 # The rider's "driver arriving" card (2026-11-06): a short-lived signed URL to the
                 # driver's photo or None, and completed trips. This frame goes to the trip's rider.

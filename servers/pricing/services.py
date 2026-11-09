@@ -325,8 +325,10 @@ def compute_surge_multiplier(
     rider_id: Optional[int] = None,
     radius_m: int = 3000,
     record_demand: bool = False,
+    floor: Optional[Decimal] = None,
 ) -> Decimal:
-    """Tiered demand/supply surge multiplier, capped by the rate card.
+    """Tiered demand/supply surge multiplier, held inside the zone's band: at most `cap`
+    (the lowest of rate card, state and country, MVAG 2025) and at least `floor`.
 
     Reads from Redis (driver geo + active-rider pings). Returns 1.00 if
     Redis is unavailable or the inputs are missing, so a Redis outage
@@ -374,9 +376,11 @@ def compute_surge_multiplier(
         else:
             surge = Decimal('1.00')
 
-        # Honour the per-zone MVA-2020 cap.
+        # Honour the zone's band (MVAG 2025: `regulation.fare_limits`).
         if surge > cap:
             surge = cap
+        if floor is not None and surge < floor:
+            surge = floor
         return surge
     except Exception as exc:  # noqa: BLE001
         logger.warning('compute_surge_multiplier failed: %s', exc)
@@ -560,9 +564,15 @@ def quote_fare(
         surge_multiplier = surge_multiplier * night_surge
         night_applied = True
 
+    # MVAG 2025: the band is the lowest cap and the highest floor of the rate card, the state
+    # and the country (config per market, `regulation.fare_limits`). Hyderabad keeps its 1.5x.
+    from servers.pricing import regulation
+    limits = regulation.limits_for_zone(zone, surge_cap)
+    surge_cap = limits.cap
+
     dyn = compute_surge_multiplier(
         pickup_lat, pickup_lon, cap=surge_cap, rider_id=rider_id,
-        record_demand=record_demand,
+        record_demand=record_demand, floor=limits.floor,
     )
     if dyn != Decimal('1.00'):
         subtotal = subtotal * dyn
@@ -575,6 +585,9 @@ def quote_fare(
         pre_surge = base_fare + distance_fare + time_fare
         subtotal = pre_surge * surge_cap
         surge_multiplier = surge_cap
+    if limits.floor is not None and surge_multiplier < limits.floor:
+        subtotal = (base_fare + distance_fare + time_fare) * limits.floor
+        surge_multiplier = limits.floor
 
     min_fare_applied = False
     if subtotal < min_fare:
@@ -631,7 +644,8 @@ def quote_fare(
     if surge_multiplier != Decimal('1.00'):
         adjustments.append({
             'code': 'surge',
-            'label': 'Busy-time surcharge',
+            # MVAG 2025 disclosure: the rider reads "Higher demand" / "Lower demand", never "surge".
+            'label': regulation.demand_label(surge_multiplier),
             'amount': quantize(_pre_surge * surge_multiplier - _pre_surge, currency),
         })
     if min_fare_applied:
@@ -730,6 +744,10 @@ def quote_fare(
         # sums exactly.
         'fare_adjustments': adjustments,
         'surge_multiplier': round(surge_multiplier, 2),
+        # Additive (MVAG 2025): the fare calculation the rider is shown. `demand_label` is None
+        # at 1.00x; `fare_limits` is the band this quote was held inside.
+        'demand_label': regulation.demand_label(surge_multiplier),
+        'fare_limits': limits.as_dict(),
         'night_surge_applied': night_applied,
         'min_fare_applied': min_fare_applied,
         'vehicle_type': vehicle_type,

@@ -217,3 +217,27 @@ class DriverNotice(models.Model):
 
 
 ZERO = Decimal('0.00')
+
+
+class CommissionStateCap(models.Model):
+    """A state's own commission cap (MVAG 2025, 2026-11-09). It can only be LOWER than the
+    country's `max_percent`: a state that notifies a stricter driver share narrows it, never
+    widens it. NULL `max_percent` = no state value; the country cap applies. A change is the
+    same `pricing.change` maker-checker action as the country row.
+    """
+
+    country = models.CharField(max_length=2)
+    #: ISO 3166-2 sub-division without the country prefix ("TG"), as on `ServiceZone.state_code`.
+    state_code = models.CharField(max_length=8)
+    max_percent = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    version = models.PositiveIntegerField(default=1)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by_label = models.CharField(max_length=255, blank=True, default='')
+    reason = models.TextField(blank=True, default='')
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['country', 'state_code'],
+                                               name='commission_state_cap_unique')]
+
+    def __str__(self):
+        return f'Commission cap {self.country}-{self.state_code} v{self.version}'

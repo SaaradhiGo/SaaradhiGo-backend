@@ -684,6 +684,8 @@ def detail_extras(request, driver):
         'documents_expired': documents_expired(driver),
         'joined_at': _iso(getattr(driver.user_id, 'created_at', None)),
         'documents': documents_payload(request.user, driver),
+        # Additive (MVAG 2025): insurance and training against the market's values.
+        'mvag_records': _records_status(driver),
         'approval_blockers': blockers,
         'ratings_summary': _ratings(driver),
         'counts': _counts(driver),
@@ -1315,3 +1317,120 @@ def admin_bulk_drivers(request):
     except approvals.ApprovalError as exc:
         return exc.response()
     return _approval_answer(outcome, {'count': len(ordered)})
+
+
+# ---------------------------------------------------------------------------
+# MVAG 2025 driver records (2026-11-09)
+# ---------------------------------------------------------------------------
+
+RECORD_TEXT = ('health_insurance_policy_number', 'health_insurance_insurer',
+               'term_insurance_policy_number', 'term_insurance_insurer')
+RECORD_DATES = ('health_insurance_expiry', 'term_insurance_expiry', 'induction_training_date')
+RECORD_MINOR = ('health_insurance_sum_insured_minor', 'term_insurance_sum_insured_minor')
+DEVICE_FIELDS = ('ais140_device_id', 'ais140_fitted', 'panic_button_device_id',
+                 'panic_button_fitted')
+
+
+def _records_values(driver):
+    from . import records
+
+    vehicle = driver.active_vehicle
+    return {'driver': _base_row(driver),
+            **{f: getattr(driver, f) for f in RECORD_TEXT + RECORD_MINOR},
+            **{f: _iso(getattr(driver, f)) for f in RECORD_DATES},
+            'induction_training_hours': (str(driver.induction_training_hours)
+                                         if driver.induction_training_hours is not None
+                                         else None),
+            'vehicle': ({f: getattr(vehicle, f) for f in DEVICE_FIELDS} if vehicle else None),
+            'status': records.status(driver)}
+
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
+def admin_driver_records(request, driver_id):
+    """GET/PATCH /driver/admin/<id>/records/: insurance, induction training and the active
+    vehicle's AIS-140 and panic-button fields (operations records them; audited)."""
+    if request.method == 'GET':
+        driver, refusal = _driver_for_write(request, driver_id, 'driver.read')
+        if refusal:
+            return refusal
+        return success_response(_records_values(driver), status.HTTP_200_OK)
+    driver, refusal = _driver_for_write(request, driver_id, 'driver.write')
+    if refusal:
+        return refusal
+    data = request.data or {}
+    before = _records_values(driver)
+    changed, vehicle_changed = [], []
+    try:
+        for f in RECORD_TEXT:
+            if f in data:
+                setattr(driver, f, _text(data, f, limit=128))
+                changed.append(f)
+        for f in RECORD_DATES:
+            if f in data:
+                value = data.get(f)
+                try:
+                    setattr(driver, f, datetime.strptime(value, '%Y-%m-%d').date()
+                            if value else None)
+                except (TypeError, ValueError):
+                    raise BadInput('INVALID_DATE', f'{f} must be YYYY-MM-DD.', f)
+                changed.append(f)
+        for f in RECORD_MINOR:
+            if f in data:
+                value = data.get(f)
+                if value not in (None, '') and (not str(value).isdigit()):
+                    raise BadInput('INVALID_AMOUNT', f'{f} must be a whole number.', f)
+                setattr(driver, f, int(value) if value not in (None, '') else None)
+                changed.append(f)
+        if 'induction_training_hours' in data:
+            value = data.get('induction_training_hours')
+            try:
+                hours = (Decimal(str(value)).quantize(Decimal('0.1'))
+                         if value not in (None, '') else None)
+            except InvalidOperation:
+                raise BadInput('INVALID_HOURS', 'induction_training_hours must be a number.',
+                               'induction_training_hours')
+            if hours is not None and not Decimal('0') <= hours <= Decimal('1000'):
+                raise BadInput('INVALID_HOURS', 'induction_training_hours must be 0 to 1000.',
+                               'induction_training_hours')
+            driver.induction_training_hours = hours
+            changed.append('induction_training_hours')
+        vehicle = driver.active_vehicle
+        for f in DEVICE_FIELDS:
+            if f in data:
+                if vehicle is None:
+                    raise BadInput('NO_VEHICLE', 'This driver has no active vehicle.', f)
+                value = data.get(f)
+                if f.endswith('_fitted'):
+                    if value is not None and not isinstance(value, bool):
+                        raise BadInput('INVALID_VALUE', f'{f} must be true, false or null.', f)
+                else:
+                    value = str(value or '')[:64]
+                setattr(vehicle, f, value)
+                vehicle_changed.append(f)
+    except BadInput as exc:
+        return exc.response()
+    if not changed and not vehicle_changed:
+        return success_response(before, status.HTTP_200_OK)
+    with transaction.atomic():
+        if changed:
+            driver.save(update_fields=changed)
+        if vehicle_changed:
+            vehicle.save(update_fields=vehicle_changed)
+        after = _records_values(driver)
+        record_admin_action(request, action='driver_records_updated', target_type=TARGET,
+                            target_id=str(driver.id),
+                            before={k: v for k, v in before.items() if k not in ('status', 'driver')},
+                            after={k: v for k, v in after.items() if k not in ('status', 'driver')},
+                            reason=str(data.get('reason') or ''))
+    return success_response(after, status.HTTP_200_OK)
+
+
+def _records_status(driver):
+    from . import records
+
+    try:
+        return records.status(driver)
+    except Exception:  # noqa: BLE001 - the detail page renders without it
+        logger.exception('records status failed for driver=%s', driver.id)
+        return None

@@ -370,7 +370,9 @@ class RateCard(models.Model):
     night_surge_end_hour = models.IntegerField(default=5)
 
     # Maximum dynamic surge multiplier permitted in this zone. MVA 2020
-    # caps aggregator surge at 1.5x normal fare; configurable per zone
+    # capped aggregator surge at 1.5x; MVAG 2025 allows up to 2x by state
+    # notification. The quote applies the lowest of this, the state cap and
+    # the country cap (`regulation.fare_limits`); configurable per zone
     # because different state regulators may pick different caps.
     surge_cap_multiplier = models.DecimalField(
         max_digits=4, decimal_places=2, default=Decimal('1.50'),
@@ -673,6 +675,7 @@ class TripFareShadow(CurrencyStampedModel, models.Model):
 
 # Commission models live in their own module and are imported here so Django finds them.
 from servers.pricing.commission_models import (  # noqa: E402,F401
-    CommissionCountryConfig, CommissionRule, DriverNotice,
+    CommissionCountryConfig, CommissionRule, CommissionStateCap, DriverNotice,
 )
+from servers.pricing.regulation_models import MarketRegulation  # noqa: E402,F401
 from servers.pricing.zone_models import ServiceZoneRevision  # noqa: E402,F401

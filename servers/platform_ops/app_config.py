@@ -37,8 +37,8 @@ EMERGENCY_LABELS = {'unified': 'Emergency services', 'police': 'Police', 'ambula
 APPS = ('rider', 'driver')
 
 #: Rider and driver policies the apps state in words (2026-11-06). TODAY'S REAL BEHAVIOUR ONLY:
-#: - No cancellation fee is ever charged (`Trip.cancellation_fee_minor` is never set above 0), so
-#:   `charges_fee` is False and there is no window: `free_cancel_seconds` stays None.
+#: - The cancellation fee below applies where no MVAG 2025 fee is configured and switched on
+#:   (`_cancel_policy` replaces it where one is): no fee, no window.
 #: - No free-wait time at pickup has been decided: `free_wait_minutes` is None.
 #: - A refund "may take 5-7 business days" (the refund notice in payments/views.py): the upper
 #:   bound, 7 business days.
@@ -107,9 +107,21 @@ def country_block(country):
     }
 
 
+def _cancel_policy(code):
+    """The MVAG 2025 cancellation fee where it is configured and its flag is on (2026-11-09):
+    `charges_fee` True, the free window, the percent and the cap. None elsewhere."""
+    from servers.pricing.regulation import cancel_policy
+
+    policy = cancel_policy(code)
+    if policy is None or not flags.flag_enabled('cancellation_penalty', country=code):
+        return None
+    return {'charges_fee': True, 'free_cancel_seconds': policy.free_seconds,
+            'fee_percent': str(policy.percent), 'fee_cap_minor': policy.cap_minor}
+
+
 def _policy(code):
     src = POLICIES.get(code, _NO_POLICY)
-    return {'cancel_policy': dict(src['cancel_policy']),
+    return {'cancel_policy': _cancel_policy(code) or dict(src['cancel_policy']),
             'free_wait_minutes': src['free_wait_minutes'], 'refund_days': src['refund_days'],
             'quote_valid_seconds': src['quote_valid_seconds'],
             'home_fare_places_max_km': src['home_fare_places_max_km']}

@@ -942,3 +942,46 @@ class TripMoneyAction(models.Model):
 
     def __str__(self):
         return f'TripMoneyAction trip={self.trip_id} {self.kind} {self.amount_minor} {self.currency}'
+
+
+class CancellationPenalty(models.Model):
+    """One unjustified cancellation's penalty (MVAG 2025, 2026-11-09). See
+    `servers.ride.cancellation_penalty` for the rule and the money path.
+
+    RIDER: `due` until the rider's next trip carries it (`collected_on_trip`) and that trip
+    settles (`collected`); it is paid to the driver who was let down (`driver`) as a
+    `cancellation_compensation` ledger credit. DRIVER: `charged` at once, a
+    `cancellation_penalty` debit on the cancelling driver (`driver`).
+    """
+
+    RIDER, DRIVER = 'rider', 'driver'
+    DUE, COLLECTED, CHARGED, WAIVED = 'due', 'collected', 'charged', 'waived'
+    STATUS_CHOICES = [(DUE, 'Due on the next trip'), (COLLECTED, 'Collected'),
+                      (CHARGED, 'Charged to the driver'), (WAIVED, 'Waived')]
+
+    trip = models.OneToOneField('ride.Trip', on_delete=models.CASCADE,
+                                related_name='cancellation_penalty')
+    party = models.CharField(max_length=8, choices=[(RIDER, 'Rider'), (DRIVER, 'Driver')])
+    rider = models.ForeignKey(User, on_delete=models.CASCADE, related_name='cancellation_penalties')
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE,
+                               related_name='cancellation_penalties')
+    currency = models.CharField(max_length=3)
+    amount_minor = models.BigIntegerField()
+    #: The rule as applied: percent of `fare_minor`, capped at `cap_minor`.
+    percent = models.DecimalField(max_digits=5, decimal_places=2)
+    cap_minor = models.BigIntegerField(null=True, blank=True)
+    fare_minor = models.BigIntegerField()
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, db_index=True)
+    collected_on_trip = models.ForeignKey('ride.Trip', null=True, blank=True,
+                                          on_delete=models.SET_NULL, related_name='dues_collected')
+    created_at = models.DateTimeField(auto_now_add=True)
+    settled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['rider', 'status'], name='cancelpen_rider_status_idx')]
+
+    amount = MinorUnitsAmount('amount_minor')
+
+    def __str__(self):
+        return f'CancellationPenalty trip={self.trip_id} {self.party} {self.amount_minor} {self.status}'

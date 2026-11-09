@@ -43,6 +43,50 @@ logger = logging.getLogger(__name__)
 # clients (Gmail, Outlook, Apple Mail). Intentionally minimal CSS so
 # we do not depend on a styling pipeline.
 
+
+def _demand_line(multiplier):
+    """The dynamic multiplier's line (MVAG 2025 disclosure): never the word "surge"."""
+    from servers.pricing.regulation import demand_label
+
+    return demand_label(Decimal(str(multiplier))) or 'Demand multiplier'
+
+
+def _due_lines_and_charged(trip):
+    """`(lines, charged)`: the cancellation fees this trip carried (MVAG 2025) and, when there are
+    any and no promo line will state it, the amount charged; else `([], None)`."""
+    try:
+        from servers.promotions import rider_promos
+        from servers.ride.cancellation_penalty import due_lines
+
+        lines = due_lines(trip)
+        if not lines:
+            return [], None
+        return lines, (None if promo_lines(trip) else rider_promos.payable(trip))
+    except Exception:  # noqa: BLE001 - a receipt must still render
+        logger.exception('cancellation fee receipt lines failed for trip=%s',
+                         getattr(trip, 'pk', None))
+        return [], None
+
+
+def _due_rows_html(trip, currency):
+    lines, charged = _due_lines_and_charged(trip)
+    rows = ''.join(f'<tr><td>{escape(label)}</td><td style="text-align:right;">'
+                   f'+{format_money(amount, currency)}</td></tr>' for label, amount in lines)
+    if charged is not None:
+        rows += ('<tr style="background: #f9fafb;"><td><b>Amount charged</b></td>'
+                 f'<td style="text-align:right;"><b>{format_money(charged, currency)}</b></td></tr>')
+    return rows
+
+
+def _due_rows_pdf(trip, currency):
+    lines, charged = _due_lines_and_charged(trip)
+    rows = [[label, '+' + format_money(amount, currency, with_symbol=False)]
+            for label, amount in lines]
+    if charged is not None:
+        rows.append(['Amount charged', format_money(charged, currency, with_symbol=False)])
+    return rows
+
+
 def _brand():
     """The customer-facing product name.
 
@@ -132,7 +176,7 @@ _RECEIPT_TEMPLATE = """\
     <tr><td>Base fare</td><td style="text-align:right;">{base_fare}</td></tr>
     <tr><td>Distance fare</td><td style="text-align:right;">{distance_fare}</td></tr>
     <tr><td>Time fare</td><td style="text-align:right;">{time_fare}</td></tr>
-    <tr><td>Surge multiplier</td><td style="text-align:right;">x {surge}</td></tr>
+    <tr><td>{demand_label}</td><td style="text-align:right;">x {surge}</td></tr>
     <tr><td>{tax_label} ({gst_rate}%)</td><td style="text-align:right;">{gst_amount}</td></tr>
     {note_row}
     <tr style="background: #f9fafb;"><td><b>Total fare</b></td><td style="text-align:right;"><b>{total_fare}</b></td></tr>
@@ -143,7 +187,7 @@ _RECEIPT_TEMPLATE = """\
 
   <p style="margin-top: 24px; color: #6b7280; font-size: 12px;">
     {legal_entity} is an aggregator under the
-    Motor Vehicles Aggregator Guidelines 2020 issued by the Ministry of
+    Motor Vehicles Aggregator Guidelines 2025 issued by the Ministry of
     Road Transport &amp; Highways, Government of India. For any dispute
     about this fare, please contact support within 30 days quoting the
     Receipt number above.
@@ -295,12 +339,13 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
         distance_fare=format_money(distance_fare, currency),
         time_fare=format_money(time_fare, currency),
         surge=str(round(surge, 2)),
+        demand_label=escape(_demand_line(surge)),
         gst_rate=str(gst_rate),
         gst_amount=format_money(gst_amount, currency),
         total_fare=format_money(total, currency),
         note_row=(f'<tr><td colspan="2"><b>{escape(operator_end_note(trip))}</b></td></tr>'
                   if operator_end_note(trip) else ''),
-        promo_rows=''.join(
+        promo_rows=_due_rows_html(trip, currency) + ''.join(
             f'<tr><td>{escape(label)}</td><td style="text-align:right;">'
             f'-{format_money(discount, currency)}</td></tr>'
             f'<tr style="background: #f9fafb;"><td><b>Amount charged</b></td>'
@@ -410,10 +455,11 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         ['Base fare', format_money(base_fare, _currency, with_symbol=False)],
         ['Distance fare', format_money(distance_fare, _currency, with_symbol=False)],
         ['Time fare', format_money(time_fare, _currency, with_symbol=False)],
-        ['Surge multiplier', f'x {surge}'],
+        [_demand_line(surge), f'x {surge}'],
         [_tax_label, format_money(receipt.gst_amount, _currency, with_symbol=False)],
         *([[operator_end_note(trip), '']] if operator_end_note(trip) else []),
         ['Total fare', format_money(receipt.total_fare, _currency, with_symbol=False)],
+        *_due_rows_pdf(trip, _currency),
         *[row for label, discount, charged in promo_lines(trip) for row in (
             [label, '-' + format_money(discount, _currency, with_symbol=False)],
             ['Amount charged', format_money(charged, _currency, with_symbol=False)])],
@@ -443,7 +489,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     story.append(Spacer(1, 16))
     story.append(Paragraph(
         f'{_legal_entity()} is an aggregator under the '
-        'Motor Vehicles Aggregator Guidelines 2020 issued by the Ministry of '
+        'Motor Vehicles Aggregator Guidelines 2025 issued by the Ministry of '
         'Road Transport &amp; Highways, Government of India. For any dispute '
         'about this fare, please contact support within 30 days quoting the '
         'Receipt number above.',

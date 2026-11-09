@@ -11,6 +11,7 @@ from servers.pricing.views import (
 
 from .commission_views import (
     commission_matrix, config_list, config_update, fare_cards_overview, fare_cards_preview,
+    regulation_list, regulation_update, state_cap_update,
     rule_detail, rule_preview, rule_submit, rules,
 )
 from .market_views import list_countries
@@ -37,6 +38,11 @@ urlpatterns = [
     path('admin/commission/config/', config_list, name='commission-config'),
     path('admin/commission/config/<str:country>/', config_update,
          name='commission-config-update'),
+    path('admin/commission/config/<str:country>/states/<str:state>/', state_cap_update,
+         name='commission-state-cap-update'),
+    path('admin/regulation/', regulation_list, name='regulation'),
+    path('admin/regulation/<str:country>/', regulation_update,
+         name='regulation-update'),
     path('admin/vehicle-classes/', vehicle_classes, name='vehicle-classes'),
     path('admin/vehicle-classes/<int:pk>/', vehicle_class_detail, name='vehicle-class'),
     path('admin/fare-cards/overview/', fare_cards_overview, name='fare-cards-overview'),

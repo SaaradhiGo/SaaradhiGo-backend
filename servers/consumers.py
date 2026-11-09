@@ -1205,6 +1205,10 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'pretax_fare_minor', 'tax_minor', 'per_trip_fee_minor'])
                 promo_result = rider_promos.book(
                     self.user, trip, fare['total_fare'], pickup_zone, promo_code, tax=promo_tax)
+                # MVAG 2025: a cancellation fee the rider was shown before booking rides on this
+                # trip and is paid with it (servers.ride.cancellation_penalty).
+                from servers.ride.cancellation_penalty import attach_to_trip as _attach_dues
+                _attach_dues(trip)
                 if promo_result is not None:
                     from servers.ride.models import PromoCode
                     full_fare = trip.estimated_fare
@@ -2128,6 +2132,17 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                                  'a vehicle before accepting rides.',
                     }
 
+                # MVAG 2025 driver records (insurance, induction training): only where the
+                # market's gate is on; off by default.
+                from servers.driver.records import blocking_problems
+                missing = blocking_problems(driver)
+                if missing:
+                    return {
+                        'success': False,
+                        'error': ('Update your ' + ', '.join(m.lower() for m in missing)
+                                  + ' in the app before accepting rides.'),
+                    }
+
                 # MVA 2020 fatigue gate. A driver who has done 12h in
                 # the last 24h, OR is in a cancellation lockout, cannot
                 # accept a new trip. Status is computed against
@@ -2592,6 +2607,11 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     )
 
                 trip.save()
+                if status_code == 'cancelled':
+                    # MVAG 2025: an unjustified cancel costs 10% of the fare, capped; the rider's
+                    # is due on the next ride, the driver's is a ledger debit now.
+                    from servers.ride.cancellation_penalty import assess as _assess_cancel
+                    _assess_cancel(trip)
 
                 # --- after-commit side effects -------------------------------
                 # None of this may run if the transaction rolls back, and none

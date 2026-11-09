@@ -12,6 +12,27 @@ from ..redis_client import nearby_drivers
 logger = logging.getLogger(__name__)
 
 
+def _coordinate(raw, limit):
+    """A latitude/longitude sent as a JSON number or a numeric string.
+
+    Returns (Decimal rounded to 10 places, None) or (None, problem). Booleans,
+    blanks, non-numbers, NaN/Infinity and values outside -limit..limit are refused.
+    """
+    if raw is None or isinstance(raw, bool) or (isinstance(raw, str) and not raw.strip()):
+        return None, 'is required'
+    if not isinstance(raw, (int, float, str, Decimal)):
+        return None, 'must be a number'
+    try:
+        value = Decimal(str(raw).strip())
+    except (InvalidOperation, ValueError):
+        return None, 'must be a number'
+    if not value.is_finite():
+        return None, 'must be a finite number'
+    if abs(value) > limit:
+        return None, f'must be between -{limit} and {limit}'
+    return value.quantize(Decimal('0.0000000001')), None
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def save_favorite_locations(request):
@@ -26,9 +47,19 @@ def save_favorite_locations(request):
     }
     """
     try:
-        request.data['latitude']=request.data['latitude'][:12]
-        request.data['longitude']=request.data['longitude'][:12]
-        instance = FavoritePlaceSerializer(data=request.data)
+        data = {k: request.data.get(k) for k in request.data.keys()}
+        for field, limit in (('latitude', 90), ('longitude', 180)):
+            value, problem = _coordinate(data.get(field), limit)
+            if problem:
+                return error_response(
+                    code='VALIDATION_ERROR',
+                    message=f'{field.capitalize()} {problem}.',
+                    field=field,
+                    issue=problem,
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            data[field] = value
+        instance = FavoritePlaceSerializer(data=data)
         if instance.is_valid():
             instance.save(user_id=request.user)
             return success_response(

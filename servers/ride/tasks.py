@@ -168,10 +168,22 @@ def dispatch_wave(self, trip_id, wave_index, dispatch_epoch, radii):
 
 #: Sent with the rider's "nobody accepted" frame. The apps show it as is.
 NO_DRIVER_MESSAGE = 'No driver accepted your request. Please try again.'
+#: The same frame when no driver was offered the trip at all: every dispatch
+#: wave found nobody online in range (QA trip 191, 2026-11-08). Same reason
+#: code, so a client that keys on `no_driver_accepted` behaves as before.
+NO_DRIVERS_NEARBY_MESSAGE = 'No drivers nearby right now. Please try again.'
 
 
-def _tell_rider_nobody_accepted(rider_id, trip_id):
-    """Push the terminal "no driver" frame to the rider's sockets."""
+def no_driver_message(nobody_nearby):
+    return NO_DRIVERS_NEARBY_MESSAGE if nobody_nearby else NO_DRIVER_MESSAGE
+
+
+def _tell_rider_nobody_accepted(rider_id, trip_id, nobody_nearby=False):
+    """Push the terminal "no driver" frame to the rider's sockets.
+
+    `no_drivers_nearby` (additive) is True only when we know no driver was
+    offered the trip; unknown (Redis down) reads as False.
+    """
     try:
         from asgiref.sync import async_to_sync
         from channels.layers import get_channel_layer
@@ -181,7 +193,8 @@ def _tell_rider_nobody_accepted(rider_id, trip_id):
             return
         event = {
             'type': 'trip_update', 'trip_id': trip_id, 'status': 'cancel',
-            'reason': 'no_driver_accepted', 'message': NO_DRIVER_MESSAGE,
+            'reason': 'no_driver_accepted', 'message': no_driver_message(nobody_nearby),
+            'no_drivers_nearby': bool(nobody_nearby),
             'driver_id': None, 'driver_name': '',
             'cancelled_by': 'system',
         }
@@ -266,6 +279,14 @@ def auto_cancel_trip(self, trip_id):
             rider = trip.user_id
             trip_pk = trip.id
 
+        # Was anyone offered this trip at all? Read before the dismissal
+        # below deletes the offer set. None (Redis down) means "unknown".
+        try:
+            from servers.redis_client import peek_offered_drivers
+            nobody_nearby = peek_offered_drivers(trip_pk) == []
+        except Exception:  # noqa: BLE001
+            nobody_nearby = False
+
         # After commit: dismiss candidate cards and drop the cached trip.
         # Outside the transaction so no external call is made under a lock.
         try:
@@ -281,6 +302,9 @@ def auto_cancel_trip(self, trip_id):
                 user_id=rider,
                 title='Ride Cancelled',
                 message=(
+                    'Your ride request was cancelled: no drivers were nearby. '
+                    'Please try again.'
+                    if nobody_nearby else
                     'Your ride request was automatically cancelled because no '
                     'driver accepted in time. Please try again.'
                 ),
@@ -292,7 +316,7 @@ def auto_cancel_trip(self, trip_id):
         # the search was over: both apps sat on "Finding your ride" after the
         # server had already cancelled (PRODUCT_AUDIT §2, finding driver).
         # Best effort and after commit, like the notification above.
-        _tell_rider_nobody_accepted(rider.id, trip_pk)
+        _tell_rider_nobody_accepted(rider.id, trip_pk, nobody_nearby)
 
         logger.info(
             'dispatch_terminal',
@@ -300,6 +324,7 @@ def auto_cancel_trip(self, trip_id):
                 'event': 'dispatch_terminal',
                 'trip_id': trip_pk,
                 'outcome': 'timeout_no_driver_accepted',
+                'no_drivers_nearby': nobody_nearby,
             },
         )
         return f'Trip {trip_id} auto-cancelled'

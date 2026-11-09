@@ -76,6 +76,7 @@ INSTALLED_APPS = [
     'servers.command_centre',
     'servers.safety',
     'servers.sharing',
+    'servers.callbridge',
     # Live Ops map (module 10): scoped driver dots, active trips, demand and supply.
     'servers.live_ops',
     # Notifications (module 11): templates, outbox dispatcher, provider adapters, campaigns.
@@ -1324,6 +1325,12 @@ SHARING_SMS_PER_RIDER_PER_HOUR = int(os.environ.get('SHARING_SMS_PER_RIDER_PER_H
 SHARING_SMS_PER_CONTACT_PER_HOUR = int(os.environ.get('SHARING_SMS_PER_CONTACT_PER_HOUR', '6'))
 SHARING_SMS_INBOUND_TOKEN = os.environ.get('SHARING_SMS_INBOUND_TOKEN', '')
 TRIP_SHARE_BASE_URL = os.environ.get('TRIP_SHARE_BASE_URL', '')
+# Masked calls between rider and driver (servers/callbridge). "fake" (the default) logs the call
+# and returns CALL_BRIDGE_FAKE_NUMBER, a test number of neither party. A real provider needs its
+# adapter, CALL_BRIDGE_PROVIDER=<name> and CALL_BRIDGE_REAL_ENABLED=true.
+CALL_BRIDGE_PROVIDER = os.environ.get('CALL_BRIDGE_PROVIDER', 'fake').strip().lower()
+CALL_BRIDGE_REAL_ENABLED = os.environ.get('CALL_BRIDGE_REAL_ENABLED', 'false').strip().lower() in {'1', 'true', 'yes'}
+CALL_BRIDGE_FAKE_NUMBER = os.environ.get('CALL_BRIDGE_FAKE_NUMBER', '+914000000000')
 ETA_ROAD_FACTOR = float(os.environ.get('ETA_ROAD_FACTOR', '1.3'))
 ETA_MARKET_KMH = {'IN': 18.0, 'US': 35.0}
 if os.environ.get('ETA_MARKET_KMH_JSON', '').strip():

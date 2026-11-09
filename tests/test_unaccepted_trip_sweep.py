@@ -134,6 +134,8 @@ def test_the_riders_open_socket_hears_it(rider):
     """The frame both apps wait on. Without it they showed "Finding your ride"
     after the server had already given up (PRODUCT_AUDIT §2)."""
     trip = _trip(rider, 'requested', age_seconds=600)
+    from servers.redis_client import clear_offered_drivers
+    clear_offered_drivers(trip.id)  # ids recur across tests; start with no offers
 
     with mock.patch('channels.layers.get_channel_layer') as get_layer:
         sent = []
@@ -148,7 +150,9 @@ def test_the_riders_open_socket_hears_it(rider):
 
     frame = {
         'trip_id': trip.id, 'status': 'cancel', 'reason': 'no_driver_accepted',
-        'message': 'No driver accepted your request. Please try again.',
+        # Nobody was ever offered this trip, so the sentence says so (2026-11-08).
+        'message': 'No drivers nearby right now. Please try again.',
+        'no_drivers_nearby': True,
         'driver_id': None, 'driver_name': '', 'cancelled_by': 'system',
     }
     assert sent == [

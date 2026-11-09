@@ -36,6 +36,12 @@ class TripListSerializer(serializers.ModelSerializer):
     #: The IANA time zone of the trip's market (its zone), so every client shows the trip's
     #: times as they were where it happened (2026-11-08). Read-only.
     timezone = serializers.SerializerMethodField()
+    #: Why the SYSTEM cancelled (e.g. `no_driver_accepted`) and the sentence to
+    #: show, so a client that missed the socket frame can still say "No driver
+    #: accepted" rather than "Ride cancelled" (2026-11-08, trip 191). Additive;
+    #: None for rider, driver and ops cancels, whose notes are not shared.
+    cancellation_reason = serializers.SerializerMethodField()
+    cancellation_message = serializers.SerializerMethodField()
     estimated_fare = MoneyField(read_only=True, allow_null=True)
     final_fare = MoneyField(read_only=True, allow_null=True)
 
@@ -56,8 +62,20 @@ class TripListSerializer(serializers.ModelSerializer):
             'requested_at', 'completed_at', 'cancelled_at','estimated_duration_min','actual_duration_min','user',
             # Who cancelled: rider, driver, system or admin ('' while not cancelled).
             'cancelled_by',
+            'cancellation_reason', 'cancellation_message',
             'timezone',
         ]
+
+    def get_cancellation_reason(self, obj):
+        if obj.cancelled_by == 'system' and obj.cancellation_reason:
+            return obj.cancellation_reason
+        return None
+
+    def get_cancellation_message(self, obj):
+        if self.get_cancellation_reason(obj) == 'no_driver_accepted':
+            from servers.ride.tasks import NO_DRIVER_MESSAGE
+            return NO_DRIVER_MESSAGE
+        return None
 
     def get_timezone(self, obj):
         from base.market_time import trip_timezone

@@ -197,6 +197,21 @@ def pop_offered_drivers(trip_id):
         return []
 
 
+def peek_offered_drivers(trip_id):
+    """Who has been offered this trip, without deleting the set.
+
+    Returns a list of driver id strings, or None when Redis cannot answer —
+    so a caller can tell "nobody was offered" from "we do not know".
+    """
+    if redis_client is None:
+        return None
+    try:
+        return [str(m) for m in (redis_client.smembers(f'{OFFERED_PREFIX}{trip_id}') or set())]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('peek_offered_drivers failed for trip %s: %s', trip_id, exc)
+        return None
+
+
 def clear_offered_drivers(trip_id):
     if redis_client is None:
         return False

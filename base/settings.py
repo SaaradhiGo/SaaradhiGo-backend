@@ -75,6 +75,7 @@ INSTALLED_APPS = [
     # module). First producer: an SOS that could not be anchored to a city.
     'servers.command_centre',
     'servers.safety',
+    'servers.callbridge',
     # Live Ops map (module 10): scoped driver dots, active trips, demand and supply.
     'servers.live_ops',
     # Notifications (module 11): templates, outbox dispatcher, provider adapters, campaigns.
@@ -1315,6 +1316,12 @@ GOOGLE_MAPS_API_KEY=os.environ.get("GOOGLE_MAPS_API_KEY", "")
 # Arrival estimates on an active trip (servers/ride/eta.py): straight line x road factor at the
 # market's average speed, in whole minutes. Per-market speeds in km/h; a market missing here
 # uses PICKUP_ETA_CITY_KMH (18). Override with ETA_MARKET_KMH_JSON, e.g. {"IN": 18, "US": 35}.
+# Masked calls between rider and driver (servers/callbridge). "fake" (the default) logs the call
+# and returns CALL_BRIDGE_FAKE_NUMBER, a test number of neither party. A real provider needs its
+# adapter, CALL_BRIDGE_PROVIDER=<name> and CALL_BRIDGE_REAL_ENABLED=true.
+CALL_BRIDGE_PROVIDER = os.environ.get('CALL_BRIDGE_PROVIDER', 'fake').strip().lower()
+CALL_BRIDGE_REAL_ENABLED = os.environ.get('CALL_BRIDGE_REAL_ENABLED', 'false').strip().lower() in {'1', 'true', 'yes'}
+CALL_BRIDGE_FAKE_NUMBER = os.environ.get('CALL_BRIDGE_FAKE_NUMBER', '+914000000000')
 ETA_ROAD_FACTOR = float(os.environ.get('ETA_ROAD_FACTOR', '1.3'))
 ETA_MARKET_KMH = {'IN': 18.0, 'US': 35.0}
 if os.environ.get('ETA_MARKET_KMH_JSON', '').strip():

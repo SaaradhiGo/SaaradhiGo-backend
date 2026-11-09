@@ -288,5 +288,8 @@ def test_area_of():
     assert services.area_of('Mindspace, Hitech City') == 'Mindspace, Hitech City'
     assert services.area_of('Gachibowli') == 'Gachibowli'
     assert services.area_of('') == ''
-    assert services.area_of('1600 Amphitheatre Pkwy, Mountain View, CA 94043, USA') == 'Mountain View, CA'
+    assert services.area_of('Gate pickup, Hitech City, Hyderabad') == 'Hitech City, Hyderabad'
+    assert services.area_of('Sai Residency, Madhapur, Hyderabad, Telangana') == 'Madhapur, Hyderabad'
+    assert services.area_of('Banjara Hills, Hyderabad, Telangana') == 'Banjara Hills, Hyderabad'
+    assert services.area_of('1600 Amphitheatre Pkwy, Mountain View, CA 94043, USA') == 'Mountain View'
     assert SharingPreference.objects.count() == 0

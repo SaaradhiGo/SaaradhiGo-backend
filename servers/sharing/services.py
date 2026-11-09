@@ -30,21 +30,39 @@ def first_name(full_name, fallback=''):
 
 
 _COUNTRY_WORDS = {'india', 'united states', 'usa', 'us', 'united states of america'}
+#: States and union territories (India) and states (US, names and codes). A trailing one is dropped,
+#: so the two parts kept are the area and the city.
+_STATE_WORDS = {
+    'andhra pradesh', 'arunachal pradesh', 'assam', 'bihar', 'chhattisgarh', 'goa', 'gujarat',
+    'haryana', 'himachal pradesh', 'jharkhand', 'karnataka', 'kerala', 'madhya pradesh',
+    'maharashtra', 'manipur', 'meghalaya', 'mizoram', 'nagaland', 'odisha', 'punjab', 'rajasthan',
+    'sikkim', 'tamil nadu', 'telangana', 'tripura', 'uttar pradesh', 'uttarakhand', 'west bengal',
+    'delhi', 'new delhi', 'jammu and kashmir', 'ladakh', 'puducherry', 'chandigarh',
+    'andaman and nicobar islands', 'lakshadweep', 'dadra and nagar haveli and daman and diu',
+    'alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado', 'connecticut', 'delaware',
+    'florida', 'georgia', 'hawaii', 'idaho', 'illinois', 'indiana', 'iowa', 'kansas', 'kentucky',
+    'louisiana', 'maine', 'maryland', 'massachusetts', 'michigan', 'minnesota', 'mississippi',
+    'missouri', 'montana', 'nebraska', 'nevada', 'new hampshire', 'new jersey', 'new mexico',
+    'new york', 'north carolina', 'north dakota', 'ohio', 'oklahoma', 'oregon', 'pennsylvania',
+    'rhode island', 'south carolina', 'south dakota', 'tennessee', 'texas', 'utah', 'vermont',
+    'virginia', 'washington', 'west virginia', 'wisconsin', 'wyoming', 'district of columbia',
+}
+_STATE_CODE = re.compile(r'^[A-Z]{2}$')
 
 
 def area_of(address):
     """The landmark/area part of an address, never its most exact part.
 
     "Flat 302, Sai Residency, Madhapur, Hyderabad, Telangana 500081, India" -> "Madhapur, Hyderabad".
-    A trailing postcode is cut, then parts holding a digit (door, plot and road numbers) and the
-    country are dropped; of what is left, the area and city are kept (the two before the state,
-    when three or more remain).
+    A trailing postcode is cut; parts holding a digit (door, plot and road numbers), the country
+    and a trailing state are dropped; of what is left, the last two (area, city) are kept. With
+    three or more left, the first (a building or a doorstep) is always among those dropped.
     """
     parts = [re.sub(r'\s*\d{5,6}(-\d{4})?$', '', p.strip()) for p in (address or '').split(',')]
     parts = [p for p in parts if p]
     parts = [p for p in parts if not re.search(r'\d', p) and p.lower() not in _COUNTRY_WORDS]
-    if len(parts) >= 3:
-        parts = parts[-3:-1]
+    if len(parts) >= 2 and (parts[-1].lower() in _STATE_WORDS or _STATE_CODE.match(parts[-1])):
+        parts = parts[:-1]
     return ', '.join(parts[-2:])
 
 

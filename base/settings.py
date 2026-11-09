@@ -75,6 +75,7 @@ INSTALLED_APPS = [
     # module). First producer: an SOS that could not be anchored to a city.
     'servers.command_centre',
     'servers.safety',
+    'servers.sharing',
     'servers.callbridge',
     # Live Ops map (module 10): scoped driver dots, active trips, demand and supply.
     'servers.live_ops',
@@ -1316,6 +1317,14 @@ GOOGLE_MAPS_API_KEY=os.environ.get("GOOGLE_MAPS_API_KEY", "")
 # Arrival estimates on an active trip (servers/ride/eta.py): straight line x road factor at the
 # market's average speed, in whole minutes. Per-market speeds in km/h; a market missing here
 # uses PICKUP_ETA_CITY_KMH (18). Override with ETA_MARKET_KMH_JSON, e.g. {"IN": 18, "US": 35}.
+# Trusted contacts and trip sharing (servers/sharing). SHARING_SMS_MODE "sink" (default) records
+# each contact message and sends nothing (the QA test sink); "live" sends it over the login-code
+# SMS provider. TRIP_SHARE_BASE_URL is where /t/<token> is served (default FRONTEND_URL).
+SHARING_SMS_MODE = os.environ.get('SHARING_SMS_MODE', 'sink').strip().lower()
+SHARING_SMS_PER_RIDER_PER_HOUR = int(os.environ.get('SHARING_SMS_PER_RIDER_PER_HOUR', '20'))
+SHARING_SMS_PER_CONTACT_PER_HOUR = int(os.environ.get('SHARING_SMS_PER_CONTACT_PER_HOUR', '6'))
+SHARING_SMS_INBOUND_TOKEN = os.environ.get('SHARING_SMS_INBOUND_TOKEN', '')
+TRIP_SHARE_BASE_URL = os.environ.get('TRIP_SHARE_BASE_URL', '')
 # Masked calls between rider and driver (servers/callbridge). "fake" (the default) logs the call
 # and returns CALL_BRIDGE_FAKE_NUMBER, a test number of neither party. A real provider needs its
 # adapter, CALL_BRIDGE_PROVIDER=<name> and CALL_BRIDGE_REAL_ENABLED=true.

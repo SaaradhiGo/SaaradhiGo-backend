@@ -1825,6 +1825,14 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
 
                     await self.channel_layer.group_send(f'rider_{rider_id}', rider_event)
 
+                if action == 'start':
+                    # Auto-share (servers/sharing): the rider's contacts get the live link.
+                    try:
+                        from servers.sharing.services import on_trip_started
+                        await database_sync_to_async(on_trip_started)(self.trip_id)
+                    except Exception:  # noqa: BLE001 - sharing must never fail a trip start
+                        logger.exception('auto_share_failed trip=%s', self.trip_id)
+
                 # Direct, post-commit, correlated. `_update_trip_status` and
                 # `_accept_trip` both wrap `transaction.atomic()`, so by the time
                 # they have returned the write is durable -- which is what lets

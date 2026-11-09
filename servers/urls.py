@@ -51,6 +51,8 @@ urlpatterns = [
     path('platform/', include(platform_ops_urls.urlpatterns)),
     # Public, read-only market config for the rider and driver apps (module 15).
     path('app-config/', app_config_view, name='app_config'),
+    # Trusted contacts, trip share links and the public trip page data (2026-11-09).
+    path('sharing/', include('servers.sharing.urls')),
     # Masked rider-driver calls (2026-11-09).
     path('calls/', include('servers.callbridge.urls')),
 ]

@@ -4,7 +4,7 @@ from .views import (
     trip_driver_details, get_active_trip, proxy_geocode, proxy_directions,
     proxy_place_details, proxy_reverse_geocode,
     driver_cancel_trip, rider_cancel_trip, resend_receipt, receipt_pdf,
-    apply_promo_endpoint, trip_chat_history,
+    apply_promo_endpoint, trip_chat_history, trip_eta,
 )
 from .admin_views import admin_list_trips, admin_dashboard, admin_trip_detail
 from .admin_stale import (
@@ -23,6 +23,7 @@ urlpatterns = [
     path('active/', get_active_trip),
     path('trip/<int:trip_id>/', trip_detail),
     path('trip/<int:trip_id>/details/',trip_driver_details),
+    path('trip/<int:trip_id>/eta/', trip_eta),
     path('trip/<int:trip_id>/driver-cancel/', driver_cancel_trip),
     path('trip/<int:trip_id>/cancel/', rider_cancel_trip),
     path('trip/<int:trip_id>/receipt/resend/', resend_receipt),

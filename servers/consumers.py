@@ -353,6 +353,7 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'lat': lat,
                         'driver_id': self.driver_id,
                     })
+                    await self._maybe_push_eta(active_trip_id, lat, lng)
             else:
                 # A rejected location frame is silent data loss: the driver is
                 # still driving, the ride still needs its distance evidence, and
@@ -388,6 +389,26 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             }))
 
     # -- Event handlers (called via channel layer) --
+
+    async def _maybe_push_eta(self, trip_id, lat, lng):
+        """Every 15 seconds at most, the trip's arrival estimate to the rider (servers/ride/eta.py).
+
+        Throttled per connection, which is one driver on one trip. Best effort: a failed
+        estimate must never cost the driver a location ping."""
+        from servers.ride import eta
+
+        now = eta.clock()
+        if now - getattr(self, '_eta_pushed_at', 0.0) < eta.PUSH_INTERVAL_SECONDS:
+            return
+        self._eta_pushed_at = now
+        try:
+            payload = await database_sync_to_async(eta.for_trip_id)(
+                trip_id, driver_at=(float(lat), float(lng)))
+        except Exception:  # noqa: BLE001
+            logger.exception('trip_eta_failed trip=%s', trip_id)
+            return
+        await self.channel_layer.group_send(f'trip_{trip_id}', {
+            'type': 'trip_eta_update', 'trip_id': trip_id, 'eta': payload})
 
     async def driver_suspended(self, event):
         """An operator suspended this driver: end the session server-side.
@@ -969,6 +990,15 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             'driver_id': event['driver_id'],
         })
         
+    async def trip_eta_update(self, event):
+        """The arrival estimate, to the rider only (the driver computed it from its own ping).
+
+        `eta` is null when there is no honest estimate; the screens then hide the line."""
+        if getattr(self, 'participation', None) == 'assigned_driver':
+            return
+        self._queue_location_frame({'type': 'trip_eta_update', 'trip_id': event.get('trip_id'),
+                                    'eta': event.get('eta')})
+
     async def cash_payment_confirmed(self, event):
         """Notify rider that cash payment has been confirmed."""
         await self.send(text_data=json.dumps({
@@ -1936,6 +1966,15 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             'driver_id': event['driver_id'],
         })
         
+    async def trip_eta_update(self, event):
+        """The arrival estimate, to the rider only (the driver computed it from its own ping).
+
+        `eta` is null when there is no honest estimate; the screens then hide the line."""
+        if getattr(self, 'participation', None) == 'assigned_driver':
+            return
+        self._queue_location_frame({'type': 'trip_eta_update', 'trip_id': event.get('trip_id'),
+                                    'eta': event.get('eta')})
+
     async def cash_payment_confirmed(self, event):
         """Notify rider that cash payment has been confirmed."""
         await self.send(text_data=json.dumps({

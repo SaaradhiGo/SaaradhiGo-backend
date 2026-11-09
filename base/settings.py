@@ -1312,6 +1312,16 @@ FARE_SHADOW_LOOKBACK_HOURS = int(os.environ.get('FARE_SHADOW_LOOKBACK_HOURS', '7
 
 GOOGLE_MAPS_API_KEY=os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
+# Arrival estimates on an active trip (servers/ride/eta.py): straight line x road factor at the
+# market's average speed, in whole minutes. Per-market speeds in km/h; a market missing here
+# uses PICKUP_ETA_CITY_KMH (18). Override with ETA_MARKET_KMH_JSON, e.g. {"IN": 18, "US": 35}.
+ETA_ROAD_FACTOR = float(os.environ.get('ETA_ROAD_FACTOR', '1.3'))
+ETA_MARKET_KMH = {'IN': 18.0, 'US': 35.0}
+if os.environ.get('ETA_MARKET_KMH_JSON', '').strip():
+    import json as _json_eta
+    ETA_MARKET_KMH.update({str(k).upper(): float(v) for k, v in
+                           _json_eta.loads(os.environ['ETA_MARKET_KMH_JSON']).items()})
+
 # Which Places API the maps adapters speak: "new" (default) or "legacy".
 #
 # Places API (Legacy) cannot be enabled on Google Cloud projects created from

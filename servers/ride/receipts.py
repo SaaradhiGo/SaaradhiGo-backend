@@ -255,7 +255,7 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
     vehicle = ''
     if trip.driver_id and trip.driver_id.user_id:
         driver_name = (
-            trip.driver_id.user_id.full_name or trip.driver_id.user_id.phone_number or ''
+            trip.driver_id.user_id.full_name or ''
         )
     if trip.vehicle_id:
         v = trip.vehicle_id
@@ -352,7 +352,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     driver_name = ''
     vehicle = ''
     if trip.driver_id and trip.driver_id.user_id:
-        driver_name = trip.driver_id.user_id.full_name or trip.driver_id.user_id.phone_number or ''
+        driver_name = trip.driver_id.user_id.full_name or ''
     if trip.vehicle_id:
         v = trip.vehicle_id
         vehicle = f"{v.brand or ''} {v.model or ''} ({v.vehicle_number or ''})".strip()

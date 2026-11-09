@@ -267,7 +267,7 @@ def _row_for(entry, trip, trip_id, settlement=None):
 
     rider_name = ''
     if trip is not None and trip.user_id is not None:
-        rider_name = trip.user_id.full_name or trip.user_id.phone_number or ''
+        rider_name = trip.user_id.full_name or ''
 
     tax = fee = None
     fee_name = ''

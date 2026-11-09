@@ -364,7 +364,7 @@ def credit_driver_wallet(trip):
             method=trip.payment_method or 'online',
             status='completed',
             txn_type=txn_type,
-            user_name=trip.user_id.full_name or trip.user_id.phone_number,
+            user_name=trip.user_id.full_name or '',
         )
 
         # Immutable economic evidence for this trip.

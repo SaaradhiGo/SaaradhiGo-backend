@@ -306,7 +306,6 @@ def get_trip_details(trip_id):
         cache_data['vehicle_color'] = str(vehicle_info.get('color', ''))
     
     if obj.driver_id:
-        cache_data['driver_phone'] = str(obj.driver_id.user_id.phone_number)
         cache_data['driver_rating'] = str(obj.driver_id.ratings)
         
     return cache_data
@@ -452,7 +451,7 @@ def create_payment_on_complete(trip):
                     driver_id=trip.driver_id,
                     amount=amount,
                     method='wallet',
-                    user_name=trip.user_id.full_name or trip.user_id.phone_number,
+                    user_name=trip.user_id.full_name or '',
                     status='completed',
                 )
 

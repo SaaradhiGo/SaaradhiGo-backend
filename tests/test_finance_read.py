@@ -477,7 +477,7 @@ class TestIndiaPayoutsAreUnchanged:
         client = client_for(world.in_driver.user_id)
         body = client.get('/api/v1/driver/withdrawals/balance/').json()['data']
         # Same keys in the same order, then the two Part B additions.
-        assert [k for k in body if k in self.LEGACY_BALANCE_KEYS] == self.LEGACY_BALANCE_KEYS and set(body) - set(self.LEGACY_BALANCE_KEYS) - {'withdrawals_available', 'message'} == {'fee_display', 'currency', 'payout_details_on_file'}
+        assert [k for k in body if k in self.LEGACY_BALANCE_KEYS] == self.LEGACY_BALANCE_KEYS and set(body) - set(self.LEGACY_BALANCE_KEYS) - {'withdrawals_available', 'message'} == {'fee_display', 'currency', 'payout_details_on_file', 'next_payout', 'instant'}
         assert body['fee_percent'] == 0.0 and body['minimum_withdrawal'] == 500.0
         assert body['fee_display'] is None and body['currency'] == 'INR'
         assert isinstance(body['fee_percent'], float) and isinstance(body['minimum_withdrawal'], float)
@@ -522,7 +522,7 @@ class TestIndiaPayoutsAreUnchanged:
         d = make_driver(geo, 'IN-TG-HYD', 'NEW', currency='INR', calling='91', city_node=False)
         Wallet.objects.filter(user_id=d.user_id).delete()
         body = client_for(d.user_id).get('/api/v1/driver/withdrawals/balance/').json()['data']
-        assert [k for k in body if k in self.LEGACY_BALANCE_KEYS] == self.LEGACY_BALANCE_KEYS and set(body) - set(self.LEGACY_BALANCE_KEYS) - {'withdrawals_available', 'message'} == {'fee_display', 'currency', 'payout_details_on_file'}
+        assert [k for k in body if k in self.LEGACY_BALANCE_KEYS] == self.LEGACY_BALANCE_KEYS and set(body) - set(self.LEGACY_BALANCE_KEYS) - {'withdrawals_available', 'message'} == {'fee_display', 'currency', 'payout_details_on_file', 'next_payout', 'instant'}
         assert body['fee_percent'] == 0.0 and body['minimum_withdrawal'] == 500.0
 
     def test_a_us_driver_is_never_given_indias_rules_whatever_their_wallet_says(self, geo):

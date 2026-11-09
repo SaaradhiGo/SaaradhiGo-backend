@@ -1163,6 +1163,9 @@ def finance_payout_config(request):
         can_edit = code in editable_in and cfg is not None
         rows.append({
             'country': code, 'name': country.name, 'currency': country.currency,
+            # Additive (2026-11-09): each state and city, what it sets and what it inherits,
+            # and when its drivers are next paid.
+            'scopes': _payout_scopes(code, cfg) if cfg else [],
             'configured': cfg is not None,
             'config': cfg.as_dict() if cfg else None,
             'message': None if cfg else (
@@ -1294,3 +1297,35 @@ def finance_export(request, kind):
         f'attachment; filename="finance-{kind}-{now:%Y%m%d-%H%M}.csv"')
     response['Cache-Control'] = 'no-store'
     return response
+
+
+def _payout_scopes(country, cfg):
+    """Every state and city of a configured country: its own override (if any), the effective
+    settings with where each value comes from, and "Drivers in {city} are next paid on {date}"."""
+    from servers.admin_access.models import GeoNode
+
+    from .models import PayoutScopeOverride
+    from .payout_scope import (
+        EffectivePayoutConfig, _overrides_for, next_payout_at, scope_codes_of_node,
+    )
+
+    own = {o.scope_code: o for o in PayoutScopeOverride.objects.filter(country=country,
+                                                                       is_active=True)}
+    out = []
+    for node in (GeoNode.objects.filter(kind__in=('state', 'city'), code__startswith=f'{country}-')
+                 .select_related('parent').order_by('path')):
+        eff = EffectivePayoutConfig(cfg, _overrides_for(scope_codes_of_node(node)))
+        when = next_payout_at(eff)
+        override = own.get(node.code)
+        out.append({
+            'scope': node.code, 'kind': node.kind, 'name': node.name,
+            'parent': node.parent.code if node.parent else None,
+            'override': override.as_dict() if override else None,
+            'effective': eff.as_dict(),
+            'next_payout_date': when.date().isoformat() if when else None,
+            'preview': (f'Drivers in {node.name} are next paid on {when.strftime("%a %d %b")} '
+                        f'at {when.strftime("%H:%M")}.' if when and node.kind == 'city'
+                        else (f'Drivers in {node.name} withdraw on request.'
+                              if node.kind == 'city' else None)),
+        })
+    return out

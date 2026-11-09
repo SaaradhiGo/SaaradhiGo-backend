@@ -1,4 +1,5 @@
-"""The scheduled weekly payout run, for countries whose payout config says weekly.
+"""The scheduled payout run: weekly, or every N days (owner ruling 2026-11-09), per country,
+state or city (`payout_scope`: a state or city that sets its own schedule runs on its own cycle).
 
 WHAT IT DOES
 ------------
@@ -30,8 +31,9 @@ approve the batch once a policy exists.
 
 IDEMPOTENT
 ----------
-PayoutRun is unique per (country, week_start), week_start being the Monday of
-the week in the country's own zone. The beat task can run every hour; the
+PayoutRun is unique per (country, scope_key, week_start): `scope_key` is '' for the country's own
+schedule (else the state or city code), and `week_start` is the cycle's start: the Monday of the
+week for a weekly schedule, the cycle date for every N days. The beat task can run every hour; the
 second and later runs in the week find the row and do nothing. The whole run
 (withdrawals, the PayoutRun row, the approval request) is one transaction, so
 a crash leaves no half-run behind.
@@ -75,12 +77,12 @@ def week_start_of(now, tz):
     return local.date() - timedelta(days=local.weekday())
 
 
-def _candidates(config):
+def _candidates(config, floor=None):
     """Driver wallets that qualify on balance, without an open withdrawal."""
     from servers.driver.models import Driver, WithdrawalRequest
     from servers.rider.models import Wallet
 
-    floor = max(1, config.minimum_withdrawal_minor)
+    floor = max(1, config.minimum_withdrawal_minor if floor is None else floor)
     wallet_users = Wallet.objects.filter(
         scope=Wallet.SCOPE_DRIVER, currency=config.currency, balance_minor__gte=floor,
     ).values('user_id')
@@ -220,24 +222,62 @@ def _create_one(driver, config):
     return withdrawal
 
 
+def _groups(config):
+    """The country's drivers who qualify, grouped by the schedule that pays them:
+    `{scope_key: (EffectivePayoutConfig of the scope, [(driver, their effective config)])}`.
+    The country's own scope is always present (a run with nothing to pay is still recorded)."""
+    from .models import PayoutScopeOverride
+    from .payout_scope import EffectivePayoutConfig, effective_for_driver
+
+    mins = [config.minimum_withdrawal_minor] + [
+        m for m in PayoutScopeOverride.objects.filter(
+            country=config.country, is_active=True, minimum_withdrawal_minor__isnull=False)
+        .values_list('minimum_withdrawal_minor', flat=True)]
+    groups = {'': (EffectivePayoutConfig(config), [])}
+    for driver in _candidates(config, floor=min(mins)):
+        _, eff = effective_for_driver(driver)
+        if eff is None or eff.base.pk != config.pk:
+            continue
+        key = eff.schedule_scope
+        if key not in groups:
+            groups[key] = (eff, [])
+        groups[key][1].append((driver, eff))
+    return groups
+
+
 def run_country(config, now=None):
-    """Run one country's weekly payout if today is its day. Returns a summary dict."""
+    """Run every schedule in one country whose cycle is due now. Returns a summary dict (the
+    country's own schedule) with the state and city runs under `scopes`."""
+    now = now or timezone.now()
+    results = {}
+    for key, (eff, members) in _groups(config).items():
+        results[key] = run_scope(eff, key, members, now)
+    out = dict(results.get('', {'country': config.country, 'ran': False, 'why': 'not_the_day'}))
+    out['scopes'] = {k: v for k, v in results.items() if k}
+    return out
+
+
+def run_scope(config, scope_key, members, now):
+    """One schedule's run: the country's (scope_key '') or a state's or city's override."""
     from servers.approvals import service as approvals
     from servers.approvals.actions import FINANCE_PAYOUT
     from servers.approvals.executors import batch_key
 
     from .models import PayoutRun
+    from .payout_scope import SCHEDULED, due_cycle
 
-    now = now or timezone.now()
     country = config.country
-    tz = ZoneInfo(get_country(country).default_timezone)
-    if config.payout_weekday is None or now.astimezone(tz).weekday() != config.payout_weekday:
-        return {'country': country, 'ran': False, 'why': 'not_the_day'}
-    week = week_start_of(now, tz)
-    if PayoutRun.objects.filter(country=country, week_start=week).exists():
-        return {'country': country, 'ran': False, 'why': 'already_ran', 'week_start': str(week)}
+    if config.payout_schedule not in SCHEDULED:
+        return {'country': country, 'scope': scope_key, 'ran': False, 'why': 'not_scheduled'}
+    week = due_cycle(config, now)
+    if week is None:
+        return {'country': country, 'scope': scope_key, 'ran': False, 'why': 'not_the_day'}
+    if PayoutRun.objects.filter(country=country, scope_key=scope_key, week_start=week).exists():
+        return {'country': country, 'scope': scope_key, 'ran': False, 'why': 'already_ran',
+                'week_start': str(week)}
 
-    candidates = list(_candidates(config))
+    by_driver = {d.id: eff for d, eff in members}
+    candidates = [d for d, _ in members]
     truncated = len(candidates) > MAX_DRIVERS_PER_RUN
     candidates = candidates[:MAX_DRIVERS_PER_RUN]
 
@@ -245,7 +285,7 @@ def run_country(config, now=None):
         with transaction.atomic(), audit_context(actor=None, actor_label=SYSTEM_LABEL,
                                                  reason=REASON):
             run = PayoutRun.objects.create(
-                country=country, currency=config.currency, week_start=week,
+                country=country, scope_key=scope_key, currency=config.currency, week_start=week,
                 truncated=truncated, outcome='nothing_to_pay')
             from . import payout_rails
 
@@ -264,7 +304,8 @@ def run_country(config, now=None):
                     skipped_drivers.append(d)
                 else:
                     payable.append(d)
-            created = [w for w in (_create_one(d, config) for d in payable) if w is not None]
+            created = [w for w in (_create_one(d, by_driver[d.id]) for d in payable)
+                       if w is not None]
             run.skipped = skipped
             run.withdrawal_count = len(created)
             run.amount_minor = sum(w.amount_minor for w in created)
@@ -278,7 +319,9 @@ def run_country(config, now=None):
                         target_id=batch_key(ids).split(':', 1)[1],
                         payload={'withdrawal_ids': ids, 'payout_run': run.id,
                                  'week_start': str(week)},
-                        idempotency_key=f'payout_run:{country}:{week}', reason=REASON)
+                        idempotency_key=(f'payout_run:{country}:{week}' if not scope_key
+                                         else f'payout_run:{scope_key}:{week}'),
+                        reason=REASON)
                     run.approval_request_id = outcome.request.id
                     run.outcome = 'opened'
                 except approvals.ThresholdNotConfigured:
@@ -289,7 +332,8 @@ def run_country(config, now=None):
             run.save()
             record_admin_action(
                 None, action='payout_run_created', target_type='payout_run', target_id=run.id,
-                after={'country': country, 'week_start': str(week), 'withdrawals': len(created),
+                after={'country': country, 'scope': scope_key, 'week_start': str(week),
+                       'withdrawals': len(created),
                        'amount_minor': run.amount_minor, 'currency': config.currency,
                        'approval_request_id': run.approval_request_id, 'outcome': run.outcome,
                        'truncated': truncated, 'skipped_no_handle': len(skipped_drivers),
@@ -300,9 +344,10 @@ def run_country(config, now=None):
                                 skipped_drivers)
                 _queue_driver_notices(run, skipped_drivers)
     except IntegrityError:
-        # Another worker created this week's run between our check and our insert.
-        return {'country': country, 'ran': False, 'why': 'already_ran', 'week_start': str(week)}
-    return {'country': country, 'ran': True, 'week_start': str(week),
+        # Another worker created this cycle's run between our check and our insert.
+        return {'country': country, 'scope': scope_key, 'ran': False, 'why': 'already_ran',
+                'week_start': str(week)}
+    return {'country': country, 'scope': scope_key, 'ran': True, 'week_start': str(week),
             'withdrawals': run.withdrawal_count, 'outcome': run.outcome,
             'approval_request_id': run.approval_request_id,
             'skipped_no_handle': [s['driver_id'] for s in run.skipped
@@ -312,12 +357,19 @@ def run_country(config, now=None):
 
 
 def run_weekly_payouts(now=None):
-    """Every weekly country, in order. A country with no config does nothing."""
-    from .models import PayoutCountryConfig
+    """Every country with a scheduled payout (its own, or a state's or city's), in order. The
+    name predates cycles; the beat task still calls it hourly. No config, nothing done."""
+    from django.db.models import Q
 
+    from .models import PayoutCountryConfig, PayoutScopeOverride
+
+    scheduled = ('weekly', 'every_n_days')
+    with_override = PayoutScopeOverride.objects.filter(
+        is_active=True, payout_schedule__in=scheduled).values_list('country', flat=True)
     results = []
-    for config in PayoutCountryConfig.objects.filter(
-            is_active=True, payout_schedule=PayoutCountryConfig.WEEKLY).order_by('country'):
+    for config in PayoutCountryConfig.objects.filter(is_active=True).filter(
+            Q(payout_schedule__in=scheduled) | Q(country__in=list(with_override))
+    ).order_by('country'):
         try:
             results.append(run_country(config, now))
         except Exception:  # noqa: BLE001 - one country must not stop the others

@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     driver_earnings, driver_earnings_summary, driver_earnings_daily, driver_earnings_period,
     list_vehicles, create_vehicle, update_vehicle, delete_vehicle, update_driver_profile, get_driver_profile,
-    driver_withdrawal_balance, driver_withdrawal_request, driver_withdrawal_history, driver_withdrawal_block_status,
+    driver_instant_quote, driver_withdrawal_balance, driver_withdrawal_request, driver_withdrawal_history, driver_withdrawal_block_status,
     driver_incentives, driver_elite_status, driver_document_view,
 )
 from .onboarding_views import driver_onboarding
@@ -39,6 +39,7 @@ urlpatterns = [
     # Withdrawals
     path('withdrawals/balance/', driver_withdrawal_balance),
     path('withdrawals/request/', driver_withdrawal_request),
+    path('withdrawals/instant/quote/', driver_instant_quote),
     path('withdrawals/history/', driver_withdrawal_history),
     path('withdrawals/block-status/', driver_withdrawal_block_status),
     # Vehicles

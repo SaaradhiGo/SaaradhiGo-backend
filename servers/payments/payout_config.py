@@ -40,7 +40,14 @@ from decimal import ROUND_HALF_UP, Decimal
 from base.countries import COUNTRIES, get_country
 from base.money import from_minor
 
-#: The owner's payout values (AUDIT 27.43), in the units the model stores.
+#: The cycle and instant-fee fields (2026-11-09) as the 27.43 seeds leave them: not set.
+_NO_CYCLE = {'payout_interval_days': None, 'payout_anchor_date': None, 'payout_time_local': None,
+             'instant_cashout_enabled': False, 'instant_cashout_fee_flat_minor': None,
+             'instant_fee_percent': None, 'instant_fee_min_minor': None,
+             'instant_fee_max_minor': None, 'instant_fee_provider': '', 'instant_fee_tiers': None}
+
+#: The owner's payout values (AUDIT 27.43), in the units the model stores. Superseded on QA by
+#: the 2026-11-09 ruling (payments migration 0026); these remain what a fresh seed writes.
 #: Weekday 0 is Monday: weekend earnings are paid out at the start of the week.
 INDIA_SEED = {
     'country': 'IN',
@@ -53,6 +60,7 @@ INDIA_SEED = {
     'reward_hold_days': 7,
     'recovery_max_percent': 50,
     'payout_hold_max_days': 14,
+    **_NO_CYCLE,
 }
 US_SEED = {
     'country': 'US',
@@ -64,6 +72,7 @@ US_SEED = {
     'reward_hold_days': 7,
     'recovery_max_percent': 50,
     'payout_hold_max_days': 14,
+    **_NO_CYCLE,
 }
 OWNER_RULING = (INDIA_SEED, US_SEED)
 RULING_REASON = 'Owner ruling, AUDIT 27.43'
@@ -113,9 +122,12 @@ def driver_payout_country(driver):
 
 
 def config_for_driver(driver):
-    """`(country_code_or_None, config_or_None)`."""
-    country = driver_payout_country(driver)
-    return country, active_config(country)
+    """`(country_code_or_None, config_or_None)`: the settings for the driver's home city,
+    resolved city -> state -> country (`payout_scope.EffectivePayoutConfig`, 2026-11-09). It reads
+    like the country row, so every caller is unchanged."""
+    from .payout_scope import effective_for_driver
+
+    return effective_for_driver(driver)
 
 
 def minimum_withdrawal(config):

@@ -175,7 +175,9 @@ def execute_payout_config_change(request_row):
 
     p = request_row.payload or {}
     country = p.get('country')
-    values = dict(p.get('values') or {})
+    values = _parsed_values(p.get('values') or {})
+    if p.get('scope'):
+        return _execute_override(request_row, p, values)
     values['fee_percent'] = Decimal(str(values['fee_percent']))
     with transaction.atomic():
         active = (PayoutCountryConfig.objects.select_for_update()
@@ -196,3 +198,55 @@ def execute_payout_config_change(request_row):
             reason=request_row.decision_reason or request_row.request_reason)
     return {'config_id': row.id, 'version': row.version,
             'superseded_id': superseded.id if superseded else None}
+
+
+def _parsed_values(raw):
+    """A payload's values back to Python: dates, times and decimals (2026-11-09 fields)."""
+    from datetime import datetime as _dt
+    from decimal import Decimal
+
+    values = dict(raw)
+    if values.get('payout_anchor_date'):
+        values['payout_anchor_date'] = _dt.strptime(values['payout_anchor_date'], '%Y-%m-%d').date()
+    if values.get('payout_time_local'):
+        values['payout_time_local'] = _dt.strptime(values['payout_time_local'], '%H:%M').time()
+    if values.get('instant_fee_percent') not in (None, ''):
+        values['instant_fee_percent'] = Decimal(str(values['instant_fee_percent']))
+    return values
+
+
+def _execute_override(request_row, p, values):
+    """Write a state's or city's next override version (the old one closes)."""
+    from django.utils import timezone
+
+    from servers.payments.models import OVERRIDE_FIELDS, PayoutScopeOverride
+
+    scope = p['scope']
+    with transaction.atomic():
+        active = (PayoutScopeOverride.objects.select_for_update()
+                  .filter(scope_code=scope, is_active=True).first())
+        if (active.version if active else 0) != p.get('base_version'):
+            raise ExecutionRefused(
+                'CONFIG_CHANGED',
+                'The payout settings changed after this request was raised; raise it again.')
+        version = (PayoutScopeOverride.objects.filter(scope_code=scope).order_by('-version')
+                   .values_list('version', flat=True).first() or 0) + 1
+        if active is not None:
+            active.is_active = False
+            active.valid_to = timezone.now()
+            active.save(update_fields=['is_active', 'valid_to'])
+        row = PayoutScopeOverride.objects.create(
+            country=p['country'], scope_code=scope, scope_kind=p.get('scope_kind') or 'city',
+            version=version, reason=(request_row.request_reason or '')[:10000],
+            created_by_id=request_row.maker_id, created_by_label=request_row.maker_label,
+            created_by_email=request_row.maker_email, created_by_role=request_row.maker_role,
+            **{k: values.get(k) for k in OVERRIDE_FIELDS
+               if k not in ('payout_schedule', 'instant_fee_provider')},
+            payout_schedule=values.get('payout_schedule') or '',
+            instant_fee_provider=values.get('instant_fee_provider') or '')
+        record_admin_action(
+            None, action='payout_config_changed', target_type='payout_scope_override',
+            target_id=row.id, before=_jsonable(active.as_dict()) if active else {},
+            after=_jsonable(row.as_dict()),
+            reason=request_row.decision_reason or request_row.request_reason)
+    return {'override_id': row.id, 'version': row.version, 'scope': scope}

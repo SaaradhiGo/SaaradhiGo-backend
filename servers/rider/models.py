@@ -48,6 +48,9 @@ class FavoritePlace(models.Model):
     # Nullable; places saved before this stay unlabelled.
     LABEL_CHOICES = [('home', 'Home'), ('work', 'Work'), ('other', 'Other')]
     label = models.CharField(max_length=8, choices=LABEL_CHOICES, null=True, blank=True)
+    # The rider's own name for an "other" place ("Gym", "Mum's"), 2026-11-09. Blank for
+    # Home and Work, whose label is the name.
+    name = models.CharField(max_length=40, blank=True, default='')
     def __str__(self):
         return f'{self.user_id} - {self.address_text}'
 class Wallet(models.Model):

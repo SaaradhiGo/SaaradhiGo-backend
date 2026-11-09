@@ -33,8 +33,12 @@ def _err(code, message, field, http=status.HTTP_400_BAD_REQUEST):
 
 def contact_json(c):
     # The rider typed this number; show it back to them in full on their own list.
+    last = c.messages.order_by('-id').first() if c.pk else None
     return {'id': c.id, 'name': c.name, 'phone': c.phone,
-            'opted_out': sms.opted_out(c.phone)}
+            'opted_out': sms.opted_out(c.phone),
+            # What happened to the latest message (kind and status only, never the text).
+            'last_message': ({'kind': last.kind, 'status': last.status,
+                              'at': last.created_at.isoformat()} if last else None)}
 
 
 def _market(user):

@@ -55,6 +55,8 @@ def test_add_list_remove_and_the_added_sms(rider):
     listed = client.get(CONTACTS).json()['data']
     assert [c['id'] for c in listed['contacts']] == [contact['id']]
     assert listed['note'].startswith('Your contacts only see this trip')
+    assert listed['contacts'][0]['last_message']['kind'] == 'added'
+    assert listed['contacts'][0]['last_message']['status'] == 'sink'
     assert client.delete(f'{CONTACTS}{contact["id"]}/').status_code == 200
     assert not TrustedContact.objects.exists()
 

@@ -106,13 +106,14 @@ def _seed(apps):
     # migration, and the historical user model lacks the app's defaults --
     # then re-read as historical instances so the FKs below accept them.
     from django.contrib.auth import get_user_model
-    from servers.driver.models import Driver as LiveDriver
     live = get_user_model()
     r = live.objects.create_user(phone_number='+919700088001', role='rider')
     d = live.objects.create_user(phone_number='+919800088001', role='driver')
     rider = User.objects.get(pk=r.pk)
     du = User.objects.get(pk=d.pk)
-    driver = Driver.objects.get(pk=LiveDriver.objects.create(user_id=d, approved=True).pk)
+    # The driver through the HISTORICAL model: the live one has columns added after BEFORE
+    # (MVAG 2025 records) that this schema does not have.
+    driver = Driver.objects.create(user_id=du, approved=True)
     status, _ = TripStatus.objects.get_or_create(status_code='completed')
 
     usd_trip = Trip.objects.create(

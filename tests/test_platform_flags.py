@@ -58,8 +58,9 @@ class TestResolution:
                                    is_archived=True)
         assert flags.flag_enabled('old.flag') is False
 
-    def test_nothing_is_seeded(self, geo):
-        assert not FeatureFlag.objects.exists()
+    def test_only_flags_with_a_reader_are_seeded(self, geo):
+        # The first real flag came with its reader (MVAG 2025, ride.cancellation_penalty).
+        assert list(FeatureFlag.objects.values_list('key', flat=True)) == ['cancellation_penalty']
 
 
 class TestChangeWithoutAChecker:

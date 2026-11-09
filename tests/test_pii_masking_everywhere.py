@@ -493,6 +493,8 @@ INVENTORY = {
     # are the list's rows, and test_drivers_module checks them masked.
     'api/v1/driver/admin/kyc-queue/': False,
     'api/v1/driver/admin/<int:driver_id>/vehicles/': False,
+    # MVAG 2025 insurance and training records of one driver (policy numbers, expiry dates).
+    'api/v1/driver/admin/<int:driver_id>/records/': True,
     # One document on demand (AUDIT 27.78): `pii.view` at the driver's city or
     # 403, and the body is only {url, expires_in} -- no person in it.
     'api/v1/driver/admin/<int:driver_id>/documents/<str:key>/view/': False,
@@ -579,6 +581,8 @@ INVENTORY = {
     'api/v1/pricing/admin/commission/rules/<int:rule_id>/': False,
     'api/v1/pricing/admin/commission/rules/<int:rule_id>/preview/': False,
     'api/v1/pricing/admin/commission/config/': False,
+    # MVAG 2025 regulation rows per country and state: numbers and notes, no person.
+    'api/v1/pricing/admin/regulation/': False,
     'api/v1/pricing/admin/fare-cards/overview/': False,
     # Zones and geofences (module 9): shapes, revisions and pending requests name no person
     # beyond the staff attribution block the renderer leaves alone.

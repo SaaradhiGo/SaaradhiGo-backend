@@ -56,12 +56,24 @@ def block_expired_driver_licenses():
         .distinct()
     )
 
-    count = expired.count()
+    blocked_ids = list(expired.values_list('id', flat=True))
+    # MVAG 2025 driver records (health and term insurance, induction training): only where the
+    # market's gate is on. With every gate off (the default) this adds nothing.
+    from servers.driver import records
+    record_reasons = {}
+    if records.any_gate_enabled():
+        for driver in (Driver.objects.filter(approved=True).exclude(status='blocked')
+                       .exclude(id__in=blocked_ids).select_related('user_id', 'home_city')):
+            problems = records.blocking_problems(driver, today)
+            if problems:
+                record_reasons[driver.id] = problems
+        blocked_ids += list(record_reasons)
+
+    count = len(blocked_ids)
     if count == 0:
         logger.info("driver.block_expired_driver_licenses: nothing to do")
         return {'blocked': 0}
 
-    blocked_ids = list(expired.values_list('id', flat=True))
     # update() can't be combined with distinct(); re-filter on ids.
     Driver.objects.filter(id__in=blocked_ids).update(status='blocked',approved=False)
 
@@ -91,6 +103,7 @@ def block_expired_driver_licenses():
                     reasons.append("vehicle fitness certificate")
                 if v.puc_expiry and v.puc_expiry < today:
                     reasons.append("vehicle PUC")
+            reasons += [r.lower() for r in record_reasons.get(driver.id, [])]
             label = ", ".join(reasons) or "credentials"
             send_push_notification(
                 driver.user_id,

@@ -71,6 +71,13 @@ REPO = Path(__file__).resolve().parent.parent
 # The world
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def pre_mvag_commission_config(db):
+    """These tests describe module 8 from a world with no country config. The MVAG 2025 seed
+    (India cap 20%, pricing 0020) has its own tests in test_mvag_2025_pricing.py."""
+    CommissionCountryConfig.objects.all().delete()
+
+
 @pytest.fixture
 def geo(db):
     from conftest import seed_admin_access

@@ -73,6 +73,9 @@ DRIVER_LEDGER_PURPOSES = (
     'fare_collected_by_platform',
     # The rider was refunded the whole trip and its earnings were taken back (AUDIT 27.76).
     'trip_refund_reversal',
+    # MVAG 2025 cancellation penalty (2026-11-09): the rider's fee paid to the driver who was let
+    # down; the driver's own penalty; on a cash trip, the fee the collecting driver holds.
+    'cancellation_compensation', 'cancellation_penalty', 'cancellation_fee_collected',
 )
 
 #: `model label -> ORM lookup(s) reaching GeoNode.path`. One table, so a view

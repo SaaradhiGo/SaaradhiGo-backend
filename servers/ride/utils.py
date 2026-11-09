@@ -248,6 +248,8 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=Non
         # 60.00 + 55.59 + 19.62 beside a charged total of 135.22.
         'fare_adjustments': fare.get('fare_adjustments', []),
         'surge_multiplier': fare['surge_multiplier'],
+        'demand_label': fare.get('demand_label'),
+        'fare_limits': fare.get('fare_limits'),
         'min_fare_applied': fare['min_fare_applied'],
         'vehicle_type': fare['vehicle_type'],
         'source': fare['source'],

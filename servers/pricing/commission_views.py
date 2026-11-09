@@ -10,6 +10,9 @@
   POST   /pricing/admin/commission/rules/<id>/submit/   pricing.write -> 202 (a checker decides)
   GET    /pricing/admin/commission/config/            zone.read: notice days and cap per country
   PUT    /pricing/admin/commission/config/<country>/  pricing.write -> 202
+  PUT    /pricing/admin/commission/config/<country>/states/<state>/  pricing.write -> 202
+  GET    /pricing/admin/regulation/              zone.read: the MVAG 2025 band per scope
+  PUT    /pricing/admin/regulation/<country>/    pricing.write -> 202 (body state_code)
   GET    /pricing/admin/fare-cards/overview/          zone.read, scoped
   POST   /pricing/admin/fare-cards/preview/           zone.read: rider-fare preview, old vs new
 
@@ -35,7 +38,10 @@ from servers.driver.models import VehicleType
 from . import commission as resolver
 from . import commission_workflow as flow
 from . import fare_card_workflow as cards
-from .commission_models import DRAFT, CommissionCountryConfig, CommissionRule
+from . import regulation
+from . import regulation_workflow as reg_flow
+from .commission_models import DRAFT, CommissionCountryConfig, CommissionRule, CommissionStateCap
+from .regulation_models import MarketRegulation
 from .models import RateCard, ServiceZone
 
 logger = logging.getLogger(__name__)
@@ -241,8 +247,76 @@ def config_list(request):
             codes.add(city.country.code)
     codes = sorted(c for c in codes if c in COUNTRIES)
     rows = {c.country: c for c in CommissionCountryConfig.objects.filter(country__in=codes)}
-    return success_response({'results': [flow.config_dict(c, rows.get(c)) for c in codes]},
+    states = {}
+    for row in CommissionStateCap.objects.filter(country__in=codes).order_by('state_code'):
+        states.setdefault(row.country, []).append(reg_flow.state_cap_dict(row))
+    above = {}
+    for rule, cap in regulation.rules_above_cap():
+        above.setdefault(rule.country, []).append(
+            {'rule_id': rule.id, 'percent': str(rule.percent), 'cap': str(cap),
+             'level': rule.level, 'geo_node': rule.geo_node.code if rule.geo_node_id else None})
+    # Additive (MVAG 2025): each country's state caps and the active rules above a cap.
+    return success_response({'results': [
+        {**flow.config_dict(c, rows.get(c)), 'states': states.get(c, []),
+         'rules_above_cap': above.get(c, [])} for c in codes]}, status.HTTP_200_OK)
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated, WRITE])
+def state_cap_update(request, country, state):
+    d = request.data or {}
+    try:
+        outcome = reg_flow.propose_state_cap(
+            request.user, country=country, state_code=state, max_percent=d.get('max_percent'),
+            clear=bool(d.get('clear_cap')), reason=str(d.get('reason') or ''),
+            http_request=request)
+    except ApprovalError as exc:
+        return exc.response()
+    return success_response(_approval_body(outcome), status.HTTP_202_ACCEPTED)
+
+
+# ---------------------------------------------------------------------------
+# Market regulation (MVAG 2025)
+# ---------------------------------------------------------------------------
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, READ])
+def regulation_list(request):
+    codes = {n.code for n in scoped(request.user, GeoNode.objects.filter(kind='country'))}
+    for city in scoped(request.user, GeoNode.objects.filter(kind='city')).select_related('parent'):
+        if city.country is not None:
+            codes.add(city.country.code)
+    codes = sorted(c for c in codes if c in COUNTRIES)
+    rows = MarketRegulation.objects.filter(country__in=codes)
+    zones = []
+    for zone in ServiceZone.objects.filter(country__in=codes, is_active=True,
+                                           zone_type='city').order_by('code'):
+        # The loosest card in the zone: what the band is worst-case.
+        caps = list(RateCard.objects.filter(zone=zone, is_active=True)
+                    .values_list('surge_cap_multiplier', flat=True))
+        card_cap = max(caps) if caps else None
+        limits = (regulation.limits_for_zone(zone, card_cap) if card_cap is not None else None)
+        zones.append({'zone': zone.code, 'country': zone.country,
+                      'state_code': regulation.state_code_of_zone(zone),
+                      'rate_card_cap': str(card_cap) if card_cap is not None else None,
+                      'effective': limits.as_dict() if limits else None})
+    return success_response({'results': [reg_flow.regulation_dict(r) for r in rows], 'zones': zones},
                             status.HTTP_200_OK)
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated, WRITE])
+def regulation_update(request, country):
+    d = request.data or {}
+    try:
+        outcome = reg_flow.propose_regulation(
+            request.user, country=country, state_code=d.get('state_code') or '',
+            changes={name: d.get(name) for name in reg_flow.FIELDS if name in d},
+            clear=tuple(d.get('clear') or ()), note=d.get('note'),
+            reason=str(d.get('reason') or ''), http_request=request)
+    except ApprovalError as exc:
+        return exc.response()
+    return success_response(_approval_body(outcome), status.HTTP_202_ACCEPTED)
 
 
 @api_view(['PUT'])

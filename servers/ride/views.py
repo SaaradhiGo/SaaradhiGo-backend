@@ -41,6 +41,16 @@ def _money_str(value):
 
 
 
+def _cancellation_due(user):
+    from .cancellation_penalty import due_for_rider
+
+    try:
+        return due_for_rider(user)
+    except Exception:  # noqa: BLE001 - a quote never fails over the due line
+        logger.exception('cancellation_due lookup failed')
+        return None
+
+
 def _rider_reason(fare):
     """"Higher demand near {area}" when the quote's demand multiplier is above 1, else None.
 
@@ -222,6 +232,9 @@ def estimate_fare(request):
         'pickup_eta_min': eta_min,
         'drivers_nearby': drivers_nearby,
         'seats': seats,
+        # Additive (MVAG 2025): a cancellation fee from an earlier trip that this booking will
+        # carry, shown BEFORE booking; None when there is none (or for a guest).
+        'cancellation_due': _cancellation_due(request.user),
         # One plain line for the rider when demand pricing is above 1x, or None.
         # Copy only: the multiplier itself is untouched (2026-11-06).
         'rider_reason': rider_reason,
@@ -244,6 +257,10 @@ def estimate_fare(request):
             'distance_fare': str(fare['distance_fare']),
             'time_fare': str(fare['time_fare']),
             'surge_multiplier': str(fare['surge_multiplier']),
+            # Additive (MVAG 2025 disclosure): "Higher demand" / "Lower demand" or None, and
+            # the band the multiplier was held inside.
+            'demand_label': fare.get('demand_label'),
+            'fare_limits': fare.get('fare_limits'),
             'min_fare_applied': fare['min_fare_applied'],
             # `tax_mode` tells the client what `tax_amount` means: `inclusive`
             # (India) is already inside `estimated_fare`, `additive` (US) was
@@ -1165,6 +1182,9 @@ def driver_cancel_trip(request, trip_id):
 
             driver = trip.driver_id
             penalty = apply_cancellation_penalty(driver, trip, reason, note)
+            # MVAG 2025: an unjustified cancel also costs the driver 10% of the fare (capped).
+            from .cancellation_penalty import assess as _assess_cancel
+            _assess_cancel(trip)
 
         # Free the driver from the Redis active-trip map so they can be
         # offered new requests once any lockout expires.
@@ -1307,6 +1327,9 @@ def rider_cancel_trip(request, trip_id):
             trip.save(update_fields=[
                 'status_id', 'cancelled_at', 'cancelled_by', 'cancellation_reason',
             ])
+            # MVAG 2025: an unjustified cancel is due on the rider's next trip (never charged now).
+            from .cancellation_penalty import assess as _assess_cancel
+            cancel_penalty = _assess_cancel(trip)
 
             # 4. Process refund if applicable
             refund_result = process_refund_on_cancel(trip)
@@ -1401,6 +1424,10 @@ def rider_cancel_trip(request, trip_id):
                 'amount': str(refund_result['amount']),
                 'status': 'initiated',
             }
+        # Additive (MVAG 2025): the cancellation fee now due on the next ride, or None.
+        response_data['cancellation_fee'] = (
+            {'amount': str(cancel_penalty.amount), 'currency': cancel_penalty.currency,
+             'note': 'Added to your next ride.'} if cancel_penalty is not None else None)
 
         return success_response(response_data, status.HTTP_200_OK)
 

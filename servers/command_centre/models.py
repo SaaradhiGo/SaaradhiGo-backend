@@ -108,7 +108,11 @@ FINANCE_PAID_AFTER_SETTLED = 'finance.paid_after_settled'
 #: A trip's promo settlement failed after the trip settled (AUDIT 27.78): on a cash trip the
 #: driver has not been paid the discount they did not collect. Critical, one per trip, Finance.
 FINANCE_PROMO_SETTLEMENT_FAILED = 'finance.promo_settlement_failed'
-FINANCE_ALERT_KINDS = frozenset({SETTLEMENT_NO_COMMISSION_RULE, FINANCE_PLATFORM_FUNDED_END,
+#: An ACTIVE commission rule is above the cap that now governs it (MVAG 2025, 2026-11-09). The rule
+#: is never changed silently: critical, one per rule, Finance reviews it.
+COMMISSION_ABOVE_CAP = 'pricing.commission_above_cap'
+FINANCE_ALERT_KINDS = frozenset({SETTLEMENT_NO_COMMISSION_RULE, COMMISSION_ABOVE_CAP,
+                                 FINANCE_PLATFORM_FUNDED_END,
                                  PROMOTION_BUDGET_OVERSHOOT, FINANCE_PAYOUT_REVERSED,
                                  FINANCE_PAYOUT_CONFLICT, FINANCE_PAID_AFTER_SETTLED,
                                  FINANCE_PROMO_SETTLEMENT_FAILED})

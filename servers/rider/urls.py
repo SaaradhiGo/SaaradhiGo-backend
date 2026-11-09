@@ -5,6 +5,7 @@ from .views import (
     get_wallet_balance, delete_favorite_location, get_wallet_transactions, wallet_payment,
     get_notification_preferences, update_notification_preferences,
 )
+from .places import place_detail, places
 from .admin_riders import (
     admin_block_rider, admin_bulk_riders, admin_flag_rider, admin_list_riders,
     admin_note_rider, admin_rider_detail, admin_sign_out_rider, admin_unblock_rider,
@@ -15,6 +16,9 @@ urlpatterns=[
     path('locations/',save_favorite_locations),
     path('locations/all/',get_favorite_locations),
     path('locations/<int:location_id>/delete/',delete_favorite_location),
+    # Saved places with labels and limits (2026-11-09); locations/ stays for older apps.
+    path('places/', places),
+    path('places/<int:place_id>/', place_detail),
     path('nearby/',get_nearby_drivers),
     # Notifications
     path('notifications/', list_notifications),

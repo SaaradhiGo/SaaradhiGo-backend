@@ -790,6 +790,8 @@ class PayoutScopeOverride(models.Model):
     #: The GeoNode code of the state or city: 'IN-TG', 'IN-TG-HYD'.
     scope_code = models.CharField(max_length=32)
     scope_kind = models.CharField(max_length=8, choices=[('state', 'State'), ('city', 'City')])
+    #: The country's currency, filled on save: the minimum and the fees are amounts in it.
+    currency = models.CharField(max_length=3, blank=True)
 
     minimum_withdrawal_minor = models.BigIntegerField(null=True, blank=True)
     payout_schedule = models.CharField(max_length=12, blank=True, default='',
@@ -825,6 +827,13 @@ class PayoutScopeOverride(models.Model):
             models.UniqueConstraint(fields=['scope_code', 'version'],
                                     name='payout_override_version_unique'),
         ]
+
+    def save(self, *args, **kwargs):
+        from base.countries import get_country
+
+        self.country = str(self.country).upper()
+        self.currency = get_country(self.country).currency
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f'PayoutScopeOverride {self.scope_code} v{self.version}'

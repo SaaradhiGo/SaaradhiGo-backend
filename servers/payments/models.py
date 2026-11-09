@@ -449,16 +449,35 @@ class PayoutCountryConfig(models.Model):
     # --- schedule (Part B, owner ruling AUDIT 27.43) -------------------------
     ON_REQUEST = 'on_request'
     WEEKLY = 'weekly'
-    SCHEDULE_CHOICES = [(ON_REQUEST, 'On request'), (WEEKLY, 'Weekly')]
+    EVERY_N_DAYS = 'every_n_days'
+    SCHEDULE_CHOICES = [(ON_REQUEST, 'On request'), (WEEKLY, 'Weekly'),
+                        (EVERY_N_DAYS, 'Every N days')]
     #: `on_request`: a driver asks. `weekly`: a scheduled run creates the
     #: withdrawals on `payout_weekday` (Monday = 0) in the country's own zone.
+    #: `every_n_days` (owner ruling 2026-11-09): every `payout_interval_days` (1-14) counted
+    #: from `payout_anchor_date`. Both scheduled kinds run from `payout_time_local` (local
+    #: time; NULL = from midnight).
     payout_schedule = models.CharField(
         max_length=12, choices=SCHEDULE_CHOICES, default=ON_REQUEST)
     payout_weekday = models.PositiveSmallIntegerField(null=True, blank=True)
-    # Instant cash-out is NOT built. These two fields only keep the model open
-    # for it; nothing reads them.
+    payout_interval_days = models.PositiveSmallIntegerField(null=True, blank=True)
+    payout_anchor_date = models.DateField(null=True, blank=True)
+    payout_time_local = models.TimeField(null=True, blank=True)
+    # Instant cash-out (owner ruling 2026-11-09): optional per market. The driver pays ONLY the
+    # provider's own fee, passed through exactly; `fee_percent` (SaaradhiGo's) stays 0. The fee
+    # rule: `instant_fee_percent` of the amount plus `instant_cashout_fee_flat_minor`, held
+    # between `instant_fee_min_minor` and `instant_fee_max_minor` (`payout_config.instant_fee`).
     instant_cashout_enabled = models.BooleanField(default=False)
     instant_cashout_fee_flat_minor = models.BigIntegerField(null=True, blank=True)
+    instant_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, null=True,
+                                              blank=True)
+    instant_fee_min_minor = models.BigIntegerField(null=True, blank=True)
+    instant_fee_max_minor = models.BigIntegerField(null=True, blank=True)
+    #: Who charges it, shown as "Provider fee (charged by {provider})".
+    instant_fee_provider = models.CharField(max_length=32, blank=True, default='')
+    #: A provider that publishes its fee by amount band (RazorpayX: per payout, by band): a list
+    #: of [up_to_minor or null, fee_minor], ascending. When set it is the fixed part of the fee.
+    instant_fee_tiers = models.JSONField(null=True, blank=True)
 
     # --- fraud money actions (owner rulings 2026-10-31, AUDIT 27.56) ---------
     #: Days an unpaid reward linked to an undecided fraud flag stays "pending review".
@@ -534,8 +553,18 @@ class PayoutCountryConfig(models.Model):
             'reward_hold_days': self.reward_hold_days,
             'recovery_max_percent': self.recovery_max_percent,
             'payout_hold_max_days': self.payout_hold_max_days,
+            'payout_interval_days': self.payout_interval_days,
+            'payout_anchor_date': self.payout_anchor_date,
+            'payout_time_local': (self.payout_time_local.strftime('%H:%M')
+                                  if self.payout_time_local else None),
             'instant_cashout_enabled': self.instant_cashout_enabled,
             'instant_cashout_fee_flat_minor': self.instant_cashout_fee_flat_minor,
+            'instant_fee_percent': (str(self.instant_fee_percent)
+                                    if self.instant_fee_percent is not None else None),
+            'instant_fee_min_minor': self.instant_fee_min_minor,
+            'instant_fee_max_minor': self.instant_fee_max_minor,
+            'instant_fee_provider': self.instant_fee_provider,
+            'instant_fee_tiers': self.instant_fee_tiers,
             'is_active': self.is_active,
             'version': self.version,
             'valid_from': self.valid_from,
@@ -686,7 +715,12 @@ class PayoutRun(models.Model):
     """
 
     country = models.CharField(max_length=2, db_index=True)
+    #: The schedule's scope (2026-11-09): '' for the country's own schedule, else the code of
+    #: the state or city whose override sets the schedule ('IN-TG', 'IN-TG-HYD').
+    scope_key = models.CharField(max_length=32, blank=True, default='')
     currency = models.CharField(max_length=3)
+    #: The start of the CYCLE (the name predates cycles): a weekly run's Monday, an every-N-days
+    #: run's cycle date.
     week_start = models.DateField()
     created_at = models.DateTimeField(auto_now_add=True)
     withdrawal_count = models.PositiveIntegerField(default=0)
@@ -704,8 +738,8 @@ class PayoutRun(models.Model):
     class Meta:
         ordering = ['-week_start', 'country']
         constraints = [
-            models.UniqueConstraint(fields=['country', 'week_start'],
-                                    name='payout_run_one_per_country_week'),
+            models.UniqueConstraint(fields=['country', 'scope_key', 'week_start'],
+                                    name='payout_run_one_per_scope_cycle'),
         ]
 
     def __str__(self):
@@ -740,3 +774,92 @@ class PlatformExpense(models.Model):
 
     def __str__(self):
         return f'{self.kind} {self.amount_minor} {self.currency} trip={self.trip_id}'
+
+
+class PayoutScopeOverride(models.Model):
+    """A state's or a city's payout settings over its country's (owner ruling 2026-11-09).
+
+    Same fields as `PayoutCountryConfig`, every one optional: NULL (or '' for text) means "not set
+    here", and the resolver (`payout_config.effective_config`) takes the next level up, city ->
+    state -> country. Versioned like the country row (a change is a new row, the old one closes)
+    and changed through the same `finance.payout_config_change` maker-checker request.
+    `fee_percent` (SaaradhiGo's own fee) is deliberately not overridable: it is 0 everywhere.
+    """
+
+    country = models.CharField(max_length=2, db_index=True)
+    #: The GeoNode code of the state or city: 'IN-TG', 'IN-TG-HYD'.
+    scope_code = models.CharField(max_length=32)
+    scope_kind = models.CharField(max_length=8, choices=[('state', 'State'), ('city', 'City')])
+    #: The country's currency, filled on save: the minimum and the fees are amounts in it.
+    currency = models.CharField(max_length=3, blank=True)
+
+    minimum_withdrawal_minor = models.BigIntegerField(null=True, blank=True)
+    payout_schedule = models.CharField(max_length=12, blank=True, default='',
+                                       choices=PayoutCountryConfig.SCHEDULE_CHOICES)
+    payout_weekday = models.PositiveSmallIntegerField(null=True, blank=True)
+    payout_interval_days = models.PositiveSmallIntegerField(null=True, blank=True)
+    payout_anchor_date = models.DateField(null=True, blank=True)
+    payout_time_local = models.TimeField(null=True, blank=True)
+    instant_cashout_enabled = models.BooleanField(null=True, blank=True)
+    instant_cashout_fee_flat_minor = models.BigIntegerField(null=True, blank=True)
+    instant_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, null=True,
+                                              blank=True)
+    instant_fee_min_minor = models.BigIntegerField(null=True, blank=True)
+    instant_fee_max_minor = models.BigIntegerField(null=True, blank=True)
+    instant_fee_provider = models.CharField(max_length=32, blank=True, default='')
+    instant_fee_tiers = models.JSONField(null=True, blank=True)
+
+    is_active = models.BooleanField(default=True)
+    version = models.PositiveIntegerField(default=1)
+    valid_from = models.DateTimeField(default=timezone.now, editable=False)
+    valid_to = models.DateTimeField(null=True, blank=True)
+    reason = models.TextField(blank=True, default='')
+    created_by_id = models.BigIntegerField(null=True, blank=True)
+    created_by_label = models.CharField(max_length=255, blank=True, default='')
+    created_by_email = models.CharField(max_length=254, blank=True, default='')
+    created_by_role = models.CharField(max_length=64, blank=True, default='')
+
+    class Meta:
+        ordering = ['country', 'scope_code', '-version']
+        constraints = [
+            models.UniqueConstraint(fields=['scope_code'], condition=models.Q(is_active=True),
+                                    name='payout_override_one_active_per_scope'),
+            models.UniqueConstraint(fields=['scope_code', 'version'],
+                                    name='payout_override_version_unique'),
+        ]
+
+    def save(self, *args, **kwargs):
+        from base.countries import get_country
+
+        self.country = str(self.country).upper()
+        self.currency = get_country(self.country).currency
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'PayoutScopeOverride {self.scope_code} v{self.version}'
+
+    def as_dict(self):
+        out = {'id': self.id, 'country': self.country, 'scope_code': self.scope_code,
+               'scope_kind': self.scope_kind, 'version': self.version,
+               'is_active': self.is_active, 'valid_from': self.valid_from,
+               'valid_to': self.valid_to, 'reason': self.reason,
+               'created_by': {'id': self.created_by_id, 'label': self.created_by_label,
+                              'role': self.created_by_role}}
+        for name in OVERRIDE_FIELDS:
+            value = getattr(self, name)
+            if name == 'payout_time_local' and value is not None:
+                value = value.strftime('%H:%M')
+            elif name == 'instant_fee_percent' and value is not None:
+                value = str(value)
+            out[name] = value
+        return out
+
+
+#: The fields a state or city may override (everything but SaaradhiGo's own fee and the
+#: country-wide fraud and reconciliation settings).
+OVERRIDE_FIELDS = (
+    'minimum_withdrawal_minor', 'payout_schedule', 'payout_weekday', 'payout_interval_days',
+    'payout_anchor_date', 'payout_time_local', 'instant_cashout_enabled',
+    'instant_cashout_fee_flat_minor', 'instant_fee_percent', 'instant_fee_min_minor',
+    'instant_fee_max_minor', 'instant_fee_provider', 'instant_fee_tiers',
+)

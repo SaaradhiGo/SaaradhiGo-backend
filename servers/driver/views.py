@@ -419,6 +419,17 @@ def driver_withdrawal_balance(request):
         # app never has to choose a symbol.
         'currency': config.currency if config else None,
     }
+    # Owner ruling 2026-11-09: paid automatically on a cycle; Withdraw now only where the
+    # driver's city has instant cash-out on, at the provider's own fee.
+    from base.money import to_minor as _to_minor
+    from servers.payments.payout_scope import next_payout
+    response_data['next_payout'] = (
+        next_payout(driver, config, _to_minor(available, config.currency)) if config else None)
+    response_data['instant'] = ({
+        'available': bool(config.instant_cashout_enabled),
+        'provider': config.instant_fee_provider or None,
+        'saaradhigo_fee': '0',
+    } if config else {'available': False, 'provider': None, 'saaradhigo_fee': '0'})
     # Payout details are checked before the country's config: a driver can fix them.
     from servers.payments.payout_destination import MISSING_MESSAGE, has_payout_destination
     response_data['payout_details_on_file'] = has_payout_destination(driver)
@@ -463,6 +474,14 @@ def driver_withdrawal_request(request):
             issue='No payout configuration exists for your country',
             status=status.HTTP_400_BAD_REQUEST
         )
+    # Withdraw now (owner ruling 2026-11-09): only where instant is on for the driver's city;
+    # the fee is the provider's own (`instant_fee`), SaaradhiGo's stays 0.
+    instant = bool(request.data.get('instant'))
+    if instant and not payout_config.instant_cashout_enabled:
+        return error_response(
+            code='INSTANT_NOT_AVAILABLE', message='Withdraw now is not available in your city.',
+            field='instant', issue='Instant cash-out is off here',
+            status=status.HTTP_400_BAD_REQUEST)
 
     # A full payout hold (a suspended driver, serious fraud, a second admin, a maximum length):
     # nothing is paid out meanwhile. Neutral wording: nothing about why.
@@ -488,8 +507,9 @@ def driver_withdrawal_request(request):
             issue='No UPI ID or bank account on file',
             status=status.HTTP_400_BAD_REQUEST)
 
-    # Validate block period
-    if is_withdrawal_blocked(driver):
+    # Validate block period (an instant withdrawal is the driver's own early cash-out: the
+    # provider fee is its price, so the 7-day block does not apply to it).
+    if not instant and is_withdrawal_blocked(driver):
         from .services import get_withdrawal_block_remaining, format_block_remaining
         remaining = get_withdrawal_block_remaining(driver)
         formatted = format_block_remaining(remaining)
@@ -558,6 +578,7 @@ def driver_withdrawal_request(request):
             driver=driver,
             amount=amount,
             status='pending',
+            origin='instant' if instant else 'driver',
         )
         # A recovery Finance approved comes off this payout: at most `recovery_max_percent` of it,
         # never below the country's minimum; the rest carries to the next payout.
@@ -568,7 +589,9 @@ def driver_withdrawal_request(request):
         if deduct_minor:
             withdrawal.amount_minor = gross_minor - deduct_minor
             withdrawal.save(update_fields=['amount_minor'])
-        fee_minor = withdrawal_fee(payout_config, withdrawal.amount_minor)
+        from servers.payments.payout_scope import instant_fee
+        fee_minor = (instant_fee(payout_config, withdrawal.amount_minor) if instant
+                     else withdrawal_fee(payout_config, withdrawal.amount_minor))
         if fee_minor >= withdrawal.amount_minor:
             transaction.set_rollback(True)
             return error_response(
@@ -1088,3 +1111,33 @@ def driver_document_view(request, ticket):
     response['Cache-Control'] = 'no-store'
     response['Referrer-Policy'] = 'no-referrer'
     return response
+
+
+@api_view(['GET'])
+@permission_classes([IsDriver])
+def driver_instant_quote(request):
+    """GET /api/driver/withdrawals/instant/quote/?amount=  The Withdraw now confirmation:
+    amount, the provider fee, "You receive", the bank (last 4) and the arrival time."""
+    from decimal import Decimal, InvalidOperation
+
+    from base.money import to_minor
+    from servers.payments.payout_config import config_for_driver
+    from servers.payments.payout_scope import instant_quote
+
+    driver = request.user.driver
+    _country, config = config_for_driver(driver)
+    if config is None or not config.instant_cashout_enabled:
+        return error_response(
+            code='INSTANT_NOT_AVAILABLE', message='Withdraw now is not available in your city.',
+            field='instant', issue='Instant cash-out is off here',
+            status=status.HTTP_400_BAD_REQUEST)
+    try:
+        amount = Decimal(str(request.query_params.get('amount')))
+        if amount <= 0:
+            raise InvalidOperation
+    except (InvalidOperation, ValueError, TypeError):
+        return error_response(code='VALIDATION_ERROR', message='Enter an amount.',
+                              field='amount', issue='amount must be a positive number',
+                              status=status.HTTP_400_BAD_REQUEST)
+    return success_response(instant_quote(driver, config, to_minor(amount, config.currency)),
+                            status.HTTP_200_OK)

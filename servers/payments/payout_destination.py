@@ -21,3 +21,17 @@ def has_payout_destination(driver):
     if (getattr(driver, 'upi_id', None) or '').strip():
         return True
     return has_payout_handle(driver)
+
+
+def destination_label(driver):
+    """Where a payout goes, masked for the confirmation: "HDFC Bank ••1234" or "UPI ••kaxis".
+    None when nothing is on file. Never the full account number or UPI ID."""
+    from servers.driver.models import DriverBankAccount
+
+    bank = DriverBankAccount.objects.filter(driver=driver).order_by('-id').first()
+    if bank is not None and bank.account_number:
+        return f'{(bank.bank_name or "Bank").strip()} \u2022\u2022{bank.account_number[-4:]}'
+    upi = (getattr(driver, 'upi_id', None) or '').strip()
+    if upi:
+        return f'UPI \u2022\u2022{upi[-5:]}'
+    return None

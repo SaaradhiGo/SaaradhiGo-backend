@@ -48,7 +48,7 @@ from .finance_executors import (
 from .models import PayoutCountryConfig
 from .payout_actions import ActionError
 from .payout_config import driver_payout_country
-from .payout_config_write import values_of
+from .payout_config_write import CYCLE_DEFAULTS, values_of
 from .scope import fetch_one
 
 READ = 'finance.read'
@@ -440,6 +440,7 @@ def _config_values(data, current):
         'reward_hold_days': current.reward_hold_days,
         'recovery_max_percent': current.recovery_max_percent,
         'payout_hold_max_days': current.payout_hold_max_days,
+        **{k: getattr(current, k) for k in CYCLE_DEFAULTS},
     }
     for key, (low, high) in {'reward_hold_days': (1, 90), 'recovery_max_percent': (1, 100),
                              'payout_hold_max_days': (1, 90)}.items():
@@ -474,10 +475,12 @@ def _config_values(data, current):
                                'stuck_payout_hours must be between 1 and 2160, or null.',
                                'stuck_payout_hours')
         values['stuck_payout_hours'] = hours
+    _cycle_and_instant(data, values)
     if 'payout_schedule' in data:
         schedule = data['payout_schedule']
-        if schedule not in (PayoutCountryConfig.ON_REQUEST, PayoutCountryConfig.WEEKLY):
-            raise BadInput('INVALID_SCHEDULE', 'payout_schedule must be on_request or weekly.',
+        if schedule not in {k for k, _ in PayoutCountryConfig.SCHEDULE_CHOICES}:
+            raise BadInput('INVALID_SCHEDULE',
+                           'payout_schedule must be on_request, weekly or every_n_days.',
                            'payout_schedule')
         values['payout_schedule'] = schedule
     if 'payout_weekday' in data:
@@ -492,6 +495,157 @@ def _config_values(data, current):
         raise BadInput('WEEKDAY_REQUIRED', 'A weekly schedule needs a weekday.', 'payout_weekday')
     if values['payout_schedule'] == PayoutCountryConfig.ON_REQUEST:
         values['payout_weekday'] = None
+    _check_cycle(values)
+    return values
+
+
+def _check_cycle(values):
+    if values.get('payout_schedule') == PayoutCountryConfig.EVERY_N_DAYS and (
+            values.get('payout_interval_days') is None or values.get('payout_anchor_date') is None):
+        raise BadInput('CYCLE_REQUIRED',
+                       'Every N days needs payout_interval_days and payout_anchor_date.',
+                       'payout_interval_days')
+    low, high = values.get('instant_fee_min_minor'), values.get('instant_fee_max_minor')
+    if low is not None and high is not None and low > high:
+        raise BadInput('INVALID_FEE_RANGE', 'The minimum fee is above the maximum.',
+                       'instant_fee_min_minor')
+
+
+def _cycle_and_instant(data, values):
+    """The cycle and instant-fee fields of a payout settings request (2026-11-09). A key that is
+    sent with null clears the value; a key that is not sent keeps it."""
+    from datetime import datetime as _dt
+
+    if 'payout_interval_days' in data:
+        n = data['payout_interval_days']
+        if n is not None:
+            n = _minor_amount(n, 'payout_interval_days')
+            if not 1 <= n <= 14:
+                raise BadInput('INVALID_INTERVAL', 'payout_interval_days is 1 to 14.',
+                               'payout_interval_days')
+        values['payout_interval_days'] = n
+    if 'payout_anchor_date' in data:
+        raw = data['payout_anchor_date']
+        try:
+            values['payout_anchor_date'] = (_dt.strptime(raw, '%Y-%m-%d').date()
+                                            if raw else None)
+        except (TypeError, ValueError):
+            raise BadInput('INVALID_DATE', 'payout_anchor_date must be YYYY-MM-DD.',
+                           'payout_anchor_date')
+    if 'payout_time_local' in data:
+        raw = data['payout_time_local']
+        try:
+            values['payout_time_local'] = _dt.strptime(raw, '%H:%M').time() if raw else None
+        except (TypeError, ValueError):
+            raise BadInput('INVALID_TIME', 'payout_time_local must be HH:MM.',
+                           'payout_time_local')
+    if 'instant_cashout_enabled' in data:
+        flag = data['instant_cashout_enabled']
+        if flag is not None and not isinstance(flag, bool):
+            raise BadInput('INVALID_VALUE', 'instant_cashout_enabled must be true or false.',
+                           'instant_cashout_enabled')
+        values['instant_cashout_enabled'] = flag
+    for key in ('instant_cashout_fee_flat_minor', 'instant_fee_min_minor',
+                'instant_fee_max_minor'):
+        if key in data:
+            amount = data[key]
+            if amount is not None:
+                amount = _minor_amount(amount, key)
+                if amount < 0:
+                    raise BadInput('INVALID_AMOUNT', f'{key} cannot be negative.', key)
+            values[key] = amount
+    if 'instant_fee_percent' in data:
+        raw = data['instant_fee_percent']
+        pct = None
+        if raw not in (None, ''):
+            try:
+                pct = Decimal(str(raw))
+            except (InvalidOperation, ValueError):
+                raise BadInput('INVALID_FEE', 'instant_fee_percent must be a number.',
+                               'instant_fee_percent')
+            if pct < 0 or pct > 100 or pct != pct.quantize(Decimal('0.01')):
+                raise BadInput('INVALID_FEE', 'instant_fee_percent is 0 to 100, two decimals.',
+                               'instant_fee_percent')
+        values['instant_fee_percent'] = pct
+    if 'instant_fee_provider' in data:
+        values['instant_fee_provider'] = str(data['instant_fee_provider'] or '')[:32]
+    if 'instant_fee_tiers' in data:
+        values['instant_fee_tiers'] = _tiers(data['instant_fee_tiers'])
+    return values
+
+
+def _tiers(raw):
+    """`[[up_to_minor or null, fee_minor], ...]`, ascending, the open band last; or None."""
+    if raw in (None, []):
+        return None
+    bad = BadInput('INVALID_TIERS', 'instant_fee_tiers is a list of [up_to_minor or null, '
+                   'fee_minor], ascending, the last with null.', 'instant_fee_tiers')
+    if not isinstance(raw, list):
+        raise bad
+    out, last = [], -1
+    for i, band in enumerate(raw):
+        if not isinstance(band, (list, tuple)) or len(band) != 2:
+            raise bad
+        up_to, fee = band
+        if (not isinstance(fee, int) or fee < 0
+                or (up_to is None and i != len(raw) - 1)
+                or (up_to is not None and (not isinstance(up_to, int) or up_to <= last))):
+            raise bad
+        last = up_to if up_to is not None else last
+        out.append([up_to, fee])
+    return out
+
+
+def _jsonable_values(values):
+    """A request payload carries JSON: decimals as strings, dates ISO, times HH:MM."""
+    from datetime import date as _date, time as _time
+
+    out = {}
+    for k, v in values.items():
+        if isinstance(v, Decimal):
+            v = str(v)
+        elif isinstance(v, _time):
+            v = v.strftime('%H:%M')
+        elif isinstance(v, _date):
+            v = v.isoformat()
+        out[k] = v
+    return out
+
+
+def _override_values(data, current):
+    """A state's or city's proposed override: every field optional (null = not set here)."""
+    from .models import OVERRIDE_FIELDS
+
+    values = {k: (getattr(current, k) if current else None) for k in OVERRIDE_FIELDS}
+    values['payout_schedule'] = values['payout_schedule'] or ''
+    values['instant_fee_provider'] = values['instant_fee_provider'] or ''
+    _cycle_and_instant(data, values)
+    if 'minimum_withdrawal_minor' in data:
+        minimum = data['minimum_withdrawal_minor']
+        if minimum is not None:
+            minimum = _minor_amount(minimum, 'minimum_withdrawal_minor')
+            if minimum < 0:
+                raise BadInput('INVALID_MINIMUM', 'The minimum cannot be negative.',
+                               'minimum_withdrawal_minor')
+        values['minimum_withdrawal_minor'] = minimum
+    if 'payout_schedule' in data:
+        schedule = data['payout_schedule'] or ''
+        if schedule and schedule not in {k for k, _ in PayoutCountryConfig.SCHEDULE_CHOICES}:
+            raise BadInput('INVALID_SCHEDULE',
+                           'payout_schedule must be on_request, weekly or every_n_days.',
+                           'payout_schedule')
+        values['payout_schedule'] = schedule
+    if 'payout_weekday' in data:
+        day = data['payout_weekday']
+        if day is not None:
+            day = _minor_amount(day, 'payout_weekday')
+            if not 0 <= day <= 6:
+                raise BadInput('INVALID_WEEKDAY', 'payout_weekday is 0 (Monday) to 6 (Sunday).',
+                               'payout_weekday')
+        values['payout_weekday'] = day
+    if values['payout_schedule'] == PayoutCountryConfig.WEEKLY and values['payout_weekday'] is None:
+        raise BadInput('WEEKDAY_REQUIRED', 'A weekly schedule needs a weekday.', 'payout_weekday')
+    _check_cycle(values)
     return values
 
 
@@ -516,6 +670,9 @@ def payout_config_propose(request, country):
         if code not in visible:
             raise ActionError('NOT_FOUND', 'Country not found', field='country',
                               http=status.HTTP_404_NOT_FOUND)
+        scope = str(request.data.get('scope') or '').upper()
+        if scope:
+            return _propose_override(request, code, scope)
         current = PayoutCountryConfig.objects.filter(country=code, is_active=True).first()
         if current is None:
             raise ActionError(
@@ -534,11 +691,39 @@ def payout_config_propose(request, country):
             FINANCE_PAYOUT_CONFIG, actor=request.user, country=code,
             scope_node=node, target_type=PAYOUT_CONFIG_TARGET, target_id=code,
             payload={'country': code, 'base_version': current.version,
-                     'values': {k: (str(v) if isinstance(v, Decimal) else v)
-                                for k, v in values.items()},
-                     'before': {k: (str(v) if isinstance(v, Decimal) else v)
-                                for k, v in values_of(current).items()}},
+                     'values': _jsonable_values(values),
+                     'before': _jsonable_values(values_of(current))},
             idempotency_key=f'payout_config:{code}:{key}', reason=reason,
             http_request=request)
         return _approval_answer(outcome, {'country': code})
     return _guard(core)(request, country)
+
+
+def _propose_override(request, code, scope):
+    """A state's or a city's payout settings (2026-11-09): same request, same checker."""
+    from servers.admin_access.models import GeoNode
+
+    from .models import PayoutScopeOverride
+
+    node = GeoNode.objects.filter(code=scope, kind__in=('state', 'city')).first()
+    if node is None or node.country is None or node.country.code != code:
+        raise ActionError('NOT_FOUND', 'No such state or city in this country.', field='scope',
+                          http=status.HTTP_404_NOT_FOUND)
+    if PayoutCountryConfig.objects.filter(country=code, is_active=True).first() is None:
+        raise ActionError('NOT_CONFIGURED', 'Set the country first.', field='country',
+                          http=status.HTTP_409_CONFLICT)
+    reason = _text(request.data, 'reason', required=True)
+    key = _idempotency_key(request)
+    current = PayoutScopeOverride.objects.filter(scope_code=scope, is_active=True).first()
+    values = _override_values(request.data, current)
+    before = _override_values({}, current)
+    if current is not None and values == before:
+        raise BadInput('NO_CHANGE', 'Nothing differs from the current settings.', 'reason')
+    outcome = approvals.require_approval_or_execute(
+        FINANCE_PAYOUT_CONFIG, actor=request.user, country=code, scope_node=node,
+        target_type=PAYOUT_CONFIG_TARGET, target_id=scope,
+        payload={'country': code, 'scope': scope, 'scope_kind': node.kind,
+                 'base_version': current.version if current else 0,
+                 'values': _jsonable_values(values), 'before': _jsonable_values(before)},
+        idempotency_key=f'payout_config:{scope}:{key}', reason=reason, http_request=request)
+    return _approval_answer(outcome, {'country': code, 'scope': scope})

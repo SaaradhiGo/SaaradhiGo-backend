@@ -24,6 +24,9 @@ BASE_FARE_SOURCE_CHOICES = [
 
 class MarketRegulation(models.Model):
     country = models.CharField(max_length=2)
+    #: The country's currency (`base.countries`), filled on save: `cancel_penalty_cap_minor` is
+    #: an amount in it.
+    currency = models.CharField(max_length=3, blank=True, default='')
     #: Blank for the country row; else the ISO 3166-2 sub-division ("TG").
     state_code = models.CharField(max_length=8, blank=True, default='')
     base_fare_source = models.CharField(max_length=16, blank=True, default='',
@@ -40,12 +43,12 @@ class MarketRegulation(models.Model):
     cancel_penalty_cap_minor = models.BigIntegerField(null=True, blank=True)
     cancel_free_seconds = models.PositiveIntegerField(null=True, blank=True)
     # Driver records gate (MVAG 2025): to go online a driver needs health insurance of at least
-    # `health_insurance_min_minor`, term insurance of at least `term_insurance_min_minor` (minor
-    # units of the country's currency) and `induction_min_hours` of training, all current. Off
+    # `health_insurance_min_sum`, term insurance of at least `term_insurance_min_sum` (WHOLE
+    # units of the country's currency: a sum insured has no paise) and `induction_min_hours` of training, all current. Off
     # until operations is ready (`driver_records_gate` NULL/False); the owner turns it on.
     driver_records_gate = models.BooleanField(null=True, blank=True)
-    health_insurance_min_minor = models.BigIntegerField(null=True, blank=True)
-    term_insurance_min_minor = models.BigIntegerField(null=True, blank=True)
+    health_insurance_min_sum = models.BigIntegerField(null=True, blank=True)
+    term_insurance_min_sum = models.BigIntegerField(null=True, blank=True)
     induction_min_hours = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
     #: Why the row holds what it holds, e.g. "state notification not confirmed".
     note = models.CharField(max_length=255, blank=True, default='')
@@ -69,6 +72,12 @@ class MarketRegulation(models.Model):
                               & models.Q(min_dynamic_multiplier__lte=1))),
                 name='market_regulation_floor_0_1'),
         ]
+
+    def save(self, *args, **kwargs):
+        from base.countries import get_country
+
+        self.currency = get_country(self.country).currency
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         scope = f'{self.country}-{self.state_code}' if self.state_code else self.country

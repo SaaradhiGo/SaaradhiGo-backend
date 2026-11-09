@@ -192,7 +192,12 @@ def attach_to_trip(trip):
     """The new trip carries the rider's open dues in its currency. Returns the amount."""
     from base.money import currency_for_trip
 
-    rows = list(_open_dues(trip.user_id, currency_for_trip(trip)).select_for_update())
+    from .models import CancellationPenalty
+
+    # FOR UPDATE cannot reach across the nullable join in `_open_dues` (PostgreSQL refuses it):
+    # find the ids, then lock those rows by primary key.
+    ids = list(_open_dues(trip.user_id, currency_for_trip(trip)).values_list('id', flat=True))
+    rows = list(CancellationPenalty.objects.select_for_update().filter(pk__in=ids))
     for row in rows:
         row.collected_on_trip = trip
         row.save(update_fields=['collected_on_trip'])

@@ -1326,7 +1326,7 @@ def admin_bulk_drivers(request):
 RECORD_TEXT = ('health_insurance_policy_number', 'health_insurance_insurer',
                'term_insurance_policy_number', 'term_insurance_insurer')
 RECORD_DATES = ('health_insurance_expiry', 'term_insurance_expiry', 'induction_training_date')
-RECORD_MINOR = ('health_insurance_sum_insured_minor', 'term_insurance_sum_insured_minor')
+RECORD_MINOR = ('health_insurance_sum_insured', 'term_insurance_sum_insured')
 DEVICE_FIELDS = ('ais140_device_id', 'ais140_fitted', 'panic_button_device_id',
                  'panic_button_fitted')
 

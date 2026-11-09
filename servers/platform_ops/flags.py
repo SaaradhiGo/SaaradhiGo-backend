@@ -8,8 +8,8 @@ RESOLUTION: city override, then country override, then the default.
 `flag_enabled` never raises for an unknown key: it answers the `default` argument (False). A flag
 that does not exist is off, so code can ship a read before the flag row is created.
 
-NO FLAG IS SEEDED. Nothing in the code base reads a flag yet, and a flag with no reader is a
-switch connected to nothing. The mechanism (this module, the console tab, the app-config
+A FLAG IS SEEDED ONLY WITH ITS READER. A flag with no reader is a switch connected to nothing.
+The first is `cancellation_penalty` (MVAG 2025, read by `ride.cancellation_penalty`). The mechanism (this module, the console tab, the app-config
 endpoint) is complete and tested with a test-only flag; the first real flag is created by the
 change that adds its reader.
 

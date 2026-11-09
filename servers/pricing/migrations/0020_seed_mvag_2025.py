@@ -21,7 +21,7 @@ def seed(apps, schema_editor):
 
     MarketRegulation.objects.get_or_create(
         country='IN', state_code='',
-        defaults={'base_fare_source': 'state_notified',
+        defaults={'currency': 'INR', 'base_fare_source': 'state_notified',
                   'max_dynamic_multiplier': Decimal('2.00'),
                   'min_dynamic_multiplier': Decimal('0.50'),
                   # 10% of the fare, at most 100.00 INR; free for 5 minutes after acceptance
@@ -30,15 +30,15 @@ def seed(apps, schema_editor):
                   'cancel_free_seconds': 300,
                   # Health 5,00,000 INR, term 10,00,000 INR, 40 hours induction. The gate is OFF
                   # until operations is ready; the owner turns it on in the console.
-                  'driver_records_gate': False, 'health_insurance_min_minor': 50_000_000,
-                  'term_insurance_min_minor': 100_000_000, 'induction_min_hours': Decimal('40.0'),
+                  'driver_records_gate': False, 'health_insurance_min_sum': 500_000,
+                  'term_insurance_min_sum': 1_000_000, 'induction_min_hours': Decimal('40.0'),
                   'note': 'MVAG 2025 central defaults', 'updated_by_label': AUTHOR,
                   'reason': 'MVAG 2025: dynamic fare between 0.5x and 2x of the base fare'})
     # Hyderabad keeps its 1.5x rate-card cap (stricter, legal under 2020 and 2025). The state
     # row exists so the console shows it, with every value unset until the owner confirms them.
     MarketRegulation.objects.get_or_create(
         country='IN', state_code='TG',
-        defaults={'note': 'state notification not confirmed', 'updated_by_label': AUTHOR,
+        defaults={'currency': 'INR', 'note': 'state notification not confirmed', 'updated_by_label': AUTHOR,
                   'reason': 'Telangana values wait for the state notification'})
 
     row = CommissionCountryConfig.objects.filter(country='IN').first()

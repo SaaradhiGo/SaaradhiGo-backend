@@ -33,8 +33,8 @@ class Driver(models.Model):
     # the market's driver-records gate is on (`servers.driver.records`).
     health_insurance_policy_number=models.CharField(max_length=64,blank=True,default='')
     health_insurance_insurer=models.CharField(max_length=128,blank=True,default='')
-    #: Sum insured in minor units of the driver's country currency.
-    health_insurance_sum_insured_minor=models.BigIntegerField(blank=True,null=True)
+    #: Sum insured in WHOLE units of the driver's country currency (5,00,000 INR is 500000).
+    health_insurance_sum_insured=models.BigIntegerField(blank=True,null=True)
     health_insurance_expiry=models.DateField(blank=True,null=True)
     health_insurance_doc=models.FileField(
         blank=True,
@@ -46,8 +46,8 @@ class Driver(models.Model):
     )
     term_insurance_policy_number=models.CharField(max_length=64,blank=True,default='')
     term_insurance_insurer=models.CharField(max_length=128,blank=True,default='')
-    #: Sum insured in minor units of the driver's country currency.
-    term_insurance_sum_insured_minor=models.BigIntegerField(blank=True,null=True)
+    #: Sum insured in WHOLE units of the driver's country currency (5,00,000 INR is 500000).
+    term_insurance_sum_insured=models.BigIntegerField(blank=True,null=True)
     term_insurance_expiry=models.DateField(blank=True,null=True)
     term_insurance_doc=models.FileField(
         blank=True,

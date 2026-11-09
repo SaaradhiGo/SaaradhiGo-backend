@@ -38,8 +38,8 @@ FIELDS = {
     'cancel_penalty_cap_minor': ('int', 0, 10 ** 12),
     'cancel_free_seconds': ('int', 0, 3600),
     'driver_records_gate': ('bool', None, None),
-    'health_insurance_min_minor': ('int', 0, 10 ** 12),
-    'term_insurance_min_minor': ('int', 0, 10 ** 12),
+    'health_insurance_min_sum': ('int', 0, 10 ** 12),
+    'term_insurance_min_sum': ('int', 0, 10 ** 12),
     'induction_min_hours': ('decimal', Decimal('0'), Decimal('500')),
 }
 

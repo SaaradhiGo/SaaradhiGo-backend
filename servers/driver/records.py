@@ -24,8 +24,8 @@ LABELS = {
 @dataclass(frozen=True)
 class Gate:
     enabled: bool
-    health_min_minor: Optional[int]
-    term_min_minor: Optional[int]
+    health_min_sum: Optional[int]
+    term_min_sum: Optional[int]
     induction_min_hours: Optional[Decimal]
 
 
@@ -54,8 +54,8 @@ def gate_for(driver):
         return None
 
     return Gate(enabled=bool(pick('driver_records_gate')),
-                health_min_minor=pick('health_insurance_min_minor'),
-                term_min_minor=pick('term_insurance_min_minor'),
+                health_min_sum=pick('health_insurance_min_sum'),
+                term_min_sum=pick('term_insurance_min_sum'),
                 induction_min_hours=pick('induction_min_hours'))
 
 
@@ -64,10 +64,10 @@ def items(driver, gate=None, today=None):
     gate = gate or gate_for(driver)
     today = today or timezone.localdate()
     out = []
-    for key, minimum in (('health_insurance', gate.health_min_minor),
-                         ('term_insurance', gate.term_min_minor)):
+    for key, minimum in (('health_insurance', gate.health_min_sum),
+                         ('term_insurance', gate.term_min_sum)):
         expiry = getattr(driver, f'{key}_expiry')
-        insured = getattr(driver, f'{key}_sum_insured_minor')
+        insured = getattr(driver, f'{key}_sum_insured')
         problem = None
         if not getattr(driver, f'{key}_policy_number') or expiry is None:
             problem = 'missing'
@@ -77,7 +77,7 @@ def items(driver, gate=None, today=None):
             problem = 'below_minimum'
         out.append({'key': key, 'label': LABELS[key], 'ok': problem is None, 'problem': problem,
                     'expiry': expiry.isoformat() if expiry else None,
-                    'sum_insured_minor': insured, 'minimum_minor': minimum,
+                    'sum_insured': insured, 'minimum': minimum,
                     'has_document': bool(getattr(driver, f'{key}_doc'))})
     hours = driver.induction_training_hours
     problem = None

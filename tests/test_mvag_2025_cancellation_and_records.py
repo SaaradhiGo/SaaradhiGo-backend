@@ -169,10 +169,10 @@ class TestTheNextBooking:
 class TestDriverRecordsGate:
     def valid(self, driver):
         future = date.today() + timedelta(days=200)
-        for key, amount in (('health_insurance', 50_000_000), ('term_insurance', 100_000_000)):
+        for key, amount in (('health_insurance', 500_000), ('term_insurance', 1_000_000)):
             setattr(driver, f'{key}_policy_number', f'P-{key[:4]}-1')
             setattr(driver, f'{key}_insurer', 'Insurer Ltd')
-            setattr(driver, f'{key}_sum_insured_minor', amount)
+            setattr(driver, f'{key}_sum_insured', amount)
             setattr(driver, f'{key}_expiry', future)
         driver.induction_training_hours = Decimal('40.0')
         driver.induction_training_date = date.today() - timedelta(days=30)
@@ -210,7 +210,7 @@ class TestDriverRecordsGate:
         url = f'/api/v1/driver/admin/{market.driver.id}/records/'
         r = client.patch(url, {
             'health_insurance_policy_number': 'H-123', 'health_insurance_insurer': 'Insurer Ltd',
-            'health_insurance_sum_insured_minor': 50_000_000,
+            'health_insurance_sum_insured': 500_000,
             'health_insurance_expiry': '2027-06-30', 'induction_training_hours': '40',
             'induction_training_date': '2026-10-01', 'ais140_device_id': 'AIS-77',
             'ais140_fitted': True, 'panic_button_fitted': False, 'reason': 'Papers checked'},

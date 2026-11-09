@@ -88,4 +88,13 @@ def dispatch_sos(self, sos_id):
     except Exception as e:
         logger.error(f"dispatch_sos[{sos_id}]: emergency SMS failed: {e}")
 
+    # 3. The rider's trusted contacts (servers/sharing): the live trip link, by SMS.
+    try:
+        if event.trip_id and event.initiated_by == 'rider' and event.user:
+            from servers.sharing.services import on_sos
+            sent = on_sos(event.trip, event.user)
+            logger.warning(f"dispatch_sos[{sos_id}]: trip link sent to {sent} trusted contacts")
+    except Exception as e:
+        logger.error(f"dispatch_sos[{sos_id}]: trusted contact SMS failed: {e}")
+
     return True

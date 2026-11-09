@@ -1766,3 +1766,23 @@ def proxy_directions(request):
         return _maps_error_response()
 
     return success_response({'status': 'OK', 'routes': [route['route']]}, status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def trip_eta(request, trip_id):
+    """GET /ride/trip/<id>/eta/: the current arrival estimate (servers/ride/eta.py).
+
+    For the rider and the assigned driver only. `eta` is null when there is no
+    honest estimate (no live driver position, or the trip is not active); the
+    screens then hide the line. The live channel pushes the same payload every
+    15 seconds as `trip_eta_update`.
+    """
+    from . import eta as eta_mod
+
+    trip = Trip.objects.select_related('status_id', 'zone', 'driver_id').filter(pk=trip_id).first()
+    is_driver = bool(trip and trip.driver_id and trip.driver_id.user_id_id == request.user.id)
+    if trip is None or not (trip.user_id_id == request.user.id or is_driver):
+        return error_response(code='NOT_FOUND', message='Trip not found', field='trip_id',
+                              issue=f'No trip with id {trip_id}', status=status.HTTP_404_NOT_FOUND)
+    return success_response({'trip_id': trip.id, 'eta': eta_mod.compute(trip)}, status.HTTP_200_OK)

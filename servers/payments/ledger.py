@@ -19,6 +19,12 @@ The driver's settlement balance (`Wallet`, scope driver) moves only through
                       platform collected what the driver was assumed to hold (AUDIT 27.71)
   * `trip_refund_reversal`  debit   the rider was refunded the whole trip: what the trip had added to
                       the driver's balance is taken back once (AUDIT 27.76)
+  * `cancellation_compensation`  credit   the rider's MVAG 2025 cancellation fee, paid to the driver
+                      who was let down once the rider's next trip settles
+  * `cancellation_penalty`  debit   the driver cancelled an accepted trip without a reason that
+                      exempts it (MVAG 2025: 10% of the fare, capped)
+  * `cancellation_fee_collected`  debit   a cash trip carried a rider's earlier cancellation fee:
+                      the driver collected it and owes it on
   * `incentive_reward` credit   a driver incentive reward: no commission, paid out with the next
                       weekly payout, its own line (tax: not configured, go-live blocker 15)
   * `referral_reward` credit    a driver referral reward: same treatment
@@ -93,6 +99,9 @@ ENTRY_KINDS = {
     'regulatory_fee_collected': 'regulatory_fee_collected',
     'fare_collected_by_platform': 'fare_collected_by_platform',
     'trip_refund_reversal': 'trip_refund_reversal',
+    'cancellation_compensation': 'cancellation_compensation',
+    'cancellation_penalty': 'cancellation_penalty',
+    'cancellation_fee_collected': 'cancellation_fee_collected',
     'withdrawal': 'withdrawal_requested',
     'refund_rejected_withdrawal': 'withdrawal_rejected',
     'refund_failed_withdrawal': 'withdrawal_returned',
@@ -124,6 +133,9 @@ ENTRY_LABELS = {
     'regulatory_fee_collected': FEE_COLLECTED_LABEL,
     'fare_collected_by_platform': 'Rider paid SaaradhiGo (no cash collected)',
     'trip_refund_reversal': 'Trip refunded to the rider (earnings reversed)',
+    'cancellation_compensation': 'Cancellation fee paid by the rider (to you)',
+    'cancellation_penalty': 'Cancellation fee (you cancelled after accepting)',
+    'cancellation_fee_collected': 'Cancellation fee collected for another trip',
     'withdrawal': 'Withdrawal requested',
     'refund_rejected_withdrawal': 'Withdrawal rejected (returned)',
     'refund_failed_withdrawal': 'Payout failed (returned)',

@@ -186,7 +186,7 @@ def test_the_receipt_html_names_one_brand_and_the_legal_entity():
     assert settings.PLATFORM_LEGAL_ENTITY in html
     assert 'VahanGo' not in html, 'the retired brand is still on the receipt'
     # The aggregator statement is a legal claim and must survive the rename.
-    assert 'Motor Vehicles Aggregator Guidelines 2020' in html
+    assert 'Motor Vehicles Aggregator Guidelines 2025' in html
 
 
 def test_driver_operational_contacts_use_the_configured_domain():

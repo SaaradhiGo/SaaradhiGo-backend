@@ -28,6 +28,45 @@ class Driver(models.Model):
         validators=[validate_document_file, validate_file_size],
     )
     license_expiry=models.DateField(blank=True,null=True)
+    # MVAG 2025 driver records (2026-11-09): health and term insurance, induction training.
+    # Expiry blocks the driver through the same sweeper as vehicle documents, but only where
+    # the market's driver-records gate is on (`servers.driver.records`).
+    health_insurance_policy_number=models.CharField(max_length=64,blank=True,default='')
+    health_insurance_insurer=models.CharField(max_length=128,blank=True,default='')
+    #: Sum insured in WHOLE units of the driver's country currency (5,00,000 INR is 500000).
+    health_insurance_sum_insured=models.BigIntegerField(blank=True,null=True)
+    health_insurance_expiry=models.DateField(blank=True,null=True)
+    health_insurance_doc=models.FileField(
+        blank=True,
+        max_length=512,
+        null=True,
+        storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('health_insurance_docs'),
+        validators=[validate_document_file, validate_file_size],
+    )
+    term_insurance_policy_number=models.CharField(max_length=64,blank=True,default='')
+    term_insurance_insurer=models.CharField(max_length=128,blank=True,default='')
+    #: Sum insured in WHOLE units of the driver's country currency (5,00,000 INR is 500000).
+    term_insurance_sum_insured=models.BigIntegerField(blank=True,null=True)
+    term_insurance_expiry=models.DateField(blank=True,null=True)
+    term_insurance_doc=models.FileField(
+        blank=True,
+        max_length=512,
+        null=True,
+        storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('term_insurance_docs'),
+        validators=[validate_document_file, validate_file_size],
+    )
+    induction_training_hours=models.DecimalField(max_digits=5,decimal_places=1,blank=True,null=True)
+    induction_training_date=models.DateField(blank=True,null=True)
+    induction_training_certificate=models.FileField(
+        blank=True,
+        max_length=512,
+        null=True,
+        storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('induction_certificates'),
+        validators=[validate_document_file, validate_file_size],
+    )
     status=models.CharField(max_length=20,choices=[
         ('online','Online'),('off','Off'),('active','Active'),
         ('on ride','On Ride'),('off ride','Off Ride'),('blocked','Blocked')
@@ -272,6 +311,12 @@ class Vehicle(models.Model):
         blank=True,
         null=True
     )
+
+    # MVAG 2025 (2026-11-09): recorded by operations; nothing gates on them yet.
+    ais140_device_id = models.CharField(max_length=64, blank=True, default='')
+    ais140_fitted = models.BooleanField(null=True, blank=True)
+    panic_button_device_id = models.CharField(max_length=64, blank=True, default='')
+    panic_button_fitted = models.BooleanField(null=True, blank=True)
 
     class Meta:
         indexes = [

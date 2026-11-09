@@ -433,3 +433,13 @@ def credit_driver_wallet(trip):
                     source_type='promo_settlement', source_id=str(trip.id), city=city)
             except Exception:  # noqa: BLE001
                 logger.exception('could not raise the promo settlement alert for trip %s', trip.id)
+        # MVAG 2025: a cancellation fee this trip carried for the rider goes to the driver who was
+        # let down (servers.ride.cancellation_penalty). Its own savepoint: it must never undo the
+        # settlement above.
+        try:
+            with transaction.atomic():
+                from servers.ride.cancellation_penalty import settle_collected
+                settle_collected(trip, is_cash=(trip.payment_method == 'cash'))
+        except Exception:  # noqa: BLE001
+            logger.exception('cancellation_due_settlement_failed', extra={
+                'event': 'cancellation_due_settlement_failed', 'trip_id': trip.id})

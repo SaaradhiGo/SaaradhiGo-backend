@@ -235,24 +235,32 @@ def fare_minor(trip):
     return trip.estimated_fare_minor or 0
 
 
-def payable_minor(trip):
-    """What the RIDER is charged: the full fare less the promo discount, never below zero."""
+def fare_payable_minor(trip):
+    """The fare part of what the rider pays: the full fare less the promo discount, never below 0."""
     full = fare_minor(trip)
     return max(0, full - min(discount_minor(trip), full))
+
+
+def payable_minor(trip):
+    """What the RIDER is charged: `fare_payable_minor` plus any cancellation fee from an earlier
+    trip that this trip carries (MVAG 2025; the rider was shown it before booking)."""
+    from servers.ride.cancellation_penalty import dues_minor
+
+    return fare_payable_minor(trip) + dues_minor(trip)
 
 
 def not_charged(trip):
     """Why the rider owes nothing for this trip, or None. Every charging path asks this first."""
     if getattr(trip, 'end_rule', '') == 'platform_funded':
         return 'This trip was ended by SaaradhiGo and you were not charged.'
-    if is_fully_covered(trip):
+    if is_fully_covered(trip) and payable_minor(trip) == 0:
         return 'A promotion covered this trip, so you were not charged.'
     return None
 
 
 def is_fully_covered(trip):
     """A promo covered the whole fare: the rider is charged nothing, and there is a fare to cover."""
-    return bool(discount_minor(trip)) and fare_minor(trip) > 0 and payable_minor(trip) == 0
+    return bool(discount_minor(trip)) and fare_minor(trip) > 0 and fare_payable_minor(trip) == 0
 
 
 def operator_end_discount_minor(trip, capped_minor):

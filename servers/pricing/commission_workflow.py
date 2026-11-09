@@ -53,6 +53,7 @@ from servers.approvals.service import (
 from servers.driver.models import VehicleType
 
 from . import commission as resolver
+from . import regulation
 from .commission_models import (
     ACTIVE, ARCHIVED, DRAFT, IMPLEMENTED_KINDS, KIND_CHOICES, PENDING_APPROVAL, PERCENTAGE,
     CommissionCountryConfig, CommissionRule, DriverNotice,
@@ -272,7 +273,7 @@ def check_rule(country, node, vt, kind, percent, effective_from, now, *, enforce
         raise InvalidRequest(f'A {kind.replace("_", " ")} commission is {NOT_SUPPORTED}.',
                              code='KIND_NOT_SUPPORTED', field='kind')
     pct = _percent(percent)
-    cap = resolver.max_percent(country)
+    cap = regulation.cap_for(country, node)
     if cap is not None and pct > cap:
         raise InvalidRequest(
             f'{pct}% is above the {country} commission cap of {cap}%.',
@@ -452,7 +453,7 @@ def activate_rule(rule_id, request_row, *, now=None, actor_reason=''):
         if rule.kind not in IMPLEMENTED_KINDS:
             raise registry.ExecutionRefused('KIND_NOT_SUPPORTED',
                                             f'{rule.kind} is {NOT_SUPPORTED}.')
-        cap = resolver.max_percent(rule.country)
+        cap = regulation.cap_for(rule.country, rule.geo_node)
         if cap is not None and rule.percent > cap:
             raise registry.ExecutionRefused(
                 'ABOVE_CAP', f'{rule.percent}% is above the {rule.country} cap of {cap}%.')
@@ -583,6 +584,7 @@ def apply_country_config(request_row):
             target_type='commission_country_config', target_id=country, before=before,
             after=config_dict(country, row),
             reason=request_row.decision_reason or request_row.request_reason)
+    regulation.alert_rules_above_cap()
     return {'country': country, 'version': row.version}
 
 
@@ -598,6 +600,10 @@ def execute_pricing_change(request_row):
         return activate_rule(payload.get('rule_id'), request_row)
     if kind == PAYLOAD_CONFIG:
         return apply_country_config(request_row)
+    from . import regulation_workflow
+
+    if kind in regulation_workflow.KINDS:
+        return regulation_workflow.execute(kind, request_row)
     from . import fare_card_workflow
 
     if kind in fare_card_workflow.KINDS:

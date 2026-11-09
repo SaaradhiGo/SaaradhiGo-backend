@@ -8,7 +8,7 @@ from .views import (
 from .onboarding_views import driver_onboarding
 from .admin_drivers import (
     admin_approve_driver, admin_bulk_drivers, admin_kyc_queue, admin_note_driver,
-    admin_document_view, admin_reinstate_driver, admin_review_document, admin_suspend_driver, admin_vehicle_status,
+    admin_document_view, admin_driver_records, admin_reinstate_driver, admin_review_document, admin_suspend_driver, admin_vehicle_status,
 )
 from .admin_views import (
     list_drivers_admin, retrieve_driver_admin, driver_full_detail_admin,
@@ -64,6 +64,7 @@ urlpatterns = [
     path('admin/<int:driver_id>/approve/', admin_approve_driver),
     path('admin/<int:driver_id>/suspend/', admin_suspend_driver),
     path('admin/<int:driver_id>/reinstate/', admin_reinstate_driver),
+    path('admin/<int:driver_id>/records/', admin_driver_records),
     path('admin/<int:driver_id>/note/', admin_note_driver),
     path('admin/<int:driver_id>/vehicles/<int:vehicle_id>/status/', admin_vehicle_status),
     

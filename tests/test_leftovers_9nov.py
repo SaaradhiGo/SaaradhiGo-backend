@@ -122,7 +122,8 @@ class TestFakeWithdrawNow:
         w.refresh_from_db()
         assert w.status == 'completed'
         rows = WalletTransaction.objects.filter(user_id=d.user_id, reference_id=f'withdrawal_{w.id}')
-        assert rows.filter(purpose='withdrawal', txn_type='debit', amount_minor=20000).exists()
+        # The ledger row reaches its final state with the payout (AUDIT §35, item 18 reversed).
+        assert rows.filter(purpose='withdrawal', txn_type='debit', amount_minor=20000).get().status == 'completed'
 
     def test_never_without_the_qa_switch(self, hyd, settings):
         from integrations.payouts import fake

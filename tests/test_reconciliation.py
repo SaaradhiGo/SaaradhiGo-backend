@@ -175,6 +175,9 @@ class TestEachKind:
     def test_a_payout_webhook_for_a_paid_withdrawal_is_fine(self, world):
         WithdrawalRequest.objects.filter(pk=world.in_pending.pk).update(
             payout_reference_id='CFT124', status='completed')
+        # Paid: its ledger row is completed with it (AUDIT §35, item 18 reversed).
+        WalletTransaction.objects.filter(reference_id=f'withdrawal_{world.in_pending.pk}',
+                                         purpose='withdrawal').update(status='completed')
         WebhookEvent.objects.create(
             gateway='cashfree', dedupe_key='payout-sig-2', event_type='TRANSFER_SUCCESS',
             raw_payload={'event': 'TRANSFER_SUCCESS', 'transfer_id': 'CFT124'})

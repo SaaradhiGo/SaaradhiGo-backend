@@ -24,6 +24,7 @@ from .password_views import (
     reset_password,
 )
 
+from .phone_change_views import change_phone
 from .registration_views import register_with_email
 
 urlpatterns = [
@@ -35,6 +36,8 @@ urlpatterns = [
     path('logout/', logout),
     path('update/', update_user),
     path('profile/', get_user_profile),
+    # The sign-in number changes only with a proof from otp/verify/ for the new one.
+    path('phone/change/', change_phone),
     path('bank-details/', update_bank_details),
     path('admin/users/', admin_list_users),
     path('admin/login/', admin_login),

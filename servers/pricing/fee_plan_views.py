@@ -221,7 +221,7 @@ def cost_per_trip_report(country, month):
         rider_fee = 0
     costs = variable_cost_per_trip_minor(country)
     sms_count = ContactSms.objects.filter(created_at__date__gte=month, created_at__date__lt=end).count()
-    calls = CallSession.objects.filter(created_at__date__gte=month, created_at__date__lt=end).count()
+    calls = CallSession.objects.filter(started_at__date__gte=month, started_at__date__lt=end).count()
     from servers.ride import maps_budget
     fx = Decimal(str(settings.MAPS_FX_TO_LOCAL.get(country) or 0))
     maps_minor = int((maps_budget.list_cost_usd(maps_budget.counts(month, end - timedelta(days=1), country))

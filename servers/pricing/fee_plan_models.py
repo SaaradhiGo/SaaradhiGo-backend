@@ -17,7 +17,7 @@ from django.utils import timezone
 
 PERCENT_COMMISSION = 'percent_commission'
 PER_TRIP_FEE = 'per_trip_fee'
-DAILY_PASS = 'daily_pass'
+DAILY_PASS = 'daily_pass'  # noqa: S105 - a plan type, not a password
 FAIR_SHARE = 'fair_share'
 PLAN_TYPES = [
     (PERCENT_COMMISSION, 'Percentage commission (today)'),

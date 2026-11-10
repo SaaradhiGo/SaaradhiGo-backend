@@ -208,3 +208,14 @@ class TestConsoleMakerChecker:
         assert india.plan.status == 'archived' and india.plan.effective_to == new.effective_from
         actions = set(AdminAuditLog.objects.values_list('action', flat=True))
         assert {'driver_fee_plan_drafted', 'driver_fee_plan_activated'} <= actions
+
+
+class TestCostPerTrip:
+    def test_the_report_counts_trips_and_costs_and_pays_nothing_out(self, india):
+        maker, _ = india.super
+        r = maker.get(f'{BASE}/cost-per-trip/?country=IN&month={date.today():%Y-%m}')
+        assert r.status_code == 200, r.content
+        data = body_of(r)
+        assert float(data['reserve_percent']) == 15
+        assert data['surplus_minor'] <= max(0, data['fee_income_minor'])
+        assert 'calls' in data['variable_costs']

@@ -210,6 +210,9 @@ def settle_or_defer(trip):
 
 
 def _rider_platform_fee_minor(trip):
+    # The rider platform fee comes only from a fee plan (9 Nov): no plan, no fee, no query.
+    if not getattr(trip, 'fee_plan_id', None):
+        return 0
     try:
         from servers.ride.models import FarePricing
 

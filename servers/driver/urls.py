@@ -1,4 +1,4 @@
-from . import catalogue_views, profile_views
+from . import catalogue_views, earnings_history_views, profile_views
 from django.urls import path
 from .views import (
     driver_earnings, driver_earnings_summary, driver_earnings_daily, driver_fee_plan, driver_earnings_period,
@@ -38,6 +38,9 @@ urlpatterns = [
     path('earnings/daily/', driver_earnings_daily),
     path('fee-plan/', driver_fee_plan),
     path('earnings/period/', driver_earnings_period),
+    path('earnings/history/', earnings_history_views.driver_earnings_history),
+    path('earnings/months/', earnings_history_views.driver_earnings_months),
+    path('earnings/statement/', earnings_history_views.driver_earnings_statement),
     # Withdrawals
     path('withdrawals/balance/', driver_withdrawal_balance),
     path('withdrawals/request/', driver_withdrawal_request),

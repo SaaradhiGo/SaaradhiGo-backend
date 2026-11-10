@@ -24,6 +24,8 @@ READS = [
     'driver/profile/', 'driver/onboarding/', 'driver/incentives/', 'driver/elite-status/',
     'earnings/?page_size=50', 'earnings/summary/', 'earnings/daily/?days=7', 'fee-plan/',
     'earnings/period/?period=today', 'earnings/period/?period=week', 'earnings/period/?period=month',
+    'earnings/history/?period=month', 'earnings/history/?period=taxyear', 'earnings/months/',
+    'earnings/statement/?month=2026-11',
     'withdrawals/balance/', 'withdrawals/instant/quote/?amount=200', 'withdrawals/history/',
     'withdrawals/block-status/', 'vehicles/',
 ]

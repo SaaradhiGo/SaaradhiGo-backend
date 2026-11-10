@@ -951,7 +951,9 @@ class TestEveryEndpointAsEveryRole:
 #: `admin_audit/views.py`: the audit-log CSV lists id, time, actor, action, target, place and the
 #: reason, never the free-form before/after payload; contact-shaped strings are scrubbed, and every
 #: export is itself an audit row.
-NEVER_UNMASKED_EXPORTS = {'payments/admin_finance.py', 'reports/views.py', 'admin_audit/views.py'}
+# driver/earnings_history_views.py: a driver's own monthly statement (10 Nov v2), PAN masked.
+NEVER_UNMASKED_EXPORTS = {'payments/admin_finance.py', 'reports/views.py', 'admin_audit/views.py',
+                          'driver/earnings_history_views.py'}
 
 SENSITIVE_KEY = re.compile(
     r'phone|email|address|upi|ifsc|account_number|licen[cs]e|aadhaar|ssn|dob|contact',

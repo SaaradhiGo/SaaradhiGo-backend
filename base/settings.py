@@ -759,6 +759,12 @@ _cors_raw = os.environ.get('CORS_ALLOWED_ORIGINS', '')
 CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_raw.split(',') if o.strip()]
 CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 
+# The web sends `X-SG-Surface` so Maps calls are metered per surface (9 Nov). Without it in
+# the allowlist the browser's preflight fails and every web API call is blocked.
+from corsheaders.defaults import default_headers as _cors_default_headers  # noqa: E402
+
+CORS_ALLOW_HEADERS = (*_cors_default_headers, 'x-sg-surface')
+
 # Allow local development on arbitrary ports (like Flutter web).
 # DEBUG-only: in production this list must stay empty, otherwise any page
 # served from a developer's localhost can read authenticated API responses.

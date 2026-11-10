@@ -237,6 +237,7 @@ def entry_dicts(driver, in_range_rows, opening_minor, offset, limit):
             settlements[s.trip_id] = s
 
     adjustments = _adjustment_details([t.reference_id for t in page if t.purpose == 'adjustment'])
+    instant = _instant_fees([t.reference_id for t in page if t.purpose == 'withdrawal'])
 
     out = []
     for txn in page:
@@ -292,10 +293,40 @@ def entry_dicts(driver, in_range_rows, opening_minor, offset, limit):
         match = WITHDRAWAL_REF.match(ref)
         if match:
             entry['withdrawal_id'] = int(match.group(1))
+            fee = instant.get(entry['withdrawal_id']) if txn.purpose == 'withdrawal' else None
+            if fee is not None:
+                entry.update(fee_line(txn.amount_minor, fee, txn.currency))
         elif txn.purpose == 'adjustment':
             entry['adjustment'] = adjustments.get(txn.reference_id)
         out.append(entry)
     return out
+
+
+def fee_line(amount_minor, fee_minor, currency):
+    """A Withdraw now line (10 Nov): "Withdrawn ₹200.00 · provider fee ₹4.72 · received ₹195.28"."""
+    from base.money import format_money, from_minor
+
+    received = max(0, amount_minor - fee_minor)
+
+    def m(x):
+        return format_money(from_minor(x, currency), currency)
+    return {'label': f'Withdrawn {m(amount_minor)} · provider fee {m(fee_minor)} · received {m(received)}',
+            'provider_fee_minor': fee_minor, 'received_minor': received, 'instant': True}
+
+
+def _instant_fees(references):
+    """`{withdrawal_id: provider_fee_minor}` for the Withdraw now requests among `references`."""
+    from servers.driver.models import WithdrawalRequest
+
+    ids = []
+    for ref in references:
+        match = WITHDRAWAL_REF.match(ref or '')
+        if match:
+            ids.append(int(match.group(1)))
+    if not ids:
+        return {}
+    return dict(WithdrawalRequest.objects.filter(pk__in=ids, origin='instant')
+                .values_list('id', 'fee_minor'))
 
 
 def _adjustment_details(references):

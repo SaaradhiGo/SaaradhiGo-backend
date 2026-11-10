@@ -13,8 +13,8 @@ so the console says plainly that statement import is not connected.
 It WRITES only `ReconciliationRun` and `ReconciliationItem` rows. It never
 changes a payment, a trip, a settlement, a withdrawal or a balance.
 
-EIGHT KINDS
------------
+NINE KINDS
+----------
   payment_no_webhook         a completed online payment with no confirming webhook
   webhook_no_payment         a confirming webhook with no completed payment
   amount_mismatch            the webhook's amount or currency is not the payment's
@@ -23,6 +23,8 @@ EIGHT KINDS
   payout_webhook_not_paid    a payout success webhook while the withdrawal is not paid
   payout_stuck               processing for longer than the country's stuck_payout_hours
   withdrawal_row_pending     a withdrawal's ledger debit still pending after its payout is final
+  payout_fee_mismatch        a Withdraw now fee charged to the driver is not the fee the provider
+                             reports on the payout (RazorpayX `fees`, GST included)
 
 The last one needs `PayoutCountryConfig.stuck_payout_hours`. A country with no
 value has NO such check: it is skipped (recorded in `run.checks` as
@@ -158,6 +160,19 @@ def parse_payment_webhook(payload):
             amount_minor = None
     return {'order_id': str(order_id) if order_id else None,
             'amount_minor': amount_minor, 'currency': currency}
+
+
+def parse_payout_fee(payload):
+    """The fee the provider reports on a payout webhook, in minor units, or None when it reports
+    none (RazorpayX: `payout.entity.fees`, which includes the GST in `tax`)."""
+    if not isinstance(payload, dict):
+        return None
+    entity = _dig(payload, 'payload', 'payout', 'entity')
+    fees = entity.get('fees') if isinstance(entity, dict) else payload.get('fees')
+    try:
+        return int(fees) if fees is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_payout_webhook(payload):
@@ -369,6 +384,7 @@ def _check_payouts(r, country, currency, gateway, start, end):
     from servers.driver.models import WithdrawalRequest
 
     now = r.now
+    fee_unreported = 0
     # -- a payout success webhook while the withdrawal is not paid ----------
     events = (WebhookEvent.objects
               .filter(gateway__in=INBOX_GATEWAYS.get(gateway, (gateway,)),
@@ -387,8 +403,20 @@ def _check_payouts(r, country, currency, gateway, start, end):
                     withdrawal = WithdrawalRequest.objects.filter(
                         id=int(ref.split('_')[1])).select_related('driver__home_city').first()
                     break
-        if (withdrawal is None or withdrawal.status in ('completed', 'reversed')
-                or withdrawal.currency != currency):
+        if withdrawal is None or withdrawal.currency != currency:
+            continue
+        # The Withdraw now fee the driver paid against the fee the provider reports (10 Nov).
+        reported = parse_payout_fee(event.raw_payload)
+        if withdrawal.origin == 'instant':
+            if reported is None:
+                fee_unreported += 1
+            elif reported != (withdrawal.fee_minor or 0) and WithdrawalRequest.objects.filter(
+                    _withdrawal_country_q(country), pk=withdrawal.pk).exists():
+                r.raise_item(K.PAYOUT_FEE_MISMATCH, f'w{withdrawal.id}', withdrawal=withdrawal,
+                             reference=ids[0], expected=f'fee {withdrawal.fee_minor or 0}',
+                             seen=f'provider reports {reported}',
+                             anchor=withdrawal.driver.home_city)
+        if withdrawal.status in ('completed', 'reversed'):
             continue
         if not WithdrawalRequest.objects.filter(_withdrawal_country_q(country), pk=withdrawal.pk).exists():
             continue
@@ -397,6 +425,8 @@ def _check_payouts(r, country, currency, gateway, start, end):
                      seen=f'withdrawal is {withdrawal.status}',
                      anchor=withdrawal.driver.home_city)
     r.checks['payout_webhook_not_paid'] = 'ran'
+    r.checks['payout_fee_mismatch'] = ('ran' if not fee_unreported
+                                       else f'ran; {fee_unreported} payout(s) with no fee reported')
 
     # -- a ledger debit still pending after its payout is final ---------------
     from servers.payments.withdrawal_ledger import FINAL

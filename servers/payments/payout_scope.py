@@ -252,6 +252,7 @@ def instant_quote(driver, config, amount_minor):
 
     fee = instant_fee(config, amount_minor)
     receive = amount_minor - fee
+    limit = instant_limit(driver, config, amount_minor)
     provider = (config.instant_fee_provider or '').strip()
     cur = config.currency
     return {'amount': str(from_minor(amount_minor, cur)), 'amount_minor': amount_minor,
@@ -263,4 +264,62 @@ def instant_quote(driver, config, amount_minor):
             'destination': destination_label(driver),
             'arrival': ARRIVAL_TEXT.get(provider.lower().replace(' ', ''),
                                         'Usually within 30 minutes'),
-            'valid': receive > 0}
+            'valid': receive > 0 and limit is None,
+            # The daily limit (10 Nov): said on the confirmation, before the driver taps.
+            'limit_reached': limit is not None,
+            'limit_message': limit['message'] if limit else '',
+            'limit_code': limit['code'] if limit else ''}
+
+
+# ---------------------------------------------------------------------------
+# The daily instant limit (owner, 10 Nov)
+# ---------------------------------------------------------------------------
+
+#: A Withdraw now that did not pay out does not use up the day.
+NOT_COUNTED = ('failed', 'reversed', 'rejected')
+
+
+def instant_used_today(driver, config, now=None):
+    """`(count, amount_minor)` of the driver's Withdraw now requests on their local day (the
+    market's zone). Failed, reversed and rejected ones are not counted; scheduled payouts never."""
+    from django.db.models import Count, Sum
+
+    from servers.driver.models import WithdrawalRequest
+
+    tz = zone_of(config)
+    local = (now or timezone.now()).astimezone(tz)
+    start = datetime.combine(local.date(), time(0, 0), tzinfo=tz)
+    agg = (WithdrawalRequest.objects
+           .filter(driver=driver, origin='instant', requested_at__gte=start,
+                   requested_at__lt=start + timedelta(days=1))
+           .exclude(status__in=NOT_COUNTED)
+           .aggregate(n=Count('id'), total=Sum('amount_minor')))
+    return agg['n'] or 0, agg['total'] or 0
+
+
+def instant_limit(driver, config, amount_minor, now=None):
+    """None when this Withdraw now fits today's limits, else `{code, message}` with the reason:
+    "Daily limit reached: 3 instant withdrawals. Your next scheduled payout is {date}."""
+    from base.money import format_money, from_minor
+
+    max_n = getattr(config, 'instant_max_per_day', None)
+    max_amount = getattr(config, 'instant_max_amount_per_day_minor', None)
+    if max_n is None and max_amount is None:
+        return None
+    count, total = instant_used_today(driver, config, now)
+    code = message = None
+    if max_n is not None and count + 1 > max_n:
+        code = 'INSTANT_DAILY_COUNT'
+        message = (f'Daily limit reached: {max_n} instant withdrawal'
+                   f'{"" if max_n == 1 else "s"}.')
+    elif max_amount is not None and total + int(amount_minor) > max_amount:
+        code = 'INSTANT_DAILY_AMOUNT'
+        left = max(0, max_amount - total)
+        message = (f'Daily limit reached: {format_money(from_minor(max_amount, config.currency), config.currency)} in instant '
+                   f'withdrawals a day ({format_money(from_minor(left, config.currency), config.currency)} left today).')
+    if code is None:
+        return None
+    when = next_payout_at(config, now)
+    if when is not None:
+        message += f' Your next scheduled payout is {when.strftime("%d %b")}.'
+    return {'code': code, 'message': message, 'used_count': count, 'used_amount_minor': total}

@@ -147,8 +147,11 @@ ENTRY_LABELS = {
 
 
 def counted(queryset):
-    """Only the rows that are part of the balance."""
-    return queryset.filter(Q(status='completed') | Q(purpose='withdrawal', status='pending'))
+    """Only the rows that are part of the balance.
+
+    A withdrawal debit counts in every state: pending while the payout is in flight, completed
+    once paid, failed once its reversal row has returned the money (`withdrawal_ledger`)."""
+    return queryset.filter(Q(status='completed') | Q(purpose='withdrawal', status__in=('pending', 'failed')))
 
 
 def driver_rows(driver, currency):

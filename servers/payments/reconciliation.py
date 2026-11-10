@@ -13,7 +13,7 @@ so the console says plainly that statement import is not connected.
 It WRITES only `ReconciliationRun` and `ReconciliationItem` rows. It never
 changes a payment, a trip, a settlement, a withdrawal or a balance.
 
-SEVEN KINDS
+EIGHT KINDS
 -----------
   payment_no_webhook         a completed online payment with no confirming webhook
   webhook_no_payment         a confirming webhook with no completed payment
@@ -22,6 +22,7 @@ SEVEN KINDS
   settlement_gross_mismatch  the current settlement's gross is not the trip's final fare
   payout_webhook_not_paid    a payout success webhook while the withdrawal is not paid
   payout_stuck               processing for longer than the country's stuck_payout_hours
+  withdrawal_row_pending     a withdrawal's ledger debit still pending after its payout is final
 
 The last one needs `PayoutCountryConfig.stuck_payout_hours`. A country with no
 value has NO such check: it is skipped (recorded in `run.checks` as
@@ -396,6 +397,29 @@ def _check_payouts(r, country, currency, gateway, start, end):
                      seen=f'withdrawal is {withdrawal.status}',
                      anchor=withdrawal.driver.home_city)
     r.checks['payout_webhook_not_paid'] = 'ran'
+
+    # -- a ledger debit still pending after its payout is final ---------------
+    from servers.payments.withdrawal_ledger import FINAL
+    from servers.rider.models import WalletTransaction
+
+    pending = (WalletTransaction.objects
+               .filter(purpose='withdrawal', txn_type='debit', status='pending', currency=currency,
+                       created_at__gte=now - STUCK_LOOKBACK)
+               .values_list('id', 'reference_id')[:MAX_ITEMS_PER_CHECK])
+    by_withdrawal = {}
+    for row_id, ref in pending:
+        parts = (ref or '').split('_')
+        if len(parts) == 2 and parts[1].isdigit():
+            by_withdrawal.setdefault(int(parts[1]), []).append(row_id)
+    final = (WithdrawalRequest.objects
+             .filter(_withdrawal_country_q(country), pk__in=list(by_withdrawal), status__in=FINAL)
+             .select_related('driver__home_city'))
+    for w in final:
+        r.raise_item(K.WITHDRAWAL_ROW_PENDING, f'w{w.id}', withdrawal=w, reference=f'withdrawal_{w.id}',
+                     expected='completed' if w.status == 'completed' else 'failed',
+                     seen=f'{len(by_withdrawal[w.id])} ledger row(s) pending, withdrawal {w.status}',
+                     anchor=w.driver.home_city)
+    r.checks['withdrawal_row_pending'] = 'ran'
 
     # -- stuck in processing -------------------------------------------------
     config = PayoutCountryConfig.objects.filter(country=country, is_active=True).first()

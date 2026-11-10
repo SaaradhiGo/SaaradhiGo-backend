@@ -631,6 +631,7 @@ class ReconciliationItem(models.Model):
     SETTLEMENT_GROSS_MISMATCH = 'settlement_gross_mismatch'
     PAYOUT_WEBHOOK_NOT_PAID = 'payout_webhook_not_paid'
     PAYOUT_STUCK = 'payout_stuck'
+    WITHDRAWAL_ROW_PENDING = 'withdrawal_row_pending'
     KIND_CHOICES = [
         (PAYMENT_NO_WEBHOOK, 'Payment captured without a confirming webhook'),
         (WEBHOOK_NO_PAYMENT, 'Confirming webhook with no captured payment'),
@@ -639,6 +640,7 @@ class ReconciliationItem(models.Model):
         (SETTLEMENT_GROSS_MISMATCH, "Settlement gross differs from the trip's final fare"),
         (PAYOUT_WEBHOOK_NOT_PAID, 'Payout marked processed by webhook, withdrawal not paid'),
         (PAYOUT_STUCK, 'Payout stuck in processing'),
+        (WITHDRAWAL_ROW_PENDING, 'Withdrawal ledger row pending after its payout is final'),
     ]
     KINDS = [k for k, _ in KIND_CHOICES]
 

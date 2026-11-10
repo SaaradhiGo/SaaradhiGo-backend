@@ -36,6 +36,9 @@ class PaymentsConfig(AppConfig):
         # Razorpay has the same property but must be able to BOOT before its keys exist: its
         # webhooks fail closed (400) while RAZORPAY_WEBHOOK_SECRET / RAZORPAYX_WEBHOOK_SECRET are
         # unset, and the integrations page shows that as a warning.
+        # A withdrawal's ledger debit follows its payout to a final state (AUDIT §35, item 18).
+        from . import withdrawal_ledger  # noqa: F401
+
         names = _configured_names()
         if 'cashfree' in names and not settings.DEBUG and not _webhook_secret():
             raise ImproperlyConfigured(

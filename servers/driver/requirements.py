@@ -288,15 +288,117 @@ def checklist(driver, today=None):
             continue
         st = item_status(driver, key, config, vehicle=vehicle, reviews=reviews, today=today)
         rows.append({'key': key, 'section': section, 'label': label, 'help': help_text,
-                     'need': need['need'], 'blocks_online': need['blocks_online'], **st})
+                     'need': need['need'], 'blocks_online': need['blocks_online'], **st,
+                     'step': STEP_OF[key], 'files': item_files(driver, key, vehicle, reviews)})
     required = [r for r in rows if r['need'] == REQUIRED]
+    steps = step_summary(rows)
     return {'market': {'country': config['country'], 'state': config['state']},
             'items': rows,
             'done': sum(1 for r in required if r['status'] in DONE_STATES),
             'total': len(required),
             'blocking': [r['key'] for r in rows if r['blocks_online'] and r['need'] == REQUIRED
                          and r['status'] in ('missing', 'rejected')],
-            'approved': driver.approved}
+            'approved': driver.approved,
+            'steps': steps,
+            'steps_done': sum(1 for st in steps if st['status'] == 'done'),
+            'next_step': next_step(steps),
+            'minutes_left': sum(MINUTES.get(r['key'], 2) for r in required if r['status'] in ('missing', 'rejected'))}
+
+
+# ---------------------------------------------------------------------------
+# Guided setup (10 Nov v2): six steps, each the items the market asks for
+# ---------------------------------------------------------------------------
+
+#: step key -> item keys, in the order the setup shows them. A step with no item the market asks
+#: for is not shown.
+STEPS = (
+    ('personal', ('profile_photo', 'legal_name', 'date_of_birth', 'address', 'permanent_address', 'address_proof')),
+    ('contact', ('emergency_contact',)),
+    ('identity', ('driving_licence', 'aadhaar', 'pan', 'police_verification', 'background_check')),
+    ('vehicle', ('vehicle',)),
+    ('vehicle_docs', ('vehicle_photos', 'rc', 'registration', 'insurance', 'permit', 'fitness', 'puc', 'inspection')),
+    ('payouts', ('payout_method',)),
+)
+STEP_OF = {key: step for step, keys in STEPS for key in keys}
+#: Rough minutes each item takes, for "About 10 minutes left".
+MINUTES = {'profile_photo': 1, 'legal_name': 1, 'date_of_birth': 1, 'address': 2, 'permanent_address': 1,
+           'address_proof': 1, 'emergency_contact': 1, 'driving_licence': 2, 'aadhaar': 1, 'pan': 1,
+           'police_verification': 1, 'background_check': 0, 'vehicle': 2, 'vehicle_photos': 3,
+           'payout_method': 2}
+
+
+def step_status(items):
+    """The worst of a step's required items: action (rejected), todo (missing), in_review, done."""
+    states = {i['status'] for i in items if i['need'] == REQUIRED} or {i['status'] for i in items}
+    if 'rejected' in states:
+        return 'action'
+    if 'missing' in states:
+        return 'todo'
+    if 'in_review' in states:
+        return 'in_review'
+    return 'done'
+
+
+def step_summary(rows):
+    out = []
+    for step, keys in STEPS:
+        items = [r for r in rows if r['key'] in keys]
+        if items:
+            out.append({'key': step, 'number': len(out) + 1, 'items': [i['key'] for i in items],
+                        'status': step_status(items)})
+    return out
+
+
+def next_step(steps):
+    """The step Continue setup opens: the first needing the driver, else the first in review."""
+    for wanted in (('action', 'todo'), ('in_review',)):
+        for st in steps:
+            if st['status'] in wanted:
+                return st['key']
+    return None
+
+
+VEHICLE_PHOTO_LABELS = {'front': 'Front', 'back': 'Back', 'left': 'Left side', 'right': 'Right side',
+                        'interior': 'Inside'}
+#: The files behind each item, (review key, label, column); vehicle items read the vehicle.
+FILE_SLOTS = {
+    'profile_photo': (('profile_photo', 'Profile photo', 'photo_pending'),),
+    'address_proof': (('address_proof', 'Address proof', 'address_proof_doc'),),
+    'aadhaar': (('aadhaar', 'Aadhaar card', 'aadhaar_doc'),),
+    'pan': (('pan', 'PAN card', 'pan_doc'),),
+    'police_verification': (('police_verification', 'Police verification certificate', 'police_verification_doc'),),
+    'driving_licence': (('license_front', 'Licence, front', 'license_doc'),
+                        ('license_back', 'Licence, back', 'license_doc_back')),
+    'vehicle_photos': tuple((f'vehicle_photo_{side}', VEHICLE_PHOTO_LABELS[side], col) for side, col in PHOTO_COLUMNS),
+}
+
+
+def item_files(driver, key, vehicle, reviews):
+    """One tile per file, each with its own status. A file that is uploaded and not yet decided is
+    in_review, never missing."""
+    from .file_times import uploaded_at
+
+    if key in VEHICLE_DOCS:
+        from .compliance import VEHICLE_DOCUMENT_COLUMNS
+
+        slots, on_vehicle = ((key, ITEMS[key][1], VEHICLE_DOCUMENT_COLUMNS[key]),), True
+    elif key in FILE_SLOTS:
+        slots, on_vehicle = FILE_SLOTS[key], key == 'vehicle_photos'
+    else:
+        return []
+    owner = vehicle if on_vehicle else driver
+    out = []
+    for review_key, label, column in slots:
+        if on_vehicle and vehicle is None:
+            state, reason = 'missing', None
+        else:
+            state, reason = _file_state(reviews, review_key, owner, column, vehicle.id if on_vehicle else None)
+        if key == 'profile_photo' and state == 'missing' and driver.user_id.avatar:
+            state = 'approved'
+        out.append({'key': review_key, 'label': label, 'status': state, 'reason': reason,
+                    'uploaded_at': uploaded_at(owner, column) if state != 'missing' else None,
+                    'vehicle': on_vehicle})
+    return out
 
 
 def blocking_unmet(driver):

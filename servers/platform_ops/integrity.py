@@ -20,6 +20,9 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 SAMPLE = 20
+#: Display fixtures written completed and never settled on purpose (`seed_us_test_city`: a paused
+#: city with no commission rule; trip 105 on QA). Not trips anyone drove, so not a missing ledger row.
+FIXTURE_TRIP_KEYS = ('qa-us-seed-trip-completed',)
 
 
 def scan(fix=False, now=None):
@@ -61,7 +64,8 @@ def scan(fix=False, now=None):
     out['driver_without_wallet'] = {'drivers': no_wallet[:SAMPLE], 'found': len(no_wallet), 'fixed': fixed_wallets}
 
     trips = Trip.objects.filter(status_id__status_code='completed', driver_id__isnull=False,
-                                completed_at__lt=now - timedelta(hours=1))
+                                completed_at__lt=now - timedelta(hours=1)
+                                ).exclude(client_request_id__in=FIXTURE_TRIP_KEYS)
     missing_trips = []
     for trip_id in trips.values_list('id', flat=True).iterator():
         ref = f'TRIP_{trip_id}'

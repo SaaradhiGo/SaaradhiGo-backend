@@ -143,6 +143,8 @@ class Driver(models.Model):
     stripe_account_id=models.CharField(max_length=64,blank=True,default='')
     STRIPE_CHOICES=[('not_started','Not started'),('in_progress','In progress'),('ready','Ready')]
     stripe_onboarding_status=models.CharField(max_length=16,choices=STRIPE_CHOICES,default='not_started')
+    #: When each file column last changed, `{column: iso}` (10 Nov v2): "Uploaded 10 Nov" on its tile.
+    file_times=models.JSONField(default=dict,blank=True)
 
     # ------------------------------------------------------------------
     # ADMIN SCOPE ANCHOR
@@ -328,6 +330,8 @@ class Vehicle(models.Model):
         upload_to=PrefixedUUIDPath('vehicle_pics'), validators=[validate_image_file, validate_file_size])
     photo_interior = models.FileField(blank=True, max_length=512, null=True, storage=public_media_storage,
         upload_to=PrefixedUUIDPath('vehicle_pics'), validators=[validate_image_file, validate_file_size])
+    #: When each file column last changed, `{column: iso}` (see Driver.file_times).
+    file_times = models.JSONField(default=dict, blank=True)
     #: The catalogue entry picked; NULL with `custom_make_model` when the driver chose "Other".
     catalogue_entry = models.ForeignKey('VehicleCatalogueEntry', null=True, blank=True,
                                         on_delete=models.SET_NULL, related_name='+')

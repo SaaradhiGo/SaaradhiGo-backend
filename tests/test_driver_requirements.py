@@ -284,6 +284,23 @@ class TestIntegrity:
         assert again['role_without_profile']['driver'] == [] and again['driver_without_wallet']['found'] == 0
 
 
+    def test_the_us_seed_fixture_trip_is_not_a_missing_ledger_row(self, world):  # noqa: F811
+        """Trip 105 on QA: the seed's completed display trip, never settled by design."""
+        from servers.platform_ops.integrity import scan
+        from servers.ride.models import Trip, TripStatus
+
+        d = new_driver(world)
+        done, _ = TripStatus.objects.get_or_create(status_code='completed')
+        old = timezone.now() - timedelta(days=2)
+        kw = dict(user_id=User.objects.create_user(phone_number='+919000000902', role='rider'), status_id=done,
+                  driver_id=d, pickup_lat=17, pickup_long=78, destination_lat=17, destination_long=78,
+                  payment_method='cash', completed_at=old)
+        fixture = Trip.objects.create(client_request_id='qa-us-seed-trip-completed', **kw)
+        real = Trip.objects.create(client_request_id='real-unsettled', **kw)
+        missing = scan(fix=False)['trip_without_ledger']['trips']
+        assert real.id in missing and fixture.id not in missing
+
+
 class TestLanguagesAndCatalogueAdmin:
     def test_profile_offers_only_the_markets_languages(self, world):  # noqa: F811
         india = client_for(new_driver(world).user_id).get('/api/v1/auth/profile/').json()['data']

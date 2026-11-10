@@ -51,6 +51,13 @@ class MarketRegulation(models.Model):
     term_insurance_min_sum = models.BigIntegerField(null=True, blank=True)
     induction_min_hours = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
     #: Why the row holds what it holds, e.g. "state notification not confirmed".
+    # What a driver must provide here (10 Nov; servers.driver.requirements): `{item: {"need":
+    # "required"|"optional"|"off", "blocks_online": bool}}`. A state row overrides per item.
+    driver_requirements = models.JSONField(null=True, blank=True)
+    min_driver_age = models.PositiveSmallIntegerField(null=True, blank=True)
+    max_vehicle_age_years = models.PositiveSmallIntegerField(null=True, blank=True)
+    #: The app and web languages offered here, e.g. ["en", "te", "hi"].
+    languages = models.JSONField(null=True, blank=True)
     note = models.CharField(max_length=255, blank=True, default='')
     version = models.PositiveIntegerField(default=1)
     updated_at = models.DateTimeField(auto_now=True)

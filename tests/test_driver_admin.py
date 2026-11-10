@@ -106,7 +106,7 @@ def test_retrieve_driver_admin_not_found(auth_client_admin):
     assert response.json()["error"]["code"] == "NOT_FOUND"
 
 @pytest.mark.django_db
-def test_update_kyc_status_admin(auth_client_admin, auth_client_driver):
+def test_update_kyc_status_admin(auth_client_admin, auth_client_driver, no_market_requirements):
     """Approving a driver requires the documents the KYC gate insists on
     (license doc + expiry in the future + active vehicle with RC doc).
 
@@ -389,7 +389,7 @@ def test_the_driver_can_then_read_that_reason(auth_client_admin, auth_client_dri
 
 @pytest.mark.django_db
 def test_approving_clears_a_previous_rejection_reason(
-    auth_client_admin, auth_client_driver,
+    auth_client_admin, auth_client_driver, no_market_requirements,
 ):
     """A stale reason beside an approved account is worse than none."""
     from django.utils import timezone as tz

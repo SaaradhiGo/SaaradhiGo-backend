@@ -64,6 +64,9 @@ _REDACT_KEYS_EXACT = frozenset({
     'rider_name', 'driver_name', 'full_name', 'payee_name',
     'address', 'pickup_address', 'destination_address',
     'upi', 'vpa', 'account_number', 'ifsc',
+    # 10 Nov: identity and address details a driver provides.
+    'aadhaar', 'aadhaar_last4', 'pan', 'dob', 'date_of_birth', 'license_number', 'line1', 'line2',
+    'postal_code', 'account_number_confirm', 'holder_name',
     # Celery embeds the full task argument list under these keys, in both
     # `celery.worker.strategy` ("received") and `celery.app.trace`
     # ("succeeded"). Any task may legitimately carry PII in its arguments —

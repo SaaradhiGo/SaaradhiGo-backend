@@ -138,10 +138,13 @@ ACK_ALSO = {PROMOTION_BUDGET_EXHAUSTED: ('incentive.write',),
 #: Kinds only Super Admin (`platform.settings`) sees.
 #: The month's Google Maps spend reached the country's budget (9 Nov): amber at 80%, red at 100%.
 MAPS_BUDGET = 'platform.maps_budget'
-PLATFORM_ALERT_KINDS = frozenset({NOTIFY_PROVIDER_FAILING, MAPS_BUDGET})
+#: The daily integrity scan found rows that do not line up (10 Nov; platform_ops.integrity).
+DATA_INTEGRITY = 'platform.data_integrity'
+PLATFORM_ALERT_KINDS = frozenset({NOTIFY_PROVIDER_FAILING, MAPS_BUDGET, DATA_INTEGRITY})
 ACK_PERMISSION = {
     NOTIFY_PROVIDER_FAILING: 'platform.settings',
     MAPS_BUDGET: 'platform.settings',
+    DATA_INTEGRITY: 'platform.settings',
     FINANCE_PLATFORM_FUNDED_END: 'finance.read',
     FINANCE_PAYOUT_REVERSED: 'finance.read',
     PROMOTION_BUDGET_OVERSHOOT: 'finance.read',

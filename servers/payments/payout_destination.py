@@ -13,6 +13,29 @@ MISSING_CODE = 'PAYOUT_DETAILS_MISSING'
 MISSING_MESSAGE = 'Add your UPI ID or bank account in Payout details before you withdraw.'
 #: What an operator sees on a payout that cannot be sent.
 MISSING_FOR_OPERATORS = 'No payout details on file'
+#: Bank or UPI changed (10 Nov): payouts wait this long, and the driver is told by SMS.
+HOLD_HOURS = 24
+HELD_CODE = 'PAYOUT_DETAILS_CHANGED'
+
+
+def payout_hold_until(driver, now=None):
+    """When payouts may resume after a bank or UPI change, or None when they are not held."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    changed = getattr(driver, 'payout_details_changed_at', None)
+    if not changed:
+        return None
+    until = changed + timedelta(hours=HOLD_HOURS)
+    return until if until > (now or timezone.now()) else None
+
+
+def held_message(until):
+    from django.utils import timezone
+
+    return ('Your payout details changed recently. For your safety, payouts resume at '
+            f'{timezone.localtime(until):%d %b, %H:%M}.')
 
 
 def has_payout_destination(driver):

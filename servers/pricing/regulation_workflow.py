@@ -41,7 +41,14 @@ FIELDS = {
     'health_insurance_min_sum': ('int', 0, 10 ** 12),
     'term_insurance_min_sum': ('int', 0, 10 ** 12),
     'induction_min_hours': ('decimal', Decimal('0'), Decimal('500')),
+    # Driver requirements (10 Nov; servers.driver.requirements).
+    'driver_requirements': ('requirements', None, None),
+    'min_driver_age': ('int', 16, 30),
+    'max_vehicle_age_years': ('int', 1, 40),
+    'languages': ('languages', None, None),
 }
+#: The site's languages; a market offers a subset.
+LANGUAGE_CODES = ('en', 'te', 'hi', 'es')
 
 
 def _out(value):
@@ -102,6 +109,25 @@ def _parse(name, value):
             raise InvalidRequest('base_fare_source must be state_notified or platform.',
                                  code='INVALID_VALUE', field=name)
         return value
+    if kind == 'requirements':
+        from servers.driver.requirements import ITEMS, OFF, OPTIONAL, REQUIRED
+
+        if not isinstance(value, dict) or any(k not in ITEMS for k in value):
+            raise InvalidRequest('driver_requirements names an unknown item.', code='INVALID_VALUE', field=name)
+        out = {}
+        for key, v in value.items():
+            need = (v or {}).get('need')
+            if need not in (REQUIRED, OPTIONAL, OFF):
+                raise InvalidRequest(f'{key}: need must be required, optional or off.', code='INVALID_VALUE',
+                                     field=name)
+            out[key] = {'need': need, 'blocks_online': bool((v or {}).get('blocks_online')) and need == REQUIRED}
+        return out
+    if kind == 'languages':
+        if (not isinstance(value, list) or not value or 'en' not in value
+                or any(v not in LANGUAGE_CODES for v in value)):
+            raise InvalidRequest(f'languages must include en and only {", ".join(LANGUAGE_CODES)}.',
+                                 code='INVALID_VALUE', field=name)
+        return list(dict.fromkeys(value))
     if kind == 'bool':
         if not isinstance(value, bool):
             raise InvalidRequest(f'{name} must be true or false.', code='INVALID_VALUE', field=name)
@@ -135,8 +161,11 @@ def propose_regulation(actor, *, country, state_code='', changes=None, clear=(),
                **{name: _out(v) for name, v in values.items()},
                'note': (current.note if current else '') if note is None else str(note)[:255],
                'base_version': current.version if current else 0}
-    key = 'market_regulation:' + ':'.join(
-        str(payload[k]) for k in ('country', 'state_code', *FIELDS, 'base_version'))
+    import hashlib
+    import json
+    key = 'market_regulation:' + hashlib.sha256(json.dumps(
+        [payload[k] for k in ('country', 'state_code', *FIELDS, 'base_version')], sort_keys=True,
+        default=str).encode()).hexdigest()
     return require_approval_or_execute(
         PRICING_CHANGE, actor=actor, country=country, scope_node=node,
         target_type=KIND_REGULATION, target_id=f'{country}-{state_code}' if state_code else country,

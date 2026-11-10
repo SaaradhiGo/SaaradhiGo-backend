@@ -159,6 +159,61 @@ def validate_document_file(file_obj):
 #   public  -> PublicMediaStorage (plain URLs)
 #   private -> PrivateDocumentStorage (signed GET URLs)
 UPLOAD_KINDS = {
+    # 10 Nov: identity, address proof, profile photo and vehicle photos.
+    "aadhaar_doc": {
+        "prefix": "aadhaar_docs",
+        "visibility": "private",
+        "types": ALLOWED_DOCUMENT_TYPES,
+        "file_validator": validate_document_file,
+    },
+    "pan_doc": {
+        "prefix": "pan_docs",
+        "visibility": "private",
+        "types": ALLOWED_DOCUMENT_TYPES,
+        "file_validator": validate_document_file,
+    },
+    "police_verification_doc": {
+        "prefix": "police_verification_docs",
+        "visibility": "private",
+        "types": ALLOWED_DOCUMENT_TYPES,
+        "file_validator": validate_document_file,
+    },
+    "address_proof_doc": {
+        "prefix": "address_proof_docs",
+        "visibility": "private",
+        "types": ALLOWED_DOCUMENT_TYPES,
+        "file_validator": validate_document_file,
+    },
+    "photo_pending": {
+        "prefix": "driver_photos",
+        "visibility": "public",
+        "types": ALLOWED_IMAGE_TYPES,
+        "file_validator": validate_image_file,
+    },
+    "photo_back": {
+        "prefix": "vehicle_pics",
+        "visibility": "public",
+        "types": ALLOWED_IMAGE_TYPES,
+        "file_validator": validate_image_file,
+    },
+    "photo_left": {
+        "prefix": "vehicle_pics",
+        "visibility": "public",
+        "types": ALLOWED_IMAGE_TYPES,
+        "file_validator": validate_image_file,
+    },
+    "photo_right": {
+        "prefix": "vehicle_pics",
+        "visibility": "public",
+        "types": ALLOWED_IMAGE_TYPES,
+        "file_validator": validate_image_file,
+    },
+    "photo_interior": {
+        "prefix": "vehicle_pics",
+        "visibility": "public",
+        "types": ALLOWED_IMAGE_TYPES,
+        "file_validator": validate_image_file,
+    },
     # MVAG 2025 driver records (9 Nov): uploaded by the driver, reviewed in the console.
     "health_insurance_doc": {
         "prefix": "health_insurance_docs",

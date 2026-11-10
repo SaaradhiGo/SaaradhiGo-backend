@@ -71,8 +71,10 @@ def candidates(user):
                 found.setdefault(pk, set()).add(SAME_INSTRUMENT)
         bank = getattr(driver, 'bank_account', None)
         if bank is not None and bank.account_number:
+            # Account numbers are encrypted at rest (10 Nov): compare their fingerprints.
+            from base.encrypted import fingerprint
             for pk in DriverBankAccount.objects.exclude(driver=driver).filter(
-                    account_number=bank.account_number, ifsc_code__iexact=bank.ifsc_code
+                    account_fingerprint=fingerprint(bank.account_number), ifsc_code__iexact=bank.ifsc_code
             ).values_list('driver__user_id_id', flat=True)[:MAX_PER_SIGNAL]:
                 found.setdefault(pk, set()).add(SAME_INSTRUMENT)
     return found

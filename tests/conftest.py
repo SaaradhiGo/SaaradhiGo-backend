@@ -359,3 +359,12 @@ def _allow_test_teardown_to_truncate_the_audit_log(django_db_setup, django_db_bl
                 )
         except Exception:  # noqa: BLE001 - the database may already be gone
             pass
+
+
+@pytest.fixture
+def no_market_requirements(db):
+    """The driver requirements seeded for IN and US (10 Nov) set aside, for tests of the KYC rules
+    that came before them. The requirements gate has its own tests (test_driver_requirements)."""
+    from servers.pricing.regulation_models import MarketRegulation
+
+    MarketRegulation.objects.update(driver_requirements=None)

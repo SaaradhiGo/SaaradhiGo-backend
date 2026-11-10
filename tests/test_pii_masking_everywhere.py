@@ -492,6 +492,8 @@ INVENTORY = {
     # Empty in this world (no driver has documents awaiting review); the rows
     # are the list's rows, and test_drivers_module checks them masked.
     'api/v1/driver/admin/kyc-queue/': False,
+    # The vehicle catalogue (10 Nov): makes and models, no person.
+    'api/v1/driver/admin/vehicle-catalogue/': False,
     'api/v1/driver/admin/<int:driver_id>/vehicles/': False,
     # MVAG 2025 insurance and training records of one driver (policy numbers, expiry dates).
     'api/v1/driver/admin/<int:driver_id>/records/': True,

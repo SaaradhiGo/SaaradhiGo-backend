@@ -67,6 +67,8 @@ SKIP_NO_HANDLE = 'no_payout_handle'
 #: A suspended driver whose payouts are on hold (serious fraud, a second admin approved, a maximum
 #: duration): skipped and listed for Finance. AUDIT 27.56.
 SKIP_HELD = 'held'
+#: Bank or UPI changed in the last 24 hours (10 Nov).
+SKIP_DETAILS_CHANGED = 'payout_details_changed'
 MAX_DRIVERS_PER_RUN = 2000
 OPEN_STATUSES = ('pending', 'approved', 'processed', 'unresolved', 'conflict')
 
@@ -298,6 +300,10 @@ def run_scope(config, scope_key, members, now):
             for d in candidates:
                 if fraud_money.active_payout_hold(d, now) is not None:
                     skipped.append({'driver_id': d.id, 'reason': SKIP_HELD})
+                    continue
+                from .payout_destination import payout_hold_until
+                if payout_hold_until(d, now) is not None:
+                    skipped.append({'driver_id': d.id, 'reason': SKIP_DETAILS_CHANGED})
                     continue
                 if needs_handle and not has_payout_handle(d):
                     skipped.append({'driver_id': d.id, 'reason': SKIP_NO_HANDLE})

@@ -448,6 +448,12 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'pricing.charge_driver_fees',
         'schedule': _crontab(minute=17),
     },
+    'platform-integrity-scan-daily': {
+        # Roles without profiles, drivers without wallets, trips and payouts without ledger rows
+        # (10 Nov): a console alert when anything does not line up. Reports only; no fixes.
+        'task': 'platform_ops.integrity_scan',
+        'schedule': _crontab(hour=3, minute=40),
+    },
     'ride-check-maps-budgets-hourly': {
         # The month's Google Maps spend per country against its budget (9 Nov): alerts, degrade.
         'task': 'ride.check_maps_budgets',
@@ -1176,6 +1182,12 @@ RAZORPAYX_ACCOUNT_NUMBER=os.environ.get("RAZORPAYX_ACCOUNT_NUMBER", "")
 RAZORPAYX_KEY_ID=os.environ.get("RAZORPAYX_KEY_ID", "")
 RAZORPAYX_KEY_SECRET=os.environ.get("RAZORPAYX_KEY_SECRET", "")
 RAZORPAYX_WEBHOOK_SECRET=os.environ.get("RAZORPAYX_WEBHOOK_SECRET", "")
+# US driver payouts through Stripe Connect Express (10 Nov). Unset: QA's fake provider, else
+# "US payouts are not set up yet".
+STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
+# Fernet key for PAN and bank account numbers at rest (base/encrypted.py). Unset: derived from
+# SECRET_KEY, so rotating SECRET_KEY would need these re-encrypted; set it before production.
+FIELD_ENCRYPTION_KEY = os.environ.get('FIELD_ENCRYPTION_KEY', '')
 # Webhooks (both endpoints) whose signed `created_at` is older than this are ignored as replays.
 # Razorpay retries a failed delivery for 24 hours after the event is created
 # (razorpay.com/docs/webhooks/best-practices/); the default is that plus 5 minutes.

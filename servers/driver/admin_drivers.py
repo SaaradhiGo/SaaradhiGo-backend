@@ -449,15 +449,54 @@ def _document_rows(driver, vehicle, documents_visible):
     return rows
 
 
+#: 10 Nov: files reviewed one by one beyond the country's statutory documents.
+EXTRA_DRIVER_FILES = {
+    'profile_photo': ('photo_pending', 'Profile photo'), 'address_proof': ('address_proof_doc', 'Address proof'),
+    'aadhaar': ('aadhaar_doc', 'Aadhaar'), 'pan': ('pan_doc', 'PAN card'),
+    'police_verification': ('police_verification_doc', 'Police verification'),
+}
+EXTRA_VEHICLE_FILES = {f'vehicle_photo_{side}': (col, f'Vehicle photo ({side})')
+                       for side, col in (('front', 'vehicle_pic'), ('back', 'photo_back'), ('left', 'photo_left'),
+                                         ('right', 'photo_right'), ('interior', 'photo_interior'))}
+
+
+def _extra_rows(driver, vehicle, documents_visible):
+    """Rows for the 10 Nov items that have a file on record."""
+    owner = vehicle if vehicle is not None else driver
+    files = EXTRA_VEHICLE_FILES if vehicle is not None else EXTRA_DRIVER_FILES
+    latest = {}
+    for review in (DriverDocumentReview.objects.filter(driver=driver, vehicle=vehicle, document_key__in=list(files))
+                   .select_related('reviewed_by').order_by('reviewed_at', 'id')):
+        latest[review.document_key] = review
+    rows = []
+    for key, (column, label) in files.items():
+        field = getattr(owner, column, None)
+        name = getattr(field, 'name', '') if field else ''
+        if not name:
+            continue
+        review = latest.get(key)
+        current = review is not None and review.file_name == name
+        rows.append({
+            'key': key, 'label': label, 'description': '', 'owner': 'vehicle' if vehicle is not None else 'driver',
+            'vehicle_id': vehicle.id if vehicle is not None else None, 'present': True, 'recordable': True,
+            'viewable': documents_visible, 'url_withheld': not documents_visible,
+            'review_state': review.state if current else 'not_reviewed',
+            'review': ({'state': review.state, 'reason': review.reason, 'reviewed_at': _iso(review.reviewed_at),
+                        'created_by': _staff(review.reviewed_by), 'current': current} if review else None),
+        })
+    return rows
+
+
 def _documents_visible(user, driver):
     return granted(user, 'pii.view', node_of(driver))[0]
 
 
 def documents_payload(user, driver):
     visible = _documents_visible(user, driver)
-    rows = _document_rows(driver, None, visible)
+    rows = _document_rows(driver, None, visible) + _extra_rows(driver, None, visible)
     for vehicle in driver.vehicle_set.order_by('id'):
         rows.extend(_document_rows(driver, vehicle, visible))
+        rows.extend(_extra_rows(driver, vehicle, visible))
     return rows
 
 
@@ -495,7 +534,9 @@ def admin_document_view(request, driver_id, key):
                               message='The document cannot be opened right now.',
                               field='general', issue='audit write failed',
                               status=status.HTTP_503_SERVICE_UNAVAILABLE)
-    url = document_access.signed_url(field)
+    # Photos (the profile photo, vehicle photos) are public files riders see: their plain URL.
+    public = key == 'profile_photo' or key in EXTRA_VEHICLE_FILES
+    url = field.url if public else document_access.signed_url(field)
     if url is None:
         return error_response(code='DOCUMENT_UNAVAILABLE',
                               message='The document could not be opened.',
@@ -568,6 +609,10 @@ def approval_blockers(driver):
         blockers.append({'code': 'DOCUMENTS_MISSING',
                          'message': 'Missing: ' + ', '.join(
                              compliance.document_label(k) for k in missing)})
+    from . import requirements
+    unmet = requirements.blocking_unmet(driver)
+    if unmet:
+        blockers.append({'code': 'REQUIREMENTS_MISSING', 'message': 'Not done: ' + ', '.join(unmet)})
     serializer = KYCApprovalSerializer(driver, data={'approved': True}, partial=True)
     if not serializer.is_valid():
         for field, errors in serializer.errors.items():
@@ -586,9 +631,10 @@ def rejected_documents(driver):
 
 
 def documents_payload_raw(driver):
-    rows = _document_rows(driver, None, False)
+    rows = _document_rows(driver, None, False) + _extra_rows(driver, None, False)
     for vehicle in driver.vehicle_set.order_by('id'):
         rows.extend(_document_rows(driver, vehicle, False))
+        rows.extend(_extra_rows(driver, vehicle, False))
     return rows
 
 
@@ -675,6 +721,23 @@ def allowed_actions(user, driver, blockers=None):
     }
 
 
+def _requirements_summary(driver):
+    from . import requirements
+    from .models import DriverBankAccount
+
+    c = requirements.checklist(driver)
+    bank = DriverBankAccount.objects.filter(driver=driver).first()
+    return {'done': c['done'], 'total': c['total'], 'blocking': c['blocking'],
+            'items': [{k: i[k] for k in ('key', 'label', 'status', 'reason', 'blocks_online', 'need', 'expires')}
+                      for i in c['items']],
+            'name_pending': driver.name_pending or None,
+            'bank': ({'bank_name': bank.bank_name, 'account_last4': (bank.account_number or '')[-4:],
+                      'ifsc': bank.ifsc_code, 'holder_name': bank.holder_name,
+                      'verification_status': bank.verification_status} if bank else None),
+            'police_verification_status': driver.police_verification_status,
+            'background_check_status': driver.background_check_status}
+
+
 def detail_extras(request, driver):
     """The sections the Drivers module adds to the full detail payload."""
     from servers.approvals.models import ApprovalRequest
@@ -688,6 +751,8 @@ def detail_extras(request, driver):
         'documents': documents_payload(request.user, driver),
         # Additive (MVAG 2025): insurance and training against the market's values.
         'mvag_records': _records_status(driver),
+        # 10 Nov: the market's checklist, a name change waiting, the bank account's check.
+        'requirements': _requirements_summary(driver),
         'approval_blockers': blockers,
         'ratings_summary': _ratings(driver),
         'counts': _counts(driver),
@@ -809,6 +874,15 @@ def _document_target(driver, data):
     key = _text(data, 'document_key', required=True, limit=32)
     if key in compliance.DRIVER_DOCUMENT_COLUMNS:
         return driver, compliance.DRIVER_DOCUMENT_COLUMNS[key], key, None
+    if key in EXTRA_DRIVER_FILES:
+        return driver, EXTRA_DRIVER_FILES[key][0], key, None
+    if key in EXTRA_VEHICLE_FILES:
+        raw = data.get('vehicle_id')
+        vehicle_id = _int(raw, 'vehicle_id') if raw not in (None, '') else driver.active_vehicle_id
+        vehicle = Vehicle.objects.filter(id=vehicle_id, driver_id=driver).first() if vehicle_id else None
+        if vehicle is None:
+            raise BadInput('VEHICLE_REQUIRED', 'vehicle_id must name one of this driver\'s vehicles.', 'vehicle_id')
+        return vehicle, EXTRA_VEHICLE_FILES[key][0], key, vehicle
     if key not in compliance.VEHICLE_DOCUMENT_COLUMNS:
         raise BadInput('INVALID_DOCUMENT', f'Unknown document {key!r}.', 'document_key')
     raw = data.get('vehicle_id')
@@ -832,6 +906,8 @@ def admin_review_document(request, driver_id):
     driver, refusal = _driver_for_write(request, driver_id, 'driver.kyc')
     if refusal:
         return refusal
+    if (request.data or {}).get('document_key') in ('legal_name', 'payout_method'):
+        return _review_detail(request, driver)
     try:
         owner, column, key, vehicle = _document_target(driver, request.data)
         decision = _text(request.data, 'decision', required=True, limit=10)
@@ -861,6 +937,9 @@ def admin_review_document(request, driver_id):
         review = DriverDocumentReview.objects.create(
             driver=driver, vehicle=vehicle, document_key=key, file_name=file_name,
             state=state, reason=reason, reviewed_by=request.user)
+        if state == DriverDocumentReview.APPROVED:
+            from . import requirements
+            requirements.on_file_approved(driver, key)
         _sync_driver_doc_state(driver)
         record_admin_action(
             request, action='driver_document_reviewed', target_type=TARGET,
@@ -871,6 +950,50 @@ def admin_review_document(request, driver_id):
     return success_response({'driver_id': driver.id, 'review_id': review.id, 'state': state,
                              'doc_status': driver.doc_status, 'created': True},
                             status.HTTP_201_CREATED)
+
+
+def _review_detail(request, driver):
+    """Approve or reject a changed legal name, or an India bank account an operator checked by hand
+    (10 Nov). Audited like a document review."""
+    from .models import DriverBankAccount
+
+    try:
+        key = _text(request.data, 'document_key', required=True, limit=32)
+        decision = _text(request.data, 'decision', required=True, limit=10)
+        if decision not in ('approve', 'reject'):
+            raise BadInput('INVALID_DECISION', 'decision must be approve or reject.', 'decision')
+        reason = _text(request.data, 'reason', required=decision == 'reject', limit=REASON_LIMIT)
+    except BadInput as exc:
+        return exc.response()
+    with transaction.atomic():
+        driver = _locked(driver.id)
+        before = _snapshot(driver)
+        if key == 'legal_name':
+            if not driver.name_pending:
+                return _conflict('NOTHING_TO_REVIEW', 'There is no name change waiting.', 'document_key')
+            pending = driver.name_pending
+            if decision == 'approve':
+                from . import requirements
+                requirements.approve_name(driver)
+            else:
+                driver.name_pending = ''
+                driver.save(update_fields=['name_pending'])
+            DriverDocumentReview.objects.create(
+                driver=driver, document_key=key, file_name=pending[:512],
+                state='approved' if decision == 'approve' else 'rejected', reason=reason or '',
+                reviewed_by=request.user)
+        else:
+            bank = DriverBankAccount.objects.filter(driver=driver).first()
+            if bank is None:
+                return _conflict('NOTHING_TO_REVIEW', 'There is no bank account on record.', 'document_key')
+            bank.verification_status = 'verified' if decision == 'approve' else 'failed'
+            bank.save(update_fields=['verification_status', 'account_fingerprint'])
+        record_admin_action(request, action='driver_document_reviewed', target_type=TARGET,
+                            target_id=driver.id, before=before,
+                            after={**_snapshot(driver), 'document_key': key, 'state': decision},
+                            reason=reason or f'{key} approved')
+    return success_response({'driver_id': driver.id, 'document_key': key, 'state': decision},
+                            status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------
@@ -918,6 +1041,10 @@ def admin_approve_driver(request, driver_id):
                 status=status.HTTP_400_BAD_REQUEST)
         before = _snapshot(driver)
         serializer.save()
+        # The reviewer approved what they saw: files nobody decided on separately, and the name.
+        from . import requirements
+        requirements.approve_reviewed_files(driver, request.user)
+        requirements.approve_name(driver)
         driver.doc_status = 'approved'
         driver.doc_rejection_reason = ''
         driver.doc_status_updated_at = timezone.now()

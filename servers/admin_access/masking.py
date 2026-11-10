@@ -321,7 +321,7 @@ ADDRESS_FIELDS = frozenset({
 })
 BLANKED_FIELDS = frozenset({
     'dob', 'date_of_birth', 'house_no', 'street', 'zip_code', 'postcode',
-    'aadhaar', 'aadhaar_number', 'pan', 'pan_number', 'ssn',
+    'aadhaar', 'aadhaar_number', 'pan', 'pan_number', 'ssn', 'line1', 'line2', 'postal_code',
 })
 LAST4_FIELDS = frozenset({
     'account_number', 'bank_account_number', 'ifsc', 'ifsc_code',

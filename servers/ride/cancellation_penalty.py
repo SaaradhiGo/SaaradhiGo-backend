@@ -243,3 +243,32 @@ def settle_collected(trip, *, is_cash):
         row.status = CancellationPenalty.COLLECTED
         row.settled_at = now
         row.save(update_fields=['status', 'settled_at'])
+
+
+def preview(trip, now=None):
+    """What cancelling now would cost the rider, for the cancel button (9 Nov):
+    {free, free_until (ISO or None), fee (str or None), fee_minor, currency}.
+
+    Free while no driver has accepted, inside the free window, and wherever no penalty applies;
+    after the window the fee the rider would owe, never a guess."""
+    from base.money import currency_for_trip, from_minor
+    from servers.platform_ops.flags import flag_enabled
+    from servers.pricing.regulation import cancel_policy
+
+    now = now or timezone.now()
+    currency = currency_for_trip(trip)
+    free = {'free': True, 'free_until': None, 'fee': None, 'fee_minor': 0, 'currency': currency}
+    if trip.driver_id_id is None or trip.accepted_at is None:
+        return free
+    country, state, city = _market(trip)
+    policy = cancel_policy(country, state) if country else None
+    if policy is None or not flag_enabled(FLAG, city=city, country=country):
+        return free
+    from datetime import timedelta
+
+    until = trip.accepted_at + timedelta(seconds=policy.free_seconds)
+    if now < until:
+        return {**free, 'free_until': until.isoformat()}
+    amount = amount_for(policy, trip.estimated_fare_minor or 0)
+    return {'free': amount <= 0, 'free_until': None, 'fee': str(from_minor(amount, currency)),
+            'fee_minor': amount, 'currency': currency}

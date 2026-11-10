@@ -57,7 +57,8 @@ VIEWED_ACTION = 'driver_document_viewed'
 _TICKET_SALT = 'saaradhigo.driver.document_view.v1'
 
 #: Columns that hold a private document, per owner.
-DRIVER_COLUMNS = ('license_doc', 'license_doc_back')
+DRIVER_COLUMNS = ('license_doc', 'license_doc_back', 'health_insurance_doc',
+                  'term_insurance_doc', 'induction_training_certificate')
 VEHICLE_COLUMNS = ('rc_doc', 'permit_doc', 'insurance_doc', 'fitness_doc',
                    'puc_doc', 'inspection_doc')
 

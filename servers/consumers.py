@@ -464,6 +464,10 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             'commission_rate': event.get('commission_rate'),
             'commission_amount': event.get('commission_amount'),
             'rider_rating': event.get('rider_rating'),
+            # Driver fee plans (9 Nov): "You earn {full fare}" and "Platform fee today so far: X of cap".
+            'fee_plan_type': event.get('fee_plan_type', ''),
+            'platform_fee_today': event.get('platform_fee_today', ''),
+            'platform_fee_cap': event.get('platform_fee_cap', ''),
         }))
 
     # -- Database helpers --
@@ -1151,6 +1155,9 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             # AUDIT 27.36): percent, rule id and rule version. Never recomputed.
             commission_snapshot = snapshot_for_booking(
                 pickup_zone, requested_vt.id if requested_vt else None)
+            # The driver fee plan (9 Nov): a non-commission plan zeroes the commission snapshot.
+            from servers.pricing.fee_plans import snapshot_for_booking as _fee_plan_snapshot
+            commission_snapshot.update(_fee_plan_snapshot(pickup_zone, requested_vt))
 
             with transaction.atomic():
                 trip = Trip.objects.create(
@@ -1172,8 +1179,11 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     **commission_snapshot,
                 )
 
+                from base.money import to_minor as _rpf_minor
                 fare_pricing = FarePricing.objects.create(
                     trip_id=trip,
+                    rider_platform_fee_minor=(_rpf_minor(fare['rider_platform_fee'], fare['currency'])
+                                              if fare.get('rider_platform_fee') else None),
                     base_fare=fare['base_fare'],
                     distance_fare=fare['distance_fare'],
                     time_fare=fare['time_fare'],

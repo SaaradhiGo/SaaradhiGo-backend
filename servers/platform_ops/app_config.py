@@ -115,8 +115,11 @@ def _cancel_policy(code):
     policy = cancel_policy(code)
     if policy is None or not flags.flag_enabled('cancellation_penalty', country=code):
         return None
+    # `free_before_accept` (9 Nov): cancelling costs nothing until a driver accepts and for
+    # `free_cancel_seconds` after; the apps say "Free to cancel" then, and the fee only after.
     return {'charges_fee': True, 'free_cancel_seconds': policy.free_seconds,
-            'fee_percent': str(policy.percent), 'fee_cap_minor': policy.cap_minor}
+            'fee_percent': str(policy.percent), 'fee_cap_minor': policy.cap_minor,
+            'free_before_accept': True}
 
 
 def _policy(code):

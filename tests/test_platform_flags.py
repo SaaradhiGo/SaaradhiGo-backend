@@ -60,7 +60,9 @@ class TestResolution:
 
     def test_only_flags_with_a_reader_are_seeded(self, geo):
         # The first real flag came with its reader (MVAG 2025, ride.cancellation_penalty).
-        assert list(FeatureFlag.objects.values_list('key', flat=True)) == ['cancellation_penalty']
+        # `driver_rebate` is the one exception: the owner asked for it (off) ahead of its reader.
+        assert sorted(FeatureFlag.objects.values_list('key', flat=True)) == [
+            'cancellation_penalty', 'driver_rebate', 'rider_platform_fee']
 
 
 class TestChangeWithoutAChecker:

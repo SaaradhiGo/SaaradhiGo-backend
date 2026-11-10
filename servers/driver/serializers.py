@@ -75,6 +75,8 @@ class DriverProfileSerializer(serializers.ModelSerializer):
         # and never told why, or that there was a reason to read. A review
         # outcome nobody can read is not a review.
         fields = ['id', 'license_doc', 'license_doc_back', 'license_expiry',
+                  # MVAG 2025 records the driver uploads themselves (9 Nov).
+                  'health_insurance_doc', 'health_insurance_policy_number', 'health_insurance_insurer', 'health_insurance_sum_insured', 'health_insurance_expiry', 'term_insurance_doc', 'term_insurance_policy_number', 'term_insurance_insurer', 'term_insurance_sum_insured', 'term_insurance_expiry', 'induction_training_certificate', 'induction_training_hours', 'induction_training_date',
                   'active_vehicle', 'active_vehicle_details', 'status',
                   'approved', 'doc_status', 'doc_rejection_reason',
                   'doc_status_updated_at', 'uploaded_timestamp',

@@ -56,6 +56,9 @@ logger = logging.getLogger(__name__)
 #: Both halves already exist; this is the one place they are joined, so a
 #: client never has to know that "licence front" is stored as `license_doc`.
 UPLOAD_KIND_FOR = {
+    'health_insurance': 'health_insurance_doc',
+    'term_insurance': 'term_insurance_doc',
+    'induction_training': 'induction_training_certificate',
     'license_front': 'license_doc',
     'license_back': 'license_doc_back',
     'rc': 'rc_doc',
@@ -70,6 +73,9 @@ UPLOAD_KIND_FOR = {
 #: Which endpoint a given document is submitted to once uploaded. The driver
 #: documents go on the driver; the rest go on a vehicle.
 TARGET_FOR = {
+    'health_insurance': 'driver',
+    'term_insurance': 'driver',
+    'induction_training': 'driver',
     'license_front': 'driver',
     'license_back': 'driver',
 }

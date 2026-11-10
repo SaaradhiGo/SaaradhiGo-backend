@@ -159,6 +159,25 @@ def validate_document_file(file_obj):
 #   public  -> PublicMediaStorage (plain URLs)
 #   private -> PrivateDocumentStorage (signed GET URLs)
 UPLOAD_KINDS = {
+    # MVAG 2025 driver records (9 Nov): uploaded by the driver, reviewed in the console.
+    "health_insurance_doc": {
+        "prefix": "health_insurance_docs",
+        "visibility": "private",
+        "types": ALLOWED_DOCUMENT_TYPES,
+        "file_validator": validate_document_file,
+    },
+    "term_insurance_doc": {
+        "prefix": "term_insurance_docs",
+        "visibility": "private",
+        "types": ALLOWED_DOCUMENT_TYPES,
+        "file_validator": validate_document_file,
+    },
+    "induction_training_certificate": {
+        "prefix": "induction_certificates",
+        "visibility": "private",
+        "types": ALLOWED_DOCUMENT_TYPES,
+        "file_validator": validate_document_file,
+    },
     "avatar": {
         "prefix": "avatars",
         "visibility": "public",

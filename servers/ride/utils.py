@@ -247,6 +247,7 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=Non
         # decomposition that does not add up -- QA trip 45 displayed
         # 60.00 + 55.59 + 19.62 beside a charged total of 135.22.
         'fare_adjustments': fare.get('fare_adjustments', []),
+        'rider_platform_fee': fare.get('rider_platform_fee'),
         'surge_multiplier': fare['surge_multiplier'],
         'demand_label': fare.get('demand_label'),
         'fare_limits': fare.get('fare_limits'),

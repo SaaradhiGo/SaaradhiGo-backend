@@ -678,4 +678,7 @@ from servers.pricing.commission_models import (  # noqa: E402,F401
     CommissionCountryConfig, CommissionRule, CommissionStateCap, DriverNotice,
 )
 from servers.pricing.regulation_models import MarketRegulation  # noqa: E402,F401
+from servers.pricing.fee_plan_models import (  # noqa: E402,F401
+    DriverDailyFee, DriverFeePlan, MonthlyFixedCost,
+)
 from servers.pricing.zone_models import ServiceZoneRevision  # noqa: E402,F401

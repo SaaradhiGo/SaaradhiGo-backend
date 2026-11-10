@@ -524,3 +524,11 @@ def run_daily_reconciliation():
     if failed:
         logger.error('reconciliation: %d run(s) failed: %s', len(failed), failed)
     return {'runs': len(runs), 'new_findings': raised, 'failed': failed}
+
+
+@shared_task(name='payments.fake_payout_settle', max_retries=0)
+def fake_payout_settle(reference_id, gateway_ref):
+    """QA only (`PAYOUT_FAKE_ALLOWED`): deliver the fake provider's 'processed' event."""
+    from integrations.payouts.fake import settle
+
+    return settle(reference_id, gateway_ref)

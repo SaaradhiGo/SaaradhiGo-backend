@@ -39,6 +39,11 @@ class Trip(CurrencyStampedModel, models.Model):
     commission_percent_snapshot=models.DecimalField(max_digits=5,decimal_places=2,null=True,blank=True)
     commission_rule_id=models.BigIntegerField(null=True,blank=True)
     commission_rule_version=models.PositiveIntegerField(null=True,blank=True)
+    # The driver fee plan in force at booking (9 Nov, `pricing.fee_plans`). Under a non-commission
+    # plan the commission snapshot above is 0 and the fee is charged once per local day.
+    fee_plan_id=models.BigIntegerField(null=True,blank=True)
+    fee_plan_version=models.PositiveIntegerField(null=True,blank=True)
+    fee_plan_type=models.CharField(max_length=24,blank=True,default='',db_index=True)
     accepted_at=models.DateTimeField(blank=True,null=True)
     # The route the driver was expected to drive (pickup to drop), fetched
     # AFTER the accept commits (`ride.store_planned_route`). An encoded
@@ -415,6 +420,9 @@ class FarePricing(CurrencyStampedModel, models.Model):
     pretax_fare_minor = models.BigIntegerField(null=True, blank=True)
     tax_minor = models.BigIntegerField(null=True, blank=True)
     per_trip_fee_minor = models.BigIntegerField(null=True, blank=True)
+    # The rider platform fee inside this fare (9 Nov; flag `rider_platform_fee`, off). Never the
+    # driver's: settlement takes it out of the gross.
+    rider_platform_fee_minor = models.BigIntegerField(null=True, blank=True)
     promo = models.ForeignKey(
         'ride.PromoCode', on_delete=models.PROTECT, null=True, blank=True,
         related_name='fare_snapshots',

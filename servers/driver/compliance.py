@@ -69,7 +69,14 @@ VEHICLE_DOCUMENT_COLUMNS = {
 DRIVER_DOCUMENT_COLUMNS = {
     'license_front': 'license_doc',
     'license_back': 'license_doc_back',
+    # MVAG 2025 (9 Nov): OPTIONAL for approval; the market's driver-records gate (driver.records)
+    # decides whether they keep a driver offline.
+    'health_insurance': 'health_insurance_doc',
+    'term_insurance': 'term_insurance_doc',
+    'induction_training': 'induction_training_certificate',
 }
+#: Driver documents a driver may upload and a reviewer checks, but approval never waits for.
+OPTIONAL_DRIVER_DOCUMENTS = ('health_insurance', 'term_insurance', 'induction_training')
 
 # Human labels for the console, so the checklist does not show raw keys.
 DOCUMENT_LABELS = {
@@ -82,6 +89,9 @@ DOCUMENT_LABELS = {
     'inspection': 'Safety inspection',
     'license_front': 'Licence (front)',
     'license_back': 'Licence (back)',
+    'health_insurance': 'Health insurance',
+    'term_insurance': 'Term insurance',
+    'induction_training': 'Induction training certificate',
 }
 
 
@@ -98,6 +108,9 @@ DOCUMENT_DESCRIPTIONS = {
     'inspection': 'Periodic safety inspection certificate.',
     'license_front': 'Government-issued driving licence, front.',
     'license_back': 'Government-issued driving licence, reverse.',
+    'health_insurance': 'Your health insurance policy (MVAG 2025).',
+    'term_insurance': 'Your term life insurance policy (MVAG 2025).',
+    'induction_training': 'The certificate from your induction training (MVAG 2025).',
 }
 
 
@@ -179,7 +192,8 @@ def evaluate_vehicle(vehicle, driver):
 
 
 def evaluate_driver(driver):
-    """Per-document status for the driver themselves."""
+    """Per-document status for the driver themselves: the required ones, then the optional MVAG
+    2025 records in a market that has driver-records values (`required: False`)."""
     out = {}
     for key in required_driver_documents(driver):
         column = DRIVER_DOCUMENT_COLUMNS.get(key)
@@ -189,7 +203,22 @@ def evaluate_driver(driver):
             'applicable': column is not None,
             'present': _has(driver, column) if column else False,
         }
+    if _records_market(driver):
+        for key in OPTIONAL_DRIVER_DOCUMENTS:
+            column = DRIVER_DOCUMENT_COLUMNS[key]
+            out.setdefault(key, {'label': DOCUMENT_LABELS[key], 'required': False, 'applicable': True,
+                                 'present': _has(driver, column)})
     return out
+
+
+def _records_market(driver):
+    try:
+        from servers.pricing.regulation_models import MarketRegulation
+
+        return MarketRegulation.objects.filter(country=driver_country_code(driver)).filter(
+            health_insurance_min_sum__isnull=False).exists()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def vehicle_is_compliant(vehicle, driver):
@@ -206,7 +235,7 @@ def vehicle_is_compliant(vehicle, driver):
 
 
 def driver_is_compliant(driver):
-    checks = evaluate_driver(driver)
+    checks = {k: c for k, c in evaluate_driver(driver).items() if c['required']}
     return bool(checks) and all(
         c['present'] and c['applicable'] for c in checks.values()
     )
@@ -217,7 +246,7 @@ def missing_documents(vehicle, driver):
     missing = [k for k, c in evaluate_vehicle(vehicle, driver).items()
                if not (c['present'] and c['applicable'])]
     missing += [k for k, c in evaluate_driver(driver).items()
-                if not (c['present'] and c['applicable'])]
+                if c['required'] and not (c['present'] and c['applicable'])]
     return missing
 
 

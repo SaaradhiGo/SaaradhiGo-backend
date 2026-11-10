@@ -157,6 +157,16 @@ def tier_fee(tiers, amount_minor):
     return 0
 
 
+def instant_ready(config):
+    """Withdraw now is offered only when it is on AND a real provider fee rule is entered: a market
+    whose provider price is not set yet (the US: "set from Stripe pricing") never shows a $0 fee
+    that is not real (9 Nov)."""
+    if config is None or not config.instant_cashout_enabled:
+        return False
+    return bool(config.instant_fee_tiers or config.instant_fee_percent
+                or config.instant_cashout_fee_flat_minor)
+
+
 def provider_label(config):
     name = (getattr(config, 'instant_fee_provider', '') or '').strip()
     return f'Provider fee (charged by {name})' if name else 'Provider fee'

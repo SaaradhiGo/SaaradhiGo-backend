@@ -136,9 +136,12 @@ FRAUD_ALERT_KINDS = frozenset({FRAUD_FLAG_HIGH, FRAUD_QUEUE_AGING, FRAUD_PAYOUT_
 ACK_ALSO = {PROMOTION_BUDGET_EXHAUSTED: ('incentive.write',),
             FRAUD_PAYOUT_HOLD_EXPIRED: ('finance.payout',)}
 #: Kinds only Super Admin (`platform.settings`) sees.
-PLATFORM_ALERT_KINDS = frozenset({NOTIFY_PROVIDER_FAILING})
+#: The month's Google Maps spend reached the country's budget (9 Nov): amber at 80%, red at 100%.
+MAPS_BUDGET = 'platform.maps_budget'
+PLATFORM_ALERT_KINDS = frozenset({NOTIFY_PROVIDER_FAILING, MAPS_BUDGET})
 ACK_PERMISSION = {
     NOTIFY_PROVIDER_FAILING: 'platform.settings',
+    MAPS_BUDGET: 'platform.settings',
     FINANCE_PLATFORM_FUNDED_END: 'finance.read',
     FINANCE_PAYOUT_REVERSED: 'finance.read',
     PROMOTION_BUDGET_OVERSHOOT: 'finance.read',

@@ -124,7 +124,21 @@ def _policy(code):
     return {'cancel_policy': _cancel_policy(code) or dict(src['cancel_policy']),
             'free_wait_minutes': src['free_wait_minutes'], 'refund_days': src['refund_days'],
             'quote_valid_seconds': src['quote_valid_seconds'],
-            'home_fare_places_max_km': src['home_fare_places_max_km']}
+            'home_fare_places_max_km': src['home_fare_places_max_km'],
+            # Additive (9 Nov, maps cost): how the clients search and locate.
+            'maps': _maps_block(code)}
+
+
+def _maps_block(code):
+    from django.conf import settings as _s
+
+    from servers.ride.maps_budget import degrade_level
+
+    level = degrade_level(code)
+    return {'autocomplete_min_chars': 5 if level >= 3 else _s.MAPS_AUTOCOMPLETE_MIN_CHARS,
+            'autocomplete_debounce_ms': _s.MAPS_AUTOCOMPLETE_DEBOUNCE_MS,
+            'reverse_geocode_move_m': _s.MAPS_REVERSE_GEOCODE_MOVE_M,
+            'route_cache_seconds': int(_s.MAPS_ROUTE_TTL.get(code) or _s.MAPS_ROUTE_TTL_S)}
 
 
 def _live_cities(country_code):

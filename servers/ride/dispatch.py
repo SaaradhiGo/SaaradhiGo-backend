@@ -380,11 +380,14 @@ def _pickup_fields(metres):
     """How far this driver is from the pickup, for their own offer card. Straight
     line at the city speed the fare quote uses; empty when unknown."""
     if metres is None:
-        return {'pickup_distance_km': '', 'pickup_eta_min': ''}
+        return {'pickup_distance_km': '', 'pickup_eta_min': '', 'pickup_eta_approx': ''}
     kmh = float(getattr(settings, 'PICKUP_ETA_CITY_KMH', 18))
     return {
         'pickup_distance_km': f'{metres / 1000:.1f}',
         'pickup_eta_min': str(max(1, math.ceil(metres / (kmh * 1000 / 60)))),
+        # Straight line before acceptance: dispatch makes no paid Maps call (9 Nov). The card
+        # says "about"; the routed time comes once, for the driver who accepts.
+        'pickup_eta_approx': '1',
     }
 
 

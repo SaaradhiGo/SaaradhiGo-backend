@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import views
+from . import maps_views, views
 
 # Mounted at api/v1/platform/. Everything operator-facing is under `admin/` so the structural
 # guard finds each route; the public app-config lives at api/v1/app-config/ (servers/urls.py).
@@ -22,5 +22,9 @@ urlpatterns = [
     path('admin/settings/', views.settings_collection, name='platform_settings'),
     path('admin/settings/<str:key>/', views.setting_update, name='platform_setting'),
     path('admin/integrations/', views.integrations_status, name='platform_integrations'),
+    path('admin/maps/', maps_views.maps_usage, name='platform_maps'),
+    path('admin/maps/prices/<str:sku>/', maps_views.maps_price_update, name='platform_maps_price'),
+    path('admin/maps/budget/<str:country>/', maps_views.maps_budget_update,
+         name='platform_maps_budget'),
     path('admin/options/', views.options, name='platform_options'),
 ]

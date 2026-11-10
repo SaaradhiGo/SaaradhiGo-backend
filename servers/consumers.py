@@ -454,6 +454,7 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             # Per-driver distance to the pickup and the offer's expiry (dispatch).
             'pickup_distance_km': event.get('pickup_distance_km', ''),
             'pickup_eta_min': event.get('pickup_eta_min', ''),
+            'pickup_eta_approx': event.get('pickup_eta_approx', ''),
             'expires_at': event.get('expires_at', ''),
             # What the driver keeps, from the settlement's own arithmetic, and the rider's rating
             # (dispatch._offer_money, 2026-11-06). This handler rebuilds the frame key by key, so a

@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     estimate_fare, ride_history, driver_history, trip_detail, rate_trip,
     trip_driver_details, get_active_trip, proxy_geocode, proxy_directions,
-    proxy_place_details, proxy_reverse_geocode,
+    proxy_place_details, proxy_reverse_geocode, maps_client_meter,
     driver_cancel_trip, rider_cancel_trip, resend_receipt, receipt_pdf,
     apply_promo_endpoint, trip_chat_history, trip_eta,
 )
@@ -37,6 +37,7 @@ urlpatterns = [
     path('maps/place-details', proxy_place_details),
     path('maps/reverse-geocode', proxy_reverse_geocode),
     path('maps/directions', proxy_directions),
+    path('maps/meter/', maps_client_meter),
 
     # Admin Panel APIs
     path('admin/trips/', admin_list_trips),

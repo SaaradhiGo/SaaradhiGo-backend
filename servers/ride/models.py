@@ -48,6 +48,15 @@ class Trip(CurrencyStampedModel, models.Model):
     planned_route_polyline=models.TextField(blank=True,null=True)
     planned_route_source=models.CharField(max_length=20,blank=True,default='')
     planned_route_at=models.DateTimeField(blank=True,null=True)
+    # The route's own distance and duration (9 Nov, maps cost): the live ETA is worked out on our
+    # server from the driver's position along the stored polyline, so the 15 s refresh calls no
+    # routing API. The pickup leg (driver to pickup) is fetched once, at accept.
+    planned_route_distance_m=models.PositiveIntegerField(blank=True,null=True)
+    planned_route_duration_s=models.PositiveIntegerField(blank=True,null=True)
+    pickup_route_polyline=models.TextField(blank=True,null=True)
+    pickup_route_distance_m=models.PositiveIntegerField(blank=True,null=True)
+    pickup_route_duration_s=models.PositiveIntegerField(blank=True,null=True)
+    pickup_route_at=models.DateTimeField(blank=True,null=True)
     reached_at=models.DateTimeField(blank=True,null=True)
     started_at=models.DateTimeField(blank=True,null=True)
     completed_at=models.DateTimeField(blank=True,null=True, db_index=True)
@@ -985,3 +994,6 @@ class CancellationPenalty(models.Model):
 
     def __str__(self):
         return f'CancellationPenalty trip={self.trip_id} {self.party} {self.amount_minor} {self.status}'
+
+
+from servers.ride.maps_models import MapsBudget, MapsSkuPrice, MapsUsage  # noqa: E402,F401

@@ -1,10 +1,10 @@
 """Arrival times for an active trip: driver to pickup, and pickup (or here) to drop.
 
-Straight-line distance x a road factor / the market's average speed, in whole minutes, and
-always marked `estimated`. The backend does have a routing API (maps_utils.google_directions),
-but this refreshes every 15 seconds for every active trip, and a Google call each would undo
-the Maps budget the paused M1-M5 work protects (the same reasoning as pickup_eta.py). Swapping
-in a routed time later is one function: `_minutes`.
+From the stored route when the trip has one (9 Nov, `route_eta`): the remaining distance along
+the polyline at the route's own speed, worked out on our server every 15 seconds with no
+routing call (`source: 'route'`). Otherwise, or off the route, or while the Maps budget is at
+degrade level 2: straight-line distance x a road factor / the market's average speed
+(`source: 'straight_line'`). Whole minutes, always marked `estimated`.
 
 Never a guess: with no live driver position, or a trip that is not active, there is no ETA
 (None), and the screens hide the line rather than show 0.
@@ -51,6 +51,23 @@ def _minutes(metres, country):
     return max(1, math.ceil(metres / (market_kmh(country) * 1000 / 60)))
 
 
+def _secs_to_min(seconds):
+    return max(1, math.ceil(float(seconds) / 60))
+
+
+def _routed(trip, phase, driver_at, country):
+    """Seconds left on the stored route, or None (straight line then). Never raises."""
+    try:
+        from servers.ride.maps_budget import degrade_level
+        from servers.ride.route_eta import routed_seconds
+
+        if degrade_level(country) >= 2:
+            return None
+        return routed_seconds(trip, phase, driver_at, country)
+    except Exception:  # noqa: BLE001 - the straight line always answers
+        return None
+
+
 def driver_position(driver_id):
     """(lat, lng) of the driver's last ping in the last two minutes, or None."""
     if not driver_id:
@@ -95,13 +112,21 @@ def compute(trip, driver_at=None, now=None):
            'source': 'straight_line'}
     if status in TO_DROP:
         out['phase'] = 'to_drop'
-        out['drop_eta_min'] = _minutes(road_metres(haversine_m(*driver_at, *drop)), country)
+        routed = _routed(trip, 'to_drop', driver_at, country)
+        out['drop_eta_min'] = (_secs_to_min(routed) if routed is not None
+                               else _minutes(road_metres(haversine_m(*driver_at, *drop)), country))
+        out['source'] = 'route' if routed is not None else 'straight_line'
     else:
-        ride_min = _minutes(road_metres(haversine_m(*pickup, *drop)), country)
+        planned = getattr(trip, 'planned_route_duration_s', None)
+        ride_min = (_secs_to_min(planned) if planned
+                    else _minutes(road_metres(haversine_m(*pickup, *drop)), country))
         if status in TO_PICKUP:
             to_pickup = road_metres(haversine_m(*driver_at, *pickup))
+            routed = _routed(trip, 'to_pickup', driver_at, country)
             out['phase'] = 'to_pickup'
-            out['pickup_eta_min'] = _minutes(to_pickup, country)
+            out['pickup_eta_min'] = (_secs_to_min(routed) if routed is not None
+                                     else _minutes(to_pickup, country))
+            out['source'] = 'route' if routed is not None else 'straight_line'
             out['pickup_distance_km'] = f'{to_pickup / 1000:.1f}'
             out['drop_eta_min'] = out['pickup_eta_min'] + ride_min
         else:

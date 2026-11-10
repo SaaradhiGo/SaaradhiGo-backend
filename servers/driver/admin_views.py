@@ -460,6 +460,14 @@ def update_kyc_status_admin(request, driver_id):
                     code='DRIVER_SUSPENDED', message='Suspended: reinstate before approving.',
                     field='approved', issue='driver is suspended',
                     status=status.HTTP_409_CONFLICT)
+            if serializer.validated_data.get('approved') is True and not driver.approved:
+                # The market's blocking items (10 Nov), as on the console's Approve.
+                from . import requirements
+                unmet = requirements.blocking_unmet(driver)
+                if unmet:
+                    return error_response(
+                        code='REQUIREMENTS_MISSING', message='Not done: ' + ', '.join(unmet),
+                        field='approved', issue='requirements', status=status.HTTP_400_BAD_REQUEST)
             serializer.save()
 
             # THE REVIEW OUTCOME, WHERE THE DRIVER CAN READ IT.

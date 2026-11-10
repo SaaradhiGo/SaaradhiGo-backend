@@ -1,3 +1,4 @@
+from . import catalogue_views, profile_views
 from django.urls import path
 from .views import (
     driver_earnings, driver_earnings_summary, driver_earnings_daily, driver_fee_plan, driver_earnings_period,
@@ -44,12 +45,23 @@ urlpatterns = [
     path('withdrawals/history/', driver_withdrawal_history),
     path('withdrawals/block-status/', driver_withdrawal_block_status),
     # Vehicles
+    # What a real driver provides, per market (10 Nov).
+    path('requirements/', profile_views.driver_requirements),
+    path('personal/', profile_views.driver_personal),
+    path('identity/', profile_views.driver_identity),
+    path('payout-method/', profile_views.driver_payout_method),
+    path('payout-method/stripe/', profile_views.driver_stripe_onboarding),
+    path('payout-method/stripe/refresh/', profile_views.driver_stripe_refresh),
+    path('ifsc/<str:code>/', profile_views.driver_ifsc),
+    path('vehicle-catalogue/', profile_views.vehicle_catalogue),
     path('vehicles/', list_vehicles),
     path('vehicles/add/', create_vehicle),
     path('vehicles/<int:vehicle_id>/', update_vehicle),
     path('vehicles/<int:vehicle_id>/delete/', delete_vehicle),
 
     # Admin URLs
+    path('admin/vehicle-catalogue/', catalogue_views.catalogue),
+    path('admin/vehicle-catalogue/<int:entry_id>/', catalogue_views.catalogue_entry),
     path('admin/', list_drivers_admin),
     path('admin/<int:driver_id>/', retrieve_driver_admin),
     path('admin/<int:driver_id>/full/', driver_full_detail_admin),

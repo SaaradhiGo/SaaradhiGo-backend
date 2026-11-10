@@ -105,6 +105,12 @@ def column_for(key):
         return 'driver', compliance.DRIVER_DOCUMENT_COLUMNS[key]
     if key in compliance.VEHICLE_DOCUMENT_COLUMNS:
         return 'vehicle', compliance.VEHICLE_DOCUMENT_COLUMNS[key]
+    from .admin_drivers import EXTRA_DRIVER_FILES, EXTRA_VEHICLE_FILES
+
+    if key in EXTRA_DRIVER_FILES:
+        return 'driver', EXTRA_DRIVER_FILES[key][0]
+    if key in EXTRA_VEHICLE_FILES:
+        return 'vehicle', EXTRA_VEHICLE_FILES[key][0]
     if key in DRIVER_COLUMNS:
         return 'driver', key
     if key in VEHICLE_COLUMNS:

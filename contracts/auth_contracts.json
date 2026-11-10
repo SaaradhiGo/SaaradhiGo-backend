@@ -31,7 +31,13 @@
             "preferred_theme": null,
             "roles": [
               "rider"
-            ]
+            ],
+            "market_languages": [
+              "en",
+              "te",
+              "hi"
+            ],
+            "market_country": "IN"
           }
         },
         "meta": {
@@ -99,7 +105,13 @@
             "preferred_theme": null,
             "roles": [
               "rider"
-            ]
+            ],
+            "market_languages": [
+              "en",
+              "te",
+              "hi"
+            ],
+            "market_country": "IN"
           }
         },
         "meta": {

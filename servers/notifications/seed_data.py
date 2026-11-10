@@ -9,6 +9,7 @@
     promotions.incentive_completed  a driver finished a quest and the reward is on its way
     promotions.referral_reward      a referral reward was earned (rider or driver)
     trips.pickup_code_reminder      support re-sent the pickup code: open the app (no code in it)
+    payout.details_changed          bank or UPI changed: payouts wait 24 hours (driver, 10 Nov)
     payout.reversed                 a payout was reversed by the bank and is back in the balance
                                     (driver, in_app + push, AUDIT 27.71)
     promotions.promo_available      a new offer (PROMOTIONAL: only to people who opted in, held by
@@ -38,6 +39,7 @@ REFERRAL_REWARD = 'promotions.referral_reward'
 PROMO_AVAILABLE = 'promotions.promo_available'
 PAYOUT_REVERSED = 'payout.reversed'
 PICKUP_CODE_REMINDER = 'trips.pickup_code_reminder'
+PAYOUT_DETAILS_CHANGED = 'payout.details_changed'
 
 _COMMISSION_VARS = ['effective_date', 'scope', 'old_rate', 'new_rate']
 _COMMISSION_SAMPLE = {'effective_date': '12 November 2026', 'scope': 'Sedan in Hyderabad',
@@ -173,6 +175,20 @@ COPY = {
         variables=['offer'], sample={'offer': '20% off your next ride this weekend.'}),
 }
 
+_CHANGED = dict(variables=['method'], sample={'method': 'bank account'})
+COPY.update({
+    (PAYOUT_DETAILS_CHANGED, 'in_app'): dict(
+        title='Your payout details changed',
+        body='Your {method} for payouts was changed. For your safety, payouts wait 24 hours. If you '
+             'did not make this change, contact driver support now.', **_CHANGED),
+    (PAYOUT_DETAILS_CHANGED, 'push'): dict(
+        title='Your payout details changed',
+        body='Your {method} was changed. Payouts wait 24 hours. Not you? Contact support.', **_CHANGED),
+    (PAYOUT_DETAILS_CHANGED, 'sms'): dict(
+        body='SaaradhiGo: your {method} for payouts was changed. Payouts wait 24 hours. If this was not '
+             'you, contact driver support in the app.', **_CHANGED),
+})
+
 #: Channels each key is seeded on. Anything not listed uses all of CHANNELS.
 KEY_CHANNELS = {OPERATOR_CANCELLED: ('in_app', 'push'),
                 OPERATOR_ENDED_RIDER: ('in_app', 'push'),
@@ -182,7 +198,8 @@ KEY_CHANNELS = {OPERATOR_CANCELLED: ('in_app', 'push'),
                 REFERRAL_REWARD: ('in_app', 'push'),
                 PROMO_AVAILABLE: ('in_app', 'push'),
                 PAYOUT_REVERSED: ('in_app', 'push'),
-                PICKUP_CODE_REMINDER: ('in_app', 'push')}
+                PICKUP_CODE_REMINDER: ('in_app', 'push'),
+                PAYOUT_DETAILS_CHANGED: ('in_app', 'push', 'sms')}
 
 COUNTRIES = ('IN', 'US')
 CHANNELS = ('in_app', 'push', 'sms', 'email')
@@ -198,7 +215,7 @@ def seed_rows():
     rows = []
     for key in (COMMISSION, PAYOUT, OPERATOR_CANCELLED, OPERATOR_ENDED_RIDER,
                 OPERATOR_ENDED_DRIVER, INCENTIVE_PROGRESS, INCENTIVE_COMPLETED, REFERRAL_REWARD,
-                PROMO_AVAILABLE, PAYOUT_REVERSED, PICKUP_CODE_REMINDER):
+                PROMO_AVAILABLE, PAYOUT_REVERSED, PICKUP_CODE_REMINDER, PAYOUT_DETAILS_CHANGED):
         for country in COUNTRIES:
             for channel in KEY_CHANNELS.get(key, CHANNELS):
                 copy = dict(COPY[(key, channel)])

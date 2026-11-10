@@ -561,6 +561,12 @@ def driver_withdrawal_request(request):
             code=MISSING_CODE, message=MISSING_MESSAGE, field='payout_details',
             issue='No UPI ID or bank account on file',
             status=status.HTTP_400_BAD_REQUEST)
+    from servers.payments.payout_destination import HELD_CODE, held_message, payout_hold_until
+    held = payout_hold_until(driver)
+    if held is not None:
+        return error_response(code=HELD_CODE, message=held_message(held), field='payout_details',
+                              issue='Payout details changed in the last 24 hours',
+                              status=status.HTTP_400_BAD_REQUEST)
 
     # Validate block period (an instant withdrawal is the driver's own early cash-out: the
     # provider fee is its price, so the 7-day block does not apply to it).
@@ -770,7 +776,7 @@ def list_vehicles(request):
 
 
 #: What identifies the car on the rider's screen; changing any of it is reviewed again.
-VEHICLE_IDENTITY = ('vehicle_type', 'brand', 'model', 'color', 'vehicle_number')
+VEHICLE_IDENTITY = ('vehicle_type', 'brand', 'model', 'color', 'vehicle_number', 'year')
 
 
 def _send_to_review(driver):
@@ -840,6 +846,12 @@ def create_vehicle(request):
             puc_expiry=data.get('puc_expiry'),
             vehicle_pic=data.get('vehicle_pic'),
         )
+        from .vehicle_rules import VehicleProblem, apply_identity
+        try:
+            apply_identity(driver, vehicle, request.data, vt.type)
+        except VehicleProblem as exc:
+            return error_response(code=exc.code, message=exc.message, field=exc.field, issue=exc.message,
+                                  status=status.HTTP_400_BAD_REQUEST)
         vehicle.full_clean()
         _, storage_error = save_with_storage_errors(
             vehicle.save, what='vehicle creation')
@@ -894,7 +906,8 @@ def update_vehicle(request, vehicle_id):
         )
 
     for field_name in ('rc_doc', 'permit_doc', 'insurance_doc', 'fitness_doc',
-                       'puc_doc', 'inspection_doc', 'vehicle_pic'):
+                       'puc_doc', 'inspection_doc', 'vehicle_pic',
+                       'photo_back', 'photo_left', 'photo_right', 'photo_interior'):
         field_provided, field_value, field_error = resolve_file_input(
             request, field_name, kind=field_name
         )
@@ -923,6 +936,14 @@ def update_vehicle(request, vehicle_id):
                                   field='vehicle_type', issue='Not in the catalogue',
                                   status=status.HTTP_400_BAD_REQUEST)
         vehicle.vehicle_type_id = vt
+    from .vehicle_rules import VehicleProblem, apply_identity
+    try:
+        apply_identity(driver, vehicle, {k: request.data[k] for k in (
+            'catalogue_entry', 'custom', 'brand', 'model', 'year', 'vehicle_number') if k in request.data},
+            vehicle.vehicle_type_id.type)
+    except VehicleProblem as exc:
+        return error_response(code=exc.code, message=exc.message, field=exc.field, issue=exc.message,
+                              status=status.HTTP_400_BAD_REQUEST)
     after = {f: str(getattr(vehicle, f) or '') for f in VEHICLE_IDENTITY if f != 'vehicle_type'}
     after['vehicle_type'] = vehicle.vehicle_type_id_id
     identity_changed = before != after

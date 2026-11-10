@@ -37,6 +37,9 @@ class VehicleSerializer(serializers.ModelSerializer):
             'insurance_doc','fitness_doc','puc_doc','inspection_doc',
             'insurance_expiry','permit_expiry',
             'fitness_expiry','puc_expiry','status','vehicle_type', 'vehicle_type_id_val',
+            # 10 Nov: the other four photos and where the make and model came from.
+            'photo_back', 'photo_left', 'photo_right', 'photo_interior', 'catalogue_entry',
+            'custom_make_model',
         ]
         read_only_fields = ['id', 'status']
 class DriverProfileSerializer(serializers.ModelSerializer):

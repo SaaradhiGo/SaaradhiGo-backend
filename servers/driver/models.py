@@ -5,6 +5,7 @@ from base.storage_backends import private_document_storage, public_media_storage
 from base.currency_stamp import CurrencyStampedModel
 from base.money import MinorUnitsAmount
 from base.db_indexes import PatternPrefixIndex
+from base.encrypted import EncryptedCharField
 from servers.driver.plates import normalised_plate_expression
 # Create your models here.
 User=get_user_model()
@@ -106,6 +107,42 @@ class Driver(models.Model):
             'approval, and ignored outside a QA environment.'
         ),
     )
+
+    # ------------------------------------------------------------------
+    # What a real driver provides (10 Nov), per the market's requirements
+    # (servers.driver.requirements). Each item is reviewed in the console.
+    # ------------------------------------------------------------------
+    #: A new profile photo waits here until approved; riders keep seeing User.avatar meanwhile.
+    photo_pending=models.FileField(blank=True, max_length=512, null=True, storage=public_media_storage,
+        upload_to=PrefixedUUIDPath('driver_photos'), validators=[validate_image_file, validate_file_size])
+    #: A changed legal name waits here until approved (it must match the licence).
+    name_pending=models.CharField(max_length=256,blank=True,default='')
+    license_number=models.CharField(max_length=32,blank=True,default='')
+    #: US: the issuing state (two letters).
+    license_state=models.CharField(max_length=8,blank=True,default='')
+    #: India: ONLY the last four digits of Aadhaar are ever stored, with the document.
+    aadhaar_last4=models.CharField(max_length=4,blank=True,default='')
+    aadhaar_doc=models.FileField(blank=True, max_length=512, null=True, storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('aadhaar_docs'), validators=[validate_document_file, validate_file_size])
+    #: India: PAN for TDS, encrypted at rest; shown masked.
+    pan_number=EncryptedCharField(max_length=256,blank=True,default='')
+    pan_doc=models.FileField(blank=True, max_length=512, null=True, storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('pan_docs'), validators=[validate_document_file, validate_file_size])
+    police_verification_doc=models.FileField(blank=True, max_length=512, null=True, storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('police_verification_docs'), validators=[validate_document_file, validate_file_size])
+    POLICE_CHOICES=[('not_submitted','Not submitted'),('pending','Pending'),('verified','Verified'),('failed','Failed')]
+    police_verification_status=models.CharField(max_length=16,choices=POLICE_CHOICES,default='not_submitted')
+    #: US: filled by the background-check provider later; nothing is collected here.
+    BACKGROUND_CHOICES=[('not_started','Not started'),('pending','Pending'),('clear','Clear'),('consider','Consider'),('failed','Failed')]
+    background_check_status=models.CharField(max_length=16,choices=BACKGROUND_CHOICES,default='not_started')
+    address_proof_doc=models.FileField(blank=True, max_length=512, null=True, storage=private_document_storage,
+        upload_to=PrefixedUUIDPath('address_proof_docs'), validators=[validate_document_file, validate_file_size])
+    #: Bank or UPI changed: payouts wait 24 hours from here.
+    payout_details_changed_at=models.DateTimeField(null=True,blank=True)
+    #: US payouts: Stripe Connect Express. Bank details never touch SaaradhiGo.
+    stripe_account_id=models.CharField(max_length=64,blank=True,default='')
+    STRIPE_CHOICES=[('not_started','Not started'),('in_progress','In progress'),('ready','Ready')]
+    stripe_onboarding_status=models.CharField(max_length=16,choices=STRIPE_CHOICES,default='not_started')
 
     # ------------------------------------------------------------------
     # ADMIN SCOPE ANCHOR
@@ -281,6 +318,20 @@ class Vehicle(models.Model):
         upload_to=PrefixedUUIDPath('vehicle_pics'),
         validators=[validate_image_file, validate_file_size],
     )
+
+    # Vehicle photos (10 Nov): `vehicle_pic` is the front; these are the other four views.
+    photo_back = models.FileField(blank=True, max_length=512, null=True, storage=public_media_storage,
+        upload_to=PrefixedUUIDPath('vehicle_pics'), validators=[validate_image_file, validate_file_size])
+    photo_left = models.FileField(blank=True, max_length=512, null=True, storage=public_media_storage,
+        upload_to=PrefixedUUIDPath('vehicle_pics'), validators=[validate_image_file, validate_file_size])
+    photo_right = models.FileField(blank=True, max_length=512, null=True, storage=public_media_storage,
+        upload_to=PrefixedUUIDPath('vehicle_pics'), validators=[validate_image_file, validate_file_size])
+    photo_interior = models.FileField(blank=True, max_length=512, null=True, storage=public_media_storage,
+        upload_to=PrefixedUUIDPath('vehicle_pics'), validators=[validate_image_file, validate_file_size])
+    #: The catalogue entry picked; NULL with `custom_make_model` when the driver chose "Other".
+    catalogue_entry = models.ForeignKey('VehicleCatalogueEntry', null=True, blank=True,
+                                        on_delete=models.SET_NULL, related_name='+')
+    custom_make_model = models.BooleanField(default=False)
 
     status = models.CharField(
         max_length=20,
@@ -530,8 +581,21 @@ class DriverBankAccount(models.Model):
     """
     driver = models.OneToOneField(Driver, on_delete=models.CASCADE, related_name='bank_account')
     bank_name = models.CharField(max_length=256)
-    account_number = models.CharField(max_length=256)
+    #: Encrypted at rest (10 Nov); compare accounts with `account_fingerprint`.
+    account_number = EncryptedCharField(max_length=256)
     ifsc_code = models.CharField(max_length=20)
+    account_fingerprint = models.CharField(max_length=64, blank=True, default='', db_index=True)
+    holder_name = models.CharField(max_length=256, blank=True, default='')
+    branch = models.CharField(max_length=256, blank=True, default='')
+    VERIFY_CHOICES = [('pending', 'Pending'), ('pending_config', 'Verification pending (config)'),
+                      ('verified', 'Verified'), ('failed', 'Failed')]
+    verification_status = models.CharField(max_length=16, choices=VERIFY_CHOICES, default='pending')
+    verified_name = models.CharField(max_length=256, blank=True, default='')
+
+    def save(self, *args, **kwargs):
+        from base.encrypted import fingerprint
+        self.account_fingerprint = fingerprint(self.account_number)
+        super().save(*args, **kwargs)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -659,3 +723,69 @@ class DriverNote(models.Model):
 
     def __str__(self):
         return f'DriverNote driver={self.driver_id}'
+
+
+class DriverAddress(models.Model):
+    """A driver's current or permanent address (10 Nov). State is a code from the market's list."""
+
+    CURRENT, PERMANENT = 'current', 'permanent'
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='addresses')
+    kind = models.CharField(max_length=10, choices=[(CURRENT, 'Current'), (PERMANENT, 'Permanent')])
+    line1 = models.CharField(max_length=256)
+    line2 = models.CharField(max_length=256, blank=True, default='')
+    city = models.CharField(max_length=128)
+    state_code = models.CharField(max_length=8)
+    postal_code = models.CharField(max_length=10)
+    country = models.CharField(max_length=2)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['driver', 'kind'], name='driver_address_one_per_kind')]
+
+
+class DriverEmergencyContact(models.Model):
+    """One of a driver's two emergency contacts (10 Nov). Shown to support and ops during an SOS,
+    never to riders. `User.emergency_contact` stays as the legacy single number."""
+
+    RELATIONSHIPS = [('spouse', 'Spouse or partner'), ('parent', 'Parent'), ('sibling', 'Brother or sister'),
+                     ('child', 'Son or daughter'), ('relative', 'Other relative'), ('friend', 'Friend'),
+                     ('other', 'Other')]
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='emergency_contacts')
+    position = models.PositiveSmallIntegerField()
+    name = models.CharField(max_length=128)
+    relationship = models.CharField(max_length=16, choices=RELATIONSHIPS)
+    phone_number = models.CharField(max_length=20)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['position']
+        constraints = [
+            models.UniqueConstraint(fields=['driver', 'position'], name='driver_emergency_one_per_position'),
+            models.CheckConstraint(condition=models.Q(position__in=[1, 2]), name='driver_emergency_position_1_2'),
+        ]
+
+
+class VehicleCatalogueEntry(models.Model):
+    """Makes and models a driver picks from, per country and vehicle type (10 Nov).
+
+    US: NHTSA vPIC (passenger cars and SUVs). India: a curated list of common models, for admins
+    to extend. "Other" is not a row: the vehicle is saved with `custom_make_model` and reviewed.
+    """
+
+    country = models.CharField(max_length=2)
+    vehicle_type = models.CharField(max_length=32)
+    make = models.CharField(max_length=64)
+    model = models.CharField(max_length=128)
+    source = models.CharField(max_length=128, blank=True, default='')
+    curated = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['make', 'model']
+        constraints = [models.UniqueConstraint(fields=['country', 'vehicle_type', 'make', 'model'],
+                                               name='vehicle_catalogue_unique')]
+        indexes = [models.Index(fields=['country', 'vehicle_type', 'is_active'], name='vehicle_cat_lookup_idx')]
+
+    def __str__(self):
+        return f'{self.country} {self.vehicle_type} {self.make} {self.model}'

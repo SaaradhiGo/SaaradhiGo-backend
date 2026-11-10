@@ -46,9 +46,9 @@ def along(points, lat, lng):
     cos0 = math.cos(math.radians(lat))
     me = _flat(lat, lng, lat, cos0)
     flat = [_flat(p[0], p[1], lat, cos0) for p in points]
-    seg_len = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(flat, flat[1:])]
+    seg_len = [math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(flat, flat[1:], strict=False)]
     best = (float('inf'), 0, 0.0)
-    for i, (a, b) in enumerate(zip(flat, flat[1:])):
+    for i, (a, b) in enumerate(zip(flat, flat[1:], strict=False)):
         dx, dy = b[0] - a[0], b[1] - a[1]
         seg = dx * dx + dy * dy
         t = 0.0 if seg == 0 else max(0.0, min(1.0, ((me[0] - a[0]) * dx + (me[1] - a[1]) * dy) / seg))

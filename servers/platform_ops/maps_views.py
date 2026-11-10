@@ -16,6 +16,7 @@ from rest_framework.permissions import IsAuthenticated
 from base.countries import COUNTRIES
 from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission
+from servers.admin_audit.models import actor_snapshot
 from servers.admin_audit.services import record_admin_action
 from servers.ride import maps_budget
 from servers.ride.maps_models import MapsBudget, MapsSkuPrice
@@ -79,7 +80,7 @@ def maps_price_update(request, sku):
                 raise ValueError
     except (InvalidOperation, TypeError, ValueError):
         return _bad('usd_per_1000', 'Prices and free calls are numbers, not negative.')
-    row.updated_by_label = getattr(request.user, 'email', '') or str(request.user.pk)
+    row.updated_by_label = actor_snapshot(request.user).get('actor_label') or f'admin {request.user.pk}'
     row.save()
     record_admin_action(request, action='maps_price_changed', target_type='maps_sku_price',
                         target_id=sku, before=before, after=_price(row), reason=str(d.get('reason') or ''))
@@ -111,7 +112,7 @@ def maps_budget_update(request, country):
             setattr(row, k, d[k])
     if not 0 < row.amber_percent <= row.red_percent <= 1000:
         return _bad('amber_percent', 'Amber must be above 0 and not above red.')
-    row.updated_by_label = getattr(request.user, 'email', '') or str(request.user.pk)
+    row.updated_by_label = actor_snapshot(request.user).get('actor_label') or f'admin {request.user.pk}'
     row.save()
     record_admin_action(request, action='maps_budget_changed', target_type='maps_budget',
                         target_id=code, before=before, after=_budget(row, code),

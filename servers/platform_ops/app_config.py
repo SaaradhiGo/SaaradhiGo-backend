@@ -104,6 +104,8 @@ def country_block(country):
         # Additive (2026-11-06): cancel_policy, free_wait_minutes and refund_days, or None when
         # not decided for the country. `refund_days` counts business days.
         **_policy(country.code),
+        # Additive (9 Nov, maps cost): how the clients search and locate.
+        'maps': _maps_block(country.code),
     }
 
 
@@ -127,9 +129,7 @@ def _policy(code):
     return {'cancel_policy': _cancel_policy(code) or dict(src['cancel_policy']),
             'free_wait_minutes': src['free_wait_minutes'], 'refund_days': src['refund_days'],
             'quote_valid_seconds': src['quote_valid_seconds'],
-            'home_fare_places_max_km': src['home_fare_places_max_km'],
-            # Additive (9 Nov, maps cost): how the clients search and locate.
-            'maps': _maps_block(code)}
+            'home_fare_places_max_km': src['home_fare_places_max_km']}
 
 
 def _maps_block(code):

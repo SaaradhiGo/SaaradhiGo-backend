@@ -44,7 +44,6 @@ pyOpenSSL>=26.0.0
 setuptools>=84.0.0
 whitenoise==6.9.0
 firebase-admin==6.5.0
-dj-database-url==2.1.0
 psycopg2-binary==2.9.9
 # Core Payment Modules
 cashfree-pg==3.2.12

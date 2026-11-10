@@ -179,7 +179,19 @@ def driver_earnings(request):
     from servers.driver.earnings import settlement_rows
 
     driver = request.user.driver
-    rows = settlement_rows(driver)
+    day = request.query_params.get('date')
+    if day:
+        # One local day (10 Nov v2): the earnings chart's bar opens that day's trips.
+        from datetime import date, datetime, time, timedelta
+
+        from base.market_time import driver_timezone
+        try:
+            since = datetime.combine(date.fromisoformat(day), time.min, tzinfo=driver_timezone(driver))
+        except ValueError:
+            return error_response('INVALID_DATE', 'date is YYYY-MM-DD', 'date', 'invalid', status.HTTP_400_BAD_REQUEST)
+        rows = settlement_rows(driver, since=since, until=since + timedelta(days=1))
+    else:
+        rows = settlement_rows(driver)
 
     paginator = PageNumberPagination()
     paginator.page_size = 10

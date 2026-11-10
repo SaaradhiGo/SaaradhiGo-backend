@@ -90,3 +90,13 @@ def test_months_and_statements_match_the_screen(driver):  # noqa: F811
     pdf = client.get(f'/api/v1/driver/earnings/statement/?month={key}&as=pdf')
     assert pdf['Content-Type'] == 'application/pdf' and pdf.content[:4] == b'%PDF'
     assert client.get('/api/v1/driver/earnings/statement/?month=2026-13').status_code == 400
+
+
+def test_the_trips_of_one_day(driver):  # noqa: F811
+    _settle(driver, '150', 'online')
+    client = _api(driver)
+    today = timezone.localdate(timezone=driver_timezone(driver)).isoformat()
+    got = _get(client, f'?date={today}&page_size=50')
+    assert len(got['results']) == 1
+    assert _get(client, '?date=2001-01-01&page_size=50')['results'] == []
+    assert client.get('/api/v1/driver/earnings/?date=yesterday').status_code == 400

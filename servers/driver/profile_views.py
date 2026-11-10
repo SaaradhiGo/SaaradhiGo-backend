@@ -92,6 +92,8 @@ def personal_dict(driver):
         'emergency_contacts': [{'position': c.position, 'name': c.name, 'relationship': c.relationship,
                                 'phone_number': c.phone_number}
                                for c in DriverEmergencyContact.objects.filter(driver=driver)],
+        # The profile summary's city (10 Nov v2).
+        'home_city': getattr(getattr(driver, 'home_city', None), 'name', None),
     }
 
 

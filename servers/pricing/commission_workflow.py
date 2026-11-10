@@ -600,10 +600,12 @@ def execute_pricing_change(request_row):
         return activate_rule(payload.get('rule_id'), request_row)
     if kind == PAYLOAD_CONFIG:
         return apply_country_config(request_row)
-    from . import regulation_workflow
+    from . import fee_plan_workflow, regulation_workflow
 
     if kind in regulation_workflow.KINDS:
         return regulation_workflow.execute(kind, request_row)
+    if kind == fee_plan_workflow.KIND:
+        return fee_plan_workflow.execute(request_row)
     from . import fare_card_workflow
 
     if kind in fare_card_workflow.KINDS:

@@ -471,6 +471,27 @@ _DEFAULTS = {
 }
 
 
+def _rider_platform_fee(zone, vehicle_type, currency):
+    """The plan's rider platform fee for this class when the flag is on there, else 0."""
+    try:
+        from base.money import from_minor
+        from servers.platform_ops.flags import flag_enabled
+        from servers.pricing.commission import city_node_of, country_code_of_zone
+        from servers.pricing.fee_plans import plan_for_zone
+
+        if zone is None:
+            return Decimal('0.00')
+        if not flag_enabled('rider_platform_fee', city=city_node_of(getattr(zone, 'geo_node', None)),
+                            country=country_code_of_zone(zone)):
+            return Decimal('0.00')
+        plan = plan_for_zone(zone)
+        minor = int((plan.amounts_for(vehicle_type).get('rider_platform_fee_minor') or 0)) if plan else 0
+        return from_minor(minor, currency) if minor else Decimal('0.00')
+    except Exception:  # noqa: BLE001 - a quote never fails over this line
+        logger.exception('rider platform fee lookup failed')
+        return Decimal('0.00')
+
+
 def quote_fare(
     distance_km,
     duration_min,
@@ -721,7 +742,16 @@ def quote_fare(
                 total_fare * tax_percent / (Decimal('100.00') + tax_percent),
                 currency)
 
+    # The rider platform fee (9 Nov, driver fee plans): OFF behind the `rider_platform_fee` flag
+    # until the CA confirms its tax treatment. When on it is its own line, inside the locked fare,
+    # and never part of the driver's earning (settlement takes it out again).
+    rider_fee = _rider_platform_fee(zone, vehicle_type, currency)
+    if rider_fee:
+        adjustments.append({'code': 'rider_platform_fee', 'label': 'Platform fee', 'amount': rider_fee})
+        total_fare = total_fare + rider_fee
+
     return {
+        'rider_platform_fee': rider_fee,
         'total_fare': total_fare,
         # The market this quote was priced in. Without it a client cannot know
         # whether 450 means rupees or dollars, and every downstream money row

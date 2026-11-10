@@ -1837,3 +1837,17 @@ def maps_client_meter(request):
         trip_id = 0
     maps_meter.record(sku, surface=surface, trip_id=trip_id or None)
     return success_response({'counted': True}, status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def rider_cancel_preview(request, trip_id):
+    """GET /ride/trip/<id>/cancel-preview/  What cancelling now costs the rider (9 Nov): free (and
+    until when), or the fee. The rider's own trip only."""
+    from .cancellation_penalty import preview
+
+    trip = Trip.objects.select_related('zone').filter(pk=trip_id, user_id=request.user).first()
+    if trip is None:
+        return error_response(code='NOT_FOUND', message='Trip not found.', field='trip_id',
+                              issue=f'No trip with id={trip_id}', status=status.HTTP_404_NOT_FOUND)
+    return success_response(preview(trip), status.HTTP_200_OK)

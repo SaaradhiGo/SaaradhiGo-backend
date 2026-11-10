@@ -209,6 +209,19 @@ def settle_or_defer(trip):
         return False
 
 
+def _rider_platform_fee_minor(trip):
+    # The rider platform fee comes only from a fee plan (9 Nov): no plan, no fee, no query.
+    if not getattr(trip, 'fee_plan_id', None):
+        return 0
+    try:
+        from servers.ride.models import FarePricing
+
+        fp = FarePricing.objects.filter(trip_id=trip).only('rider_platform_fee_minor').first()
+        return int(fp.rider_platform_fee_minor or 0) if fp else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def settlement_amounts(trip):
     """The settlement's arithmetic for a trip, with no side effects.
 
@@ -231,6 +244,8 @@ def settlement_amounts(trip):
     currency = currency_for_trip(trip)
     gross_minor = (trip.final_fare_minor if trip.final_fare_minor is not None
                    else trip.estimated_fare_minor or 0)
+    # The rider platform fee (9 Nov, flag off) is the platform's, never part of the earning.
+    gross_minor -= _rider_platform_fee_minor(trip)
 
     # US (additive-tax) trips: sales tax and the per-trip regulatory fee are PASS-THROUGH (owner
     # ruling, AUDIT 27.62 item 1). They are collected from the rider and remitted by SaaradhiGo,

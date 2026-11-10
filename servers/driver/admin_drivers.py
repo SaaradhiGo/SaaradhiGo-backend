@@ -419,6 +419,8 @@ def _document_rows(driver, vehicle, documents_visible):
         column = columns.get(key)
         field = getattr(owner, column, None) if column else None
         name = getattr(field, 'name', '') if field else ''
+        if key in compliance.OPTIONAL_DRIVER_DOCUMENTS and not name:
+            continue  # optional MVAG records (9 Nov) are reviewed once uploaded
         review = latest.get(key)
         current = review is not None and review.file_name == name
         rows.append({

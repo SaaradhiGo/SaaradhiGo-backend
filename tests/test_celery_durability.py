@@ -295,6 +295,12 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # sets a cached level and raises alerts keyed on (country, month, level).
         'ride.reroute_trip',
         'ride.check_maps_budgets',
+        # Driver fee plans (9 Nov). acks_late is safe: one DriverDailyFee per (driver, day) and a
+        # ledger idempotency key, so a redelivered run writes nothing twice.
+        'pricing.charge_driver_fees',
+        # QA only (PAYOUT_FAKE_ALLOWED): the fake provider's 'processed' event goes through the
+        # real, idempotent payout webhook handler.
+        'payments.fake_payout_settle',
         # Unattached-upload sweep (hourly, beat). acks_late is safe: it lists
         # objects and deletes only those older than 24 h that no file field
         # references, re-checked per object on every run, so a redelivered or

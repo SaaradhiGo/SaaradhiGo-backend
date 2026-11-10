@@ -9,6 +9,7 @@ from servers.pricing.views import (
 )
 
 
+from . import fee_plan_views
 from .commission_views import (
     commission_matrix, config_list, config_update, fare_cards_overview, fare_cards_preview,
     regulation_list, regulation_update, state_cap_update,
@@ -41,6 +42,14 @@ urlpatterns = [
     path('admin/commission/config/<str:country>/states/<str:state>/', state_cap_update,
          name='commission-state-cap-update'),
     path('admin/regulation/', regulation_list, name='regulation'),
+    path('admin/fee-plans/', fee_plan_views.fee_plans_list, name='fee-plans'),
+    path('admin/fee-plans/simulate/', fee_plan_views.fee_plan_simulate, name='fee-plans-simulate'),
+    path('admin/fee-plans/<int:plan_id>/', fee_plan_views.fee_plan_detail, name='fee-plan'),
+    path('admin/fee-plans/<int:plan_id>/submit/', fee_plan_views.fee_plan_submit,
+         name='fee-plan-submit'),
+    path('admin/cost-per-trip/', fee_plan_views.cost_per_trip, name='cost-per-trip'),
+    path('admin/fixed-costs/<str:country>/<str:month>/', fee_plan_views.fixed_cost_update,
+         name='fixed-cost'),
     path('admin/regulation/<str:country>/', regulation_update,
          name='regulation-update'),
     path('admin/vehicle-classes/', vehicle_classes, name='vehicle-classes'),

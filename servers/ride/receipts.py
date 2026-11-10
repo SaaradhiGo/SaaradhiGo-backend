@@ -68,9 +68,26 @@ def _due_lines_and_charged(trip):
         return [], None
 
 
+def _rider_fee_line(trip):
+    """('Platform fee', amount) when the fare carried a rider platform fee (9 Nov), else None."""
+    try:
+        from base.money import from_minor
+        from servers.ride.models import FarePricing
+
+        fp = FarePricing.objects.filter(trip_id=trip).only('rider_platform_fee_minor', 'currency').first()
+        if fp and fp.rider_platform_fee_minor:
+            return 'Platform fee (included above)', from_minor(fp.rider_platform_fee_minor, fp.currency or 'INR')
+    except Exception:  # noqa: BLE001 - a receipt must still render
+        logger.exception('rider fee receipt line failed for trip=%s', getattr(trip, 'pk', None))
+    return None
+
+
 def _due_rows_html(trip, currency):
+    fee = _rider_fee_line(trip)
+    head = (f'<tr><td>{escape(fee[0])}</td><td style="text-align:right;">'
+            f'{format_money(fee[1], currency)}</td></tr>') if fee else ''
     lines, charged = _due_lines_and_charged(trip)
-    rows = ''.join(f'<tr><td>{escape(label)}</td><td style="text-align:right;">'
+    rows = head + ''.join(f'<tr><td>{escape(label)}</td><td style="text-align:right;">'
                    f'+{format_money(amount, currency)}</td></tr>' for label, amount in lines)
     if charged is not None:
         rows += ('<tr style="background: #f9fafb;"><td><b>Amount charged</b></td>'
@@ -79,9 +96,10 @@ def _due_rows_html(trip, currency):
 
 
 def _due_rows_pdf(trip, currency):
+    fee = _rider_fee_line(trip)
     lines, charged = _due_lines_and_charged(trip)
-    rows = [[label, '+' + format_money(amount, currency, with_symbol=False)]
-            for label, amount in lines]
+    rows = ([[fee[0], format_money(fee[1], currency, with_symbol=False)]] if fee else []) + [
+        [label, '+' + format_money(amount, currency, with_symbol=False)] for label, amount in lines]
     if charged is not None:
         rows.append(['Amount charged', format_money(charged, currency, with_symbol=False)])
     return rows

@@ -35,3 +35,12 @@ def fare_shadow_sweep(self):
     return {k: v for k, v in result.items() if k != 'by_status'} | {
         'by_status': result.get('by_status', {}),
     }
+
+
+@shared_task(name='pricing.charge_driver_fees', max_retries=0)
+def charge_driver_fees():
+    """Hourly: each driver's platform fee for the local day just ended (idempotent per driver and
+    day). Only trips booked under a non-commission fee plan are counted."""
+    from servers.pricing.fee_plans import charge_yesterday
+
+    return charge_yesterday()

@@ -376,6 +376,32 @@ def _offer_money(trip):
     return out
 
 
+def _fee_fields(trip, driver_id):
+    """Under a non-commission fee plan (9 Nov): the plan type and this driver's platform fee today
+    so far, against the daily cap. Empty under the commission (the card keeps its commission line)."""
+    from servers.pricing.fee_plans import NON_COMMISSION
+
+    if getattr(trip, 'fee_plan_type', '') not in NON_COMMISSION:
+        return {'fee_plan_type': getattr(trip, 'fee_plan_type', '') or ''}
+    try:
+        from base.money import from_minor
+        from servers.driver.models import Driver
+        from servers.pricing.fee_plans import today_so_far
+        from servers.pricing.fee_plan_models import DriverFeePlan
+
+        plan = DriverFeePlan.objects.filter(pk=trip.fee_plan_id).first()
+        country = plan.country if plan else 'IN'
+        today = today_so_far(Driver.objects.get(pk=driver_id), country)
+        cur = plan.currency if plan else 'INR'
+        return {'fee_plan_type': trip.fee_plan_type,
+                'platform_fee_today': str(from_minor(today['fee_minor'] if today else 0, cur)),
+                'platform_fee_cap': (str(from_minor(plan.daily_cap_minor, cur))
+                                     if plan and plan.daily_cap_minor is not None else '')}
+    except Exception:  # noqa: BLE001 - never stop an offer
+        logger.exception('offer fee fields failed trip=%s', trip.id)
+        return {'fee_plan_type': trip.fee_plan_type}
+
+
 def _pickup_fields(metres):
     """How far this driver is from the pickup, for their own offer card. Straight
     line at the city speed the fare quote uses; empty when unknown."""
@@ -554,7 +580,8 @@ def execute_wave(trip_id, wave_index, epoch, radii):
             group_send = async_to_sync(channel_layer.group_send)
             for driver_id in candidates:
                 try:
-                    group_send(f'driver_{driver_id}', {**payload, **_pickup_fields(distances.get(driver_id))})
+                    group_send(f'driver_{driver_id}', {**payload, **_pickup_fields(distances.get(driver_id)),
+                                                       **_fee_fields(trip, driver_id)})
                     delivered += 1
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(

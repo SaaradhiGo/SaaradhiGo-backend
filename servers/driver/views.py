@@ -232,12 +232,63 @@ def driver_earnings_daily(request):
             'commission': str(t['total_commission']),
             'net': str(t['total_net']),
         })
+    # Additive (9 Nov): the day's platform fee under a driver fee plan, with why ("Today: 12 trips x
+    # Rs 10 = Rs 120 (cap Rs 149)"). Past days from the ledger's daily row, today as worked out so far.
+    _add_platform_fee(driver, out)
     # Additive (2026-11-08): what the amounts are in and whose days these are, so a driver with
     # no trips yet still gets a chart that reads "Mon 2 ... ₹0.00" without another call.
     from servers.driver.services import driver_currency
     return success_response({
         'days': out, 'currency': driver_currency(driver), 'timezone': getattr(tz, 'key', str(tz)),
     }, status.HTTP_200_OK)
+
+
+def _add_platform_fee(driver, days):
+    from base.money import from_minor
+    from servers.pricing.fee_plan_models import DriverDailyFee
+    from servers.pricing.fee_plans import today_so_far
+    from servers.payments.payout_config import driver_payout_country
+
+    try:
+        country = driver_payout_country(driver) or 'IN'
+        fees = {r.day.isoformat(): r for r in DriverDailyFee.objects.filter(
+            driver=driver, day__gte=days[0]['date'])} if days else {}
+        today = today_so_far(driver, country)
+        for i, d in enumerate(days):
+            row = fees.get(d['date'])
+            if row is not None:
+                d['platform_fee'] = str(from_minor(row.fee_minor, row.currency))
+                d['platform_fee_note'] = row.explanation
+            elif i == len(days) - 1 and today is not None:
+                d['platform_fee'] = str(from_minor(today['fee_minor'], today['currency']))
+                d['platform_fee_note'] = today['explanation']
+                d['platform_fee_so_far'] = True
+    except Exception:  # noqa: BLE001 - the earnings page shows without the fee line
+        import logging
+        logging.getLogger(__name__).exception('platform fee line failed driver=%s', driver.id)
+
+
+@api_view(['GET'])
+@permission_classes([IsDriver])
+def driver_fee_plan(request):
+    """GET /driver/fee-plan/  The plan in force for the driver's home city, today's fee so far and
+    the values the "How our fee works" sheet is written from."""
+    from servers.pricing.fee_plan_workflow import plan_dict
+    from servers.pricing.fee_plans import local_day, resolve, today_so_far
+    from servers.payments.payout_config import driver_payout_country
+    from servers.payments.payout_scope import scope_codes_of_node
+
+    driver = request.user.driver
+    country = driver_payout_country(driver) or 'IN'
+    home = getattr(driver, 'home_city', None)
+    plan = resolve(country, scope_codes_of_node(home) if home else [], local_day(country))
+    vt = getattr(getattr(driver.active_vehicle, 'vehicle_type_id', None), 'type', '')         if driver.active_vehicle_id else ''
+    body = {'plan': plan_dict(plan) if plan else None,
+            'applies_to_my_class': bool(plan and plan.amounts_for(vt)),
+            'my_class': vt, 'today': today_so_far(driver, country)}
+    if plan:
+        body['my_amounts'] = plan.amounts_for(vt)
+    return success_response(body, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -425,8 +476,9 @@ def driver_withdrawal_balance(request):
     from servers.payments.payout_scope import next_payout
     response_data['next_payout'] = (
         next_payout(driver, config, _to_minor(available, config.currency)) if config else None)
+    from servers.payments.payout_scope import instant_ready
     response_data['instant'] = ({
-        'available': bool(config.instant_cashout_enabled),
+        'available': instant_ready(config),
         'provider': config.instant_fee_provider or None,
         'saaradhigo_fee': '0',
     } if config else {'available': False, 'provider': None, 'saaradhigo_fee': '0'})
@@ -477,7 +529,8 @@ def driver_withdrawal_request(request):
     # Withdraw now (owner ruling 2026-11-09): only where instant is on for the driver's city;
     # the fee is the provider's own (`instant_fee`), SaaradhiGo's stays 0.
     instant = bool(request.data.get('instant'))
-    if instant and not payout_config.instant_cashout_enabled:
+    from servers.payments.payout_scope import instant_ready
+    if instant and not instant_ready(payout_config):
         return error_response(
             code='INSTANT_NOT_AVAILABLE', message='Withdraw now is not available in your city.',
             field='instant', issue='Instant cash-out is off here',
@@ -619,6 +672,16 @@ def driver_withdrawal_request(request):
         if deduct_plan:
             fraud_money.apply_deduction(driver, deduct_plan, withdrawal, gross_minor,
                                         payout_config.recovery_max_percent)
+
+    # Withdraw now (9 Nov): the driver's own early cash-out of their own balance, after the hold and
+    # conflict checks above, is sent at once at the provider fee; a scheduled or on-request payout
+    # still waits for Finance.
+    if instant:
+        WithdrawalRequest.objects.filter(pk=withdrawal.pk, status='pending').update(status='approved')
+        withdrawal.refresh_from_db()
+        from .services import trigger_payout_creation
+        trigger_payout_creation(withdrawal)
+        withdrawal.refresh_from_db()
 
     # Return created withdrawal
     from .serializers import WithdrawalRequestSerializer
@@ -925,6 +988,24 @@ def update_driver_profile(request):
     if license_back_provided:
         update_data['license_doc_back'] = license_back_value
 
+    # MVAG 2025 records (9 Nov): the three documents and their details, through the same
+    # upload path and the same reviewer queue as the licence.
+    for doc_field in ('health_insurance_doc', 'term_insurance_doc', 'induction_training_certificate'):
+        provided, value, err = resolve_file_input(request, doc_field, kind=doc_field)
+        if err:
+            return error_response(code='UPLOAD_FAILED', message=err, field=doc_field, issue=err,
+                                  status=status.HTTP_400_BAD_REQUEST)
+        if provided:
+            update_data[doc_field] = value
+    for text_field in ('health_insurance_policy_number', 'health_insurance_insurer',
+                       'health_insurance_sum_insured', 'health_insurance_expiry',
+                       'term_insurance_policy_number', 'term_insurance_insurer',
+                       'term_insurance_sum_insured', 'term_insurance_expiry',
+                       'induction_training_hours', 'induction_training_date'):
+        if text_field in request.data:
+            value = request.data.get(text_field)
+            update_data[text_field] = None if value in EMPTY_FILE_VALUES else value
+
     if 'license_expiry' in request.data:
         license_expiry = request.data.get('license_expiry')
         update_data['license_expiry'] = None if license_expiry in EMPTY_FILE_VALUES else license_expiry
@@ -951,7 +1032,8 @@ def update_driver_profile(request):
             code='VALIDATION_ERROR',
             message='No driver profile data provided',
             field='data',
-            issue='Provide at least one of active_vehicle, license_doc, license_doc_back, or license_expiry',
+            issue='Provide at least one of active_vehicle, license_doc, license_doc_back, license_expiry '
+                  'or an insurance or training record',
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -1126,7 +1208,8 @@ def driver_instant_quote(request):
 
     driver = request.user.driver
     _country, config = config_for_driver(driver)
-    if config is None or not config.instant_cashout_enabled:
+    from servers.payments.payout_scope import instant_ready
+    if not instant_ready(config):
         return error_response(
             code='INSTANT_NOT_AVAILABLE', message='Withdraw now is not available in your city.',
             field='instant', issue='Instant cash-out is off here',

@@ -443,6 +443,11 @@ MIGRATION_WAIT_TIMEOUT = int(os.environ.get('MIGRATION_WAIT_TIMEOUT', '300'))
 # (or adopt django-celery-beat for a DB-backed schedule lock).
 from celery.schedules import crontab as _crontab
 CELERY_BEAT_SCHEDULE = {
+    'pricing-charge-driver-fees-hourly': {
+        # Driver fee plans (9 Nov): one platform_fee row per driver for the local day just ended.
+        'task': 'pricing.charge_driver_fees',
+        'schedule': _crontab(minute=17),
+    },
     'ride-check-maps-budgets-hourly': {
         # The month's Google Maps spend per country against its budget (9 Nov): alerts, degrade.
         'task': 'ride.check_maps_budgets',
@@ -1370,6 +1375,24 @@ MAPS_REVERSE_GEOCODE_MOVE_M = float(os.environ.get('MAPS_REVERSE_GEOCODE_MOVE_M'
 # Showing Maps cost in local money in the console: USD -> local currency (a display rate, not a
 # booking rate). MAPS_FX_TO_LOCAL_JSON, e.g. {"IN": 84.0}.
 MAPS_FX_TO_LOCAL = {'IN': 84.0, 'US': 1.0}
+# Driver fee plans and open books (9 Nov): the variable costs per market, in minor units, from
+# the environment (JSON per country). Missing is 0 and the console says it is not configured.
+def _json_env(name):
+    return {str(k).upper(): v for k, v in
+            __import__('json').loads(os.environ.get(name) or '{}').items()}
+COST_SMS_UNIT_MINOR = _json_env('COST_SMS_UNIT_MINOR_JSON')          # per SMS sent
+COST_CALL_UNIT_MINOR = _json_env('COST_CALL_UNIT_MINOR_JSON')        # per masked call
+COST_SMS_PER_TRIP_MINOR = _json_env('COST_SMS_PER_TRIP_MINOR_JSON')  # simulator: SMS per trip
+COST_CALL_PER_TRIP_MINOR = _json_env('COST_CALL_PER_TRIP_MINOR_JSON')
+PAYMENT_GATEWAY_FEE_PERCENT = _json_env('PAYMENT_GATEWAY_FEE_PERCENT_JSON')
+ONLINE_PAYMENT_SHARE = _json_env('ONLINE_PAYMENT_SHARE_JSON')        # 0..1 of fares paid online
+OPEN_BOOKS_RESERVE_PERCENT = float(os.environ.get('OPEN_BOOKS_RESERVE_PERCENT', '15'))
+# QA only: RazorpayX's test-mode UPI addresses (success@razorpay) go to the fake payout provider
+# (integrations/payouts/fake.py). Never set in production.
+PAYOUT_FAKE_ALLOWED = os.environ.get('PAYOUT_FAKE_ALLOWED', '').strip().lower() in ('1', 'true', 'yes')
+# Maps cost per trip for the simulator until a month of metered trips exists (QA baseline,
+# 9 Nov: 3 autocomplete + 1 place details + 1 Routes Pro at list price).
+MAPS_BASELINE_USD_PER_TRIP = os.environ.get('MAPS_BASELINE_USD_PER_TRIP', '0.0285')
 MAPS_FX_TO_LOCAL.update({str(k).upper(): float(v) for k, v in
                          __import__('json').loads(os.environ.get('MAPS_FX_TO_LOCAL_JSON') or '{}').items()})
 

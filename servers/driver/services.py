@@ -1645,7 +1645,11 @@ def initiate_upi_payout(withdrawal, driver):
         )
         return False
 
-    upi_validation = validate_upi_id_advanced(driver.upi_id)
+    from integrations.payouts import fake as _fake_payouts
+    # QA only (`PAYOUT_FAKE_ALLOWED`): RazorpayX's test-mode addresses are refused by the real
+    # validator on purpose, and go to the fake provider instead (9 Nov).
+    upi_validation = ((True, None, None) if _fake_payouts.allowed_for(driver.upi_id)
+                      else validate_upi_id_advanced(driver.upi_id))
 
     if not upi_validation[0]:
         withdrawal.failure_reason = (
@@ -1742,6 +1746,10 @@ def initiate_upi_payout(withdrawal, driver):
         # with no provider has no payout rail: nothing is dispatched, so the caller refunds.
         payout_country = country_of_currency(withdrawal_currency) or country_for_driver(driver)
         gateway = get_payment_gateway_for_payouts(payout_country)
+        from integrations.payouts import fake as _fake_payouts
+        if _fake_payouts.allowed_for(driver.upi_id):
+            # QA only: RazorpayX's test-mode UPI addresses go to the fake provider (9 Nov).
+            gateway = _fake_payouts.FakePayoutGateway()
         if not gateway:
             withdrawal.failure_reason = (
                 f'No payout provider is configured for {payout_country or "this market"}'

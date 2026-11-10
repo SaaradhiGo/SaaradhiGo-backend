@@ -306,6 +306,9 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
     driver_upi_id = serializers.CharField(source='driver.upi_id', read_only=True, default='')
     driver_kyc_approved = serializers.BooleanField(source='driver.approved', read_only=True, default=False)
     amount = MoneyField()
+    # Withdraw now (10 Nov): the provider fee on the driver's statement line,
+    # "Withdrawn ₹200.00 · provider fee ₹4.72 · received ₹195.28"; empty for a scheduled payout.
+    statement_line = serializers.SerializerMethodField()
 
     class Meta:
         model = WithdrawalRequest
@@ -320,11 +323,18 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
             'currency',
             'driver_kyc_approved', 'amount', 'status', 'requested_at',
             'processed_at', 'admin_notes', 'payout_reference_id',
+            'origin', 'fee_minor', 'statement_line',
         ]
         read_only_fields = [
             'id', 'driver', 'currency', 'status', 'requested_at',
-            'processed_at', 'admin_notes', 'payout_reference_id',
+            'processed_at', 'admin_notes', 'payout_reference_id', 'origin', 'fee_minor',
         ]
+
+    def get_statement_line(self, obj):
+        if obj.origin != 'instant':
+            return ''
+        from servers.payments.ledger import fee_line
+        return fee_line(obj.amount_minor, obj.fee_minor or 0, obj.currency)['label']
 
     def get_driver_name(self, obj):
         user = getattr(obj.driver, 'user_id', None)

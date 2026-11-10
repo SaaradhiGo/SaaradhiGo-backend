@@ -571,6 +571,17 @@ def _cycle_and_instant(data, values):
         values['instant_fee_provider'] = str(data['instant_fee_provider'] or '')[:32]
     if 'instant_fee_tiers' in data:
         values['instant_fee_tiers'] = _tiers(data['instant_fee_tiers'])
+    # The daily Withdraw now limit (10 Nov): a count and a total per local day; null = no limit.
+    for key in ('instant_max_per_day', 'instant_max_amount_per_day_minor'):
+        if key in data:
+            n = data[key]
+            if n is not None:
+                n = _minor_amount(n, key)
+                if n < 1:
+                    raise BadInput('INVALID_LIMIT', f'{key} is at least 1, or empty for no limit.', key)
+                if key == 'instant_max_per_day' and n > 50:
+                    raise BadInput('INVALID_LIMIT', 'instant_max_per_day is 1 to 50.', key)
+            values[key] = n
     return values
 
 

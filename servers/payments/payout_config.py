@@ -44,7 +44,8 @@ from base.money import from_minor
 _NO_CYCLE = {'payout_interval_days': None, 'payout_anchor_date': None, 'payout_time_local': None,
              'instant_cashout_enabled': False, 'instant_cashout_fee_flat_minor': None,
              'instant_fee_percent': None, 'instant_fee_min_minor': None,
-             'instant_fee_max_minor': None, 'instant_fee_provider': '', 'instant_fee_tiers': None}
+             'instant_fee_max_minor': None, 'instant_fee_provider': '', 'instant_fee_tiers': None,
+             'instant_max_per_day': None, 'instant_max_amount_per_day_minor': None}
 
 #: The owner's payout values (AUDIT 27.43), in the units the model stores. Superseded on QA by
 #: the 2026-11-09 ruling (payments migration 0026); these remain what a fresh seed writes.

@@ -625,6 +625,17 @@ def driver_withdrawal_request(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # The daily Withdraw now limit (10 Nov), checked under the wallet lock so two requests at
+        # once cannot both fit. The same reason the confirmation screen already showed.
+        if instant:
+            from base.money import to_minor as _to_minor
+            from servers.payments.payout_scope import instant_limit
+            limit = instant_limit(driver, payout_config, _to_minor(amount, payout_config.currency))
+            if limit is not None:
+                return error_response(
+                    code=limit['code'], message=limit['message'], field='amount',
+                    issue=limit['message'], status=status.HTTP_400_BAD_REQUEST)
+
         # Create withdrawal request. The fee is stamped from the ONE function
         # that also feeds the balance endpoint's `fee_percent`.
         withdrawal = WithdrawalRequest.objects.create(

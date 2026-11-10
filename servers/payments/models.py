@@ -478,6 +478,10 @@ class PayoutCountryConfig(models.Model):
     #: A provider that publishes its fee by amount band (RazorpayX: per payout, by band): a list
     #: of [up_to_minor or null, fee_minor], ascending. When set it is the fixed part of the fee.
     instant_fee_tiers = models.JSONField(null=True, blank=True)
+    #: The daily Withdraw now limit (owner, 10 Nov), over the driver's local day: at most this many
+    #: requests and this total. Null: no limit. Scheduled payouts are never limited.
+    instant_max_per_day = models.PositiveSmallIntegerField(null=True, blank=True)
+    instant_max_amount_per_day_minor = models.BigIntegerField(null=True, blank=True)
 
     # --- fraud money actions (owner rulings 2026-10-31, AUDIT 27.56) ---------
     #: Days an unpaid reward linked to an undecided fraud flag stays "pending review".
@@ -565,6 +569,8 @@ class PayoutCountryConfig(models.Model):
             'instant_fee_max_minor': self.instant_fee_max_minor,
             'instant_fee_provider': self.instant_fee_provider,
             'instant_fee_tiers': self.instant_fee_tiers,
+            'instant_max_per_day': self.instant_max_per_day,
+            'instant_max_amount_per_day_minor': self.instant_max_amount_per_day_minor,
             'is_active': self.is_active,
             'version': self.version,
             'valid_from': self.valid_from,
@@ -632,6 +638,7 @@ class ReconciliationItem(models.Model):
     PAYOUT_WEBHOOK_NOT_PAID = 'payout_webhook_not_paid'
     PAYOUT_STUCK = 'payout_stuck'
     WITHDRAWAL_ROW_PENDING = 'withdrawal_row_pending'
+    PAYOUT_FEE_MISMATCH = 'payout_fee_mismatch'
     KIND_CHOICES = [
         (PAYMENT_NO_WEBHOOK, 'Payment captured without a confirming webhook'),
         (WEBHOOK_NO_PAYMENT, 'Confirming webhook with no captured payment'),
@@ -641,6 +648,7 @@ class ReconciliationItem(models.Model):
         (PAYOUT_WEBHOOK_NOT_PAID, 'Payout marked processed by webhook, withdrawal not paid'),
         (PAYOUT_STUCK, 'Payout stuck in processing'),
         (WITHDRAWAL_ROW_PENDING, 'Withdrawal ledger row pending after its payout is final'),
+        (PAYOUT_FEE_MISMATCH, "Withdraw now fee differs from the provider's report"),
     ]
     KINDS = [k for k, _ in KIND_CHOICES]
 
@@ -810,6 +818,8 @@ class PayoutScopeOverride(models.Model):
     instant_fee_max_minor = models.BigIntegerField(null=True, blank=True)
     instant_fee_provider = models.CharField(max_length=32, blank=True, default='')
     instant_fee_tiers = models.JSONField(null=True, blank=True)
+    instant_max_per_day = models.PositiveSmallIntegerField(null=True, blank=True)
+    instant_max_amount_per_day_minor = models.BigIntegerField(null=True, blank=True)
 
     is_active = models.BooleanField(default=True)
     version = models.PositiveIntegerField(default=1)
@@ -864,4 +874,5 @@ OVERRIDE_FIELDS = (
     'payout_anchor_date', 'payout_time_local', 'instant_cashout_enabled',
     'instant_cashout_fee_flat_minor', 'instant_fee_percent', 'instant_fee_min_minor',
     'instant_fee_max_minor', 'instant_fee_provider', 'instant_fee_tiers',
+    'instant_max_per_day', 'instant_max_amount_per_day_minor',
 )

@@ -17,7 +17,7 @@ CONFIG_FIELDS = (
     'payout_interval_days', 'payout_anchor_date', 'payout_time_local',
     'instant_cashout_enabled', 'instant_cashout_fee_flat_minor', 'instant_fee_percent',
     'instant_fee_min_minor', 'instant_fee_max_minor', 'instant_fee_provider',
-    'instant_fee_tiers',
+    'instant_fee_tiers', 'instant_max_per_day', 'instant_max_amount_per_day_minor',
     # Fraud money actions (AUDIT 27.56): changed through the same finance.payout_config_change
     # checker as every other payout setting.
     'reward_hold_days', 'recovery_max_percent', 'payout_hold_max_days',
@@ -32,7 +32,8 @@ CYCLE_DEFAULTS = {'payout_interval_days': None, 'payout_anchor_date': None,
                   'payout_time_local': None, 'instant_cashout_enabled': False,
                   'instant_cashout_fee_flat_minor': None, 'instant_fee_percent': None,
                   'instant_fee_min_minor': None, 'instant_fee_max_minor': None,
-                  'instant_fee_provider': '', 'instant_fee_tiers': None}
+                  'instant_fee_provider': '', 'instant_fee_tiers': None,
+                  'instant_max_per_day': None, 'instant_max_amount_per_day_minor': None}
 CARRIED = {**FRAUD_MONEY_DEFAULTS, **CYCLE_DEFAULTS}
 
 

@@ -1,5 +1,4 @@
 from django.urls import path, include
-from django.views.defaults import bad_request, permission_denied, page_not_found
 
 from base.config_view import public_config
 from base.health import healthz, version

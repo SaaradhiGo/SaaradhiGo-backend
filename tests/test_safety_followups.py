@@ -359,7 +359,8 @@ POLYLINE = encode(LINE)
 DIRECTIONS = {'status': 'OK', 'routes': [{
     'legs': [{'distance': {'value': 1000}, 'duration': {'value': 120}}],
     'overview_polyline': {'points': POLYLINE}}]}
-ROUTE = {'distance_m': 1000.0, 'duration_s': 120.0, 'polyline': POLYLINE, 'route': DIRECTIONS['routes'][0]}
+ROUTE = {'distance_m': 1000.0, 'duration_s': 120.0, 'polyline': POLYLINE, 'route': DIRECTIONS['routes'][0],
+         'cached_at': 9e12}   # never expired (route_cache checks its age)
 
 
 class TestGeometry:
@@ -594,7 +595,8 @@ class TestPlannedRouteOnAccept:
 
         trip.refresh_from_db()
         assert maps.call_count == 0
-        assert cache.call_args.args[0] == 'maps:route:v1:17.3,78.3:17.49,78.49'
+        from servers.ride.route_cache import route_cache_key
+        assert cache.call_args_list[0].args[0] == route_cache_key(17.3, 78.3, 17.49, 78.49, 'IN')
         assert trip.planned_route_polyline == POLYLINE and trip.planned_route_source == 'maps_cache'
 
     def test_a_trip_that_already_has_a_route_is_not_fetched_again(self, accepting):

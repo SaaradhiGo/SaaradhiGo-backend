@@ -290,6 +290,11 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # retries into the maps quota. Rate limited 60/m per worker. Writes
         # three observation columns on the trip; no fare, status or dispatch.
         'ride.store_planned_route',
+        # Maps cost (9 Nov). acks_late is safe for both: a reroute writes one Redis entry per
+        # trip and leg (the 3-minute lock is taken before it is enqueued), and the budget check
+        # sets a cached level and raises alerts keyed on (country, month, level).
+        'ride.reroute_trip',
+        'ride.check_maps_budgets',
         # Unattached-upload sweep (hourly, beat). acks_late is safe: it lists
         # objects and deletes only those older than 24 h that no file field
         # references, re-checked per object on every run, so a redelivered or

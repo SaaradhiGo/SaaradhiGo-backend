@@ -1815,3 +1815,25 @@ def trip_eta(request, trip_id):
         return error_response(code='NOT_FOUND', message='Trip not found', field='trip_id',
                               issue=f'No trip with id {trip_id}', status=status.HTTP_404_NOT_FOUND)
     return success_response({'trip_id': trip.id, 'eta': eta_mod.compute(trip)}, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+@throttle_classes([GuestMapsThrottle, GuestMapsGlobalThrottle])
+def maps_client_meter(request):
+    """POST /ride/maps/meter/ {sku: 'dynamic_maps', surface, trip_id?}: a client tells the meter it
+    loaded a billed Google map (the web's Maps JS), so the console counts every surface (9 Nov).
+    Only client-billed SKUs are accepted; the server counts its own calls itself."""
+    from servers.ride import maps_meter
+
+    sku = str(request.data.get('sku') or '')
+    surface = str(request.data.get('surface') or request.headers.get('X-SG-Surface') or '')
+    if sku not in maps_meter.CLIENT_SKUS or surface not in maps_meter.SURFACES:
+        return error_response(code='INVALID_VALUE', message='Unknown SKU or surface.', field='sku',
+                              issue=sku, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        trip_id = int(request.data.get('trip_id') or 0)
+    except (TypeError, ValueError):
+        trip_id = 0
+    maps_meter.record(sku, surface=surface, trip_id=trip_id or None)
+    return success_response({'counted': True}, status.HTTP_200_OK)

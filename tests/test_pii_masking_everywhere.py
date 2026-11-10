@@ -637,6 +637,8 @@ INVENTORY = {
     'api/v1/platform/admin/notices/': False,
     'api/v1/platform/admin/settings/': False,
     'api/v1/platform/admin/integrations/': False,
+    # Maps usage and budget (9 Nov): counts, prices and budgets; no person.
+    'api/v1/platform/admin/maps/': False,
     'api/v1/platform/admin/options/': False,
     'api/v1/admin-audit/admin/entries/': False,
     'api/v1/admin-audit/admin/entries/export/': False,

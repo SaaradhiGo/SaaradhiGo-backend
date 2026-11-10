@@ -115,6 +115,8 @@ MIDDLEWARE = [
     # log. Reads the user lazily, so API bearer-token writes are covered.
     'servers.admin_audit.middleware.AuditActorMiddleware',
     'base.middleware.ExceptionHandlingMiddleware',
+    # Counts each Google Maps call against the client that asked (X-SG-Surface; 9 Nov).
+    'servers.ride.maps_surface.MapsSurfaceMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     
@@ -441,6 +443,11 @@ MIGRATION_WAIT_TIMEOUT = int(os.environ.get('MIGRATION_WAIT_TIMEOUT', '300'))
 # (or adopt django-celery-beat for a DB-backed schedule lock).
 from celery.schedules import crontab as _crontab
 CELERY_BEAT_SCHEDULE = {
+    'ride-check-maps-budgets-hourly': {
+        # The month's Google Maps spend per country against its budget (9 Nov): alerts, degrade.
+        'task': 'ride.check_maps_budgets',
+        'schedule': _crontab(minute=7),
+    },
     'driver-block-expired-licenses-daily': {
         'task': 'driver.block_expired_driver_licenses',
         # 02:00 in TIME_ZONE (Asia/Kolkata) — quiet hours.
@@ -1337,6 +1344,34 @@ if os.environ.get('ETA_MARKET_KMH_JSON', '').strip():
     import json as _json_eta
     ETA_MARKET_KMH.update({str(k).upper(): float(v) for k, v in
                            _json_eta.loads(os.environ['ETA_MARKET_KMH_JSON']).items()})
+
+# Maps cost control (owner, 9 Nov). Every value is env-overridable; none is a key.
+# The route cache: one Google route per journey, a ~75 m grid, 30 min (per market in
+# MAPS_ROUTE_TTL_JSON, e.g. {"IN": 1800}); optionally shorter in a peak window
+# (MAPS_ROUTE_PEAK_TTL_S during MAPS_ROUTE_PEAK_HOURS_JSON, local hours, e.g. [[8, 11], [17, 21]]).
+MAPS_ROUTE_GRID_M = float(os.environ.get('MAPS_ROUTE_GRID_M', '75'))
+MAPS_ROUTE_TTL_S = float(os.environ.get('MAPS_ROUTE_TTL_S', '1800'))
+MAPS_ROUTE_TTL = {str(k).upper(): float(v) for k, v in
+                  __import__('json').loads(os.environ.get('MAPS_ROUTE_TTL_JSON') or '{}').items()}
+MAPS_ROUTE_PEAK_TTL_S = (float(os.environ['MAPS_ROUTE_PEAK_TTL_S'])
+                         if os.environ.get('MAPS_ROUTE_PEAK_TTL_S') else None)
+MAPS_ROUTE_PEAK_HOURS = __import__('json').loads(os.environ.get('MAPS_ROUTE_PEAK_HOURS_JSON') or '[]')
+# The live ETA reroutes only when 150 m off the route for 30 s, or 30% off the plan, and at most
+# once every 3 minutes per trip (servers/ride/route_eta.py).
+ETA_OFFROUTE_M = float(os.environ.get('ETA_OFFROUTE_M', '150'))
+ETA_OFFROUTE_S = float(os.environ.get('ETA_OFFROUTE_S', '30'))
+ETA_DRIFT = float(os.environ.get('ETA_DRIFT', '0.30'))
+ETA_REROUTE_MIN_S = float(os.environ.get('ETA_REROUTE_MIN_S', '180'))
+# Search on the clients (served in app-config): autocomplete after 3 characters, 300 ms after the
+# last keystroke; "You are here" again only after moving 200 m.
+MAPS_AUTOCOMPLETE_MIN_CHARS = int(os.environ.get('MAPS_AUTOCOMPLETE_MIN_CHARS', '3'))
+MAPS_AUTOCOMPLETE_DEBOUNCE_MS = int(os.environ.get('MAPS_AUTOCOMPLETE_DEBOUNCE_MS', '300'))
+MAPS_REVERSE_GEOCODE_MOVE_M = float(os.environ.get('MAPS_REVERSE_GEOCODE_MOVE_M', '200'))
+# Showing Maps cost in local money in the console: USD -> local currency (a display rate, not a
+# booking rate). MAPS_FX_TO_LOCAL_JSON, e.g. {"IN": 84.0}.
+MAPS_FX_TO_LOCAL = {'IN': 84.0, 'US': 1.0}
+MAPS_FX_TO_LOCAL.update({str(k).upper(): float(v) for k, v in
+                         __import__('json').loads(os.environ.get('MAPS_FX_TO_LOCAL_JSON') or '{}').items()})
 
 # Which Places API the maps adapters speak: "new" (default) or "legacy".
 #

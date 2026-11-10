@@ -494,3 +494,20 @@ def store_planned_route(trip_id):
     from servers.ride.planned_route import store_planned_route_for
 
     return store_planned_route_for(trip_id)
+
+
+@shared_task(name='ride.reroute_trip', max_retries=0, acks_late=True, rate_limit='120/m')
+def reroute_trip(trip_id, leg, lat, lng, t_lat, t_lng, country=''):
+    """One new route for a trip's live ETA (the driver left the route, or the ETA drifted).
+    At most once every 3 minutes per trip, decided by the caller (`route_eta.request_reroute`)."""
+    from servers.ride.route_eta import reroute_now
+
+    return reroute_now(trip_id, leg, lat, lng, t_lat, t_lng, country)
+
+
+@shared_task(name='ride.check_maps_budgets', max_retries=0)
+def check_maps_budgets():
+    """Hourly: the month's Maps spend per country against its budget (alerts, degrade level)."""
+    from servers.ride.maps_budget import check_budgets
+
+    return check_budgets()

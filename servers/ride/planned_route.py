@@ -68,22 +68,60 @@ def schedule_planned_route(trip_id):
         logger.warning('planned route: could not register for trip %s', trip_id, exc_info=True)
 
 
-def fetch_planned_route(trip):
-    """`(polyline, source)` for the trip, or `(None, reason)` on any failure."""
-    from servers.ride import maps_utils
+def _country(trip):
+    return str(getattr(getattr(trip, 'zone', None), 'country', '') or '').upper()
+
+
+def fetch_route(trip):
+    """`(route, source)` pickup to drop (normally the route cached at quote time), or
+    `(None, reason)` on any failure."""
+    from servers.ride import maps_meter, maps_utils
     from servers.ride.route_cache import get_route
 
     try:
-        route, from_cache = get_route(
-            trip.pickup_lat, trip.pickup_long, trip.destination_lat, trip.destination_long)
+        with maps_meter.context(trip_id=trip.id, country=_country(trip)):
+            route, from_cache = get_route(trip.pickup_lat, trip.pickup_long, trip.destination_lat,
+                                          trip.destination_long, _country(trip))
     except Exception:  # noqa: BLE001
         return None, 'no_result'
     if route is None:
         return None, maps_utils.MapsFailure.reason() or 'no_result'
-    line = (route.get('polyline') or '').strip()
-    if not line:
+    if not (route.get('polyline') or '').strip():
         return None, 'empty_route'
-    return line, SOURCE_CACHE if from_cache else SOURCE_DIRECTIONS
+    return route, SOURCE_CACHE if from_cache else SOURCE_DIRECTIONS
+
+
+def fetch_planned_route(trip):
+    """`(polyline, source)` for the trip, or `(None, reason)` on any failure."""
+    route, source = fetch_route(trip)
+    return ((route['polyline'].strip(), source) if route else (None, source))
+
+
+def store_pickup_leg(trip):
+    """The one routing call of the pickup leg: the accepting driver's position to the pickup
+    (9 Nov, maps cost: dispatch itself makes no paid call). Never raises; returns True if stored."""
+    from servers.ride import maps_meter
+    from servers.ride.eta import driver_position
+    from servers.ride.models import Trip
+    from servers.ride.route_cache import get_route
+
+    try:
+        if trip.pickup_route_polyline or not trip.driver_id_id:
+            return False
+        at = driver_position(trip.driver_id_id)
+        if at is None:
+            return False
+        with maps_meter.context(trip_id=trip.id, country=_country(trip)):
+            route, _ = get_route(at[0], at[1], trip.pickup_lat, trip.pickup_long, _country(trip))
+        if not route or not route.get('polyline'):
+            return False
+        Trip.objects.filter(pk=trip.id, pickup_route_polyline__isnull=True).update(
+            pickup_route_polyline=route['polyline'], pickup_route_distance_m=int(route['distance_m']),
+            pickup_route_duration_s=int(route['duration_s']), pickup_route_at=timezone.now())
+        return True
+    except Exception:  # noqa: BLE001 - observation only
+        logger.warning('pickup route: failed for trip %s', trip.id, exc_info=True)
+        return False
 
 
 def store_planned_route_for(trip_id):
@@ -91,21 +129,21 @@ def store_planned_route_for(trip_id):
     from servers.ride.models import Trip
 
     try:
-        trip = Trip.objects.filter(pk=trip_id).only(
-            'id', 'pickup_lat', 'pickup_long', 'destination_lat', 'destination_long',
-            'planned_route_polyline').first()
+        trip = Trip.objects.select_related('zone').filter(pk=trip_id).first()
         if trip is None:
             return None
+        store_pickup_leg(trip)
         if trip.planned_route_polyline:
             return None
-        line, source = fetch_planned_route(trip)
-        if not line:
+        route, source = fetch_route(trip)
+        if not route:
             logger.warning('planned route: none stored for trip %s (%s)', trip_id, source)
             return None
         # Conditional: never overwrite a route a concurrent run stored.
         Trip.objects.filter(pk=trip_id, planned_route_polyline__isnull=True).update(
-            planned_route_polyline=line, planned_route_source=source,
-            planned_route_at=timezone.now())
+            planned_route_polyline=route['polyline'].strip(), planned_route_source=source,
+            planned_route_at=timezone.now(), planned_route_distance_m=int(route['distance_m']),
+            planned_route_duration_s=int(route['duration_s']))
         return source
     except Exception:  # noqa: BLE001 - observation only; never propagates
         logger.warning('planned route: failed for trip %s', trip_id, exc_info=True)

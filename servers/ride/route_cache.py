@@ -4,7 +4,7 @@ The route (distance, duration, polyline) and the price are separate: the route c
 once and is cached here; the price is worked out by our own fare engine from the cached route
 every time it is needed, so demand, time of day and night fees stay current at no Maps cost.
 
-KEY: the country, then pickup and drop each snapped to a grid of `MAPS_ROUTE_GRID_M` (about 75 m).
+KEY: pickup and drop each snapped to a grid of `MAPS_ROUTE_GRID_M` (about 75 m).
 Not the rider, not the vehicle class. A miss also looks in the 8 neighbouring cells of each end
 and takes an entry whose real endpoints are within one grid step, so dragging a pin a few metres
 across a cell edge never pays for a new route.
@@ -85,8 +85,10 @@ def _cell(lat, lng):
 
 
 def _cell_key(country, o_cell, d_cell):
-    return (f'maps:route:v2:{(country or "").upper()}:{o_cell[0]},{o_cell[1]}:'
-            f'{d_cell[0]},{d_cell[1]}')
+    # Coordinates are already global: the key carries no country, so the quote (which does not
+    # know its market) and the accept (which does) share one entry. `country` only sets the
+    # lifetime and the metering.
+    return f'maps:route:v2:{o_cell[0]},{o_cell[1]}:{d_cell[0]},{d_cell[1]}'
 
 
 def route_cache_key(o_lat, o_lng, d_lat, d_lng, country=''):

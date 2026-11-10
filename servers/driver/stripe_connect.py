@@ -7,10 +7,9 @@ only where PAYOUT_FAKE_ALLOWED (QA), a fake account and a link to the site's own
 """
 import secrets
 
-import requests
 from django.conf import settings
 
-API = 'https://api.stripe.com/v1'
+from integrations.payouts import driver_onboarding as vendor
 
 
 class NotConfigured(Exception):
@@ -18,7 +17,7 @@ class NotConfigured(Exception):
 
 
 def _key():
-    return getattr(settings, 'STRIPE_SECRET_KEY', '') or ''
+    return vendor.stripe_key()
 
 
 def _fake_allowed():
@@ -31,7 +30,8 @@ def _site():
 
 def onboarding_link(driver, return_url=''):
     # Only back to our own site: a client-chosen URL would be an open redirect.
-    back = return_url if return_url and _site() and return_url.startswith(_site() + '/') else         f'{_site()}/driver/payouts?stripe=return'
+    ours = bool(return_url and _site() and return_url.startswith(_site() + '/'))
+    back = return_url if ours else f'{_site()}/driver/payouts?stripe=return'
     if not _key():
         if not _fake_allowed():
             raise NotConfigured()
@@ -41,20 +41,12 @@ def onboarding_link(driver, return_url=''):
         driver.save(update_fields=['stripe_account_id', 'stripe_onboarding_status'])
         sep = '&' if '?' in back else '?'
         return f'{back}{sep}fake=1'
-    auth = (_key(), '')
     if not driver.stripe_account_id:
-        r = requests.post(f'{API}/accounts', auth=auth, timeout=15, data={
-            'type': 'express', 'country': 'US', 'capabilities[transfers][requested]': 'true',
-            'metadata[driver_id]': str(driver.pk)})
-        r.raise_for_status()
-        driver.stripe_account_id = r.json()['id']
-    r = requests.post(f'{API}/account_links', auth=auth, timeout=15, data={
-        'account': driver.stripe_account_id, 'type': 'account_onboarding',
-        'refresh_url': back, 'return_url': back})
-    r.raise_for_status()
+        driver.stripe_account_id = vendor.stripe_express_account(driver.pk)
+    url = vendor.stripe_account_link(driver.stripe_account_id, back)
     driver.stripe_onboarding_status = 'in_progress'
     driver.save(update_fields=['stripe_account_id', 'stripe_onboarding_status'])
-    return r.json()['url']
+    return url
 
 
 def refresh_status(driver, fake_done=False):
@@ -67,9 +59,8 @@ def refresh_status(driver, fake_done=False):
         return driver.stripe_onboarding_status
     if not _key():
         return driver.stripe_onboarding_status
-    r = requests.get(f'{API}/accounts/{driver.stripe_account_id}', auth=(_key(), ''), timeout=15)
-    if r.ok:
-        acct = r.json()
+    acct = vendor.stripe_account(driver.stripe_account_id)
+    if acct is not None:
         driver.stripe_onboarding_status = ('ready' if acct.get('payouts_enabled')
                                            else 'in_progress' if acct.get('details_submitted') is not None
                                            else 'not_started')

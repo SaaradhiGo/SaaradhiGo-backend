@@ -397,6 +397,10 @@ class TestDocumentReview:
 # ---------------------------------------------------------------------------
 
 class TestApprove:
+    @pytest.fixture(autouse=True)
+    def _before_requirements(self, no_market_requirements):
+        pass
+
     def test_kyc_verifier_approves_once(self, geo, world):
         client, _ = operator('kyc_verifier', geo)
         driver = world['review']

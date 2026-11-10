@@ -86,11 +86,12 @@ class TestSeed:
         rows = NotificationTemplate.objects.all()
         # 2 keys x 2 countries x 4 channels + 3 keys x 2 countries x 2 (operator trips)
         # + 4 keys x 2 countries x 2 (promotions, module 12) + 1 key x 2 x 2 (payout reversed) + 1 x 2 x 2 (pickup code reminder)
-        assert rows.count() == 52
-        assert rows.filter(status=ACTIVE).count() == 50
+        # + 1 key x 2 x 3 (payout details changed: in_app, push, sms; 10 Nov)
+        assert rows.count() == 58
+        assert rows.filter(status=ACTIVE).count() == 55
         drafts = rows.filter(status=DRAFT)
         assert {(t.channel, t.country) for t in drafts} == {('sms', 'IN')}
-        assert drafts.count() == 2
+        assert drafts.count() == 3
         assert all(t.locale == 'en' for t in rows)
         # Only the "new offer" template is promotional (opt-in, quiet hours); every other is
         # transactional.
@@ -100,7 +101,7 @@ class TestSeed:
             'trips.operator_ended_rider', 'trips.operator_ended_driver',
             'promotions.incentive_progress', 'promotions.incentive_completed',
             'promotions.referral_reward', 'promotions.promo_available', 'payout.reversed',
-            'trips.pickup_code_reminder'}
+            'trips.pickup_code_reminder', 'payout.details_changed'}
 
     def test_the_india_sms_drafts_carry_the_text_to_register_and_no_ids(self, geo):
         seed()
@@ -129,7 +130,7 @@ class TestSeed:
         NotificationTemplate.objects.filter(pk=template.pk).update(body='Edited by a person')
         assert 'already present' in seed()
         template.refresh_from_db()
-        assert template.body == 'Edited by a person' and NotificationTemplate.objects.count() == 52
+        assert template.body == 'Edited by a person' and NotificationTemplate.objects.count() == 58
 
     def test_a_template_in_any_status_blocks_the_seed_for_that_slot(self, geo):
         seed()
@@ -144,7 +145,7 @@ class TestSeed:
         row = AdminAuditLog.objects.get(action='notification_templates_seeded')
         assert row.actor_id == seed_actor().pk
         assert row.actor_label.endswith('via seed_notification_templates')
-        assert len(row.after['created']) == 52
+        assert len(row.after['created']) == 58
 
     def test_it_needs_an_actor(self, geo):
         with pytest.raises(CommandError, match='--actor-email'):

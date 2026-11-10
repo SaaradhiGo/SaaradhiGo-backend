@@ -328,8 +328,8 @@ def payout_method_dict(driver, country):
 
 
 def lookup_ifsc(code):
-    """`{bank, branch}` for an IFSC from Razorpay's public IFSC service, cached for a day; None if unknown."""
-    import requests
+    """`{bank, branch, city}` for an IFSC, cached for a day; None if unknown or unreachable."""
+    from integrations.payouts.driver_onboarding import ifsc_lookup
 
     code = (code or '').strip().upper()
     if not IFSC_RE.match(code):
@@ -338,14 +338,9 @@ def lookup_ifsc(code):
     got = cache.get(key)
     if got is not None:
         return got or None
-    try:
-        r = requests.get(f'https://ifsc.razorpay.com/{code}', timeout=6)
-        data = r.json() if r.status_code == 200 else {}
-    except Exception:  # noqa: BLE001
-        logger.warning('ifsc lookup failed code=%s', code)
+    out = ifsc_lookup(code)
+    if out is None:
         return None
-    out = {'bank': data.get('BANK') or '', 'branch': data.get('BRANCH') or '',
-           'city': data.get('CITY') or ''} if data.get('BANK') else {}
     cache.set(key, out, 86400)
     return out or None
 
@@ -358,30 +353,14 @@ def razorpayx_configured():
 def request_bank_validation(bank, driver):
     """RazorpayX fund-account validation (Rs 1 and a name match). Without keys the account is
     marked "Verification pending (config)" (config-required.md)."""
-    import requests
+    from integrations.payouts.driver_onboarding import validate_bank_account
 
     if not razorpayx_configured():
         return 'pending_config'
-    try:
-        r = requests.post(
-            'https://api.razorpay.com/v1/fund_accounts/validations',
-            auth=(settings.RAZORPAYX_KEY_ID, settings.RAZORPAYX_KEY_SECRET), timeout=15,
-            json={'account_number': settings.RAZORPAYX_ACCOUNT_NUMBER, 'amount': 100, 'currency': 'INR',
-                  'fund_account': {'account_type': 'bank_account',
-                                   'bank_account': {'name': bank.holder_name, 'ifsc': bank.ifsc_code,
-                                                    'account_number': bank.account_number},
-                                   'contact': {'name': bank.holder_name}}})
-        data = r.json()
-    except Exception:  # noqa: BLE001
-        logger.warning('bank validation request failed driver=%s', driver.pk)
-        return 'pending'
-    result = (data.get('results') or {})
-    if data.get('status') == 'completed':
-        if result.get('account_status') == 'active':
-            bank.verified_name = result.get('registered_name') or ''
-            return 'verified'
-        return 'failed'
-    return 'pending'
+    state, name = validate_bank_account(bank.holder_name, bank.ifsc_code, bank.account_number)
+    if state == 'verified':
+        bank.verified_name = name
+    return state
 
 
 def _changed(driver, method_label, had_details):

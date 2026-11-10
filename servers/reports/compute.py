@@ -43,7 +43,7 @@ twice, or while a trip settles, ends in the same rows for the same source data.
 import logging
 import re
 from collections import defaultdict
-from datetime import date as date_cls, datetime, time, timedelta, timezone as dt_timezone
+from datetime import datetime, time, timedelta, timezone as dt_timezone
 from decimal import Decimal
 
 from django.db import transaction

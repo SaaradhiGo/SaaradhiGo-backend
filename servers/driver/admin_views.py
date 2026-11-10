@@ -7,15 +7,15 @@ from rest_framework import status
 from base.money import charged_fare, sum_minor, to_major_string
 from base.utils import success_response, error_response
 from base.permissions import (
-    CAP_DRIVER_KYC, CAP_FINANCE_PAYOUT, IsAdmin, RequiresCapability,
+    CAP_DRIVER_KYC, CAP_FINANCE_PAYOUT, IsAdmin,
 )
-from servers.admin_access.bridge import ScopedPermission, in_scope
+from servers.admin_access.bridge import ScopedPermission
 from servers.admin_access.scoping import (
     ScopeNotHeld, scoped, scoped_or_none, scoped_to_request,
 )
 from servers.driver.models import Driver, DriverSuspension, Vehicle
 from servers.driver.serializers import (
-    AdminVehicleSerializer, DriverAdminDetailSerializer, DriverAdminListSerializer,
+    AdminVehicleSerializer, DriverAdminDetailSerializer,
     KYCApprovalSerializer,
 )
 from rest_framework.pagination import PageNumberPagination

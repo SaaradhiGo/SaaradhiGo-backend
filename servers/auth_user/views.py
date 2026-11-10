@@ -1041,10 +1041,15 @@ def update_user(request):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+            old_email = user.email
             with transaction.atomic():
                 user_serializer.save()
                 if home_city is not None:
                     _save_home_city(user, home_city)
+                # A new address is not the one that was verified.
+                if (user.email or '') != (old_email or '') and user.email_verified_at is not None:
+                    user.email_verified_at = None
+                    user.save(update_fields=['email_verified_at'])
             logger.info(f"User profile updated successfully: {user_id}")
             return success_response(
                 user_serializer.data,

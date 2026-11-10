@@ -14,7 +14,8 @@ from .models import Driver, WithdrawalRequest
 from servers.rider.models import Wallet
 
 def driver_currency(driver):
-    """The currency a driver is paid in: their wallet's, else the default."""
+    """The currency a driver is paid in: their wallet's, else their market's (home city, then
+    phone number), else the default. A new US driver with no wallet sees $0.00, not ₹0.00."""
     try:
         wallet = Wallet.objects.filter(
             user_id=getattr(driver, 'user_id_id', None)).first()
@@ -22,7 +23,11 @@ def driver_currency(driver):
         wallet = None
     if wallet and getattr(wallet, 'currency', None):
         return normalize_currency(wallet.currency)
-    return DEFAULT_CURRENCY
+    from base.countries import currency_for
+    from servers.payments.payout_config import driver_payout_country
+
+    country = driver_payout_country(driver)
+    return currency_for(country) if country else DEFAULT_CURRENCY
 
 
 def minimum_withdrawal_for(driver):

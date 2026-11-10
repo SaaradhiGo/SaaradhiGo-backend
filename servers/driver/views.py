@@ -442,7 +442,9 @@ def driver_withdrawal_balance(request):
     GET /api/driver/withdrawals/balance/
     Returns available balance, block status, fee percentage.
     """
-    from .services import calculate_available_balance, is_withdrawal_blocked, get_withdrawal_block_remaining
+    from .services import (
+        calculate_available_balance, driver_currency, get_withdrawal_block_remaining, is_withdrawal_blocked,
+    )
     from servers.payments.payout_config import (
         NOT_AVAILABLE_MESSAGE, config_for_driver, fee_display, fee_percent, minimum_withdrawal,
     )
@@ -468,7 +470,7 @@ def driver_withdrawal_balance(request):
         'minimum_withdrawal': float(minimum_withdrawal(config)) if config else None,
         # The currency the amounts above are in (the driver's country), so the
         # app never has to choose a symbol.
-        'currency': config.currency if config else None,
+        'currency': config.currency if config else driver_currency(driver),
     }
     # Owner ruling 2026-11-09: paid automatically on a cycle; Withdraw now only where the
     # driver's city has instant cash-out on, at the provider's own fee.
@@ -767,6 +769,19 @@ def list_vehicles(request):
     return success_response(serializer.data, status.HTTP_200_OK)
 
 
+#: What identifies the car on the rider's screen; changing any of it is reviewed again.
+VEHICLE_IDENTITY = ('vehicle_type', 'brand', 'model', 'color', 'vehicle_number')
+
+
+def _send_to_review(driver):
+    """Back into the KYC queue as "In review"; may_operate stays off until approved (10 Nov)."""
+    driver.doc_status = 'pending'
+    driver.approved = False
+    driver.doc_rejection_reason = None
+    driver.doc_status_updated_at = timezone.now()
+    driver.save(update_fields=['doc_status', 'approved', 'doc_rejection_reason', 'doc_status_updated_at'])
+
+
 @api_view(['POST'])
 @permission_classes([IsDriver])
 @parser_classes([MultiPartParser, FormParser, JSONParser])
@@ -830,6 +845,10 @@ def create_vehicle(request):
             vehicle.save, what='vehicle creation')
         if storage_error is not None:
             return storage_error
+        if driver.active_vehicle_id is None:
+            driver.active_vehicle = vehicle
+            driver.save(update_fields=['active_vehicle'])
+        _send_to_review(driver)
     except ValidationError as e:
         return error_response(
             code='VALIDATION_ERROR',
@@ -891,9 +910,22 @@ def update_vehicle(request, vehicle_id):
             setattr(vehicle, field_name, field_value)
 
     allowed_fields = ['brand', 'model', 'color', 'year', 'capacity', 'vehicle_number', 'insurance_expiry', 'permit_expiry','fitness_expiry','puc_expiry',]
+    before = {f: str(getattr(vehicle, f) or '') for f in VEHICLE_IDENTITY if f != 'vehicle_type'}
+    before['vehicle_type'] = vehicle.vehicle_type_id_id
     for field in allowed_fields:
         if field in request.data:
             setattr(vehicle, field, request.data[field])
+    if request.data.get('vehicle_type'):
+        from .models import VehicleType
+        vt = VehicleType.objects.filter(type=request.data['vehicle_type']).first()
+        if vt is None:
+            return error_response(code='VALIDATION_ERROR', message='Unknown vehicle type',
+                                  field='vehicle_type', issue='Not in the catalogue',
+                                  status=status.HTTP_400_BAD_REQUEST)
+        vehicle.vehicle_type_id = vt
+    after = {f: str(getattr(vehicle, f) or '') for f in VEHICLE_IDENTITY if f != 'vehicle_type'}
+    after['vehicle_type'] = vehicle.vehicle_type_id_id
+    identity_changed = before != after
 
     try:
         vehicle.full_clean()
@@ -903,7 +935,9 @@ def update_vehicle(request, vehicle_id):
             vehicle.save, what='vehicle documents')
         if storage_error is not None:
             return storage_error
-        if was_rejected:
+        if identity_changed:
+            _send_to_review(driver)
+        elif was_rejected:
             driver.doc_status = "pending"
             driver.approved = False
             driver.doc_rejection_reason = None

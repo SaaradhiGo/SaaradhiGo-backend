@@ -62,6 +62,15 @@ class DriverProfileSerializer(serializers.ModelSerializer):
     # what the three WebSocket gates already decide, so the client and the
     # server stop disagreeing. Read-only, computed, and never writable.
     dispatch_eligible = serializers.SerializerMethodField()
+    # One count of the driver's trips (11 Nov): the settled trips Earnings counts, never the stored
+    # `Driver.total_trips` counter, which drifts.
+    total_trips = serializers.SerializerMethodField()
+
+    def get_total_trips(self, obj) -> int:
+        from .earnings import trip_count
+
+        return trip_count(obj)
+
     qa_simulated_eligibility = serializers.BooleanField(read_only=True)
 
     def get_dispatch_eligible(self, obj) -> bool:

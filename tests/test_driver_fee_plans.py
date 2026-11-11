@@ -240,6 +240,31 @@ class TestNewDriverAndOvercharge:
         assert fee_plans.fee_words(india.driver, today=DAY) == 'A commission on each trip, shown on every trip'
 
 
+class TestLateConfigurationAndClass:
+    """Owner ruling 11 Nov: a driver never pays for configuration written late, and a trip with no
+    ride class takes the vehicle's class."""
+
+    def test_trips_before_any_plan_inside_the_waiver_are_refunded(self, india):
+        DriverFeePlan.objects.all().delete()
+        early = trips_on(india, date(2026, 10, 1), 2)               # no plan existed that day
+        assert all(t.fee_plan_type == '' for t in early)
+        later = plan(waiver_first_days=60)
+        later.effective_from = date(2026, 10, 5)                     # in force now, written late
+        later.save()
+        assert [r[3] for r in fee_plans.refund_overcharged(india.driver, 'IN')] == [2250, 2250]
+
+    def test_a_trip_with_no_class_takes_the_vehicle_class(self, india):
+        DriverFeePlan.objects.all().delete()
+        t = trips_on(india, DAY, 1)[0]
+        Trip.objects.filter(pk=t.pk).update(requested_vehicle_type=None)
+        t.refresh_from_db()
+        assert fee_plans.trip_class(t) == 'sedan'
+        later = plan(waiver_first_days=60)
+        later.effective_from = DAY
+        later.save()
+        assert [r[3] for r in fee_plans.refund_overcharged(india.driver, 'IN')] == [2250]
+
+
 class TestSimulator:
     @pytest.mark.parametrize('n', [5, 12, 20])
     def test_simulator_equals_the_end_of_day_job(self, india, n):

@@ -93,6 +93,9 @@ class EarningRow:
     tax_collected: Optional[Decimal] = None
     fee_collected: Optional[Decimal] = None
     fee_name: str = ''
+    # A platform fee returned for this trip (`platform_fee_refund`, 11 Nov), whenever it was written:
+    # already taken off `commission` and added to `net`, so every view shows it on the trip's day.
+    refunded: Decimal = Decimal('0.00')
 
     def _fee_label(self):
         return (f'{self.fee_name} collected (remitted by SaaradhiGo)' if self.fee_name
@@ -156,6 +159,8 @@ class EarningRow:
             'promo_paid_by_platform': _s(self.promo_discount) if self.promo_discount else None,
             'promo_paid_label': PROMO_PAID_LABEL if self.promo_discount else None,
             'promo_credited_to_wallet': bool(self.promo_discount) and self.driver_holds_cash,
+            # Additive (11 Nov): the fee returned for this trip, already in `commission` and `net_amount`.
+            'platform_fee_refunded': _s(self.refunded) if self.refunded else None,
         }
 
 
@@ -179,11 +184,13 @@ def _trip_id_from_reference(reference_id):
         return None
 
 
-def settlement_rows(driver, since=None, until=None, limit=None):
+def settlement_rows(driver, since=None, until=None, limit=None, refunds=True):
     """Every settled trip for this driver, newest first.
 
     Two queries regardless of how many trips: the ledger rows, then the trips
-    they reference.
+    they reference. With `refunds` (every driver view), a `platform_fee_refund` for a trip is
+    applied to that trip's row: the fee goes down and the earning up on the trip's own day, while the
+    refund's ledger row keeps the date it was written. `refunds=False` gives the fee as charged.
     """
     from servers.ride.models import Trip
     from servers.rider.models import WalletTransaction
@@ -239,7 +246,31 @@ def settlement_rows(driver, since=None, until=None, limit=None):
         row.commission_percent = percents.get(trip_id)
         row.promo_discount = discounts.get(trip_id)
         rows.append(row)
+    if refunds and trip_ids:
+        _apply_refunds(driver, rows, trip_ids)
     return rows
+
+
+def _apply_refunds(driver, rows, trip_ids):
+    from base.money import from_minor
+    from servers.rider.models import WalletTransaction
+
+    back = {}
+    for ref, minor, cur in (WalletTransaction.objects.filter(
+            user_id=driver.user_id, purpose='platform_fee_refund', status='completed',
+            reference_id__in=[f'{_REFERENCE_PREFIX}{t}' for t in trip_ids])
+            .values_list('reference_id', 'amount_minor', 'currency')):
+        tid = _trip_id_from_reference(ref)
+        back[tid] = back.get(tid, Decimal('0.00')) + from_minor(minor, cur)
+    for row in rows:
+        got = back.pop(row.trip_id, None) if row.trip_id is not None else None
+        if not got:
+            continue
+        row.refunded = got
+        if row.commission is not None:
+            row.commission -= got
+        if row.net is not None:
+            row.net += got
 
 
 def _row_for(entry, trip, trip_id, settlement=None):
@@ -301,6 +332,12 @@ def _row_for(entry, trip, trip_id, settlement=None):
         fee_collected=fee,
         fee_name=fee_name,
     )
+
+
+def trip_count(driver):
+    """How many trips the driver has done: the settled trips, as Earnings and the statement count
+    them (`summarise`). The one count every driver screen shows."""
+    return summarise(settlement_rows(driver, refunds=False))['total_trips']
 
 
 def summarise(rows):

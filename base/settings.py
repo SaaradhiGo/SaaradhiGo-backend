@@ -938,6 +938,10 @@ FINANCE_EXPORT_MAX_ROWS = int(os.environ.get('FINANCE_EXPORT_MAX_ROWS', '50000')
 # exist, so there a person passes the flag.
 QA_BOOTSTRAP_ACTOR_EMAIL = (os.environ.get('QA_BOOTSTRAP_ACTOR_EMAIL') or '').strip()
 
+# QA only (11 Nov): a QA-simulated test driver (not approved) may go online without the market's
+# requirements. Off unless set; production refuses to boot with it on (below).
+QA_SIM_DRIVERS_SKIP_REQUIREMENTS = os.environ.get('QA_SIM_DRIVERS_SKIP_REQUIREMENTS', '').strip().lower() in ('1', 'true', 'yes')
+
 if IS_PRODUCTION:
     from django.core.exceptions import ImproperlyConfigured as _Improper
 
@@ -962,6 +966,12 @@ if IS_PRODUCTION:
             f'TEST_PHONE_NUMBERS is set ({len(TEST_PHONE_NUMBERS)} entries). '
             'Each entry is a phone number that logs in with a fixed OTP and '
             'skips SMS delivery and throttling -- an authentication bypass.'
+        )
+
+    if QA_SIM_DRIVERS_SKIP_REQUIREMENTS:
+        _production_faults.append(
+            'QA_SIM_DRIVERS_SKIP_REQUIREMENTS is on. It lets an unapproved test driver go online '
+            'without licence, insurance or any other required document.'
         )
 
     if not ADMIN_MFA_REQUIRED:

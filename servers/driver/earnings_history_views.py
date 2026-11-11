@@ -123,7 +123,9 @@ def driver_trip_detail(request, trip_id):
         'duration_min': s(minutes if minutes is not None else trip.estimated_duration_min),
         'ride_class': getattr(trip.requested_vehicle_type, 'type', '') or '',
         'payment_method': row.method if row is not None else (trip.payment_method or ''),
-        'fare': s(row.gross) if row else None, 'platform_fee': s(row.commission) if row else None,
+        # The fee net of its refund, as the Trips row shows it; the refund itself is tagged.
+        'fare': s(row.gross) if row else None,
+        'platform_fee': s(row.commission - refund) if row and row.commission is not None else None,
         'platform_fee_refunded': s(refund) if refund else None, 'tips': '0.00', 'earned': s(earned),
         'cash_in_hand': s(row.gross) if row is not None and row.driver_holds_cash else None,
         'rider': {'first_name': first, 'rating': s(rating)},

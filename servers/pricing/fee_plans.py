@@ -208,6 +208,18 @@ def _state_code(zone):
     return node.code.split('-')[-1] if node is not None else ''
 
 
+def trip_class(trip):
+    """The ride class a trip's fee is worked out for (11 Nov): the class booked; with none (a trip
+    written without one), the class of the vehicle that drove it, else the driver's active vehicle."""
+    if trip.requested_vehicle_type_id:
+        return getattr(trip.requested_vehicle_type, 'type', '') or ''
+    for vehicle in (getattr(trip, 'vehicle_id', None), getattr(getattr(trip, 'driver_id', None), 'active_vehicle', None)):
+        vt = getattr(getattr(vehicle, 'vehicle_type_id', None), 'type', '') if vehicle is not None else ''
+        if vt:
+            return vt
+    return ''
+
+
 def day_trips(driver, country, day):
     from servers.ride.models import Trip
 
@@ -215,7 +227,7 @@ def day_trips(driver, country, day):
     return list(Trip.objects.filter(driver_id=driver, status_id__status_code='completed',
                                     completed_at__gte=start, completed_at__lt=end,
                                     fee_plan_type__in=NON_COMMISSION)
-                .select_related('zone', 'requested_vehicle_type').order_by('completed_at', 'id'))
+                .select_related('zone', 'requested_vehicle_type', 'vehicle_id__vehicle_type_id', 'driver_id__active_vehicle__vehicle_type_id').order_by('completed_at', 'id'))
 
 
 def first_trip_day(driver, country):
@@ -237,7 +249,7 @@ def charge_day(driver, country, day):
     if not trips:
         return None
     plan = DriverFeePlan.objects.get(pk=trips[0].fee_plan_id)
-    vt = getattr(trips[0].requested_vehicle_type, 'type', '') if trips[0].requested_vehicle_type_id else ''
+    vt = trip_class(trips[0])
     fares = [t.final_fare_minor if t.final_fare_minor is not None else (t.estimated_fare_minor or 0)
              for t in trips]
     result = day_fee(plan, vt, fares, day=day, first_trip_day=first_trip_day(driver, country),
@@ -302,7 +314,7 @@ def today_so_far(driver, country, now=None):
     plan = DriverFeePlan.objects.filter(pk=trips[0].fee_plan_id).first()
     if plan is None:
         return None
-    vt = getattr(trips[0].requested_vehicle_type, 'type', '') if trips[0].requested_vehicle_type_id else ''
+    vt = trip_class(trips[0])
     fares = [t.final_fare_minor if t.final_fare_minor is not None else (t.estimated_fare_minor or 0)
              for t in trips]
     result = day_fee(plan, vt, fares, day=day, first_trip_day=first_trip_day(driver, country),
@@ -324,15 +336,15 @@ def _commission_minor(driver):
 
     cur = driver_currency(driver)
     out = {}
-    for row in settlement_rows(driver):
+    for row in settlement_rows(driver, refunds=False):
         if row.trip_id is not None and row.commission is not None:
             out[row.trip_id] = out.get(row.trip_id, 0) + to_minor(row.commission, cur)
     return out
 
 
 def overcharged(driver, country):
-    """Days on which a non-commission plan was in force for the trip's city and class but the trip
-    settled with a percentage commission (booked before the plan existed: QA, 10 Nov). Each day:
+    """Days on which a non-commission plan was in force for the trip's city and class (or, before any
+    plan existed, the plan in force now) but the trip settled with a percentage commission. Each day:
     `(day, plan, [(trip, commission_minor, refund_minor)])`. The refund is the commission less any
     plan fee the day would have owed with those trips counted, so the driver ends where the plan
     puts them."""
@@ -340,15 +352,17 @@ def overcharged(driver, country):
 
     trips = list(Trip.objects.filter(driver_id=driver, status_id__status_code='completed', fee_plan_type='',
                                      completed_at__isnull=False)
-                 .select_related('zone', 'requested_vehicle_type').order_by('completed_at', 'id'))
+                 .select_related('zone', 'requested_vehicle_type', 'vehicle_id__vehicle_type_id', 'driver_id__active_vehicle__vehicle_type_id').order_by('completed_at', 'id'))
     commission = _commission_minor(driver)
     by_day = {}
     for t in trips:
         if commission.get(t.id, 0) <= 0 or t.zone is None:
             continue
         day = local_day(country, t.completed_at)
-        plan = resolve(country, scope_codes_of_zone(t.zone), day)
-        vt = getattr(t.requested_vehicle_type, 'type', '') if t.requested_vehicle_type_id else ''
+        # A driver never pays for configuration written late (owner ruling, 11 Nov): a day before any
+        # plan existed is judged by the plan in force now, waiver included.
+        plan = resolve(country, scope_codes_of_zone(t.zone), day) or resolve(country, scope_codes_of_zone(t.zone))
+        vt = trip_class(t)
         if plan is None or plan.plan_type not in NON_COMMISSION or not plan.amounts_for(vt):
             continue
         by_day.setdefault(day, (plan, vt, []))[2].append(t)

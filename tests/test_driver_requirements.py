@@ -283,9 +283,12 @@ class TestGoOnlineAndExpiry:
         Vehicle.objects.filter(pk=driver.active_vehicle_id).update(insurance_expiry=date.today() - timedelta(days=1))
         driver.refresh_from_db()
         assert 'Vehicle insurance' in requirements_unmet(driver)
-        Driver.objects.filter(pk=driver.pk).update(approved=False)     # not approved: the approval gate applies
+        Driver.objects.filter(pk=driver.pk).update(approved=False)     # QA-simulated: only with the QA setting
         driver.refresh_from_db()
-        assert requirements_unmet(driver) == []
+        assert 'Police verification' in requirements_unmet(driver)
+        from django.test import override_settings
+        with override_settings(QA_SIM_DRIVERS_SKIP_REQUIREMENTS=True, IS_PRODUCTION=False):
+            assert requirements_unmet(driver) == []
 
     def test_a_dated_paper_is_approved_only_with_its_expiry(self, world):  # noqa: F811
         driver = new_driver(world)
@@ -335,6 +338,29 @@ class TestGoOnlineAndExpiry:
         assert sent[0][4].endswith(':7')
         assert tasks.remind_expiring_documents(today=today + timedelta(days=1)) == 1    # same window, same key
         assert sent[1][4] == sent[0][4]
+
+
+class TestNoDataIsNeverDone:
+    """11 Nov: a step with no data is never Done, and a driver with no approved vehicle is never ready
+    to drive; a seed (test) driver too."""
+
+    @pytest.mark.requirements_gate
+    def test_a_seed_driver_without_a_vehicle(self, world):  # noqa: F811
+        from servers.driver.qa_eligibility import requirements_unmet
+
+        driver = new_driver(world)
+        TestGate().complete(driver)
+        Driver.objects.filter(pk=driver.pk).update(is_seed=True, approved=True, doc_status='approved', active_vehicle=None)
+        Vehicle.objects.filter(driver_id=driver).delete()
+        driver.refresh_from_db()
+        c = req.checklist(driver)
+        step = next(s for s in c['steps'] if s['key'] == 'vehicle')
+        assert step['status'] == 'todo' and 'vehicle' in c['blocking']
+        assert 'Vehicle details' in requirements_unmet(driver)
+        Driver.objects.filter(pk=driver.pk).update(approved=False)
+        ops, _ = operator('kyc_verifier', world.geo)
+        r = ops.post(f'/api/v1/driver/admin/{driver.id}/approve/', {}, format='json')
+        assert r.status_code == 400 and 'Vehicle details' in str(r.json()['error'])
 
 
 class TestIntegrity:

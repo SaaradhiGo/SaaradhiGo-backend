@@ -334,3 +334,24 @@ def test_the_test_account_invite_routes_exist_outside_production():
     assert rc == 0, out[-3000:]
     assert 'PRESENT /api/v1/auth/admin/invite/test-rider/' in out
     assert 'PRESENT /api/v1/auth/admin/invite/test-driver/' in out
+
+
+def test_the_qa_go_online_bypass_is_refused_in_production():
+    """11 Nov: unapproved QA test drivers going online without documents must never reach production."""
+    rc, out = _boot(QA_SIM_DRIVERS_SKIP_REQUIREMENTS='1')
+
+    assert rc != 0, 'production booted with the QA go-online bypass on'
+    assert 'QA_SIM_DRIVERS_SKIP_REQUIREMENTS' in out
+
+
+def test_the_qa_go_online_bypass_is_off_unless_set():
+    from django.conf import settings
+    from django.test import override_settings
+
+    from servers.driver.qa_eligibility import requirements_bypass_allowed
+
+    assert getattr(settings, 'QA_SIM_DRIVERS_SKIP_REQUIREMENTS', False) is False
+    with override_settings(QA_SIM_DRIVERS_SKIP_REQUIREMENTS=True, IS_PRODUCTION=True):
+        assert requirements_bypass_allowed() is False
+    with override_settings(QA_SIM_DRIVERS_SKIP_REQUIREMENTS=True, IS_PRODUCTION=False):
+        assert requirements_bypass_allowed() is True

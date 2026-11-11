@@ -1,0 +1,18 @@
+# main takes pull requests from dev only (owner, 11 Nov): dev deploys to QA, main to production.
+# A required check on main; it fails any other source branch.
+name: main source
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  source-branch:
+    name: source branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: The pull request comes from dev
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" != "dev" ]; then
+            echo "main takes pull requests from dev only, not $HEAD_REF"; exit 1
+          fi

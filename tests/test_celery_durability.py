@@ -311,6 +311,10 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # no-op). No retry: the next hour is the retry. Touches object storage
         # only; no record, money or status.
         'driver.sweep_unattached_uploads',
+        # Expiry reminders (daily, beat, 11 Nov). Safe to redeliver: one notify() per driver, paper,
+        # date and window (30/7/1), keyed by idempotency key, so a doubled run sends nothing twice.
+        # No retry: tomorrow's run is the retry. Writes notification outbox rows only.
+        'driver.remind_expiring_documents',
         # City rollups (every minute and nightly, beat). acks_late is safe: each run
         # replaces the rows of the buckets it recounts, in one transaction, from the
         # source tables, so a redelivered or doubled run writes the same rows; a cache

@@ -47,18 +47,219 @@ def update_driver_location(driver_id, lng, lat):
         status_code=status.HTTP_200_OK
     )
 
-def credit_driver_wallet(trip):
-    """Settle a completed trip against the driver's settlement balance."""
-    from servers.payments.models import TransactionHistory
+#: Wallet-ledger purposes of the US pass-through lines on a CASH trip (the driver holds the rider's
+#: tax and fee in hand and owes them to SaaradhiGo, which remits them). Debits, never earnings.
+PURPOSE_TAX_COLLECTED = 'tax_collected'
+PURPOSE_FEE_COLLECTED = 'regulatory_fee_collected'
+#: A cash trip the rider then paid through SaaradhiGo (from the wallet): the platform holds the money
+#: the cash settlement assumed the driver had. A credit of exactly what the rider was charged.
+PURPOSE_FARE_COLLECTED_BY_PLATFORM = 'fare_collected_by_platform'
+
+
+def credit_fare_collected_by_platform(trip, amount_minor, currency):
+    """Credit the driver the fare the platform collected on a trip settled as cash.
+
+    The cash settlement debited the commission (and, in the US, the tax and fee the driver was
+    assumed to hold) and, with a promo, credited the discount. Adding what the rider actually paid
+    the platform leaves the balance at the trip's net, as on an online trip. Append-only and keyed
+    per trip, so a second call writes nothing. Call inside the payment's transaction.
+    """
+    from django.db import IntegrityError, transaction
+
     from servers.rider.models import Wallet, WalletTransaction, get_wallet
-    from servers.pricing.services import commission_percent_for_trip
-    from decimal import Decimal, ROUND_HALF_UP
-    from django.db import transaction, IntegrityError
+
+    if not trip.driver_id or amount_minor <= 0:
+        return None
+    wallet = get_wallet(trip.driver_id.user_id, Wallet.SCOPE_DRIVER, lock=True)
+    try:
+        with transaction.atomic():
+            txn = WalletTransaction.objects.create(
+                user_id=trip.driver_id.user_id, currency=currency, amount_minor=amount_minor,
+                txn_type='credit', status='completed', purpose=PURPOSE_FARE_COLLECTED_BY_PLATFORM,
+                reference_id=f'TRIP_{trip.id}', idempotency_key=f'TRIP_{trip.id}_COLLECTED')
+    except IntegrityError:
+        return None
+    wallet.balance_minor = wallet.balance_minor + amount_minor
+    wallet.save(update_fields=['balance_minor'])
+    return txn
+
+
+def settle_paid_by_platform(trip, amount_minor, currency=None):
+    """Settle a completed trip the platform has just been PAID for (online, or from the wallet).
+
+    Every path that completes a platform payment calls this, so the driver ends credited exactly
+    once with the trip's net, whatever happened before (AUDIT 27.72):
+
+    * not settled yet: the normal settlement (`credit_driver_wallet`), as an online trip;
+    * already settled as a platform-collected trip: nothing more (a repeat webhook, a poll);
+    * settled as CASH at completion, then switched and paid online or from the wallet: the driver
+      did not collect the cash, so they are credited exactly what the platform collected
+      (`credit_fare_collected_by_platform`), which leaves the balance at the net, and the
+      settlement gets a version 2 (append only) with the same amounts and the new payment method,
+      so reports read the trip as paid through the platform.
+
+    Call with `trip.payment_method` already set to the method that paid. Inside a transaction.
+    """
+    from django.db import transaction
+
+    from servers.payments.models import TripSettlement
+    from servers.rider.models import Wallet, get_wallet
+
+    # Read the settlement under the driver-wallet lock every settlement takes, so a cash completion
+    # settling at the same moment is either committed (seen) or not started (review MEDIUM-2).
+    if trip.driver_id:
+        get_wallet(trip.driver_id.user_id, Wallet.SCOPE_DRIVER, lock=True)
+    current = TripSettlement.objects.filter(trip=trip).order_by('-version').first()
+    if current is None:
+        # No commission rule must not undo the rider's payment (review MEDIUM-3): settle or defer.
+        settle_or_defer(trip)
+        return None
+    if current.payment_method != 'cash':
+        return None
+    with transaction.atomic():
+        txn = credit_fare_collected_by_platform(trip, amount_minor, currency or current.currency)
+        if txn is None:
+            return None
+        TripSettlement.objects.create(
+            trip=trip, driver=current.driver, wallet_transaction=txn, currency=current.currency,
+            gross_fare_minor=current.gross_fare_minor,
+            commission_percent=current.commission_percent,
+            commission_amount_minor=current.commission_amount_minor,
+            driver_net_minor=current.driver_net_minor,
+            tax_collected_minor=current.tax_collected_minor,
+            regulatory_fee_collected_minor=current.regulatory_fee_collected_minor,
+            payment_method=trip.payment_method or 'online', settled_at=current.settled_at,
+            version=current.version + 1, source=current.source,
+            provenance_note='Paid through SaaradhiGo after a cash settlement (AUDIT 27.72)')
+    return txn
+
+
+#: Every ledger purpose a trip's settlement can write on the driver's balance (keyed `TRIP_<id>`).
+TRIP_LEDGER_PURPOSES = (
+    'trip_earnings', 'trip_commission', PURPOSE_TAX_COLLECTED, PURPOSE_FEE_COLLECTED,
+    'promo_discount_platform_funded', PURPOSE_FARE_COLLECTED_BY_PLATFORM, 'platform_funded_trip_end',
+)
+#: The rider was refunded the whole trip: what the driver's balance gained from it is taken back.
+PURPOSE_TRIP_REFUND_REVERSAL = 'trip_refund_reversal'
+
+
+def reverse_trip_earnings(trip):
+    """Take back, once, what the driver's balance gained from this trip (AUDIT 27.76).
+
+    Used when the rider is refunded the whole trip. The amount is read from the driver's own ledger
+    lines for the trip (credits less debits), never from a report row, and taken back as ONE
+    append-only debit keyed per trip (`TRIP_<id>_REFUND_REVERSAL`), so a retried refund takes nothing
+    more. Nothing is taken when the trip left the driver nothing (or owing). Inside a transaction.
+    """
+    from django.db import IntegrityError, transaction
+
+    from servers.rider.models import Wallet, WalletTransaction, get_wallet
 
     if not trip.driver_id:
-        return
+        return None
+    user = trip.driver_id.user_id
+    wallet = get_wallet(user, Wallet.SCOPE_DRIVER, lock=True)
+    net = 0
+    for txn_type, amount in (WalletTransaction.objects
+                             .filter(user_id=user, reference_id=f'TRIP_{trip.id}',
+                                     purpose__in=TRIP_LEDGER_PURPOSES, status='completed')
+                             .values_list('txn_type', 'amount_minor')):
+        net += amount if txn_type == 'credit' else -amount
+    if net <= 0:
+        return None
+    try:
+        with transaction.atomic():
+            txn = WalletTransaction.objects.create(
+                user_id=user, currency=wallet.currency, amount_minor=net, txn_type='debit',
+                status='completed', purpose=PURPOSE_TRIP_REFUND_REVERSAL,
+                reference_id=f'TRIP_{trip.id}', idempotency_key=f'TRIP_{trip.id}_REFUND_REVERSAL')
+    except IntegrityError:
+        return None
+    wallet.balance_minor = wallet.balance_minor - net
+    wallet.save(update_fields=['balance_minor'])
+    return txn
 
-    amount = trip.final_fare or trip.estimated_fare or Decimal('0.00')
+
+def settle_or_defer(trip):
+    """Settle a completed trip, but never let a missing commission rule strand the ride.
+
+    `credit_driver_wallet` raises `CommissionNotConfigured` when no rule governs the trip
+    (module 8: there is no default rate). Completing a trip, and telling the rider and
+    driver it is done, must not depend on that: the failure is logged loudly and the trip
+    stays completed but UNSETTLED. Nothing is written, so settling it later (once a rule
+    exists) is the normal idempotent call, and the daily reconciliation's trips-vs-
+    settlements check lists it. Returns True when settled, False when deferred.
+    """
+    from servers.pricing.commission import CommissionNotConfigured
+
+    try:
+        credit_driver_wallet(trip)
+        return True
+    except CommissionNotConfigured as exc:
+        logger.error('settlement_deferred_no_commission_rule', extra={
+            'event': 'settlement_deferred_no_commission_rule', 'trip_id': trip.id,
+            'detail': str(exc)})
+        # Logging is not enough: raise ONE critical Command Centre alert for finance
+        # (idempotent per trip). It must never fail the completion it is reporting on.
+        try:
+            from servers.payments.unsettled import raise_unsettled_alert
+            raise_unsettled_alert(trip, str(exc))
+        except Exception:  # noqa: BLE001
+            logger.exception('could not raise the unsettled-trip alert for trip %s', trip.id)
+        return False
+
+
+def _rider_platform_fee_minor(trip):
+    # The rider platform fee comes only from a fee plan (9 Nov): no plan, no fee, no query.
+    if not getattr(trip, 'fee_plan_id', None):
+        return 0
+    try:
+        from servers.ride.models import FarePricing
+
+        fp = FarePricing.objects.filter(trip_id=trip).only('rider_platform_fee_minor').first()
+        return int(fp.rider_platform_fee_minor or 0) if fp else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def settlement_amounts(trip):
+    """The settlement's arithmetic for a trip, with no side effects.
+
+    `credit_driver_wallet` settles with exactly these numbers; the driver's
+    ride offer shows them (2026-11-06), so the offer's "You earn" is the
+    settlement's own result, not a second calculation. Raises
+    `CommissionNotConfigured` when no commission rule governs the trip.
+
+    Returns `{gross_minor, tax_minor, fee_minor, commission_rate,
+    commission_minor, net_minor}` in the trip's currency's minor units.
+    """
+    from decimal import Decimal
+    from base.money import currency_for_trip, from_minor, to_minor
+    from servers.pricing.services import commission_percent_for_trip
+
+    # The ledger is integers in the trip's currency. The one rounding is the
+    # commission, done by the money helper; the driver's net is then an exact
+    # subtraction, so gross = commission + net holds to the paisa by
+    # construction rather than by luck.
+    currency = currency_for_trip(trip)
+    gross_minor = (trip.final_fare_minor if trip.final_fare_minor is not None
+                   else trip.estimated_fare_minor or 0)
+    # The rider platform fee (9 Nov, flag off) is the platform's, never part of the earning.
+    gross_minor -= _rider_platform_fee_minor(trip)
+
+    # US (additive-tax) trips: sales tax and the per-trip regulatory fee are PASS-THROUGH (owner
+    # ruling, AUDIT 27.62 item 1). They are collected from the rider and remitted by SaaradhiGo,
+    # never part of the driver's earnings, and commission is worked out on the fare BEFORE tax and
+    # fees. So the settlement's gross is the pre-tax fare and the tax and fee are recorded beside it.
+    # India (inclusive tax) and a zone with nothing to split: `passthrough` is None and every line
+    # below is exactly what it was. US accountant to confirm (go-live blocker #15).
+    from servers.pricing.promo_tax import settlement_split
+
+    passthrough = settlement_split(trip, gross_minor, currency)
+    tax_minor = fee_minor = None
+    if passthrough is not None:
+        gross_minor, tax_minor, fee_minor = (
+            passthrough['pretax'], passthrough['tax'], passthrough['fee'])
 
     # Commission comes from the RateCard in force for the trip's zone, not
     # from a global env var. PLATFORM_COMMISSION_PERCENT defaulted to "0",
@@ -66,10 +267,41 @@ def credit_driver_wallet(trip):
     # and the per-city commission on each RateCard was never applied.
     commission_rate = commission_percent_for_trip(trip)
 
-    commission = (amount * commission_rate / Decimal('100')).quantize(
-        Decimal('0.01'), rounding=ROUND_HALF_UP,
-    )
-    net_amount = amount - commission
+    commission_minor = to_minor(
+        from_minor(gross_minor, currency) * commission_rate / Decimal('100'), currency)
+    net_minor = gross_minor - commission_minor
+    return {'gross_minor': gross_minor, 'tax_minor': tax_minor, 'fee_minor': fee_minor,
+            'commission_rate': commission_rate, 'commission_minor': commission_minor,
+            'net_minor': net_minor}
+
+
+def credit_driver_wallet(trip):
+    """Settle a completed trip against the driver's settlement balance."""
+    from servers.payments.models import TransactionHistory, TripSettlement
+    from servers.rider.models import Wallet, WalletTransaction, get_wallet
+    from django.utils import timezone
+    from servers.pricing.services import commission_percent_for_trip
+    from decimal import Decimal
+    from django.db import transaction, IntegrityError
+    from base.money import currency_for_trip, from_minor, to_minor
+
+    if not trip.driver_id:
+        return
+    # An operator ended it under the platform-funded rule: the driver was paid their earnings by
+    # the platform then (`operator_end._credit_driver`); there is no rider payment to settle.
+    if trip.end_rule == 'platform_funded':
+        return
+
+    # The ledger is integers in the trip's currency. The one rounding is the
+    # commission, done by the money helper; the driver's net is then an exact
+    # subtraction, so gross = commission + net holds to the paisa by
+    # construction rather than by luck.
+    currency = currency_for_trip(trip)
+    amounts = settlement_amounts(trip)
+    gross_minor = amounts['gross_minor']
+    tax_minor, fee_minor = amounts['tax_minor'], amounts['fee_minor']
+    commission_rate = amounts['commission_rate']
+    commission_minor, net_minor = amounts['commission_minor'], amounts['net_minor']
 
     with transaction.atomic():
         # Driver settlement balance — a DIFFERENT row from the rider credit
@@ -77,28 +309,32 @@ def credit_driver_wallet(trip):
         # through the rider payment path.
         wallet = get_wallet(trip.driver_id.user_id, Wallet.SCOPE_DRIVER, lock=True)
 
-        current_balance = Decimal(str(wallet.balance))
-        
         # Handle cash vs non-cash trips
         if trip.payment_method == 'cash':
             # Driver collected full fare in cash, so they owe the platform the commission
-            txn_amount = commission
+            txn_minor = commission_minor
             txn_type = 'debit'
             purpose = 'trip_commission'
-            new_balance = current_balance - commission
+            new_balance_minor = wallet.balance_minor - commission_minor
+            # The driver also holds the tax and fee the rider handed over: it is not theirs, so
+            # the wallet owes it to SaaradhiGo as two more debits, each its own labelled line
+            # (written below, once the commission line has gone in).
+            new_balance_minor -= (tax_minor or 0) + (fee_minor or 0)
         else:
             # Online/Wallet payment, platform owes driver the net amount
-            txn_amount = net_amount
+            txn_minor = net_minor
             txn_type = 'credit'
             purpose = 'trip_earnings'
-            new_balance = current_balance + net_amount
+            new_balance_minor = wallet.balance_minor + net_minor
 
         # Idempotency block
+        wallet_txn = None
         try:
             with transaction.atomic():
-                WalletTransaction.objects.create(
+                wallet_txn = WalletTransaction.objects.create(
                     user_id=trip.driver_id.user_id,
-                    amount=txn_amount,
+                    currency=currency,
+                    amount_minor=txn_minor,
                     txn_type=txn_type,
                     status='completed',
                     purpose=purpose,
@@ -106,20 +342,119 @@ def credit_driver_wallet(trip):
                     idempotency_key=f'TRIP_{trip.id}_EARNING'
                 )
         except IntegrityError:
-            # Duplicate webhook/retry: already processed
+            # Duplicate webhook/retry: already processed. The idempotency key
+            # TRIP_<id>_EARNING is what refuses it, and returning here is what
+            # stops the balance being credited twice -- so this branch working
+            # is load-bearing for the ledger.
+            #
+            # Logged because a rising rate here means something upstream is
+            # retrying settlement more than expected, and that is worth knowing
+            # before it turns into a support question about a missing payment.
+            logger.info('driver_earning_duplicate_suppressed', extra={
+                'event': 'driver_earning_duplicate_suppressed',
+                'trip_id': trip.id,
+                'idempotency_key': f'TRIP_{trip.id}_EARNING',
+            })
             return
 
-        wallet.balance = new_balance
-        wallet.save(update_fields=['balance'])
+        wallet.balance_minor = new_balance_minor
+        wallet.save(update_fields=['balance_minor'])
+
+        if trip.payment_method == 'cash':
+            for amount, purpose_, key in ((tax_minor, PURPOSE_TAX_COLLECTED, 'TAX'),
+                                          (fee_minor, PURPOSE_FEE_COLLECTED, 'FEE')):
+                if amount:
+                    WalletTransaction.objects.create(
+                        user_id=trip.driver_id.user_id, currency=currency, amount_minor=amount,
+                        txn_type='debit', status='completed', purpose=purpose_,
+                        reference_id=f'TRIP_{trip.id}', idempotency_key=f'TRIP_{trip.id}_{key}')
 
         # Create transaction history
         TransactionHistory.objects.create(
             trip_id=trip,
             user_id=trip.user_id,
             driver_id=trip.driver_id,
-            amount=txn_amount,
+            currency=currency,
+            amount_minor=txn_minor,
             method=trip.payment_method or 'online',
             status='completed',
             txn_type=txn_type,
-            user_name=trip.user_id.full_name or trip.user_id.phone_number,
+            user_name=trip.user_id.full_name or '',
         )
+
+        # Immutable economic evidence for this trip.
+        #
+        # Inside the SAME transaction as the ledger row it explains, so the two
+        # cannot disagree after a crash -- a settlement describing money that never
+        # moved would be worse than no settlement at all.
+        #
+        # It needs no idempotency logic of its own. The `TRIP_<id>_EARNING` key on
+        # WalletTransaction above is the guard: a second call returns at the
+        # IntegrityError before reaching this line, so this runs exactly once for
+        # exactly the reason the ledger row does. The partial unique index on
+        # (trip) where version=1 is the database's independent backstop.
+        #
+        # Amounts are copied, not referenced: `commission_percent` is the rate AS
+        # APPLIED, so editing a rate card later cannot rewrite what this ride earned.
+        TripSettlement.objects.create(
+            trip=trip,
+            driver=trip.driver_id,
+            wallet_transaction=wallet_txn,
+            currency=currency,
+            gross_fare_minor=gross_minor,
+            commission_percent=commission_rate,
+            commission_amount_minor=commission_minor,
+            driver_net_minor=net_minor,
+            # Pass-through amounts owed by the platform (None = nothing passed through: India, and
+            # every settlement written before this existed, which read exactly as they always did).
+            tax_collected_minor=tax_minor,
+            regulatory_fee_collected_minor=fee_minor,
+            payment_method=trip.payment_method or 'online',
+            settled_at=timezone.now(),
+            source=TripSettlement.SOURCE_NATIVE,
+        )
+
+        # A rider promo is PLATFORM-FUNDED (owner ruling, AUDIT 27.51): everything above was
+        # computed on the FULL fare, so the driver's earnings and commission are what they would
+        # be without the promo. This only counts the discount against its campaign's budget,
+        # writes the platform-funded ledger entry and, on a cash trip, pays the driver the
+        # discount they did not collect. In its own savepoint: a promotions defect must never
+        # undo a settlement.
+        try:
+            with transaction.atomic():
+                from servers.promotions.rider_promos import settle_trip as _settle_trip_promo
+                _settle_trip_promo(trip, wallet, is_cash=(trip.payment_method == 'cash'))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception('promo_settlement_failed', extra={
+                'event': 'promo_settlement_failed', 'trip_id': trip.id})
+            # Logging is not enough: on a cash trip the driver is short the discount. One critical
+            # Finance alert, as with every other money failure (AUDIT 27.78). It must never undo
+            # the settlement it reports on.
+            try:
+                from servers.command_centre.models import (
+                    CRITICAL, FINANCE_PROMO_SETTLEMENT_FAILED,
+                )
+                from servers.command_centre.services import raise_alert
+                from servers.payments.unsettled import city_node_of
+
+                city = city_node_of(trip)
+                raise_alert(
+                    FINANCE_PROMO_SETTLEMENT_FAILED, severity=CRITICAL,
+                    title=(f'Trip {trip.id}: the promo could not be settled'
+                           f'{"; the cash driver is short the discount" if trip.payment_method == "cash" else ""}')[:200],
+                    payload={'trip_id': trip.id, 'payment_method': trip.payment_method or '',
+                             'error': type(exc).__name__,
+                             'city': city.code if city is not None else None},
+                    source_type='promo_settlement', source_id=str(trip.id), city=city)
+            except Exception:  # noqa: BLE001
+                logger.exception('could not raise the promo settlement alert for trip %s', trip.id)
+        # MVAG 2025: a cancellation fee this trip carried for the rider goes to the driver who was
+        # let down (servers.ride.cancellation_penalty). Its own savepoint: it must never undo the
+        # settlement above.
+        try:
+            with transaction.atomic():
+                from servers.ride.cancellation_penalty import settle_collected
+                settle_collected(trip, is_cash=(trip.payment_method == 'cash'))
+        except Exception:  # noqa: BLE001
+            logger.exception('cancellation_due_settlement_failed', extra={
+                'event': 'cancellation_due_settlement_failed', 'trip_id': trip.id})

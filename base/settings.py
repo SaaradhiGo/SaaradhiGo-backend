@@ -1,12 +1,13 @@
 
 from pathlib import Path
+import json
 import os
 import logging
 logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv()
+load_dotenv(".env.local")
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
@@ -38,7 +39,9 @@ CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf_raw.split(',') if o.strip()]
 
 INSTALLED_APPS = [
     'daphne',
-    'django.contrib.admin',
+    # django.contrib.admin is deliberately NOT installed: the Django console and admin site are
+    # off (owner ruling, AUDIT 27.62). Nothing needs it (no LogEntry use, no migration depends on
+    # it); the django_admin_log table, if any, is left in place untouched.
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
@@ -56,9 +59,42 @@ INSTALLED_APPS = [
     'servers.ride',
     'servers.payments',
     'servers.admin_audit',
+    # Geo hierarchy, editable roles and scoped assignments. Admin authority
+    # is never global by default: SaaradhiGo operates in more than one
+    # country and US rules are state-level.
+    'servers.admin_access',
     'servers.sos',
     'servers.pricing',
     'servers.support',
+    # Maker-checker: per-country thresholds, approval requests and the
+    # executors that run on a second admin's approval. Its own app because
+    # every module (payouts, refunds, pricing, driver status) plugs into
+    # the same request -> check -> execute loop rather than growing its own.
+    'servers.approvals',
+    # Command Centre: operator alerts that must reach a person (seed of the
+    # module). First producer: an SOS that could not be anchored to a city.
+    'servers.command_centre',
+    'servers.safety',
+    'servers.sharing',
+    'servers.callbridge',
+    # Live Ops map (module 10): scoped driver dots, active trips, demand and supply.
+    'servers.live_ops',
+    # Notifications (module 11): templates, outbox dispatcher, provider adapters, campaigns.
+    'servers.notifications',
+    # Promotions & Incentives (module 12): rider promos, driver incentives, referrals, with budgets.
+    'servers.promotions',
+    # Fraud & Risk (module 13): the review queue, detection rules, linked accounts and review actions.
+    'servers.fraud',
+    'servers.reports',
+    'servers.platform_ops',
+    # Console search: trip id, phone, plate, name -- indexed and scoped.
+    'servers.search',
+    # Operator MFA. django-otp is the established Django implementation: TOTP
+    # (RFC 6238) and single-use static recovery codes, with the cryptography done
+    # by the library. Nothing here implements an algorithm.
+    'django_otp',
+    'django_otp.plugins.otp_totp',
+    'django_otp.plugins.otp_static',
     'django_cleanup.apps.CleanupConfig',
 
 ]
@@ -70,7 +106,17 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # Must come after AuthenticationMiddleware: it reads request.user and adds
+    # `request.user.is_verified()`, which is how the console knows whether this
+    # SESSION has cleared MFA (as opposed to whether the account has a device).
+    'django_otp.middleware.OTPMiddleware',
+    # Attributes any access write made during the request (an assignment,
+    # a role, a scope, an authority flag) to request.user in the audit
+    # log. Reads the user lazily, so API bearer-token writes are covered.
+    'servers.admin_audit.middleware.AuditActorMiddleware',
     'base.middleware.ExceptionHandlingMiddleware',
+    # Counts each Google Maps call against the client that asked (X-SG-Surface; 9 Nov).
+    'servers.ride.maps_surface.MapsSurfaceMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     
@@ -89,12 +135,30 @@ ROOT_URLCONF = 'base.urls'
 # driven by CSRF into authorising DRF writes — approving KYC, refunding a
 # trip, releasing a payout. Tests authenticate with `force_authenticate`
 # or a real JWT instead.
+# HOW MANY PROXIES APPEND TO X-Forwarded-For in front of the app (AUDIT 27.78, M1).
+# `base/client_ip.py` reads the client address from the right of the chain,
+# past this many trusted hops; the left end is client-written and ignored.
+# Railway's edge is one proxy, hence 1. Put a CDN in front and this is 2.
+TRUSTED_PROXY_COUNT = int(os.environ.get('TRUSTED_PROXY_COUNT', '1'))
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
     'PAGE_SIZE': 20,
+    # THE PII MASK IS A RENDERER, so no operator endpoint can forget it.
+    # `MaskingJSONRenderer` is DRF's JSON renderer plus one step: a response
+    # produced under the operator namespace (`/api/v1/**/admin/**`,
+    # `/api/v1/admin-access/**`, or any ScopedPermission-gated view) has its
+    # personal fields masked by name before serialization, unless the view
+    # is a reveal and has written its audit row (`masking.mark_revealed`).
+    # Rider and driver endpoints never match, so their contracts are
+    # untouched. See servers/admin_access/rendering.py.
+    'DEFAULT_RENDERER_CLASSES': [
+        'servers.admin_access.rendering.MaskingJSONRenderer',
+        'rest_framework.renderers.BrowsableAPIRenderer',
+    ],
     # Rates are defined here; the actual throttle classes are wired per-view
     # (see base/throttles.py + decorators on auth endpoints) so we don't
     # accidentally rate-limit unrelated endpoints.
@@ -108,8 +172,128 @@ REST_FRAMEWORK = {
         'otp_request': '5/hour',
         'otp_request_burst': '2/min',
         'otp_verify': '10/hour',
+        # Presigned uploads, per account (AUDIT 27.78, Low 5). Every presign is
+        # a write slot in the bucket; onboarding needs about ten documents and
+        # a few retries, so 60 an hour is generous and stops a scripted fill.
+        'upload_presign': '60/hour',
+        # Email+password. Deliberately tighter than the OTP rates: an OTP is
+        # a one-time code the user is waiting for, whereas a password attempt
+        # is a guess.
+        'email_login': '20/hour',
+        # These two SEND MAIL, so the cap also protects a third party's inbox
+        # from being used as a spam target.
+        'password_reset': '5/hour',
+        # Console search, per operator and per result type. A person typing
+        # into a 250 ms-debounced box never approaches it; a script walking
+        # phone prefixes does. See servers/search/throttles.py.
+        'admin_search': '60/min',
+        # Report CSV exports (module 14), per operator.
+        'report_export': '30/hour',
+        # Audit-log CSV export (module 15), per operator.
+        'audit_export': '10/hour',
+        # Public app-config read (module 15), per client address. The apps read it at start-up
+        # and on login; 120 a minute is far above that and far below a scrape.
+        'app_config': '120/min',
+        # Place lookups from a SIGNED-OUT visitor on the public homepage.
+        # Each one costs a Places call, so this is a spend cap, not a
+        # security control. Generous enough to type two addresses with
+        # autocomplete firing as you go; far too small to be worth scraping.
+        # Signed-in riders bypass it entirely (see GuestMapsThrottle).
+        # Sized against SHARED ADDRESSES, not against one person. Mobile
+        # carriers in India put large numbers of subscribers behind a single
+        # CGNAT address, and an office does the same, so a cap tuned to one
+        # visitor's typing would lock out everyone else on that address. A
+        # debounced autocomplete spends roughly 10-20 calls on a booking
+        # attempt, so this allows about ten visitors an hour per address.
+        'guest_maps': '180/hour',
+        # Fare quotes for a visitor who has not signed in. A real rider
+        # prices one trip and presses "Show fares" once, which is four
+        # requests sharing one cached distance lookup. 120/hour is roughly
+        # thirty such trips from one address per hour -- far above honest
+        # use, far below a bill worth worrying about.
+        'guest_fare': '120/hour',
+        # One route per trip, cached for five minutes server-side; a
+        # visitor who re-centres the map does not buy another.
+        'guest_route': '120/hour',
+        # The ceiling that actually bounds the bill. The per-IP cap is keyed
+        # on a client-supplied header and can be walked around by rotating
+        # it; this bucket is shared by every anonymous request and cannot.
+        # At Places list-pricing this caps anonymous spend near USD 1.70 an
+        # hour in the worst case, which is a bad day rather than an
+        # incident. Raise it when real traffic justifies it -- with a figure
+        # measured from the logs, not a guess.
+        'guest_maps_global': '600/hour',
+        # The un-evadable ceiling on anonymous fare quotes. Sized so the
+        # worst hour of a scripted abuse run is a few hundred distance
+        # lookups, not an unbounded number.
+        'guest_fare_global': '400/hour',
+        'guest_route_global': '400/hour',
+        # Unmasking personal data, per operator. Sixty a minute is more than
+        # a person working a queue needs and far less than a script walking
+        # the driver table; every one of them is also an audit row, and the
+        # count in the window is written on it. See admin_access/reveal.py.
+        'pii_reveal': '60/min',
     },
 }
+# --- Email delivery ----------------------------------------------------------
+#
+# There was NO email configuration in this file. Django's defaults are SMTP on
+# localhost:25, which does not exist on Railway, so every receipt email has
+# been failing silently: the Receipt row is written, `send_failure_reason` is
+# populated, and nothing surfaces it.
+#
+# Now configured from the environment, with an explicit development default.
+# `base/auth_email.py` reports delivery as FAILED rather than pretending, so an
+# unconfigured deployment is visible in the log instead of in a column.
+#
+# To make mail work, the owner sets (per environment):
+#   EMAIL_HOST, EMAIL_PORT, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD,
+#   EMAIL_USE_TLS, DEFAULT_FROM_EMAIL
+# AWS SES SMTP is the natural choice here since the stack already uses SES for
+# SMS; it needs a verified sender domain, which is an owner action.
+_email_backend_default = (
+    'django.core.mail.backends.console.EmailBackend' if DEBUG
+    else 'django.core.mail.backends.smtp.EmailBackend'
+)
+EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', _email_backend_default)
+EMAIL_HOST = os.environ.get('EMAIL_HOST', '')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() in ('1', 'true', 'yes')
+EMAIL_TIMEOUT = int(os.environ.get('EMAIL_TIMEOUT', '10'))
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', '')
+
+# Who a NON-PRODUCTION deployment is allowed to email.
+#
+# The accident this prevents: QA is pointed at real SES, QA's database holds a
+# real customer's address (restored from a dump, or typed into a test account),
+# somebody exercises password reset, and a reset link for a live account lands
+# in that person's inbox.
+#
+# Comma-separated. An entry starting with '@' matches a whole domain:
+#   AUTH_EMAIL_ALLOWLIST="qa@deeptrics.com,@saaradhigo.com"
+#
+# Enforced by base/auth_email.py whenever ENVIRONMENT != 'production' AND the
+# backend actually delivers. An empty allowlist on a delivering non-production
+# deployment blocks ALL mail, deliberately: the safe default for "we do not yet
+# know who we may write to" is nobody.
+#
+# SES sandbox mode restricts recipients too, but that is an AWS account state
+# nobody in this repo controls or can assert. This is the copy we own.
+AUTH_EMAIL_ALLOWLIST = [
+    entry.strip().lower()
+    for entry in os.environ.get('AUTH_EMAIL_ALLOWLIST', '').split(',')
+    if entry.strip()
+]
+
+# How long a password-reset or email-verification link stays valid.
+#
+# Django's default is 3 days. Two hours is enough for a person who just asked
+# for the link and short enough that an address compromised later is not a way
+# into the account. `PasswordResetTokenGenerator` reads this setting directly.
+PASSWORD_RESET_TIMEOUT = int(os.environ.get('PASSWORD_RESET_TIMEOUT', 2 * 60 * 60))
+
 from datetime import timedelta
 # JWT lifetimes match the system-design doc:
 #   - Access:  15 min (short window; minimises blast radius of a leaked token)
@@ -123,6 +307,43 @@ from datetime import timedelta
 # SECRET_KEY only so an existing deploy keeps booting — set
 # JWT_SIGNING_KEY in prod (rotating it logs everyone out once).
 JWT_SIGNING_KEY = os.environ.get('JWT_SIGNING_KEY') or SECRET_KEY
+# --- Brand ------------------------------------------------------------------
+#
+# One source of truth, because the platform was shipping two names at once: the
+# OTP SMS said VahanGo, the Android label said SaaradhiGo, the iOS bundle said
+# Vahango, and the rider's wallet said "VahanGo Credits". A rider was told one
+# name by SMS and shown another by the app.
+#
+# Customer-facing copy must read these rather than hardcode a name.
+PLATFORM_BRAND_NAME = os.environ.get('PLATFORM_BRAND_NAME', 'SaaradhiGo')
+
+# The registered entity, which is NOT the same thing as the brand and appears on
+# the GST receipt. Left exactly as it was found; whether this is the correct
+# registered name, and whether a GSTIN and registered address must also appear,
+# is a question for the business and its accountants -- see the compliance list.
+PLATFORM_LEGAL_ENTITY = os.environ.get(
+    'PLATFORM_LEGAL_ENTITY', 'SaaradhiGo Mobility',
+)
+# The registered address and GSTIN printed on the driver's statement (11 Nov). No default: a
+# statement leaves a line out rather than print an invented one (docs/config-required.md).
+PLATFORM_LEGAL_ADDRESS = os.environ.get('PLATFORM_LEGAL_ADDRESS', '')
+PLATFORM_GSTIN = os.environ.get('PLATFORM_GSTIN', '')
+
+# Domain used to build the operational contact addresses shown to drivers.
+#
+# THE OFFICIAL DOMAIN IS saaradhigo.com. This was hardcoded to vahango.com
+# (a domain this platform does not use), then saaradhigo.in (which publishes
+# no MX record, so a driver's grievance email bounced). `.com` publishes Zoho
+# MX, SPF and DMARC, so mail to it is deliverable.
+#
+# Deliverable is not the same as read: each mailbox built from this domain --
+# tech-support@, fraud-team@, compliance@, operations@ -- still has to exist
+# in Zoho and be monitored by a person before the MVA-2020 grievance
+# obligation is met. That is an owner action, not a code change.
+PLATFORM_CONTACT_DOMAIN = os.environ.get(
+    'PLATFORM_CONTACT_DOMAIN', 'saaradhigo.com',
+)
+
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=14),
@@ -135,6 +356,90 @@ SIMPLE_JWT = {
 # celery
 CELERY_BROKER_URL = REDIS_URL + '/0'
 
+# Task durability under worker loss.
+#
+# Both default to False, and 5 of the 12 registered tasks did not set acks_late
+# themselves: auto_cancel_trip, block_expired_driver_licenses,
+# reconcile_stuck_payments, reconcile_stuck_withdrawals and
+# sweep_stale_driver_presence. With early ack, the broker forgets a task the
+# moment a worker picks it up, so a worker killed mid-task loses it silently --
+# no error, no retry, no trace. For auto_cancel_trip that means a trip nobody
+# accepted is never cancelled and the rider waits forever; for
+# reconcile_stuck_withdrawals it means stuck payouts stop being surfaced.
+#
+# acks_late alone is not enough: a SIGKILLed worker never gets to reject the
+# message either. task_reject_on_worker_lost is what returns it to the queue.
+#
+# The trade is that a redelivered task runs twice, so every task must tolerate
+# re-execution. All 12 do: the ride tasks re-check state inside a row lock
+# (auto_cancel_trip takes select_for_update and stands down if a driver has since
+# accepted), the money tasks are keyed by idempotency key, and the rest are
+# sweeps that converge.
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+
+# Bound a wedged task rather than letting it hold a worker slot forever. The
+# longest legitimate task here is a sweep over completed trips, well inside
+# these limits; soft first so a task gets a chance to log before it is killed.
+CELERY_TASK_SOFT_TIME_LIMIT = 300
+CELERY_TASK_TIME_LIMIT = 360
+
+# One task at a time per worker process. The default of 4 prefetches work that a
+# crashing worker then loses -- and with ETA tasks (auto_cancel_trip,
+# compute_trip_actuals) a prefetched message is held in worker memory until its
+# countdown elapses, so a crash discards a scheduled cancellation.
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+# How long a lost task stays lost.
+#
+# acks_late means "not lost". It does not mean "redelivered promptly", and the
+# difference is the Redis transport. A worker that reserves a message moves it out
+# of the queue into an `unacked` hash and records a deadline in `unacked_index`.
+# If that worker is killed, the message still exists but is invisible to every
+# other worker until the deadline passes. That deadline is visibility_timeout,
+# and kombu's default is 3600 seconds.
+#
+# Measured in qa/celery_worker_loss_drill.py: killing a worker mid-task leaves the
+# message in the unacked hash, and a replacement worker does not touch it until the
+# timeout elapses. Unset, that meant auto_cancel_trip — scheduled to fire 90 seconds
+# after a trip is created — could be an hour late, with the rider still watching a
+# search that had already been given up on.
+#
+# The floor is set by how long a message can legitimately sit unacked:
+#
+#   longest countdown   180 s   TRIP_ACTUALS_DELAY_SECONDS; an ETA message is held
+#                               in worker memory, still unacked, until it fires
+#   longest execution   360 s   CELERY_TASK_TIME_LIMIT
+#                     -------
+#   worst case          540 s
+#
+# Below that floor a still-legitimate task gets redelivered to a second worker while
+# the first is working on it, turning a recovery mechanism into a duplicate-execution
+# generator. 900 s clears the floor with margin and still recovers a lost task in
+# fifteen minutes instead of sixty.
+#
+# Raising TRIP_ACTUALS_DELAY_SECONDS or CELERY_TASK_TIME_LIMIT means raising this.
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'visibility_timeout': int(
+        os.environ.get('CELERY_VISIBILITY_TIMEOUT_SECONDS', '900')
+    ),
+}
+
+# Migration gate for the Celery worker.
+#
+# On Railway the backend service runs `manage.py migrate --noinput` as its
+# pre-deploy command and the celery service does not; its start command is just
+# `celery -A base worker -B`. Nothing orders the two, so a worker built from
+# new code can start consuming against a schema that is still one migration
+# behind. base/migration_gate.py holds the worker at `worker_init` until
+# `migrate --check` would pass, retrying with backoff up to this many seconds
+# and then exiting loudly with the pending migrations named.
+#
+# 0 disables the gate. That is for a migration left unapplied ON PURPOSE (a
+# backfill scheduled for off-hours, a rollback that keeps its migration); the
+# module docstring says why it is an environment variable and not a code change.
+MIGRATION_WAIT_TIMEOUT = int(os.environ.get('MIGRATION_WAIT_TIMEOUT', '300'))
+
 # Celery Beat — periodic tasks.
 # The compose `celery` service runs with `-B` so beat is embedded in the
 # worker. That's fine while we run a single celery instance; when we
@@ -142,10 +447,31 @@ CELERY_BROKER_URL = REDIS_URL + '/0'
 # (or adopt django-celery-beat for a DB-backed schedule lock).
 from celery.schedules import crontab as _crontab
 CELERY_BEAT_SCHEDULE = {
+    'pricing-charge-driver-fees-hourly': {
+        # Driver fee plans (9 Nov): one platform_fee row per driver for the local day just ended.
+        'task': 'pricing.charge_driver_fees',
+        'schedule': _crontab(minute=17),
+    },
+    'platform-integrity-scan-daily': {
+        # Roles without profiles, drivers without wallets, trips and payouts without ledger rows
+        # (10 Nov): a console alert when anything does not line up. Reports only; no fixes.
+        'task': 'platform_ops.integrity_scan',
+        'schedule': _crontab(hour=3, minute=40),
+    },
+    'ride-check-maps-budgets-hourly': {
+        # The month's Google Maps spend per country against its budget (9 Nov): alerts, degrade.
+        'task': 'ride.check_maps_budgets',
+        'schedule': _crontab(minute=7),
+    },
     'driver-block-expired-licenses-daily': {
         'task': 'driver.block_expired_driver_licenses',
         # 02:00 in TIME_ZONE (Asia/Kolkata) — quiet hours.
         'schedule': _crontab(hour=2, minute=0),
+    },
+    'driver-remind-expiring-documents-daily': {
+        # 30, 7 and 1 days before a licence or vehicle paper expires (11 Nov).
+        'task': 'driver.remind_expiring_documents',
+        'schedule': _crontab(hour=9, minute=30),
     },
     'payments-reconcile-stuck-every-5-min': {
         # Sweep payments/wallets stuck in pending/processing against the
@@ -160,6 +486,125 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'payments.reconcile_stuck_withdrawals',
         'schedule': _crontab(minute='*/10'),
     },
+    'payments-weekly-payout-run-hourly': {
+        # Weekly payout countries (PayoutCountryConfig.payout_schedule): on the
+        # configured weekday in the country's own zone, create the withdrawals
+        # for drivers at or above the minimum and open ONE payout-run approval
+        # request. Idempotent per country per week; a no-op for every other hour.
+        'task': 'payments.weekly_payout_run',
+        'schedule': _crontab(minute=5),
+    },
+    'notifications-dispatch-queued-every-minute': {
+        # Backstop for the outbox: sends queued rows whose hold (quiet hours, backoff)
+        # has passed, requeues rows stuck mid-send, drains DriverNotice / DriverPayoutNotice
+        # outboxes and starts due campaigns. A no-op with nothing queued.
+        'task': 'notifications.dispatch_queued',
+        'schedule': _crontab(minute='*'),
+    },
+    'notifications-provider-health-every-5-min': {
+        # Raises (and clears) the Super Admin-only `notify.provider_failing` alert.
+        'task': 'notifications.check_provider_health',
+        'schedule': _crontab(minute='*/5'),
+    },
+    'promotions-sweep-every-5-min': {
+        # Starts scheduled campaigns, ends campaigns past their window, releases discount
+        # reservations held by cancelled trips and retries unpaid qualified referrals.
+        'task': 'promotions.sweep',
+        'schedule': _crontab(minute='*/5'),
+    },
+    'fraud-run-rules-every-15-min': {
+        # Fraud & Risk (module 13): evaluates the enabled detection rules over their bounded recent
+        # windows and raises or extends flags; then the queue-aging alert. Idempotent; it only
+        # raises flags and alerts, it never acts on an account or any money.
+        'task': 'fraud.run_rules',
+        'schedule': _crontab(minute='*/15'),
+    },
+    'fraud-release-holds-hourly': {
+        # Fraud money actions (AUDIT 27.56): a reward held pending review is released after the
+        # country's `reward_hold_days` if its flag is not decided; a payout hold lapses at its
+        # maximum duration (Finance and the reviewers are alerted). Releases only, never takes.
+        'task': 'fraud.release_holds',
+        'schedule': _crontab(minute=20),
+    },
+    'payments-retry-unsettled-trips-hourly': {
+        # Trips left unsettled because no commission rule governed them (module 8 path
+        # that logs and defers). Retries each once an hour and clears its critical
+        # Command Centre alert when it settles. A no-op with no open alerts.
+        'task': 'payments.retry_unsettled_trips',
+        'schedule': _crontab(minute=40),
+    },
+    'payments-release-awaiting-rail': {
+        # Approved payouts in a currency with no payout rail wait as
+        # payout_status=awaiting_rail; once a rail is registered in
+        # payments.payout_rails.RAILS they leave on the next run. A no-op until then.
+        'task': 'payments.release_awaiting_rail',
+        'schedule': _crontab(minute=20),
+    },
+    'payments-reconcile-daily': {
+        # Local-data reconciliation: payments vs webhooks, trips vs
+        # settlements, payouts vs payout webhooks and stuck payouts. Writes
+        # ReconciliationRun / ReconciliationItem only; no gateway call.
+        'task': 'payments.run_daily_reconciliation',
+        'schedule': _crontab(hour=3, minute=30),
+    },
+    'fare-shadow-sweep-every-15-min': {
+        # Observes what a metered fare would have charged on completed trips.
+        # Writes only to TripFareShadow -- no rider is charged from this. A
+        # no-op while FARE_SHADOW_ENABLED is False.
+        'task': 'pricing.fare_shadow_sweep',
+        'schedule': _crontab(minute='*/15'),
+    },
+    'unaccepted-trip-sweep-every-2-min': {
+        # The DURABLE backstop for the accept deadline.
+        #
+        # auto_cancel_trip is scheduled once with a 90-second countdown, and if its
+        # worker dies the broker does not redeliver it for ~15-17 minutes
+        # (visibility_timeout 900 s plus restore-poll granularity, both measured in
+        # qa/celery_worker_loss_drill.py). Fifteen minutes is acceptable for a
+        # receipt and not for the frame that tells a rider nobody accepted.
+        #
+        # Lowering visibility_timeout to suit this one deadline would break every
+        # other task -- its floor is the longest legitimate unacked wait. So this
+        # deadline gets its own recovery path in the database instead, and recovery
+        # becomes this interval rather than the broker's.
+        #
+        # Only touches trips still in `requested` with no driver. The in-progress
+        # case is flag_stale_active_trips, which never cancels anything.
+        'task': 'ride.sweep_unaccepted_trips',
+        'schedule': _crontab(minute='*/2'),
+    },
+    'command-centre-city-rollups-every-minute': {
+        # Five-minute city buckets the overviews read (servers/command_centre/rollups.py).
+        'task': 'command_centre.refresh_city_rollups',
+        'schedule': _crontab(minute='*'),
+    },
+    'command-centre-city-rollups-nightly': {
+        # Yesterday again, for trip outcomes after the two-hour window.
+        'task': 'command_centre.backfill_city_rollups',
+        'schedule': _crontab(minute=40, hour=0),
+        'kwargs': {'days': 2},
+    },
+    'sweep-unattached-uploads-hourly': {
+        # Presigned uploads never attached to a record, older than
+        # UNATTACHED_UPLOAD_MAX_AGE_HOURS (24): deleted. servers/driver/upload_sweep.py.
+        'task': 'driver.sweep_unattached_uploads',
+        'schedule': _crontab(minute=17),
+    },
+    'gps-trail-drain-every-minute': {
+        # Drains driver_location_stream into TripLocationPoint. A no-op while
+        # GPS_TRAIL_ENABLED is False, so scheduling it is safe before the
+        # feature is switched on.
+        'task': 'ride.persist_location_trail',
+        'schedule': 60.0,
+    },
+    'stale-active-ride-sweep-every-2-min': {
+        # DETECTION only. Flags active trips that have gone quiet so operations
+        # can look; it never cancels, completes or charges anything. An abandoned
+        # in-progress ride previously stranded its driver's supply with nothing to
+        # surface it -- see servers/ride/liveness.py.
+        'task': 'ride.flag_stale_active_trips',
+        'schedule': 120.0,
+    },
     'driver-presence-sweep-every-minute': {
         # Evict drivers whose heartbeat lapsed (app killed, worker crashed)
         # from the geo index. Heartbeat TTL is 45s, so a ghost is matchable
@@ -167,8 +612,149 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'driver.sweep_stale_driver_presence',
         'schedule': 60.0,
     },
+    'support-waiting-sweep-hourly': {
+        # Support: one reminder, then auto-close, for tickets waiting on the
+        # user, per country config. Skips safety tickets and countries with
+        # no SupportCountryConfig row. Idempotent.
+        'task': 'support.sweep_waiting_tickets',
+        'schedule': _crontab(minute=7),
+    },
+    'reports-rebuild-recent-every-30-min': {
+        # Reports (module 14): re-compute today and yesterday of every city (city-local days) into
+        # the daily rollups. Idempotent; writes only derived rollup tables.
+        'task': 'reports.rebuild_recent',
+        'schedule': _crontab(minute='*/30'),
+    },
+    'reports-rebuild-week-nightly': {
+        # The last 7 local days plus the weekly rider cohorts: a late settlement or refund lands
+        # on an earlier day.
+        'task': 'reports.rebuild_week',
+        'schedule': _crontab(hour=3, minute=10),
+    },
+    'command-centre-threshold-sweep-every-minute': {
+        # Command Centre: measure every city against its active alert
+        # thresholds and raise / escalate / clear OperatorAlerts. Idempotent
+        # per (city, metric); writes alerts and audit rows only.
+        'task': 'command_centre.evaluate_alert_thresholds',
+        'schedule': 60.0,
+    },
+    'safety-escalation-sweep-every-minute': {
+        # Safety: an SOS not acknowledged within its country's timer, and a
+        # critical incident not assigned in time, raise an alert and repeat
+        # the push, once per event. Two bounded index scans when idle.
+        'task': 'safety.escalation_sweep',
+        'schedule': 60.0,
+    },
+    'safety-coverage-sweep-every-5-minutes': {
+        # Safety: a LIVE city with fewer Safety Officers than its country's
+        # minimum raises one critical alert, cleared when fixed. One query
+        # per city; idempotent.
+        'task': 'safety.coverage_sweep',
+        'schedule': 300.0,
+    },
+    'live-ops-supply-sample-every-minute': {
+        # Live Ops map: count idle online drivers per ~1 km cell (never ids), for
+        # the demand and supply heatmap; prunes samples older than a day.
+        'task': 'live_ops.sample_supply',
+        'schedule': 60.0,
+    },
+    'safety-signal-sweep-every-minute': {
+        # Safety: detect long stops and ETA overruns on in-progress trips.
+        # Two queries however many trips are live; detection only.
+        'task': 'safety.evaluate_signals',
+        'schedule': 60.0,
+    },
 }
+
+# --- Command Centre --------------------------------------------------------
+# The per-city overview is recomputed at most this often per (caller scope,
+# node, window). 0 disables the cache (the test suite sets it so).
+COMMAND_CENTRE_OVERVIEW_CACHE_SECONDS = int(
+    os.environ.get('COMMAND_CENTRE_OVERVIEW_CACHE_SECONDS', '30'))
+# --- Operations console login guard ------------------------------------------
+# Brute-force bounds for the operator console. Measured on QA before these existed:
+# 12 failed logins in 7.8 seconds, unthrottled, on the console that approves KYC and
+# releases payouts.
+#
+# Per-phone is the gentler bound; per-IP is tighter because one host working through
+# a list of numbers is more clearly hostile than repeated failures on one account.
+# Locking only on phone would let an attacker deliberately lock a known operator out
+# of their own console.
+OPS_LOGIN_MAX_ATTEMPTS = int(os.environ.get('OPS_LOGIN_MAX_ATTEMPTS', '8'))
+OPS_LOGIN_MAX_ATTEMPTS_PER_IP = int(os.environ.get(
+    'OPS_LOGIN_MAX_ATTEMPTS_PER_IP', '15'))
+OPS_LOGIN_LOCKOUT_SECONDS = int(os.environ.get('OPS_LOGIN_LOCKOUT_SECONDS', '900'))
+
+# --- Operator MFA -----------------------------------------------------------
+#
+# A second factor for the accounts that approve driver KYC and release payouts.
+# Riders and drivers are untouched: their accounts book rides, and charging ten
+# thousand riders the friction to protect four operators would be paid by the
+# riders.
+#
+# In production this is ON and there is no variable that turns it off -- see
+# base/ops_mfa.py:mfa_enforced. That matches the boot guards above: a guard that
+# can be satisfied by setting a flag is a comment. Outside production it defaults
+# OFF so a fresh deployment can bootstrap an operator and enrol them, and any
+# operator who HAS enrolled is still required to present their factor.
+OPS_MFA_ENFORCED = os.environ.get('OPS_MFA_ENFORCED', 'False') == 'True'
+
+# The MASTER switch for operator MFA, and the one guard on it.
+#
+# QA needs a way to sign in with email + password only while nobody has an
+# authenticator in hand, and that is the exact shortcut that must never reach
+# real money and real driver data. So: default ON everywhere; off ONLY by
+# setting ADMIN_MFA_REQUIRED=false; and in production that value refuses to
+# boot (see the guard block below). When off, admin login never asks for a
+# code, a pending authenticator is left alone, and the console never shows
+# the TOTP step. Break-glass still requires a reason: that is a different
+# control.
+ADMIN_MFA_REQUIRED = os.environ.get(
+    'ADMIN_MFA_REQUIRED', 'true'
+).strip().lower() not in {'0', 'false', 'no', 'off'}
+
+# --- Active-ride liveness -----------------------------------------------------
+# Operational thresholds for the stale-ride detector. Generous on purpose: these
+# decide when a human LOOKS, never when the system acts. The driver presence
+# heartbeat TTL is 45s, so a driver in a tunnel is already invisible to dispatch
+# long before any of these fire.
+#
+# Raising them makes operations slower to notice an abandoned ride. Lowering them
+# puts legitimate long rides in front of an operator for no reason. Neither
+# setting can cancel a trip.
+TRIP_LIVENESS_WRITE_INTERVAL_SECONDS = int(os.environ.get(
+    'TRIP_LIVENESS_WRITE_INTERVAL_SECONDS', '60'))
+TRIP_STALE_AFTER_SECONDS = int(os.environ.get('TRIP_STALE_AFTER_SECONDS', '600'))
+TRIP_OPERATOR_ATTENTION_AFTER_SECONDS = int(os.environ.get(
+    'TRIP_OPERATOR_ATTENTION_AFTER_SECONDS', '1800'))
+
 CELERY_TIMEZONE = 'Asia/Kolkata'
+
+# Let Django's LOGGING own worker output.
+#
+# Celery defaults `worker_hijack_root_logger = True`, which replaces the root
+# logger's handlers with its own. That silently discarded the whole logging
+# configuration in this project for every line the worker emitted: the
+# JSONFormatter that promotes `extra={...}` to top-level JSON fields, and the
+# PIIRedactionFilter. The dispatch events added with ADR-0008 therefore logged
+# their event NAME but none of their fields — no trip_id, no wave_index, no
+# radius, no candidate count — and no worker log line passed through redaction
+# at all. Verified during the PR 2 QA rehearsal: setting
+# DJANGO_LOG_FORMAT=json on the worker changed nothing, because Django's
+# handler was not the one in use.
+#
+# With this False, Celery adds no root handler and every worker record flows
+# through the single console handler declared in LOGGING. Celery's own task
+# lifecycle lines ("Task ... received", "... succeeded in ...s") come from the
+# `celery.*` loggers, which propagate to root, so they are preserved rather
+# than replaced — just formatted and redacted like everything else. Because
+# Celery installs no handler of its own here, records are emitted once; there
+# is no double-logging.
+#
+# `worker_redirect_stdouts` is left at its default: it routes stray print()
+# output to the logger, which is still desirable and does not duplicate
+# records.
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
 # cache
 CACHES={
     'default':{
@@ -188,13 +774,19 @@ _cors_raw = os.environ.get('CORS_ALLOWED_ORIGINS', '')
 CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_raw.split(',') if o.strip()]
 CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
 
+# The web sends `X-SG-Surface` so Maps calls are metered per surface (9 Nov). Without it in
+# the allowlist the browser's preflight fails and every web API call is blocked.
+from corsheaders.defaults import default_headers as _cors_default_headers  # noqa: E402
+
+CORS_ALLOW_HEADERS = (*_cors_default_headers, 'x-sg-surface')
+
 # Allow local development on arbitrary ports (like Flutter web).
 # DEBUG-only: in production this list must stay empty, otherwise any page
 # served from a developer's localhost can read authenticated API responses.
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://localhost:\d+$",
     r"^http://127\.0\.0\.1:\d+$",
-] if DEBUG else []
+]
 
 # Production security headers. No-ops in DEBUG.
 if not DEBUG:
@@ -226,7 +818,7 @@ if not DEBUG:
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR/'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -234,6 +826,19 @@ TEMPLATES = [
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
             ],
+            # Registered explicitly because `servers.admin_dashboard` is
+            # deliberately NOT in INSTALLED_APPS -- it is a views-and-templates
+            # package mounted at the site root, and adding it would start
+            # managing its models and migrations as an app.
+            #
+            # Template tag libraries are otherwise discovered only from
+            # installed apps, so without this every console page that formats
+            # money raises "'money_tags' is not a registered tag library" at
+            # render time, which blanks the page rather than degrading.
+            'libraries': {
+                'money_tags':
+                    'servers.admin_dashboard.templatetags.money_tags',
+            },
         },
     },
 ]
@@ -262,6 +867,173 @@ if _test_phones_raw:
                 TEST_PHONE_NUMBERS[_phone] = _otp
 
 logger.info(f"Loaded {len(TEST_PHONE_NUMBERS)} test phone numbers for OTP bypass.")
+
+# --- Production configuration guards -----------------------------------------
+#
+# The production environment is configured by copying QA's variable set, which is
+# the right way to avoid missing one -- and the wrong way to handle the three QA
+# variables that are an authentication bypass and a back door. These guards refuse
+# to boot rather than trusting anyone to remember.
+#
+# Keyed on ENVIRONMENT rather than `not DEBUG`, because QA also runs DEBUG=False
+# and legitimately needs its test phones. The default mirrors the Sentry block
+# below, so a deployment with DEBUG=False and no ENVIRONMENT is treated as
+# production -- the conservative reading.
+#
+# Nothing here is weakened to make a boot succeed. A guard that can be satisfied
+# by setting a flag is not a guard.
+ENVIRONMENT = os.environ.get('ENVIRONMENT', 'production' if not DEBUG else 'development')
+IS_PRODUCTION = ENVIRONMENT.strip().lower() == 'production'
+
+# ---------------------------------------------------------------------------
+# Admin access: closing the legacy path
+# ---------------------------------------------------------------------------
+# False while `ops_role` holders are still being migrated to AdminAssignment
+# rows. In that state an unmigrated operator keeps today's unscoped access and
+# every such grant is logged by `servers.admin_access.bridge`.
+#
+# Set to True once `list_admin_access` shows an assignment against every
+# operator and the 'via LEGACY ops_role' warnings have stopped. After that an
+# account with no assignment can do nothing, which is the intended end state —
+# so flipping this before the migration finishes locks people out.
+#
+# Default False DELIBERATELY, including in production: the alternative is a
+# deploy that silently removes every operator's access.
+ADMIN_ACCESS_STRICT = os.environ.get(
+    'ADMIN_ACCESS_STRICT', 'false'
+).strip().lower() in {'1', 'true', 'yes'}
+
+# THE SOLE SUPER ADMIN MAY CHECK THEIR OWN REQUESTS (owner, 2026-11-03).
+# Until launch there is one person who can approve anything, and a maker can
+# never be their own checker, so every payout and maker-checker action waited
+# forever. With this on, a Super Admin may approve or reject a request they
+# raised, with a reason, recorded as self-approved -- but ONLY while nobody
+# else could check it (`servers.approvals.service.self_approval_allowed`), so
+# the exception ends by itself the day a second real checker is assigned.
+# Default False: off unless the environment says otherwise.
+APPROVALS_SOLO_SUPER_ADMIN = os.environ.get(
+    'APPROVALS_SOLO_SUPER_ADMIN', 'false'
+).strip().lower() in {'1', 'true', 'yes'}
+
+# A rider belongs to every city where they took a trip in this many months
+# (operator scope; see servers/rider/scope.py).
+RIDER_SCOPE_TRIP_MONTHS = int(os.environ.get('RIDER_SCOPE_TRIP_MONTHS', '12'))
+
+# The most rows one Finance CSV export (settlements, payouts, payments) may
+# contain. Above it the export is refused with a 400 asking for a narrower
+# range or scope; it is never silently truncated.
+FINANCE_EXPORT_MAX_ROWS = int(os.environ.get('FINANCE_EXPORT_MAX_ROWS', '50000'))
+
+# Who a deploy's unattended writes are attributed to.
+#
+# Every management command that writes access, money or driver status
+# demands `--actor-email`, which must resolve to an active operator
+# (`servers.admin_audit.actor_option`). Railway's QA start command runs
+# `bootstrap_qa_accounts` on every boot and nobody is there to type an
+# address, so for the commands a deploy may run unattended this names the
+# operator instead. It is validated by the same rule as the flag.
+#
+# Ignored in production, deliberately: a production deploy that seeds
+# access rows with nobody at the keyboard is the thing that must not
+# exist, so there a person passes the flag.
+QA_BOOTSTRAP_ACTOR_EMAIL = (os.environ.get('QA_BOOTSTRAP_ACTOR_EMAIL') or '').strip()
+
+# QA only (11 Nov): a QA-simulated test driver (not approved) may go online without the market's
+# requirements. Off unless set; production refuses to boot with it on (below).
+QA_SIM_DRIVERS_SKIP_REQUIREMENTS = os.environ.get('QA_SIM_DRIVERS_SKIP_REQUIREMENTS', '').strip().lower() in ('1', 'true', 'yes')
+
+if IS_PRODUCTION:
+    from django.core.exceptions import ImproperlyConfigured as _Improper
+
+    _production_faults = []
+
+    if DEBUG:
+        _production_faults.append(
+            'DEBUG is True. Django serves tracebacks with settings and local '
+            'variables to anyone who can trigger an error.'
+        )
+
+    if not SECRET_KEY:
+        # Previously read with a bare os.environ.get and no check, so an unset
+        # key surfaced later as a confusing signing error rather than at boot.
+        _production_faults.append(
+            'DJANGO_SECRET_KEY is not set. Sessions, password resets and every '
+            'signed value depend on it.'
+        )
+
+    if TEST_PHONE_NUMBERS:
+        _production_faults.append(
+            f'TEST_PHONE_NUMBERS is set ({len(TEST_PHONE_NUMBERS)} entries). '
+            'Each entry is a phone number that logs in with a fixed OTP and '
+            'skips SMS delivery and throttling -- an authentication bypass.'
+        )
+
+    if QA_SIM_DRIVERS_SKIP_REQUIREMENTS:
+        _production_faults.append(
+            'QA_SIM_DRIVERS_SKIP_REQUIREMENTS is on. It lets an unapproved test driver go online '
+            'without licence, insurance or any other required document.'
+        )
+
+    if not ADMIN_MFA_REQUIRED:
+        _production_faults.append(
+            'ADMIN_MFA_REQUIRED is false. It exists so QA can sign in with a '
+            'password alone while nobody holds an authenticator; in production '
+            'it would let a stolen operator password approve payouts and KYC.'
+        )
+
+    for _qa_only in ('QA_ADMIN_BOOTSTRAP_PHONE', 'QA_ADMIN_BOOTSTRAP_CODE',
+                     'QA_ADMIN_BOOTSTRAP_PASSWORD'):
+        if os.environ.get(_qa_only):
+            _production_faults.append(
+                f'{_qa_only} is set. It exists to create an admin account in QA, '
+                'and in production it is a back door into payout approval and KYC.'
+            )
+
+    # A PRODUCTION THAT CANNOT SEND MAIL CANNOT COMPLETE A SIGN-UP.
+    #
+    # `email_login` refuses an unverified address and verification happens by
+    # clicking a link in an email. Without a mail backend those two make a
+    # lock with no key: the account is created, the screen says "check your
+    # email", nothing is sent, and the person can never sign in. QA hit
+    # exactly that.
+    #
+    # Registration compensates off production by marking the address
+    # verified instead. This guard is what keeps that branch unreachable
+    # here: production either delivers mail or refuses to start, so it can
+    # never be the deployment that accepts a password for an address nobody
+    # proved they own.
+    _mail_ok, _mail_why = (True, '')
+    try:
+        from base.auth_email import delivery_is_configured as _delivery_check
+
+        _mail_ok, _mail_why = _delivery_check()
+    except Exception as _exc:  # pragma: no cover - import-time safety only
+        _mail_ok, _mail_why = False, f'could not be checked ({_exc})'
+    if not _mail_ok:
+        _production_faults.append(
+            f'Email delivery is not configured ({_mail_why}). Verification '
+            'links cannot be sent, so nobody could finish signing up, and '
+            'password reset would be silently dead.'
+        )
+
+    # A production deployment still pointing at QA infrastructure writes real
+    # customer data into a test system, or reads test data as if it were real.
+    for _name in ('BACKEND_URL', 'FRONTEND_URL'):
+        _url = (os.environ.get(_name) or '').lower()
+        if any(marker in _url for marker in ('-qa-', 'qa.', 'staging', 'localhost',
+                                             '127.0.0.1')):
+            _production_faults.append(
+                f'{_name} points at a non-production host. Receipts and '
+                'notifications would carry links into QA.'
+            )
+
+    if _production_faults:
+        _joined = chr(10).join('  - ' + f for f in _production_faults)
+        raise _Improper(
+            'Refusing to start in production with these faults:'
+            + chr(10) + _joined + chr(10) + chr(10)
+            + 'Fix the configuration. Do not relax these checks to boot.'
+        )
 #URLS
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 BACKEND_URL  = os.environ.get("BACKEND_URL", "http://localhost:8000")
@@ -296,49 +1068,231 @@ AWS_REGION=os.environ.get("AWS_REGION")
 AWS_SNS_SENDER_ID=os.environ.get("AWS_SNS_SENDER_ID")
 
 # AWS S3
+from base import object_store as _object_store  # noqa: E402
+
 AWS_S3_BUCKET_NAME=os.environ.get("AWS_S3_BUCKET_NAME", "")
 AWS_S3_REGION=os.environ.get("AWS_S3_REGION", AWS_REGION)
 AWS_STORAGE_BUCKET_NAME=AWS_S3_BUCKET_NAME
 AWS_S3_REGION_NAME=AWS_S3_REGION
 AWS_DEFAULT_ACL=None
 AWS_QUERYSTRING_EXPIRE=int(os.environ.get("AWS_QUERYSTRING_EXPIRE", "900"))
-AWS_S3_FILE_OVERWRITE=False
+# TRUE, and deliberately. Every upload path is `uuid4().hex` (see
+# base/media.PrefixedUUIDPath), so there is no caller-supplied name to
+# collide with -- and the alternative costs a HeadObject on every save,
+# which this deployment's bucket credentials answer 403 to. That turned
+# every document upload into an HTTP 500. See base/storage_backends.py.
+AWS_S3_FILE_OVERWRITE=True
 AWS_S3_SIGNATURE_VERSION="s3v4"
-AWS_S3_ADDRESSING_STYLE="virtual"
 
-# Razorpay
+# Optional S3-compatible endpoint. Unset means real AWS S3, which is what
+# production uses. Set it to point document storage at any S3-compatible store --
+# Cloudflare R2, MinIO for local development -- without AWS credentials
+# existing in that environment at all.
+#
+# django-storages reads AWS_S3_ENDPOINT_URL from settings by itself, so the
+# storage backends need no change; only integrations.storage.s3.build_s3_client (which constructs
+# its own boto3 client for presigning) has to be told.
+#
+#   Cloudflare R2:  https://<account-id>.r2.cloudflarestorage.com
+AWS_S3_ENDPOINT_URL=os.environ.get("AWS_S3_ENDPOINT_URL") or None
+
+# ADDRESSING STYLE AND REGION ARE DERIVED FROM THE ENDPOINT when they are not
+# set explicitly, because the right answer differs per provider and getting
+# it wrong fails as an opaque 403 SignatureDoesNotMatch rather than as
+# "unsupported".
+#
+#   R2  -> path-style; the bucket is the first PATH segment of
+#          <account-id>.r2.cloudflarestorage.com, and the virtual-hosted
+#          form does not resolve at all.
+#   AWS -> virtual-hosted; botocore otherwise presigns to the global
+#          s3.amazonaws.com host with a regional signature scope, which S3
+#          rejects with 403 on PUT.
+#
+# An explicit environment variable still wins, so an operator can override
+# either without editing code. See base/object_store.py.
+AWS_S3_ADDRESSING_STYLE=(
+    os.environ.get("AWS_S3_ADDRESSING_STYLE")
+    or _object_store.default_addressing_style(AWS_S3_ENDPOINT_URL)
+)
+if not AWS_S3_REGION:
+    # R2 has no regions; `auto` is its only valid sigv4 scope.
+    AWS_S3_REGION = _object_store.default_region(AWS_S3_ENDPOINT_URL) or ""
+AWS_S3_REGION_NAME = AWS_S3_REGION
+
+# The botocore Config django-storages' own client uses, so it signs exactly
+# the way integrations/storage/s3.py does.
+#
+# IT MUST BE COMPLETE. django-storages applies `addressing_style` and
+# `signature_version` only when `client_config` is None -- read its
+# S3Boto3Storage.__init__ -- so supplying a partial Config here would
+# SILENTLY DROP path-style addressing, and the first write to R2 would fail
+# as an unexplainable 403. Everything the backend would otherwise have set
+# is therefore set here as well.
+from integrations.storage.errors import Config as _BotoConfig  # noqa: E402
+
+AWS_S3_CLIENT_CONFIG = _BotoConfig(
+    signature_version=AWS_S3_SIGNATURE_VERSION,
+    s3={"addressing_style": AWS_S3_ADDRESSING_STYLE},
+    # On R2: disables the CRC32 checksum headers botocore 1.36+ adds by
+    # default, which a presigned PUT cannot reproduce. Empty on AWS.
+    **_object_store.client_config_kwargs(AWS_S3_ENDPOINT_URL),
+)
+
+# WHERE PUBLICLY-READABLE FILES ARE SERVED FROM.
+#
+# Avatars and vehicle pictures are public and their URLs carry no signature.
+# On AWS the bucket URL is fine. On R2 the S3 API endpoint is NOT publicly
+# readable -- a plain URL against it answers 401 -- so public objects must be
+# served from the bucket's public hostname instead: either the r2.dev
+# address Cloudflare gives you when you enable public access, or a custom
+# domain bound to the bucket.
+#
+# Applied ONLY to the public storage. It must never reach the private
+# document storage, whose URLs are presigned against the API endpoint; see
+# base/storage_backends.py.
+AWS_S3_PUBLIC_BASE_URL=os.environ.get("AWS_S3_PUBLIC_BASE_URL", "").strip().rstrip("/")
+
+# A SEPARATE BUCKET FOR KYC DOCUMENTS (AUDIT 27.78). Public objects are served
+# from the bucket's public hostname, and public read on a bucket is
+# all-or-nothing: with documents in the same bucket, every licence is readable
+# unsigned at <public host>/license_docs/<key> by anyone holding the key. Set
+# this to a bucket with NO public access; unset keeps the shared bucket, and
+# `manage.py check_storage` reports that as a failure while a public host is
+# configured. Existing documents must be copied across when it is first set.
+AWS_S3_PRIVATE_BUCKET_NAME=os.environ.get("AWS_S3_PRIVATE_BUCKET_NAME", "").strip()
+
+# Separate credentials for the private bucket, when it needs them. Empty means
+# "use the main AWS_* credentials", which is the R2 case: one API token
+# scoped to both buckets (owner decision 2026-11-02, QA storage on R2).
+AWS_S3_PRIVATE_ACCESS_KEY_ID=os.environ.get("AWS_S3_PRIVATE_ACCESS_KEY_ID", "").strip()
+AWS_S3_PRIVATE_SECRET_ACCESS_KEY=os.environ.get("AWS_S3_PRIVATE_SECRET_ACCESS_KEY", "").strip()
+AWS_S3_PRIVATE_ENDPOINT_URL=os.environ.get("AWS_S3_PRIVATE_ENDPOINT_URL", "").strip() or None
+
+# How long a SIGNED link to public media (avatars, vehicle photos) lives, in
+# seconds, while no public hostname is configured (AWS_S3_PUBLIC_BASE_URL
+# unset). R2's API endpoint is not publicly readable, so without a public
+# domain an unsigned avatar URL answers 400. SigV4 caps this at 7 days.
+PUBLIC_MEDIA_URL_TTL_SECONDS=min(int(os.environ.get("PUBLIC_MEDIA_URL_TTL_SECONDS", "21600")), 604800)
+
+# Uploads presigned but never attached to a record are deleted after this
+# many hours (servers/driver/upload_sweep.py, Celery beat, hourly).
+UNATTACHED_UPLOAD_MAX_AGE_HOURS=int(os.environ.get("UNATTACHED_UPLOAD_MAX_AGE_HOURS", "24"))
+
+# How long a signed link to a KYC document lives, in seconds. Capped at 300 in
+# code (servers/driver/document_access.py) whatever this says.
+DOCUMENT_URL_TTL_SECONDS=int(os.environ.get("DOCUMENT_URL_TTL_SECONDS", "300"))
+
+# How long an email sign-up's phone proof lives (servers/auth_user/phone_proof.py).
+PHONE_PROOF_TTL_SECONDS=int(os.environ.get("PHONE_PROOF_TTL_SECONDS", "600"))
+
+# Razorpay (India payments, adapter: integrations/payments/razorpay.py) and RazorpayX (India
+# payouts, adapter: integrations/payouts/razorpayx.py). Names only; values live in the environment.
+#   Payments  RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET (required), RAZORPAY_WEBHOOK_SECRET (the secret
+#             set on the dashboard webhook; missing = webhooks are rejected, a readiness warning)
+#   Payouts   RAZORPAYX_ACCOUNT_NUMBER (required: the RazorpayX account to debit),
+#             RAZORPAYX_WEBHOOK_SECRET, and RAZORPAYX_KEY_ID / RAZORPAYX_KEY_SECRET, which default to
+#             the RAZORPAY_* pair when unset.
+# Test vs live is decided by the key prefix (rzp_test_ / rzp_live_). A rzp_live_ key is refused when
+# IS_PRODUCTION is false (see integrations/razorpay_http.py). The base URL is fixed.
 RAZORPAY_KEY_ID=os.environ.get("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET=os.environ.get("RAZORPAY_KEY_SECRET", "")
 RAZORPAY_WEBHOOK_SECRET=os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
+RAZORPAYX_ACCOUNT_NUMBER=os.environ.get("RAZORPAYX_ACCOUNT_NUMBER", "")
+RAZORPAYX_KEY_ID=os.environ.get("RAZORPAYX_KEY_ID", "")
+RAZORPAYX_KEY_SECRET=os.environ.get("RAZORPAYX_KEY_SECRET", "")
+RAZORPAYX_WEBHOOK_SECRET=os.environ.get("RAZORPAYX_WEBHOOK_SECRET", "")
+# US driver payouts through Stripe Connect Express (10 Nov). Unset: QA's fake provider, else
+# "US payouts are not set up yet".
+STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
+# Fernet key for PAN and bank account numbers at rest (base/encrypted.py). Unset: derived from
+# SECRET_KEY, so rotating SECRET_KEY would need these re-encrypted; set it before production.
+FIELD_ENCRYPTION_KEY = os.environ.get('FIELD_ENCRYPTION_KEY', '')
+# Webhooks (both endpoints) whose signed `created_at` is older than this are ignored as replays.
+# Razorpay retries a failed delivery for 24 hours after the event is created
+# (razorpay.com/docs/webhooks/best-practices/); the default is that plus 5 minutes.
+RAZORPAY_WEBHOOK_MAX_AGE_SECONDS=int(os.environ.get("RAZORPAY_WEBHOOK_MAX_AGE_SECONDS") or 24 * 3600 + 300)
 
-# Cashfree
+# Cashfree. ONE consistent set of names (adapter: integrations/payments/cashfree.py).
+#   Payment gateway  CASHFREE_APP_ID, CASHFREE_SECRET_KEY, CASHFREE_ENVIRONMENT (sandbox|production)
+#   Webhook          CASHFREE_WEBHOOK_SECRET is optional: PG webhooks (API 2023-08-01) are signed
+#                    with the client secret key, which is used when this is unset.
+#   Payouts          CASHFREE_PAYOUTS_CLIENT_ID, CASHFREE_PAYOUTS_CLIENT_SECRET
+#                    (deprecated aliases still read: CASHFREE_PAYOUT_APP_ID, CASHFREE_PAYOUT_SECRET_KEY)
+# Hosts are DERIVED from CASHFREE_ENVIRONMENT (sandbox is the default). The two *_BASE_URL
+# overrides are optional and are ignored if they point at the other environment's host.
 CASHFREE_APP_ID=os.environ.get("CASHFREE_APP_ID", "")
 CASHFREE_SECRET_KEY=os.environ.get("CASHFREE_SECRET_KEY", "")
 CASHFREE_WEBHOOK_SECRET=os.environ.get("CASHFREE_WEBHOOK_SECRET", "")
 CASHFREE_API_VERSION=os.environ.get("CASHFREE_API_VERSION", "2023-08-01")
 CASHFREE_ENVIRONMENT=os.environ.get("CASHFREE_ENVIRONMENT", "sandbox")  # sandbox or production
-CASHFREE_PG_BASE_URL = os.environ.get("CASHFREE_PG_BASE_URL", "https://sandbox.cashfree.com")
+CASHFREE_PG_BASE_URL = os.environ.get("CASHFREE_PG_BASE_URL", "")
 
-CASHFREE_PAYOUTS_CLIENT_ID = os.environ.get("CASHFREE_PAYOUTS_CLIENT_ID", "")
-CASHFREE_PAYOUTS_CLIENT_SECRET = os.environ.get("CASHFREE_PAYOUTS_CLIENT_SECRET", "")
-CASHFREE_PAYOUTS_BASE_URL = os.environ.get("CASHFREE_PAYOUTS_BASE_URL", "https://payout-api.cashfree.com/payout/v1")
+CASHFREE_PAYOUTS_CLIENT_ID = os.environ.get("CASHFREE_PAYOUTS_CLIENT_ID", "") or os.environ.get("CASHFREE_PAYOUT_APP_ID", "")
+CASHFREE_PAYOUTS_CLIENT_SECRET = os.environ.get("CASHFREE_PAYOUTS_CLIENT_SECRET", "") or os.environ.get("CASHFREE_PAYOUT_SECRET_KEY", "")
+CASHFREE_PAYOUTS_BASE_URL = os.environ.get("CASHFREE_PAYOUTS_BASE_URL", "")
 
 
-# Payment Gateway Selection
-PAYMENT_GATEWAY=os.environ.get("PAYMENT_GATEWAY", "cashfree")
-PAYOUT_GATEWAY=os.environ.get("PAYOUT_GATEWAY", "cashfree")
+# Payment and payout providers, PER COUNTRY, by configuration only (owner ruling, AUDIT 27.62).
+# Registered names: payments cashfree|razorpay|stripe, payouts cashfree|razorpay(razorpayx)|
+# stripe_connect. DEFAULT (owner decision 2026-11-01): India uses Razorpay, the US has none.
+# stripe / stripe_connect are STUBS. Cashfree stays in the code but is configured nowhere: select it
+# only by explicit config, e.g. PAYMENT_PROVIDERS_JSON={"IN": "cashfree", "US": null}. A country
+# with a null or missing entry has no provider and never borrows India's.
+# PAYMENT_GATEWAY / PAYOUT_GATEWAY are legacy names, read only if set explicitly (no default), and
+# only as India's provider when there is no explicit IN entry in the table.
+PAYMENT_GATEWAY=os.environ.get("PAYMENT_GATEWAY", "")
+PAYOUT_GATEWAY=os.environ.get("PAYOUT_GATEWAY", "")
+
+
+def _provider_table(env_name, default):
+    import json as _json_pt
+
+    table = dict(default)
+    raw = os.environ.get(env_name, "").strip()
+    if raw:
+        try:
+            parsed = _json_pt.loads(raw)
+            assert isinstance(parsed, dict)
+        except (ValueError, AssertionError):
+            from django.core.exceptions import ImproperlyConfigured as _IC
+            raise _IC(f"{env_name} must be a JSON object of country code -> provider name or null")
+        for code, name in parsed.items():
+            table[str(code).strip().upper()] = (str(name).strip().lower() if name else None)
+    return table
+
+
+PAYMENT_PROVIDERS = _provider_table("PAYMENT_PROVIDERS_JSON", {"IN": "razorpay", "US": None})
+PAYOUT_PROVIDERS = _provider_table("PAYOUT_PROVIDERS_JSON", {"IN": "razorpay", "US": None})
 
 # --- Platform / dispatch settings -------------------------------------------
-# PLATFORM_COMMISSION_PERCENT is now only the LAST-RESORT fallback. The
-# authoritative rate is RateCard.commission_percent for the trip's zone
-# (see servers/pricing/services.commission_for_trip). Kept as a Decimal —
-# a float here silently produced binary-rounded commission on every trip.
-PLATFORM_COMMISSION_PERCENT=_Decimal(os.environ.get("PLATFORM_COMMISSION_PERCENT", "18"))
+# The platform commission is NOT a setting. It is the layered, versioned
+# CommissionRule model (servers/pricing/commission.py, module 8, AUDIT 27.36);
+# each trip snapshots its rate at booking. The old PLATFORM_COMMISSION_PERCENT
+# setting (default 18) is removed so there is exactly one source.
 
 # How long a rider's request stays open before auto-cancel. 600s meant a
 # rider stared at "finding a driver" for ten minutes; the rolling fanout
 # below has fully played out well before 90s.
 TRIP_ACCEPT_TIMEOUT_SECONDS=int(os.environ.get("TRIP_ACCEPT_TIMEOUT_SECONDS", "90"))
+
+# SaaradhiGo's own support line per country, as JSON: {"IN": "+91...", "US": "+1..."}.
+# Published in app-config (`country.support.phone`); the apps hide the support
+# call row while a country has none. Never a placeholder: a number that rings
+# nobody is worse than no number (PRODUCT_AUDIT §8, go-live #27).
+try:
+    SUPPORT_PHONE_NUMBERS = {
+        str(k).upper(): str(v).strip()
+        for k, v in json.loads(os.environ.get("SUPPORT_PHONE_NUMBERS") or "{}").items()
+        if str(v).strip()
+    }
+except (ValueError, AttributeError):
+    SUPPORT_PHONE_NUMBERS = {}
+
+# Grace on top of the accept timeout before the durable sweep steps in, so the
+# normal countdown path wins and the sweep stays a backstop rather than a race.
+TRIP_UNACCEPTED_SWEEP_GRACE_SECONDS = int(
+    os.environ.get('TRIP_UNACCEPTED_SWEEP_GRACE_SECONDS', '60')
+)
 
 # Rolling fanout: expanding radius waves rather than one 5km blast. Each
 # wave gets DISPATCH_WAVE_SECONDS of exclusivity before the next widens.
@@ -347,7 +1301,174 @@ DISPATCH_RADIUS_WAVES_M = tuple(
 )
 DISPATCH_WAVE_SECONDS = float(os.environ.get('DISPATCH_WAVE_SECONDS', '20'))
 
+# --- Durable GPS trail (ADR-0010) -------------------------------------------
+# Off by default on purpose. The writer can therefore merge and deploy without
+# changing behaviour, and be switched on deliberately per environment once the
+# table and the beat cadence have been watched. Turning it off again is a
+# variable change, not a rollback.
+GPS_TRAIL_ENABLED = os.environ.get('GPS_TRAIL_ENABLED', 'False') == 'True'
+
+# Sampling policy. Every value is env-tunable because the right numbers depend
+# on city density and on how chatty the driver app build is, and we would
+# rather change a variable than ship a release to find out.
+#   MIN_INTERVAL  one point per N seconds is enough to reconstruct a route
+#   MIN_DISTANCE  below this, successive points are jitter, not movement --
+#                 this is what stops a driver idling at a pickup filling the
+#                 table
+#   MAX_ACCURACY  a fix worse than this makes derived distance worse, not
+#                 better, so it is dropped rather than stored
+GPS_TRAIL_MIN_INTERVAL_SECONDS = float(os.environ.get('GPS_TRAIL_MIN_INTERVAL_SECONDS', '5'))
+GPS_TRAIL_MIN_DISTANCE_METRES = float(os.environ.get('GPS_TRAIL_MIN_DISTANCE_METRES', '25'))
+GPS_TRAIL_MAX_ACCURACY_METRES = float(os.environ.get('GPS_TRAIL_MAX_ACCURACY_METRES', '50'))
+
+# Broken-client guard: a 60-minute trip sampled every 5s is ~720 points, so
+# this is roughly 7x headroom before something is clearly wrong.
+GPS_TRAIL_MAX_POINTS_PER_TRIP = int(os.environ.get('GPS_TRAIL_MAX_POINTS_PER_TRIP', '5000'))
+
+# How much of the Redis stream one drain run consumes. Bounded so a backlog
+# cannot turn a single beat tick into an unbounded transaction. At sustained
+# high ping rates this wants a dedicated long-running consumer rather than a
+# beat tick -- see ADR-0010.
+GPS_TRAIL_BATCH_SIZE = int(os.environ.get('GPS_TRAIL_BATCH_SIZE', '500'))
+GPS_TRAIL_MAX_EVENTS_PER_RUN = int(os.environ.get('GPS_TRAIL_MAX_EVENTS_PER_RUN', '10000'))
+# The drain is periodic, so a journey's last pings are still in the stream when
+# the trip completes. Accept them for this long after the trip ends, or every
+# trip's measured distance is short by the final stretch -- systematically.
+GPS_TRAIL_LATE_ARRIVAL_MINUTES = int(os.environ.get('GPS_TRAIL_LATE_ARRIVAL_MINUTES', '60'))
+
+# --- Actual trip metrics (observe-only) -------------------------------------
+# How long after completion to derive actual distance/duration. The trail is
+# drained on a 60s cadence, so waiting lets the final points land; computing at
+# completion would systematically under-read distance.
+TRIP_ACTUALS_DELAY_SECONDS = int(os.environ.get('TRIP_ACTUALS_DELAY_SECONDS', '180'))
+
+# A segment implying a higher speed than this is a GPS jump, not a car, and is
+# excluded from the distance sum rather than allowed to dominate it.
+TRIP_ACTUALS_MAX_SEGMENT_SPEED_KMH = float(
+    os.environ.get('TRIP_ACTUALS_MAX_SEGMENT_SPEED_KMH', '150'),
+)
+# Gaps longer than this are reported so the fare policy can distinguish a
+# well-covered trip from a patchy one.
+TRIP_ACTUALS_MAX_ACCEPTABLE_GAP_SECONDS = float(
+    os.environ.get('TRIP_ACTUALS_MAX_ACCEPTABLE_GAP_SECONDS', '120'),
+)
+
+# --- Fare shadow comparison (observe-only) -----------------------------------
+# Off by default. When on, completed trips with measured actuals are re-quoted
+# through the canonical fare function and the result is stored for analysis.
+# Nothing a rider pays depends on this.
+FARE_SHADOW_ENABLED = os.environ.get('FARE_SHADOW_ENABLED', 'False') == 'True'
+FARE_SHADOW_BATCH_SIZE = int(os.environ.get('FARE_SHADOW_BATCH_SIZE', '200'))
+FARE_SHADOW_LOOKBACK_HOURS = int(os.environ.get('FARE_SHADOW_LOOKBACK_HOURS', '72'))
+
 GOOGLE_MAPS_API_KEY=os.environ.get("GOOGLE_MAPS_API_KEY", "")
+
+# Arrival estimates on an active trip (servers/ride/eta.py): straight line x road factor at the
+# market's average speed, in whole minutes. Per-market speeds in km/h; a market missing here
+# uses PICKUP_ETA_CITY_KMH (18). Override with ETA_MARKET_KMH_JSON, e.g. {"IN": 18, "US": 35}.
+# Trusted contacts and trip sharing (servers/sharing). SHARING_SMS_MODE "sink" (default) records
+# each contact message and sends nothing (the QA test sink); "live" sends it over the login-code
+# SMS provider. TRIP_SHARE_BASE_URL is where /t/<token> is served (default FRONTEND_URL).
+SHARING_SMS_MODE = os.environ.get('SHARING_SMS_MODE', 'sink').strip().lower()
+SHARING_SMS_PER_RIDER_PER_HOUR = int(os.environ.get('SHARING_SMS_PER_RIDER_PER_HOUR', '20'))
+SHARING_SMS_PER_CONTACT_PER_HOUR = int(os.environ.get('SHARING_SMS_PER_CONTACT_PER_HOUR', '6'))
+SHARING_SMS_INBOUND_TOKEN = os.environ.get('SHARING_SMS_INBOUND_TOKEN', '')
+TRIP_SHARE_BASE_URL = os.environ.get('TRIP_SHARE_BASE_URL', '')
+# Masked calls between rider and driver (servers/callbridge). "fake" (the default) logs the call
+# and returns CALL_BRIDGE_FAKE_NUMBER, a test number of neither party. A real provider needs its
+# adapter, CALL_BRIDGE_PROVIDER=<name> and CALL_BRIDGE_REAL_ENABLED=true.
+CALL_BRIDGE_PROVIDER = os.environ.get('CALL_BRIDGE_PROVIDER', 'fake').strip().lower()
+CALL_BRIDGE_REAL_ENABLED = os.environ.get('CALL_BRIDGE_REAL_ENABLED', 'false').strip().lower() in {'1', 'true', 'yes'}
+CALL_BRIDGE_FAKE_NUMBER = os.environ.get('CALL_BRIDGE_FAKE_NUMBER', '+914000000000')
+ETA_ROAD_FACTOR = float(os.environ.get('ETA_ROAD_FACTOR', '1.3'))
+ETA_MARKET_KMH = {'IN': 18.0, 'US': 35.0}
+if os.environ.get('ETA_MARKET_KMH_JSON', '').strip():
+    import json as _json_eta
+    ETA_MARKET_KMH.update({str(k).upper(): float(v) for k, v in
+                           _json_eta.loads(os.environ['ETA_MARKET_KMH_JSON']).items()})
+
+# Maps cost control (owner, 9 Nov). Every value is env-overridable; none is a key.
+# The route cache: one Google route per journey, a ~75 m grid, 30 min (per market in
+# MAPS_ROUTE_TTL_JSON, e.g. {"IN": 1800}); optionally shorter in a peak window
+# (MAPS_ROUTE_PEAK_TTL_S during MAPS_ROUTE_PEAK_HOURS_JSON, local hours, e.g. [[8, 11], [17, 21]]).
+MAPS_ROUTE_GRID_M = float(os.environ.get('MAPS_ROUTE_GRID_M', '75'))
+MAPS_ROUTE_TTL_S = float(os.environ.get('MAPS_ROUTE_TTL_S', '1800'))
+MAPS_ROUTE_TTL = {str(k).upper(): float(v) for k, v in
+                  __import__('json').loads(os.environ.get('MAPS_ROUTE_TTL_JSON') or '{}').items()}
+MAPS_ROUTE_PEAK_TTL_S = (float(os.environ['MAPS_ROUTE_PEAK_TTL_S'])
+                         if os.environ.get('MAPS_ROUTE_PEAK_TTL_S') else None)
+MAPS_ROUTE_PEAK_HOURS = __import__('json').loads(os.environ.get('MAPS_ROUTE_PEAK_HOURS_JSON') or '[]')
+# The live ETA reroutes only when 150 m off the route for 30 s, or 30% off the plan, and at most
+# once every 3 minutes per trip (servers/ride/route_eta.py).
+ETA_OFFROUTE_M = float(os.environ.get('ETA_OFFROUTE_M', '150'))
+ETA_OFFROUTE_S = float(os.environ.get('ETA_OFFROUTE_S', '30'))
+ETA_DRIFT = float(os.environ.get('ETA_DRIFT', '0.30'))
+ETA_REROUTE_MIN_S = float(os.environ.get('ETA_REROUTE_MIN_S', '180'))
+# Search on the clients (served in app-config): autocomplete after 3 characters, 300 ms after the
+# last keystroke; "You are here" again only after moving 200 m.
+MAPS_AUTOCOMPLETE_MIN_CHARS = int(os.environ.get('MAPS_AUTOCOMPLETE_MIN_CHARS', '3'))
+MAPS_AUTOCOMPLETE_DEBOUNCE_MS = int(os.environ.get('MAPS_AUTOCOMPLETE_DEBOUNCE_MS', '300'))
+MAPS_REVERSE_GEOCODE_MOVE_M = float(os.environ.get('MAPS_REVERSE_GEOCODE_MOVE_M', '200'))
+# Showing Maps cost in local money in the console: USD -> local currency (a display rate, not a
+# booking rate). MAPS_FX_TO_LOCAL_JSON, e.g. {"IN": 84.0}.
+MAPS_FX_TO_LOCAL = {'IN': 84.0, 'US': 1.0}
+# Driver fee plans and open books (9 Nov): the variable costs per market, in minor units, from
+# the environment (JSON per country). Missing is 0 and the console says it is not configured.
+def _json_env(name):
+    return {str(k).upper(): v for k, v in
+            __import__('json').loads(os.environ.get(name) or '{}').items()}
+COST_SMS_UNIT_MINOR = _json_env('COST_SMS_UNIT_MINOR_JSON')          # per SMS sent
+COST_CALL_UNIT_MINOR = _json_env('COST_CALL_UNIT_MINOR_JSON')        # per masked call
+COST_SMS_PER_TRIP_MINOR = _json_env('COST_SMS_PER_TRIP_MINOR_JSON')  # simulator: SMS per trip
+COST_CALL_PER_TRIP_MINOR = _json_env('COST_CALL_PER_TRIP_MINOR_JSON')
+PAYMENT_GATEWAY_FEE_PERCENT = _json_env('PAYMENT_GATEWAY_FEE_PERCENT_JSON')
+ONLINE_PAYMENT_SHARE = _json_env('ONLINE_PAYMENT_SHARE_JSON')        # 0..1 of fares paid online
+OPEN_BOOKS_RESERVE_PERCENT = float(os.environ.get('OPEN_BOOKS_RESERVE_PERCENT', '15'))
+# QA only: RazorpayX's test-mode UPI addresses (success@razorpay) go to the fake payout provider
+# (integrations/payouts/fake.py). Never set in production.
+PAYOUT_FAKE_ALLOWED = os.environ.get('PAYOUT_FAKE_ALLOWED', '').strip().lower() in ('1', 'true', 'yes')
+# Maps cost per trip for the simulator until a month of metered trips exists (QA baseline,
+# 9 Nov: 3 autocomplete + 1 place details + 1 Routes Pro at list price).
+MAPS_BASELINE_USD_PER_TRIP = os.environ.get('MAPS_BASELINE_USD_PER_TRIP', '0.0285')
+MAPS_FX_TO_LOCAL.update({str(k).upper(): float(v) for k, v in
+                         __import__('json').loads(os.environ.get('MAPS_FX_TO_LOCAL_JSON') or '{}').items()})
+
+# Which Places API the maps adapters speak: "new" (default) or "legacy".
+#
+# Places API (Legacy) cannot be enabled on Google Cloud projects created from
+# October 2026, so a fresh project can only use "new". Projects that already
+# have legacy access can set "legacy" and keep the old endpoints.
+GOOGLE_PLACES_API_VERSION = os.environ.get("GOOGLE_PLACES_API_VERSION", "new")
+
+# CARTO basemap key for the admin God View map.
+#
+# CARTO stopped serving raster tiles unkeyed in September 2026 -- an unkeyed
+# request returns HTTP 200 whose image is the words "API KEY REQUIRED". The
+# key is free, needs no CARTO account, and allows 1M commercial tile requests
+# a month. Blank is handled: the console says the map is unconfigured rather
+# than drawing a grid of watermarks.
+CARTO_BASEMAP_API_KEY = os.environ.get("CARTO_BASEMAP_API_KEY", "")
+
+# --- Firebase Cloud Messaging ------------------------------------------------
+#
+# `servers/auth_user/services.py` only ever looked for a service-account FILE,
+# at a path that was not configurable because this setting did not exist. The
+# file is gitignored and is not in the deployed image, so `firebase_admin` was
+# never initialised anywhere and EVERY push was skipped -- for both apps, for
+# the whole life of the project. Dispatch's FCM leg has been dead and the
+# WebSocket has carried every ride offer alone.
+#
+# FIREBASE_CREDENTIALS_JSON holds the service-account JSON itself, which is
+# what a platform with environment variables and an ephemeral filesystem can
+# supply. Owner action: create a service account for the Firebase project,
+# download its key, and set this variable. It is a private key -- it must
+# never be committed, logged, or echoed.
+#
+# The file path remains supported for local development.
+FIREBASE_CREDENTIALS_JSON = os.environ.get('FIREBASE_CREDENTIALS_JSON', '')
+FIREBASE_CREDENTIALS_PATH = os.environ.get(
+    'FIREBASE_CREDENTIALS_PATH', 'firebase-credentials.json',
+)
 
 # When no RateCard governs a pickup, may we quote the hardcoded fallback
 # fare? Yes in dev/CI so a fresh DB is usable; no in production, where a
@@ -367,7 +1488,7 @@ CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            'hosts': [REDIS_URL + '/4'],
+             "hosts": [REDIS_URL + "/4"], 
         },
     },
 }
@@ -413,6 +1534,20 @@ if os.environ.get('DB_HOST'):
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 
+# Sign in to the operator console with either identifier.
+#
+# USERNAME_FIELD is phone_number, so ModelBackend alone means the console
+# form accepts a phone and nothing else -- while the API had offered
+# /auth/email/login/ for a while. Two sign-in surfaces for one account, and
+# the identifier most people remember worked on only one of them.
+#
+# Order matters: ModelBackend stays FIRST, so every existing phone+password
+# sign-in takes exactly the path it always did. The email backend only
+# engages for an identifier containing '@'.
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+    'base.auth_backends.EmailOrPhoneBackend',
+]
 AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
@@ -464,6 +1599,14 @@ LOGGING = {
         'handlers': ['console'],
         'level': LOG_LEVEL,
     },
+    # AWS SDK chatter: every presign/HEAD emits dozens of DEBUG lines that
+    # drown real signals (and cost latency under load). Keep warnings+.
+    'loggers': {
+        'botocore': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        'boto3': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        's3transfer': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        'urllib3': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+    },
 }
 
 # Internationalization
@@ -484,7 +1627,26 @@ AUTH_USER_MODEL='auth_user.customUser'
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+# Django 4.2 deprecated STATICFILES_STORAGE in favour of STORAGES and 5.1
+# removed it. It is not an error on 5.2 -- it is silently IGNORED, which is
+# worse: `manage.py check` passes, the app boots, and whitenoise's
+# CompressedManifestStaticFilesStorage is simply never applied. collectstatic
+# then stops writing the hashed manifest and the gzip/brotli variants, so every
+# static asset loses cache-busting and compression with nothing to signal it.
+#
+# STORAGES exists from 4.2 onward, so this form is correct on both 5.0 and 5.2.
+STORAGES = {
+    'default': {
+        # Left as the filesystem default deliberately. The S3 backends in
+        # base/storage_backends.py are instantiated explicitly per field
+        # (get_public_media_storage / get_private_document_storage), not wired
+        # in globally, so nothing here should point at S3.
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -496,6 +1658,9 @@ if SENTRY_DSN:
     from sentry_sdk.integrations.celery import CeleryIntegration
     from sentry_sdk.integrations.redis import RedisIntegration
     from django.dispatch.dispatcher import Signal
+    from base.sentry_scrub import (
+        before_breadcrumb as _sentry_before_breadcrumb, before_send as _sentry_before_send,
+    )
 
     # WORKAROUND: sentry-sdk 1.32.0 crashes on Django 5.0 due to a bug in signal receiver patching
     # (TypeError: 'tuple' object does not support item assignment). We must use 1.32.0 for cashfree-pg.
@@ -517,8 +1682,110 @@ if SENTRY_DSN:
         # Sentry a processor of personal data we never told users about,
         # and it defeats the PII redaction filter above.
         send_default_pii=False,
+        # ...and that does not look inside what integrations attach, such as
+        # CeleryIntegration's task args/kwargs. These scrub every event and
+        # breadcrumb for OTPs, passwords, tokens and secrets (base/sentry_scrub.py).
+        before_send=_sentry_before_send,
+        before_breadcrumb=_sentry_before_breadcrumb,
         environment=os.environ.get('ENVIRONMENT', 'production' if not DEBUG else 'development')
     )
 
     if original_live_receivers:
         Signal._live_receivers = original_live_receivers
+
+
+# ---------------------------------------------------------------------------
+# Notifications (module 11)
+# ---------------------------------------------------------------------------
+# NOTIFY_LIVE_SEND is the master switch. False (the default, everywhere) forces EVERY
+# external channel to the stub provider, which records the message and sends nothing. Even
+# when True, a non-production ENVIRONMENT sends only to recipients on NOTIFY_TEST_RECIPIENTS
+# (phones in E.164 and emails, comma separated, from the environment and never from the
+# repo); everyone else is recorded as `suppressed: not on test allowlist`.
+NOTIFY_LIVE_SEND = os.environ.get('NOTIFY_LIVE_SEND', 'false').strip().lower() in {'1', 'true', 'yes'}
+NOTIFY_TEST_RECIPIENTS = [
+    entry.strip() for entry in os.environ.get('NOTIFY_TEST_RECIPIENTS', '').split(',')
+    if entry.strip()
+]
+# Provider per channel x country. A channel/country with no entry has no provider and its
+# messages are suppressed (`no provider configured`), never sent by a guess.
+NOTIFY_PROVIDERS = {
+    'sms': {'IN': 'msg91', 'US': 'twilio'},
+    'whatsapp': {'IN': 'msg91'},
+    'email': {'IN': 'ses', 'US': 'ses'},
+    'push': {'IN': 'fcm', 'US': 'fcm'},
+    'in_app': {'IN': 'in_app', 'US': 'in_app'},
+}
+# Every provider is swappable BY CONFIGURATION ONLY (owner ruling, AUDIT 27.62). To switch a
+# channel in a country, set NOTIFY_PROVIDERS_JSON to a partial table, e.g.
+#   {"sms": {"US": "sns"}, "push": {"IN": "sns"}}
+# It is merged over the table above, channel by channel and country by country; a null value
+# removes the provider (messages are suppressed). Valid names per channel: sms msg91|twilio|sns,
+# whatsapp msg91, email ses, push fcm|sns, in_app in_app, and `stub` anywhere.
+_notify_override = os.environ.get('NOTIFY_PROVIDERS_JSON', '').strip()
+if _notify_override:
+    import json as _json_np
+    try:
+        _parsed_np = _json_np.loads(_notify_override)
+        assert isinstance(_parsed_np, dict)
+        for _channel, _by_country in _parsed_np.items():
+            assert isinstance(_by_country, dict)
+            _row = NOTIFY_PROVIDERS.setdefault(_channel, {})
+            for _country, _provider in _by_country.items():
+                if _provider is None:
+                    _row.pop(_country, None)
+                else:
+                    _row[_country] = str(_provider).strip().lower()
+    except (ValueError, AssertionError):
+        from django.core.exceptions import ImproperlyConfigured as _IC
+        raise _IC('NOTIFY_PROVIDERS_JSON must be a JSON object of channel -> country -> provider')
+# Promotional quiet hours, recipient-local, per country (start hour inclusive, end hour
+# exclusive). GO-LIVE LEGAL ITEM: the exact TRAI (India) and TCPA (US) windows need legal
+# confirmation before any live promotional send.
+NOTIFY_QUIET_HOURS = {'IN': (21, 10), 'US': (21, 10)}
+NOTIFY_QUIET_HOURS_DEFAULT = (21, 10)
+NOTIFY_MAX_ATTEMPTS = int(os.environ.get('NOTIFY_MAX_ATTEMPTS', '5'))
+NOTIFY_BACKOFF_BASE_SECONDS = int(os.environ.get('NOTIFY_BACKOFF_BASE_SECONDS', '30'))
+# Sends per provider per minute (0 or missing = unlimited).
+NOTIFY_RATE_LIMITS = {'msg91': 600, 'twilio': 600, 'ses': 600, 'fcm': 3000, 'sns': 600}
+# `notify.provider_failing`: failed / (sent + delivered + failed) over the window.
+NOTIFY_FAILURE_WINDOW_MINUTES = 15
+NOTIFY_FAILURE_RATE_THRESHOLD = float(os.environ.get('NOTIFY_FAILURE_RATE_THRESHOLD', '0.3'))
+NOTIFY_FAILURE_MIN_SAMPLE = int(os.environ.get('NOTIFY_FAILURE_MIN_SAMPLE', '10'))
+# Credentials: environment variable NAMES only. Values are set by the owner on the service
+# once the provider accounts are confirmed; this repo and the tests never hold one.
+#   MSG91_AUTH_KEY, MSG91_WHATSAPP_NUMBER, MSG91_WEBHOOK_SECRET
+#   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_MESSAGING_SERVICE_SID (or TWILIO_FROM_NUMBER)
+#   SES_AWS_ACCESS_KEY_ID, SES_AWS_SECRET_ACCESS_KEY, SES_AWS_REGION, SES_FROM_EMAIL,
+#   SES_CONFIGURATION_SET (optional), SES_SNS_TOPIC_ARNS (comma separated allowlist)
+#   FIREBASE_CREDENTIALS_JSON (existing; push)
+MSG91_AUTH_KEY = os.environ.get('MSG91_AUTH_KEY', '')
+MSG91_WHATSAPP_NUMBER = os.environ.get('MSG91_WHATSAPP_NUMBER', '')
+MSG91_WEBHOOK_SECRET = os.environ.get('MSG91_WEBHOOK_SECRET', '')
+TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID', '')
+TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', '')
+TWILIO_MESSAGING_SERVICE_SID = os.environ.get('TWILIO_MESSAGING_SERVICE_SID', '')
+TWILIO_FROM_NUMBER = os.environ.get('TWILIO_FROM_NUMBER', '')
+SES_AWS_ACCESS_KEY_ID = os.environ.get('SES_AWS_ACCESS_KEY_ID', '')
+SES_AWS_SECRET_ACCESS_KEY = os.environ.get('SES_AWS_SECRET_ACCESS_KEY', '')
+SES_AWS_REGION = os.environ.get('SES_AWS_REGION', '')
+SES_FROM_EMAIL = os.environ.get('SES_FROM_EMAIL', '')
+SES_CONFIGURATION_SET = os.environ.get('SES_CONFIGURATION_SET', '')
+SES_SNS_TOPIC_ARNS = [
+    arn.strip() for arn in os.environ.get('SES_SNS_TOPIC_ARNS', '').split(',') if arn.strip()
+]
+# AWS SNS as an alternative SMS and push provider (adapters in integrations/sms/sns.py and
+# integrations/push/sns.py). SANDBOX-ONLY: they never call AWS unless NOTIFY_LIVE_SEND is on AND
+# SNS_LIVE_CONFIRMED is true; otherwise the message is recorded as `suppressed: sns not
+# confirmed` with no network call. SNS_LIVE_CONFIRMED means "the owner confirms the AWS account".
+#   SNS_AWS_ACCESS_KEY_ID, SNS_AWS_SECRET_ACCESS_KEY, SNS_AWS_REGION, SNS_SMS_SENDER_ID (optional)
+#   SNS_PLATFORM_APPLICATION_ARN_FCM, SNS_PLATFORM_APPLICATION_ARN_APNS (platform applications)
+SNS_LIVE_CONFIRMED = os.environ.get('SNS_LIVE_CONFIRMED', 'false').strip().lower() in {'1', 'true', 'yes'}
+SNS_AWS_ACCESS_KEY_ID = os.environ.get('SNS_AWS_ACCESS_KEY_ID', '')
+SNS_AWS_SECRET_ACCESS_KEY = os.environ.get('SNS_AWS_SECRET_ACCESS_KEY', '')
+SNS_AWS_REGION = os.environ.get('SNS_AWS_REGION', '')
+SNS_SMS_SENDER_ID = os.environ.get('SNS_SMS_SENDER_ID', '')
+SNS_PLATFORM_APPLICATION_ARN_FCM = os.environ.get('SNS_PLATFORM_APPLICATION_ARN_FCM', '')
+SNS_PLATFORM_APPLICATION_ARN_APNS = os.environ.get('SNS_PLATFORM_APPLICATION_ARN_APNS', '')
+# The public base URL Twilio signs against (the URL it was configured with).
+NOTIFY_WEBHOOK_BASE_URL = os.environ.get('NOTIFY_WEBHOOK_BASE_URL', '')

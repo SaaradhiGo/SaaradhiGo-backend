@@ -16,7 +16,7 @@ Do not hardcode the API base URL. Use environment variables (e.g. via `python-do
 ```python
 # settings.py
 import os
-API_BASE_URL = os.environ.get('API_BASE_URL', 'https://dev.api.saaradhigo.in')
+API_BASE_URL = os.environ.get('API_BASE_URL', 'https://backend-qa-811d.up.railway.app')
 ```
 
 ### B. Handling Static Files
@@ -243,11 +243,37 @@ Below are the specific endpoints you will use for the Admin interface.
 
 ### D. Rides & Monitoring
 - **List Trips:** `GET /ride/admin/trips/`
-- **Live Locations:** `GET /ride/admin/live-locations/`
+- **Live Ops map (module 10):** `GET /live-ops/admin/snapshot/?city=`, `GET /live-ops/admin/heatmap/?city=&window=15|60|1440`, `POST /live-ops/admin/ws-ticket/` (single-use ticket for `ws/admin/live-locations/`; the JWT in the URL is no longer accepted there)
 
 ### E. Payments & Transactions
 - **List Payments:** `GET /payments/admin/payments/`
 - **List Transactions:** `GET /payments/admin/transactions/`
+
+### F. Notifications (module 11)
+All under `/notifications/admin/`; `notify.read` to look, `notify.template` / `notify.campaign` to draft and submit. Activating a template and sending a campaign are maker-checker requests (`notification.template_change`, `notification.campaign_send`) and answer **202**.
+- **Templates:** `GET|POST /templates/`, `GET|PATCH /templates/<id>/`, `PUT /templates/<id>/registrations/` (DLT / sender / WhatsApp rows), `POST /templates/<id>/preview/`, `POST /templates/preview/` (unsaved editor state), `POST /templates/<id>/submit/`, `POST /templates/<id>/archive/`
+- **Campaigns:** `GET|POST /campaigns/`, `GET|PATCH /campaigns/<id>/`, `POST /campaigns/audience-preview/`, `POST /campaigns/<id>/submit/`, `POST /campaigns/<id>/cancel/`, `GET /cities/`
+- **Delivery log:** `GET /messages/?status=&channel=&provider=&template=&user_id=&campaign=` and `GET /messages/<id>/` (status timeline). Scoped by the recipient's city; recipients are masked.
+- **Providers:** `GET /providers/` (configured provider, live vs stub, credentials present yes/no, allowlist size; never a value)
+- **A user's preferences:** `GET|PUT /users/<id>/preferences/` (an admin may only opt a user OUT)
+- **App:** `GET|PUT /notifications/preferences/` (the signed-in rider or driver). Webhooks: `POST /notifications/webhooks/<twilio|ses|msg91>/` (signature or secret verified; 403 otherwise).
+
+### G. Promotions & Incentives (module 12)
+All under `/promotions/admin/`; `promo.read` to look (Marketing, City Ops, Finance, Analyst, Super Admin). `promo.write` (Marketing) drafts rider promos and rider referrals; `incentive.write` (City Ops Manager) drafts driver incentives and driver referrals. A campaign is anchored at a country or city node; out of scope is a 404, in scope without the capability a 403. Launching any campaign (`promotion.launch`) and raising a budget (`promotion.budget_increase`) are maker-checker requests and answer **202**; pausing, resuming and cancelling need no checker and are audited.
+- **Campaigns:** `GET|POST /campaigns/` (`?kind=rider_promo|driver_incentive|referral&state=&audience=rider|driver&q=&scope=`), `GET|PATCH /campaigns/<id>/` (PATCH: drafts only), `POST /campaigns/<id>/submit/` (`{reason}`), `POST /campaigns/<id>/pause|resume|cancel/`, `POST /campaigns/<id>/budget-increase/` (`{budget_minor, reason}`)
+- **What it did:** `GET /campaigns/<id>/activity/` (redemptions | progress | referrals, people as masked references)
+- **Form options:** `GET /options/` (places the caller may write in, zones, vehicle classes)
+- **Budget:** every campaign carries `budget` (`budget_minor`, `committed_minor`, `spent_minor`, `remaining_minor`, `overshoot_minor`; always a hard cap). Money is integer minor units of the campaign currency.
+- **Fraud flags (read-only, `fraud.read`):** `GET /fraud/admin/flags/?kind=&status=`. Evidence names the signals that matched (`same_device`, `same_phone`, `same_instrument`), never a value.
+
+### H. Fraud money actions (module 13 follow-up, AUDIT 27.56)
+Owner rulings, all under `/fraud/admin/` unless noted. Nothing happens automatically on a confirmed flag except the **reward hold**.
+- **Reward hold:** an open flag holds ONLY the unpaid incentive/referral reward linked to the flagged activity (never trip earnings). Released after `reward_hold_days` (7, per country) if undecided, and at once on a dismissal. The flag detail's `money` block lists each linked reward as `held | credited | paid | forfeited`, `recoverable_minor`, and `recover`, `cash`, `payout_hold` offers. The driver or rider sees "Pending review" only.
+- **Recover:** `POST /flags/<id>/recover/` `{amount_minor, note, idempotency_key}` (`fraud.review` + `finance.adjust`). A Finance adjustment request (`finance.adjust`, target `fraud_recovery`, **always a checker**), never more than the linked rewards. Held rewards are forfeited first; the rest becomes a recovery debt taken from payouts, at most `recovery_max_percent` (50) of one payout, the remainder carrying over. A rider's recovery comes from the wallet only and never below zero.
+- **Online payment only:** `POST /flags/<id>/restrict-cash/` `{note}` (`fraud.review`, flag confirmed as payment abuse). Booking or switching to cash is then refused with `CASH_NOT_AVAILABLE`. The Riders page lists it under `restrictions` and `POST /rider/admin/<id>/restriction/clear/` `{note}` (`rider.block`) clears it. Blocking stays the existing block action.
+- **Payout hold:** `POST /flags/<id>/payout-hold/` `{note, days?, renew?, idempotency_key}` (`fraud.review`; request `finance.payout_hold`, **always a checker**). Only for a confirmed serious-fraud flag (`gps_spoofing`, `collusion`) on a SUSPENDED driver; lasts at most `payout_hold_max_days` (14) then lapses (Command Centre alert to Finance and the reviewers) unless renewed (another request). Release early, no checker: `POST /fraud/admin/payout-holds/<id>/release/` or `POST /payments/admin/payout-holds/<id>/release/` `{note}`.
+- **Settings:** `reward_hold_days`, `recovery_max_percent`, `payout_hold_max_days` live on the country's payout config (`POST /payments/admin/payout-config/<country>/`, a checker request).
+- **Finance views:** the driver ledger (`/payments/admin/drivers/<id>/ledger/`) adds `held_rewards`, `recovery` (debts with deductions and carry-over) and `payout_hold`; the overview's `skipped_in_latest_run` adds `held_count`; `platform_funded_trip_ends.regulatory_fee_expenses` lists the per-trip regulatory fee the platform booked on US trips ended with the rider charged 0.
 
 ---
 *Note: Make sure to handle session expiration gracefully. If any API returns a 401 Unauthorized, redirect the user to the admin login page and clear `request.session['access_token']`.*

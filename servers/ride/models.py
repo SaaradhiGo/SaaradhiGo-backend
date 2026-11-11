@@ -1,6 +1,8 @@
 from django.db import models
 from django.contrib.auth import get_user_model
 from servers.driver.models import Vehicle,Driver,VehicleType
+from base.currency_stamp import CurrencyStampedModel
+from base.money import MinorUnitsAmount, as_decimal, currency_of, from_minor, to_minor
 
 User=get_user_model()
 # Create your models here.
@@ -17,18 +19,104 @@ def get_default_trip_status():
     status, _ = TripStatus.objects.get_or_create(status_code='requested')
     return status.id
 
-class Trip(models.Model):
+class Trip(CurrencyStampedModel, models.Model):
+    # Where this row's currency is derived from. See base/currency_stamp.py.
+    #  A trip's currency comes from the zone its PICKUP fell in, which is
+    #  already stamped on the trip for exactly this kind of reason.
+    currency_source_fields = ('zone',)
+
     user_id=models.ForeignKey(User,on_delete=models.CASCADE,related_name='trips')
     driver_id=models.ForeignKey(Driver,on_delete=models.DO_NOTHING,related_name='trips',blank=True,null=True)
     vehicle_id=models.ForeignKey(Vehicle,on_delete=models.DO_NOTHING,related_name='trips',blank=True,null=True)
     requested_vehicle_type=models.ForeignKey(VehicleType,on_delete=models.SET_NULL,null=True,blank=True,related_name='requested_trips')
     status_id=models.ForeignKey(TripStatus,on_delete=models.DO_NOTHING,related_name='trips',default=get_default_trip_status)
     requested_at=models.DateTimeField(auto_now_add=True)
+    # THE COMMISSION SNAPSHOT (module 8, AUDIT 27.36): written once at booking from
+    # the layered CommissionRule model and never recomputed, so a later rule change
+    # cannot reach this trip. NULL on a trip that predates the module (or one booked
+    # where no rule existed): settlement then resolves the rule effective at
+    # `requested_at`. Ids and versions, not an FK: a rule's history is its own.
+    commission_percent_snapshot=models.DecimalField(max_digits=5,decimal_places=2,null=True,blank=True)
+    commission_rule_id=models.BigIntegerField(null=True,blank=True)
+    commission_rule_version=models.PositiveIntegerField(null=True,blank=True)
+    # The driver fee plan in force at booking (9 Nov, `pricing.fee_plans`). Under a non-commission
+    # plan the commission snapshot above is 0 and the fee is charged once per local day.
+    fee_plan_id=models.BigIntegerField(null=True,blank=True)
+    fee_plan_version=models.PositiveIntegerField(null=True,blank=True)
+    fee_plan_type=models.CharField(max_length=24,blank=True,default='',db_index=True)
+    # QA test data (11 Nov): written by a seed or a gate, never by a rider. Integrity checks and
+    # reports read this flag, never a trip id or a marker in the text.
+    is_seed=models.BooleanField(default=False,db_index=True)
     accepted_at=models.DateTimeField(blank=True,null=True)
+    # The route the driver was expected to drive (pickup to drop), fetched
+    # AFTER the accept commits (`ride.store_planned_route`). An encoded
+    # polyline, precision 5. Null when maps failed or has not answered yet; a
+    # trip without one is never flagged for route deviation. Observation
+    # only: nothing about fare, dispatch or the driver's screen reads it.
+    planned_route_polyline=models.TextField(blank=True,null=True)
+    planned_route_source=models.CharField(max_length=20,blank=True,default='')
+    planned_route_at=models.DateTimeField(blank=True,null=True)
+    # The route's own distance and duration (9 Nov, maps cost): the live ETA is worked out on our
+    # server from the driver's position along the stored polyline, so the 15 s refresh calls no
+    # routing API. The pickup leg (driver to pickup) is fetched once, at accept.
+    planned_route_distance_m=models.PositiveIntegerField(blank=True,null=True)
+    planned_route_duration_s=models.PositiveIntegerField(blank=True,null=True)
+    pickup_route_polyline=models.TextField(blank=True,null=True)
+    pickup_route_distance_m=models.PositiveIntegerField(blank=True,null=True)
+    pickup_route_duration_s=models.PositiveIntegerField(blank=True,null=True)
+    pickup_route_at=models.DateTimeField(blank=True,null=True)
     reached_at=models.DateTimeField(blank=True,null=True)
     started_at=models.DateTimeField(blank=True,null=True)
     completed_at=models.DateTimeField(blank=True,null=True, db_index=True)
     cancelled_at=models.DateTimeField(blank=True,null=True)
+
+    # --- Operational liveness -------------------------------------------------
+    #
+    # Added because an abandoned in-progress ride was unrecoverable without an
+    # engineer. A trip reached `in_progress`, both clients disappeared, and the
+    # only liveness evidence that existed was `driver:heartbeat:<id>` in Redis
+    # with a 45 second TTL. Once that expired there was nothing left to say WHEN
+    # activity stopped, so nothing could tell "the driver dropped out a minute
+    # ago" from "the driver has been gone for three hours" -- and the driver's
+    # `driver:active_trip:` key, which has no TTL, kept them out of dispatch
+    # permanently.
+    #
+    # These are deliberately operational, not financial. Nothing here may change
+    # a trip's status, its fare, or any settlement. Absence of connectivity is
+    # not evidence of abandonment: a legitimate ride can cross a tunnel, run for
+    # hours, or sit on a phone whose battery died.
+    last_driver_activity_at=models.DateTimeField(
+        blank=True, null=True, db_index=True,
+        help_text='Server clock, last time the assigned driver was seen alive on '
+                  'this trip. Written coalesced -- see servers.ride.liveness -- so '
+                  'a 12-ping minute costs one UPDATE, not twelve.',
+    )
+    last_rider_activity_at=models.DateTimeField(
+        blank=True, null=True,
+        help_text='Server clock, last time the rider was seen on this trip. '
+                  'Advisory only: a rider whose app is closed must never block '
+                  'the driver from completing a legitimate ride.',
+    )
+    stale_flagged_at=models.DateTimeField(
+        blank=True, null=True, db_index=True,
+        help_text='Set by the stale-ride detector when a trip stops looking '
+                  'alive. A FLAG, not a decision -- it never changes status. '
+                  'Cleared automatically when activity resumes.',
+    )
+    stale_reason=models.CharField(
+        max_length=64, blank=True, default='',
+        help_text='Why the detector flagged this trip, for the operator queue.',
+    )
+    stale_reviewed_at=models.DateTimeField(
+        blank=True, null=True,
+        help_text='When an operator last marked this trip reviewed. The detector '
+                  'does not re-flag it for the same silence: only activity after '
+                  'this moment, followed by new silence, flags it again.',
+    )
+    stale_reviewed_by=models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+',
+    )
     pickup_address=models.CharField(max_length=512,blank=True,null=True)
     pickup_lat=models.DecimalField(max_digits=10,decimal_places=7)
     pickup_long=models.DecimalField(max_digits=10,decimal_places=7)
@@ -37,12 +125,42 @@ class Trip(models.Model):
     destination_long=models.DecimalField(max_digits=10,decimal_places=7)
     estimated_distance_km=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
     actual_distance_km=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
-    estimated_fare=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
-    final_fare=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
+    estimated_duration_min=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
+    actual_duration_min=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
+    # Money is integer minor units in `currency` (base/money.py). The bare
+    # names are Decimal views of these columns for code that reads a fare.
+    estimated_fare_minor=models.BigIntegerField(blank=True,null=True)
+    final_fare_minor=models.BigIntegerField(blank=True,null=True)
+    estimated_fare=MinorUnitsAmount('estimated_fare_minor')
+    final_fare=MinorUnitsAmount('final_fare_minor')
+    # The currency this amount is in, stamped at write time from the trip's
+    # zone. Denormalised on purpose: the currency a row was written in is a
+    # FACT about that row, not a lookup against today's zone configuration --
+    # same reasoning as the already-stored `zone_code` and `rate_card_version`.
+    # Without it, every cross-market Sum() in this codebase is a meaningless
+    # number and nothing says so.
+    currency = models.CharField(max_length=3, db_index=True)
     surge_multiplier=models.DecimalField(max_digits=4,decimal_places=2,default=1.00)
     payment_method=models.CharField(max_length=50,blank=True,null=True)
     payment_status=models.CharField(max_length=50,blank=True,null=True)
     otp=models.CharField(max_length=6,blank=True,null=True)
+
+    # Client-generated idempotency key for the booking request.
+    #
+    # A rider who double-taps Book, or whose app retries after a timeout or a
+    # reconnect, used to get two trips -- two dispatch chains, two surge demand
+    # records, two auto-cancel deadlines. The client now sends a stable id per
+    # logical booking and reuses it on every retry, and the partial unique index
+    # below makes PostgreSQL the arbiter rather than a Redis check that can be
+    # lost or raced.
+    #
+    # Nullable and unindexed when null, so a client that has never heard of this
+    # field keeps working exactly as before during rollout.
+    client_request_id=models.CharField(
+        max_length=64, blank=True, null=True, default=None,
+        help_text='Client-generated idempotency key for the booking request. '
+                  'The same value retried returns the original trip.',
+    )
 
     # Who ended the trip, and why. `status_id` stays a single 'cancelled'
     # code so the four clients keep working, but ops, refunds, the driver
@@ -59,10 +177,23 @@ class Trip(models.Model):
         db_index=True,
     )
     cancellation_reason=models.CharField(max_length=255, blank=True, default='')
-    cancellation_fee=models.DecimalField(
-        max_digits=10, decimal_places=2, default=0,
-        help_text='Charged to the cancelling party, per the published cancellation policy.',
+    cancellation_fee_minor=models.BigIntegerField(
+        default=0,
+        help_text='Charged to the cancelling party, per the published cancellation '
+                  'policy. Minor units of `currency`.',
     )
+    cancellation_fee=MinorUnitsAmount('cancellation_fee_minor')
+
+    # An operator ended this STARTED trip from the Stale trip panel (case C,
+    # `servers.ride.operator_end`). Blank on every other trip. `end_rule` says which
+    # of the two owner rules applied: 'standard' (rider pays the capped fare for the
+    # distance driven) or 'platform_funded' (rider pays 0, the platform pays the
+    # driver). `platform_funded_minor` is what the platform paid the driver.
+    end_reason_code=models.CharField(max_length=32, blank=True, default='', db_index=True)
+    end_rule=models.CharField(max_length=16, blank=True, default='', db_index=True)
+    ended_by=models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    platform_funded_minor=models.BigIntegerField(null=True, blank=True)
 
     # Zone the pickup fell in, resolved at booking time. Stamped on the row
     # so fare/commission/GST attribution and per-city reporting do not have
@@ -76,21 +207,261 @@ class Trip(models.Model):
         return f'Trip {self.id} - {self.user_id}'
 
     class Meta:
+        constraints = [
+            # Scoped to the rider rather than global: the question this answers is
+            # "has THIS rider already submitted THIS booking?", and a global
+            # constraint would let one rider's id collide with another's.
+            #
+            # Partial, so the many rows with no key do not enter the index at all.
+            models.UniqueConstraint(
+                fields=['user_id', 'client_request_id'],
+                condition=models.Q(client_request_id__isnull=False),
+                name='trip_unique_client_request_per_rider',
+            ),
+        ]
         indexes = [
             models.Index(fields=['user_id', '-requested_at']),
             models.Index(fields=['driver_id', '-requested_at']),
             models.Index(fields=['status_id', '-requested_at'], name='trip_status_recent_idx'),
             models.Index(fields=['zone', '-requested_at'], name='trip_zone_recent_idx'),
         ]
-class FarePricing(models.Model):
+
+
+# Statuses in which a Trip already has a driver committed to it, and that
+# driver must therefore not be able to take another ride.
+#
+# Deliberately NARROWER than the trip-active set used elsewhere
+# (`('requested', 'accepted', 'reached', 'in_progress')`, which answers "does
+# this rider have a live trip?"). `requested` belongs in that broader set but
+# not here: a requested trip has no driver by definition, so including it
+# would make every unassigned trip look like it occupied someone.
+#
+# Keep this as the single source of truth for the driver invariant. Do not
+# inline the tuple at call sites.
+DRIVER_ACTIVE_TRIP_STATUSES = ('accepted', 'reached', 'in_progress')
+
+
+def driver_active_trip_ids(driver, exclude_trip_id=None):
+    """Ids of trips this driver is already committed to.
+
+    Empty list means the driver is free to accept. `exclude_trip_id` skips the
+    trip currently being accepted, so re-accepting the same trip (a duplicate
+    tap, a retried frame) is not mistaken for a conflict.
+
+    Completed and cancelled trips are excluded by
+    `DRIVER_ACTIVE_TRIP_STATUSES`, which is what lets `Trip.driver_id` stay
+    populated for history and settlement without ever blocking future work.
+
+    The caller is responsible for holding the Driver row lock: this is a plain
+    read, and it is only authoritative while that lock serialises competing
+    acceptances.
+    """
+    if driver is None:
+        return []
+    qs = Trip.objects.filter(
+        driver_id=driver,
+        status_id__status_code__in=DRIVER_ACTIVE_TRIP_STATUSES,
+    )
+    if exclude_trip_id is not None:
+        qs = qs.exclude(pk=exclude_trip_id)
+    return list(qs.values_list('pk', flat=True))
+
+
+class FarePricing(CurrencyStampedModel, models.Model):
+    """Immutable snapshot of how a trip's fare was arrived at.
+
+    This table already existed and already behaved as a snapshot: one row is
+    written inside the trip-creation transaction and nothing ever updates it.
+    The columns added here close the gap between "a record of the amounts" and
+    "a record that can explain the amounts without reading today's RateCard",
+    which is the property the money chain needs.
+
+    Two snapshots per trip are expected once fare finalisation lands:
+
+        SNAPSHOT_QUOTE  written at booking, from the quote the rider accepted
+        SNAPSHOT_FINAL  written once inside the completion transaction
+
+    The FK (rather than a OneToOne) is what makes that possible without
+    destroying the booking row, and `receipts.py` already reads the most recent
+    row, so it picks up the final one with no change.
+
+    Nothing in this class is read by billing yet. Adding the columns changes no
+    behaviour; populating them at booking changes no behaviour either. Only a
+    later, separately reviewed change makes anything read `rider_payable`.
+    """
+
+    # Where this row's currency is derived from. See base/currency_stamp.py.
+    #  The quote belongs to the trip it priced.
+    currency_source_fields = ('trip_id',)
+
+    SNAPSHOT_QUOTE = 'quote'
+    SNAPSHOT_FINAL = 'final'
+    #: An operator ended a started trip (`servers.ride.operator_end`): the distance
+    #: and elapsed time driven, the uncapped fare (`total_fare_minor`), the fare
+    #: after the cap (`gross_fare_minor`) and what the rider pays (`rider_payable_minor`).
+    SNAPSHOT_OPERATOR_END = 'ops_end'
+    SNAPSHOT_CHOICES = [
+        (SNAPSHOT_QUOTE, 'Quote at booking'),
+        (SNAPSHOT_FINAL, 'Final at completion'),
+        (SNAPSHOT_OPERATOR_END, 'Ended by an operator'),
+    ]
+
+    # How the billable quantities were arrived at. `estimate_legacy` is what
+    # every historical trip is: quoted up front, never reconciled against a
+    # measured journey. Recording it is what makes the eventual switch to a
+    # metered basis auditable and its fallback rate measurable.
+    BASIS_ESTIMATE_LEGACY = 'estimate_legacy'
+    BASIS_ESTIMATE_NO_TELEMETRY = 'estimate_no_telemetry'
+    BASIS_METERED = 'metered'
+    BASIS_METERED_DEGRADED = 'metered_degraded'
+    FARE_BASIS_CHOICES = [
+        (BASIS_ESTIMATE_LEGACY, 'Estimate (no metering in force)'),
+        (BASIS_ESTIMATE_NO_TELEMETRY, 'Estimate (telemetry unusable)'),
+        (BASIS_METERED, 'Metered from the trail'),
+        (BASIS_METERED_DEGRADED, 'Metered, degraded coverage'),
+    ]
+
     trip_id=models.ForeignKey(Trip,on_delete=models.CASCADE,related_name='fare_pricing')
-    base_fare=models.DecimalField(max_digits=10,decimal_places=2)
-    distance_fare=models.DecimalField(max_digits=10,decimal_places=2)
-    time_fare=models.DecimalField(max_digits=10,decimal_places=2)
+
+    # --- the original columns, unchanged ------------------------------------
+    # Amounts in minor units of `currency`; the bare names are Decimal views.
+    base_fare_minor=models.BigIntegerField()
+    distance_fare_minor=models.BigIntegerField()
+    time_fare_minor=models.BigIntegerField()
     surge_multiplier=models.DecimalField(max_digits=4,decimal_places=2,default=1.00)
-    total_fare=models.DecimalField(max_digits=10,decimal_places=2)
+    total_fare_minor=models.BigIntegerField()
+    base_fare=MinorUnitsAmount('base_fare_minor')
+    distance_fare=MinorUnitsAmount('distance_fare_minor')
+    time_fare=MinorUnitsAmount('time_fare_minor')
+    total_fare=MinorUnitsAmount('total_fare_minor')
+    # Stamped at write time from the trip's zone. Denormalised on purpose: the
+    # currency a row was written in is a fact about that row, not a lookup
+    # against today's zone configuration.
+    currency = models.CharField(max_length=3, db_index=True)
+
+    # --- which snapshot this is ---------------------------------------------
+    snapshot_type = models.CharField(
+        max_length=8, choices=SNAPSHOT_CHOICES, default=SNAPSHOT_QUOTE,
+        db_index=True,
+    )
+    version = models.PositiveIntegerField(default=1)
+    fare_basis = models.CharField(
+        max_length=32, choices=FARE_BASIS_CHOICES,
+        default=BASIS_ESTIMATE_LEGACY,
+    )
+    # Non-null means immutable. It is also the idempotency guard: finalisation
+    # writes only when no final snapshot exists for the trip.
+    finalized_at = models.DateTimeField(null=True, blank=True)
+
+    # --- the quantities the fare was computed from --------------------------
+    # Stored because `distance_fare / per_km` cannot be inverted without a rate
+    # card, and because these are the numbers a rider disputes.
+    quoted_distance_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    quoted_duration_min = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # Copied onto the FINAL snapshot only. Deliberately duplicated from Trip:
+    # `record_actuals(force=True)` can revise Trip's values, and a fare must keep
+    # the quantities it was actually computed from.
+    actual_distance_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    actual_duration_min = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    # --- why the arithmetic looks the way it does ---------------------------
+    # When either of these binds, the components do NOT sum to the total, and a
+    # correct snapshot would otherwise read as broken.
+    min_fare_applied = models.BooleanField(default=False)
+    surge_cap_applied = models.BooleanField(default=False)
+    # Separates a time-of-day surcharge from demand surge. The dynamic component
+    # is then derivable as surge_multiplier / night_surge_multiplier.
+    night_surge_applied = models.BooleanField(default=False)
+    night_surge_multiplier = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
+
+    # --- which schedule priced it -------------------------------------------
+    # Codes and versions, not FKs: a renamed or reparented zone must not rewrite
+    # what a historical trip was priced under.
+    rate_card_version = models.IntegerField(null=True, blank=True)
+    zone_code = models.CharField(max_length=64, blank=True, default='')
+    vehicle_type = models.CharField(max_length=64, blank=True, default='')
+    # 'db' or 'default'. A fare quoted from the hardcoded fallback defaults must
+    # be identifiable; today it is invisible.
+    pricing_source = models.CharField(max_length=16, blank=True, default='')
+
+    # --- why this fare deserved its basis -----------------------------------
+    #
+    # Added on the evidence of the five-ride QA rehearsal, which established two
+    # things a schema review alone would have missed.
+    #
+    # First, `coverage_ratio` does not measure density and cannot be the quality
+    # gate on its own: trip 13 sent four pings forty seconds apart and scored 0.75,
+    # BETTER than trip 16 which sent seven. Coverage is span, not sampling -- points
+    # spread across a journey score well, points bunched at the start score badly.
+    #
+    # Second, `max_gap_seconds` was being computed and then not surfaced anywhere,
+    # so the one number that does reveal a hole in the middle of a journey was
+    # invisible.
+    #
+    # Together these are what justifies `fare_basis`. Recording `metered_degraded`
+    # without them is an assertion; with them it is evidence a rider or a regulator
+    # can be shown. Null on a quote snapshot -- there is no trail yet at booking.
+    trail_points = models.PositiveIntegerField(null=True, blank=True)
+    trail_coverage_ratio = models.DecimalField(
+        max_digits=5, decimal_places=4, null=True, blank=True,
+    )
+    trail_max_gap_seconds = models.PositiveIntegerField(null=True, blank=True)
+
+    # --- the three amounts --------------------------------------------------
+    # gross_fare is the commission basis and the driver's economics.
+    # rider_payable is what payment captures. They differ only by a discount.
+    gross_fare_minor = models.BigIntegerField(null=True, blank=True)
+    discount_amount_minor = models.BigIntegerField(null=True, blank=True)
+    rider_payable_minor = models.BigIntegerField(null=True, blank=True)
+    gross_fare = MinorUnitsAmount('gross_fare_minor')
+    discount_amount = MinorUnitsAmount('discount_amount_minor')
+    rider_payable = MinorUnitsAmount('rider_payable_minor')
+    # An operator-end row in an ADDITIVE-tax market (the US): the charged fare split into the fare
+    # before tax, the tax, and the per-trip fee (all 0 when the rider was charged 0). NULL in an
+    # inclusive-tax market (India) and on every other snapshot. US accountant to confirm
+    # (go-live blocker #15).
+    pretax_fare_minor = models.BigIntegerField(null=True, blank=True)
+    tax_minor = models.BigIntegerField(null=True, blank=True)
+    per_trip_fee_minor = models.BigIntegerField(null=True, blank=True)
+    # The rider platform fee inside this fare (9 Nov; flag `rider_platform_fee`, off). Never the
+    # driver's: settlement takes it out of the gross.
+    rider_platform_fee_minor = models.BigIntegerField(null=True, blank=True)
+    promo = models.ForeignKey(
+        'ride.PromoCode', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='fare_snapshots',
+    )
+    # The code as it read at booking. Codes can be renamed; receipts cannot.
+    promo_code = models.CharField(max_length=32, blank=True, default='')
+
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+
+    class Meta:
+        constraints = [
+            # At most one FINAL snapshot per trip, enforced by the database
+            # rather than by the one service that writes it.
+            models.UniqueConstraint(
+                fields=['trip_id'],
+                condition=models.Q(snapshot_type='final'),
+                name='farepricing_one_final_per_trip',
+            ),
+            models.CheckConstraint(
+                # `condition=`, not the deprecated `check=`: CheckConstraint.check
+                # is removed in Django 6.0 and we are already on 5.2.
+                condition=(models.Q(discount_amount_minor__isnull=True)
+                           | models.Q(discount_amount_minor__gte=0)),
+                name='farepricing_discount_non_negative',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['trip_id', '-version'], name='farepricing_trip_ver_idx'),
+        ]
+
     def __str__(self):
-        return f'Fare for Trip {self.trip_id.id}'
+        return f'Fare for Trip {self.trip_id.id} ({self.snapshot_type} v{self.version})'
+
+    @property
+    def is_final(self):
+        return self.snapshot_type == self.SNAPSHOT_FINAL and self.finalized_at is not None
 class VehicleFarePricing(models.Model):
     vehicle_type_id=models.ForeignKey(VehicleType,on_delete=models.CASCADE,related_name='fare_pricing')
     base_fare=models.DecimalField(max_digits=10,decimal_places=2)
@@ -110,7 +481,7 @@ class Rating(models.Model):
         return f'Rating {self.score} for Trip {self.trip_id.id}'
 
 
-class Receipt(models.Model):
+class Receipt(CurrencyStampedModel, models.Model):
     """Per-completed-trip receipt sent to the rider.
 
     Generated at trip-completion time. Stores the rendered HTML so
@@ -123,14 +494,27 @@ class Receipt(models.Model):
     fare adjusted, new receipt version). Resending the latest
     receipt updates last_sent_at only.
     """
+
+    # Where this row's currency is derived from. See base/currency_stamp.py.
+    #  The document belongs to the trip it describes.
+    currency_source_fields = ('trip_id',)
     from base.storage_backends import private_document_storage
     from base.media import PrefixedUUIDPath
 
     trip_id=models.ForeignKey(Trip,on_delete=models.CASCADE,related_name='receipts')
     user_id=models.ForeignKey(User,on_delete=models.CASCADE,related_name='receipts')
     receipt_number=models.CharField(max_length=64,unique=True,db_index=True)
-    total_fare=models.DecimalField(max_digits=10,decimal_places=2)
-    gst_amount=models.DecimalField(max_digits=10,decimal_places=2,default=0)
+    total_fare_minor=models.BigIntegerField()
+    gst_amount_minor=models.BigIntegerField(default=0)
+    total_fare=MinorUnitsAmount('total_fare_minor')
+    gst_amount=MinorUnitsAmount('gst_amount_minor')
+    # The currency this amount is in, stamped at write time from the trip's
+    # zone. Denormalised on purpose: the currency a row was written in is a
+    # FACT about that row, not a lookup against today's zone configuration --
+    # same reasoning as the already-stored `zone_code` and `rate_card_version`.
+    # Without it, every cross-market Sum() in this codebase is a meaningless
+    # number and nothing says so.
+    currency = models.CharField(max_length=3, db_index=True)
     payment_method=models.CharField(max_length=32,blank=True,default='')
     payment_status=models.CharField(max_length=32,blank=True,default='')
     sent_to_email=models.EmailField(blank=True,default='')
@@ -197,7 +581,7 @@ class ChatMessage(models.Model):
         return f'ChatMessage trip={self.trip_id} role={self.sender_role}'
 
 
-class PromoCode(models.Model):
+class PromoCode(CurrencyStampedModel, models.Model):
     """Rider-facing promo code.
 
     Designed for two common cases:
@@ -217,16 +601,26 @@ class PromoCode(models.Model):
     code = models.CharField(max_length=32, unique=True, db_index=True)
     description = models.CharField(max_length=256, blank=True, default='')
 
+    # A flat code's amounts are in this currency: the zone's, or the default
+    # market's for an all-zones code.
+    currency_source_fields = ('zone',)
+
     discount_type = models.CharField(max_length=8, choices=DISCOUNT_TYPE_CHOICES)
-    discount_value = models.DecimalField(max_digits=10, decimal_places=2)
-    # Used only for percent codes -- cap the discount in absolute Rs.
-    max_discount_amount = models.DecimalField(
-        max_digits=10, decimal_places=2, null=True, blank=True,
+    # `discount_value` used to be one Decimal column holding EITHER a percentage
+    # or a rupee amount, depending on `discount_type`. A percentage is a rate
+    # and stays Decimal; an amount is money and is minor units. Exactly one of
+    # these is set, matching `discount_type`.
+    discount_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
     )
-    # Minimum fare required before the code is allowed (Rs).
-    min_fare = models.DecimalField(
-        max_digits=10, decimal_places=2, default=0,
-    )
+    discount_flat_minor = models.BigIntegerField(null=True, blank=True)
+    # Used only for percent codes -- cap the discount in absolute money.
+    max_discount_amount_minor = models.BigIntegerField(null=True, blank=True)
+    # Minimum fare required before the code is allowed.
+    min_fare_minor = models.BigIntegerField(default=0)
+    max_discount_amount = MinorUnitsAmount('max_discount_amount_minor')
+    min_fare = MinorUnitsAmount('min_fare_minor')
+    currency = models.CharField(max_length=3, db_index=True)
 
     # Optional zone scope. NULL = applies in all active zones.
     zone = models.ForeignKey(
@@ -258,8 +652,27 @@ class PromoCode(models.Model):
     def __str__(self):
         return self.code
 
+    # The percentage for a percent code, the amount (Decimal, major units) for
+    # a flat one -- the single value the API and the operator forms have always
+    # shown. Set `discount_type` first; the constructor does, because Django
+    # assigns fields before properties.
+    @property
+    def discount_value(self):
+        if self.discount_type == 'flat':
+            return from_minor(self.discount_flat_minor, currency_of(self, 'currency'))
+        return self.discount_percent
 
-class PromoRedemption(models.Model):
+    @discount_value.setter
+    def discount_value(self, value):
+        if self.discount_type == 'flat':
+            self.discount_flat_minor = to_minor(value, currency_of(self, 'currency'))
+            self.discount_percent = None
+        else:
+            self.discount_percent = None if value is None else as_decimal(value)
+            self.discount_flat_minor = None
+
+
+class PromoRedemption(CurrencyStampedModel, models.Model):
     """One row per successful (code, user, trip) apply.
 
     Trip is nullable for the "validate at booking time, attach to trip
@@ -274,10 +687,35 @@ class PromoRedemption(models.Model):
         Trip, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='promo_redemptions',
     )
-    discount_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    currency_source_fields = ('trip', 'promo')
+    discount_amount_minor = models.BigIntegerField()
+    discount_amount = MinorUnitsAmount('discount_amount_minor')
+    currency = models.CharField(max_length=3, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     # Free-form note (e.g. the fare-quote id the user saw when applying)
     notes = models.CharField(max_length=256, blank=True, default='')
+    # --- Promotions module (module 12) --------------------------------------
+    # The campaign whose budget this discount was reserved against (NULL on rows
+    # written before the module existed), and where the reservation stands:
+    #   committed  reserved at booking, the trip has not settled yet
+    #   settled    the trip settled; the discount moved from committed to spent
+    #   released   the trip was cancelled (or ended by an operator); the reservation
+    #              went back to the budget and no longer counts toward the rider's limit
+    #   legacy     written before budgets existed; never touched by the new engine
+    STATE_COMMITTED = 'committed'
+    STATE_SETTLED = 'settled'
+    STATE_RELEASED = 'released'
+    STATE_LEGACY = 'legacy'
+    STATE_CHOICES = [(STATE_COMMITTED, 'Committed'), (STATE_SETTLED, 'Settled'),
+                     (STATE_RELEASED, 'Released'), (STATE_LEGACY, 'Legacy')]
+    campaign = models.ForeignKey(
+        'promotions.Campaign', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='redemptions',
+    )
+    state = models.CharField(max_length=10, choices=STATE_CHOICES, default=STATE_LEGACY,
+                             db_index=True)
+    settled_at = models.DateTimeField(null=True, blank=True)
+    released_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']
@@ -288,3 +726,285 @@ class PromoRedemption(models.Model):
 
     def __str__(self):
         return f'Redeem promo={self.promo_id} user={self.user_id} amount={self.discount_amount}'
+
+
+class TripLocationPoint(models.Model):
+    """One durable GPS sample from a driver during an active trip.
+
+    Driver location has been Redis-only: a GEO index for matching and an
+    ephemeral `driver_location_stream`. Nothing survived, so the platform could
+    not compute actual distance, reconcile a fare, answer "which route did the
+    driver take", support an SOS investigation, or produce evidence for an
+    insurance claim. This is the durable half.
+
+    Deliberately NOT a telematics platform. It stores sampled points for the
+    operationally active portion of a trip and nothing else:
+
+      * Rider locations are never stored. Only the assigned driver's track
+        while they are actually driving that trip.
+      * Collection starts when the trip reaches a driver-active status and
+        stops the moment it becomes terminal — enforced by the writer, which
+        resolves the trip's status from PostgreSQL rather than from Redis.
+      * Points are sampled, not streamed. See `servers.ride.location_trail`.
+
+    Write path is the existing Redis stream drained in batches by Celery, so
+    the per-ping hot path takes no extra database work. Redis stays the live
+    source of truth for "where is this driver now"; this table is history.
+    """
+
+    SOURCE_DRIVER_WS = 'driver_ws'
+    SOURCE_DRIVER_REST = 'driver_rest'
+    SOURCE_BACKFILL = 'backfill'
+    SOURCE_CHOICES = [
+        (SOURCE_DRIVER_WS, 'Driver app websocket ping'),
+        (SOURCE_DRIVER_REST, 'Driver app REST update'),
+        (SOURCE_BACKFILL, 'Backfilled / reconstructed'),
+    ]
+
+    trip = models.ForeignKey(
+        Trip, on_delete=models.CASCADE, related_name='location_points',
+    )
+    # Denormalised from the trip on purpose: safety and insurance queries ask
+    # "where was driver X at time T" without knowing the trip, and the trip's
+    # driver can be reassigned in principle. Matches Trip.driver_id's
+    # on_delete so this table inherits no stricter behaviour than its parent.
+    driver = models.ForeignKey(
+        Driver, on_delete=models.DO_NOTHING, related_name='trip_location_points',
+    )
+
+    # Same precision as Trip.pickup_lat/long so a point can be compared with a
+    # trip endpoint without a cast.
+    latitude = models.DecimalField(max_digits=10, decimal_places=7)
+    longitude = models.DecimalField(max_digits=10, decimal_places=7)
+
+    # `recorded_at` is the device's clock and is therefore untrusted: phones
+    # drift and can be wrong by minutes. `received_at` is ours and is what
+    # anything legal or financial should reason about. Both are kept precisely
+    # because they disagree.
+    recorded_at = models.DateTimeField(db_index=True)
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    accuracy_m = models.FloatField(
+        null=True, blank=True,
+        help_text='Device-reported horizontal accuracy in metres. Low-accuracy '
+                  'points are dropped by the sampler rather than stored.',
+    )
+    speed_kmh = models.FloatField(null=True, blank=True)
+    heading_deg = models.FloatField(null=True, blank=True)
+
+    # Monotonic per trip, assigned by the writer. Lets a route be replayed in a
+    # stable order even where two points share a timestamp, which happens when
+    # a device flushes a buffer.
+    sequence = models.PositiveIntegerField(null=True, blank=True)
+
+    # The Redis stream entry id this row came from, e.g. '1758623456789-0'.
+    # This is the idempotency key for the writer: Celery and Redis consumer
+    # groups both give at-least-once delivery, so the same entry can arrive
+    # twice after a retry or a worker death mid-batch. A unique constraint on
+    # (trip, source_event_id) makes the second insert a no-op instead of a
+    # duplicate point that would inflate actual distance.
+    #
+    # Nullable because backfilled or reconstructed rows have no originating
+    # event, and PostgreSQL permits unlimited NULLs in a unique index -- so
+    # those rows coexist without needing a partial predicate.
+    source_event_id = models.CharField(max_length=64, null=True, blank=True)
+
+    source = models.CharField(
+        max_length=16, choices=SOURCE_CHOICES, default=SOURCE_DRIVER_WS,
+    )
+
+    class Meta:
+        indexes = [
+            # The dominant read: replay one trip's route in order. Also serves
+            # actual-distance computation and fare reconciliation.
+            models.Index(fields=['trip', 'recorded_at'], name='triploc_trip_time_idx'),
+            # Safety / SOS / insurance: where was this driver around time T.
+            models.Index(fields=['driver', '-recorded_at'], name='triploc_driver_time_idx'),
+            # Retention sweeps delete by age.
+            models.Index(fields=['received_at'], name='triploc_received_idx'),
+        ]
+        constraints = [
+            # Idempotency for the writer. Re-processing a Redis stream entry --
+            # after a Celery retry, a redelivered consumer-group message, or a
+            # worker dying mid-batch -- must not create a second point, because
+            # duplicated points inflate actual distance and therefore the fare.
+            models.UniqueConstraint(
+                fields=['trip', 'source_event_id'],
+                name='triploc_one_row_per_source_event',
+            ),
+        ]
+
+    def __str__(self):
+        return f'TripLocationPoint trip={self.trip_id} seq={self.sequence}'
+
+
+# ---------------------------------------------------------------------------
+# Operator console: Trips module (flags, internal notes, money actions)
+# ---------------------------------------------------------------------------
+#
+# WHY THREE SMALL TABLES
+# ----------------------
+# The console needs to remember three things the trip row has no place for:
+# that an operator flagged it (and why, for Fraud & Risk later), what
+# operators wrote about it (internal, never shown to the rider or driver),
+# and every refund or fare adjustment made on it with the approval that
+# allowed it. Columns on `Trip` would cover one flag and one note; these
+# keep the history, and keep the rider/driver contracts untouched because
+# nothing in the rider or driver apps reads them.
+
+
+class TripFlag(models.Model):
+    """An operator's flag on a trip. Active while `cleared_at` is NULL."""
+
+    FRAUD_SUSPICION = 'fraud_suspicion'
+    SAFETY = 'safety'
+    DISPUTE = 'dispute'
+    REASON_CHOICES = [
+        (FRAUD_SUSPICION, 'Fraud suspicion'),
+        (SAFETY, 'Safety'),
+        (DISPUTE, 'Dispute'),
+    ]
+
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name='operator_flags')
+    reason = models.CharField(max_length=32, choices=REASON_CHOICES)
+    note = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    cleared_at = models.DateTimeField(null=True, blank=True)
+    cleared_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    clear_note = models.TextField(blank=True, default='')
+
+    class Meta:
+        constraints = [
+            # One open flag per reason per trip: flagging twice is the same flag.
+            models.UniqueConstraint(
+                fields=['trip', 'reason'], condition=models.Q(cleared_at__isnull=True),
+                name='trip_flag_one_active_per_reason',
+            ),
+        ]
+
+    def __str__(self):
+        return f'TripFlag trip={self.trip_id} {self.reason}'
+
+
+class TripNote(models.Model):
+    """An internal operator note. Never shown to riders or drivers."""
+
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name='operator_notes')
+    body = models.TextField()
+    author = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    idempotency_key = models.CharField(max_length=200, unique=True, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    def __str__(self):
+        return f'TripNote trip={self.trip_id}'
+
+
+class TripMoneyAction(models.Model):
+    """One refund or manual fare adjustment on a trip: the ledger row.
+
+    Written only by the approvals executors (`servers.ride.admin_trips`),
+    so every row was either within its maker's limit or approved by a
+    checker, and `approval_request` says which. Amounts are integer minor
+    units of `currency`; a refund is positive, an adjustment is signed.
+    """
+
+    REFUND = 'refund'
+    ADJUSTMENT = 'adjustment'
+    KIND_CHOICES = [(REFUND, 'Refund'), (ADJUSTMENT, 'Fare adjustment')]
+
+    WALLET_CREDIT = 'wallet_credit'
+    GATEWAY = 'gateway'
+    LEDGER_ONLY = 'ledger_only'
+    METHOD_CHOICES = [
+        (WALLET_CREDIT, 'Credited to the rider wallet'),
+        (GATEWAY, 'Refund to the original payment method'),
+        (LEDGER_ONLY, 'Recorded in the ledger only'),
+    ]
+
+    COMPLETED = 'completed'
+    PENDING_GATEWAY = 'pending_gateway'
+    RECORDED = 'recorded'
+    STATUS_CHOICES = [
+        (COMPLETED, 'Completed'),
+        (PENDING_GATEWAY, 'Pending gateway refund (not yet sent to the provider)'),
+        (RECORDED, 'Recorded'),
+    ]
+
+    trip = models.ForeignKey(Trip, on_delete=models.PROTECT, related_name='money_actions')
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES)
+    amount_minor = models.BigIntegerField()
+    currency = models.CharField(max_length=3)
+    method = models.CharField(max_length=16, choices=METHOD_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES)
+    reason = models.TextField()
+    approval_request = models.ForeignKey(
+        'approvals.ApprovalRequest', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='+')
+    wallet_transaction = models.ForeignKey(
+        'rider.WalletTransaction', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='+')
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        constraints = [
+            # One ledger row per approval: an executor retried cannot pay twice.
+            models.UniqueConstraint(
+                fields=['approval_request'], condition=models.Q(approval_request__isnull=False),
+                name='trip_money_action_one_per_request',
+            ),
+        ]
+
+    def __str__(self):
+        return f'TripMoneyAction trip={self.trip_id} {self.kind} {self.amount_minor} {self.currency}'
+
+
+class CancellationPenalty(models.Model):
+    """One unjustified cancellation's penalty (MVAG 2025, 2026-11-09). See
+    `servers.ride.cancellation_penalty` for the rule and the money path.
+
+    RIDER: `due` until the rider's next trip carries it (`collected_on_trip`) and that trip
+    settles (`collected`); it is paid to the driver who was let down (`driver`) as a
+    `cancellation_compensation` ledger credit. DRIVER: `charged` at once, a
+    `cancellation_penalty` debit on the cancelling driver (`driver`).
+    """
+
+    RIDER, DRIVER = 'rider', 'driver'
+    DUE, COLLECTED, CHARGED, WAIVED = 'due', 'collected', 'charged', 'waived'
+    STATUS_CHOICES = [(DUE, 'Due on the next trip'), (COLLECTED, 'Collected'),
+                      (CHARGED, 'Charged to the driver'), (WAIVED, 'Waived')]
+
+    trip = models.OneToOneField('ride.Trip', on_delete=models.CASCADE,
+                                related_name='cancellation_penalty')
+    party = models.CharField(max_length=8, choices=[(RIDER, 'Rider'), (DRIVER, 'Driver')])
+    rider = models.ForeignKey(User, on_delete=models.CASCADE, related_name='cancellation_penalties')
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE,
+                               related_name='cancellation_penalties')
+    currency = models.CharField(max_length=3)
+    amount_minor = models.BigIntegerField()
+    #: The rule as applied: percent of `fare_minor`, capped at `cap_minor`.
+    percent = models.DecimalField(max_digits=5, decimal_places=2)
+    cap_minor = models.BigIntegerField(null=True, blank=True)
+    fare_minor = models.BigIntegerField()
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, db_index=True)
+    collected_on_trip = models.ForeignKey('ride.Trip', null=True, blank=True,
+                                          on_delete=models.SET_NULL, related_name='dues_collected')
+    created_at = models.DateTimeField(auto_now_add=True)
+    settled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['rider', 'status'], name='cancelpen_rider_status_idx')]
+
+    amount = MinorUnitsAmount('amount_minor')
+
+    def __str__(self):
+        return f'CancellationPenalty trip={self.trip_id} {self.party} {self.amount_minor} {self.status}'
+
+
+from servers.ride.maps_models import MapsBudget, MapsSkuPrice, MapsUsage  # noqa: E402,F401

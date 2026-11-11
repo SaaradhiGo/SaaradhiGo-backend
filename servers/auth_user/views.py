@@ -4,7 +4,9 @@ from rest_framework import status
 from rest_framework.decorators import (
     api_view, permission_classes, parser_classes, throttle_classes,
 )
-from base.utils import success_response, error_response, generate_otp, send_otp_via_sns
+from base.utils import (
+    success_response, error_response, generate_otp, send_otp_via_sns, stash_sms_message,
+)
 from django.conf import settings
 from base.throttles import (
     OtpRequestThrottle, OtpRequestBurstThrottle, OtpVerifyThrottle,
@@ -19,13 +21,21 @@ from servers.rider.models import Rider
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from servers.driver.models import Driver
+from servers.driver.serializers import has_valid_driver_name, is_valid_driver_name
 from base.media import resolve_file_input
 
 logger = logging.getLogger(__name__)
 user_model = get_user_model()
 
 # Valid roles for user accounts
+# Every role the system knows about.
 VALID_ROLES = ['rider', 'driver', 'admin']
+
+# The roles a CLIENT may ask to be created as. 'admin' is deliberately absent:
+# an operator account approves driver KYC and releases payouts, so it cannot be
+# self-served by anyone who can receive an SMS. See the comment at the role check
+# in `request_otp` for what this used to allow.
+SELF_SERVICE_ROLES = ['rider', 'driver']
 PHONE_REGEX = re.compile(r'^\+?1?\d{9,15}$')
 OTP_EXPIRY = 600  # 10 minutes
 MAX_OTP_ATTEMPTS = 5
@@ -94,17 +104,38 @@ def request_otp(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Validate role
-        if role not in VALID_ROLES:
+        # Validate role.
+        #
+        # SELF_SERVICE_ROLES, not VALID_ROLES. 'admin' is a role the system has;
+        # it is not a role a client may ASK FOR. Accepting it here was a
+        # privilege escalation: this endpoint caches the requested role, /login/
+        # creates the user with it, and IsAdmin then granted operator access on
+        # role alone. Demonstrated end to end before the fix -- a fresh phone
+        # number requesting role=admin reached the KYC queue, the withdrawal
+        # queue, every trip, live driver locations and the operations dashboard,
+        # all HTTP 200.
+        #
+        # Operator accounts are created by `manage.py bootstrap_qa_operator` or
+        # by an existing operator. Never by asking.
+        if role not in SELF_SERVICE_ROLES:
+            # Deliberately the same shape of refusal as any other bad role, so
+            # this does not become a probe for which privileged roles exist.
             logger.warning(f"Invalid role requested: {role}")
             return error_response(
                 code="AUTH_INVALID_ROLE",
-                message=f'Role must be one of {VALID_ROLES}',
+                message=f'Role must be one of {SELF_SERVICE_ROLES}',
                 field='role',
                 issue='Invalid role specified',
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        # Module 15: a build below the minimum supported version is told to update (426), but ONLY
+        # when it sends X-App-Version; an absent header is allowed so current apps keep working.
+        from servers.platform_ops import versions as app_versions
+        update = app_versions.check_request(request, role)
+        if update is not None:
+            return app_versions.update_required_response(update)
+
         # Test-phone bypass: if this phone is configured in
         # settings.TEST_PHONE_NUMBERS, use the operator-supplied fixed OTP
         # and skip the AWS SNS round-trip. The login path is unchanged —
@@ -142,11 +173,15 @@ def request_otp(request):
 
         if not test_otp:
             try:
-                # Send OTP via SNS (async task)
-                task_id = send_otp_via_sns.delay(
-                    phone_number,
-                    f"Your OTP for VahanGo is {otp}. It will expire in 10 minutes."
+                # Send OTP via SNS (async task). The text, which contains the
+                # OTP, is stashed and only its reference is enqueued: task
+                # arguments reach the broker, worker logs and Sentry.
+                message_ref = stash_sms_message(
+                    f"Your OTP for {settings.PLATFORM_BRAND_NAME} is {otp}. "
+                    f"It will expire in 10 minutes.",
+                    ttl=OTP_EXPIRY,
                 )
+                task_id = send_otp_via_sns.delay(phone_number, message_ref)
                 logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id}")
             except Exception as e:
                 logger.error(f"Failed to queue OTP send task: {str(e)}")
@@ -176,6 +211,60 @@ def request_otp(request):
             issue=str(e),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+def _consume_otp(phone_number, otp):
+    """Check `otp` for `phone_number` and spend it: (role, None) or (None, error).
+
+    The one place an SMS code is checked, shared by the OTP sign-in and the
+    phone-proof step of email sign-up, so both have the same expiry, the same
+    per-code attempt counter and the same single use.
+    """
+    # Get OTP data from cache
+    cache_key = f'otp_role_{phone_number}'
+    cache_data = cache.get(cache_key, {})
+    role = cache_data.get('role', 'rider')
+    sent_otp = cache_data.get('otp', None)
+    attempts = cache_data.get('attempts', 0)
+    
+    # Check if OTP has expired
+    if sent_otp is None:
+        logger.warning(f"OTP expired or not found for: {phone_number[:5]}***")
+        return None, error_response(
+            code='AUTH_OTP_EXPIRED',
+            message='OTP has expired',
+            field='otp',
+            issue='OTP not found or expired',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Check attempt limit
+    if attempts >= MAX_OTP_ATTEMPTS:
+        logger.warning(f"Too many login attempts for: {phone_number[:5]}***")
+        return None, error_response(
+            code='AUTH_TOO_MANY_ATTEMPTS',
+            message="Too many failed attempts. Please request a new OTP.",
+            field='otp',
+            issue='Maximum login attempts exceeded',
+            status=status.HTTP_429_TOO_MANY_REQUESTS
+        )
+    
+    # Verify OTP
+    if otp != sent_otp:
+        cache_data['attempts'] = attempts + 1
+        cache.set(cache_key, cache_data, OTP_EXPIRY)
+        logger.warning(f"Invalid OTP attempt ({attempts + 1}/{MAX_OTP_ATTEMPTS}) for: {phone_number[:5]}***")
+        return None, error_response(
+            code="AUTH_INVALID_OTP",
+            message='OTP is incorrect',
+            field='otp',
+            issue='Provided OTP does not match',
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Spent: a code is good for one sign-in or one phone proof, not both.
+    cache.delete(cache_key)
+    return role, None
+
+
 @api_view(['POST'])
 @throttle_classes([OtpVerifyThrottle])
 def login(request):
@@ -227,50 +316,9 @@ def login(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Get OTP data from cache
-        cache_key = f'otp_role_{phone_number}'
-        cache_data = cache.get(cache_key, {})
-        role = cache_data.get('role', 'rider')
-        sent_otp = cache_data.get('otp', None)
-        attempts = cache_data.get('attempts', 0)
-        
-        # Check if OTP has expired
-        if sent_otp is None:
-            logger.warning(f"OTP expired or not found for: {phone_number[:5]}***")
-            return error_response(
-                code='AUTH_OTP_EXPIRED',
-                message='OTP has expired',
-                field='otp',
-                issue='OTP not found or expired',
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Check attempt limit
-        if attempts >= MAX_OTP_ATTEMPTS:
-            logger.warning(f"Too many login attempts for: {phone_number[:5]}***")
-            return error_response(
-                code='AUTH_TOO_MANY_ATTEMPTS',
-                message="Too many failed attempts. Please request a new OTP.",
-                field='otp',
-                issue='Maximum login attempts exceeded',
-                status=status.HTTP_429_TOO_MANY_REQUESTS
-            )
-        
-        # Verify OTP
-        if otp != sent_otp:
-            cache_data['attempts'] = attempts + 1
-            cache.set(cache_key, cache_data, OTP_EXPIRY)
-            logger.warning(f"Invalid OTP attempt ({attempts + 1}/{MAX_OTP_ATTEMPTS}) for: {phone_number[:5]}***")
-            return error_response(
-                code="AUTH_INVALID_OTP",
-                message='OTP is incorrect',
-                field='otp',
-                issue='Provided OTP does not match',
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Clear OTP from cache after successful verification
-        cache.delete(cache_key)
+        role, otp_error = _consume_otp(phone_number, otp)
+        if otp_error is not None:
+            return otp_error
         
         try:
             with transaction.atomic():
@@ -280,6 +328,25 @@ def login(request):
                     created = False
                 except user_model.DoesNotExist:
                     # Password not accepted — see docstring.
+                    #
+                    # Re-checked here rather than trusted. `role` arrives from the
+                    # OTP cache, which is a different request, and this is the
+                    # line that actually mints the account. Defence in depth: if
+                    # a privileged role ever reaches this point -- a stale cache
+                    # entry written before the guard, a future code path, an
+                    # operator error -- it is refused rather than granted.
+                    if role not in SELF_SERVICE_ROLES:
+                        logger.error(
+                            'refusing to create a user with non-self-service '
+                            'role %r', role,
+                        )
+                        return error_response(
+                            code="AUTH_INVALID_ROLE",
+                            message=f'Role must be one of {SELF_SERVICE_ROLES}',
+                            field='role',
+                            issue='Invalid role specified',
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
                     user = user_model.objects.create_user(
                         phone_number=phone_number,
                         role=role,
@@ -332,10 +399,83 @@ def login(request):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
         
+        # An operator may not authenticate through the SMS-OTP path.
+        #
+        # This endpoint exchanges an SMS code for a token with no password and no
+        # second factor. If an operator could use it, every MFA control would be
+        # bypassable by anyone able to receive that operator's SMS -- one SIM swap,
+        # or one SS7 intercept, and the payout queue is open. It would also make the
+        # console's second factor pointless, since the API token is the stronger
+        # credential of the two.
+        #
+        # Operators sign in at /api/v1/auth/admin/login/ with a password and a TOTP
+        # code, or at the console form. Riders and drivers are unaffected.
+        #
+        # Refused with the ordinary invalid-OTP shape rather than a distinctive
+        # message, so this does not become a way to discover which phone numbers
+        # belong to operators.
+        from base.permissions import is_operator as _is_operator
+        if _is_operator(user):
+            logger.warning(
+                'sms_login_refused_for_operator user_id=%s', user.id)
+            return error_response(
+                code="AUTH_INVALID_OTP",
+                message='OTP is incorrect',
+                field='otp',
+                issue='Provided OTP does not match',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # After the operator check, so an operator's number still gets only the
+        # generic refusal. A deactivated account cannot sign itself back in by SMS: deactivation
+        # revokes its refresh tokens (session_revocation), and this is the door
+        # that would otherwise hand out new ones (AUDIT 27.78, Low 3).
+        if not user.is_active:
+            logger.warning('sms_login_refused_inactive user_id=%s', user.id)
+            return error_response(
+                code='AUTH_ACCOUNT_INACTIVE',
+                message='This account is not active. Contact support.',
+                field='phone_number',
+                issue='The account is deactivated',
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Register this device for push, if the client had a token to give.
+        #
+        # This used to be `user.fcm_token = device_token; user.save()`, which had
+        # two defects on the most-travelled path in the product.
+        #
+        # 1. `device_token` is optional and defaults to None, so ANY login without
+        #    one wiped the stored token. The driver app omits the key whenever
+        #    FCM is unavailable -- no Play Services, permission not yet granted,
+        #    no network at launch, Firebase not configured -- all of which are
+        #    documented, survivable states in its own PushService. A driver who
+        #    hit one of them and logged in lost push until they happened to log
+        #    in again with a working token, and nothing reported it. Push is the
+        #    fallback channel for ride offers when the socket is down, so the
+        #    failure is invisible until a driver misses rides in the background.
+        #
+        # 2. A bare `save()` writes every column from the in-memory instance.
+        #    On the error path above, `user` is re-fetched after a failed create,
+        #    so it can be stale -- and a full-row write from a stale instance is
+        #    exactly the defect that cancelled trips a driver had already
+        #    accepted. Narrow write instead.
+        #
+        # Deliberately not fatal: a login must not fail because a push
+        # registration could not be stored. Push is redundant to the WebSocket.
+        if device_token:
+            try:
+                user.fcm_token = device_token
+                user.save(update_fields=['fcm_token'])
+            except Exception as exc:  # noqa: BLE001
+                # No token in the log line: it is a device credential, and
+                # anyone holding one can push to that device.
+                logger.error(
+                    'push registration failed for user %s: %s', user.id, exc,
+                )
+
         # Generate tokens
         try:
-            user.fcm_token=device_token
-            user.save()
             access_token = AccessToken.for_user(user)
             refresh_token = RefreshToken.for_user(user)
         except Exception as e:
@@ -370,6 +510,60 @@ def login(request):
             issue=str(e),
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+@api_view(['POST'])
+@throttle_classes([OtpVerifyThrottle])
+def verify_phone(request):
+    """Prove a phone number with its SMS code, without signing in (AUDIT 27.78, H4).
+
+    The first half of email sign-up. `/auth/email/register/` requires the
+    returned `phone_proof`, so an account can no longer be registered on a
+    number the registrant cannot receive SMS on.
+
+    Same code, same rules as the OTP sign-in: the code comes from `/auth/otp/`
+    (QA test phones keep their fixed codes), is checked by `_consume_otp` with
+    its expiry and attempt counter, is spent on success, and the per-phone
+    `otp_verify` throttle applies. It creates no account and its answer is the
+    same whether the number is registered or not.
+
+    Expected: {"phone_number": str, "otp": str}
+    Returns:  {"phone_proof": str, "expires_in": int}
+    """
+    from . import phone_proof
+
+    phone_number = request.data.get('phone_number')
+    otp = request.data.get('otp')
+    if not phone_number or not isinstance(phone_number, str):
+        return error_response(
+            code='AUTH_PHONE_REQUIRED', message='Phone number is required',
+            field='phone_number', issue='Missing required field',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not otp:
+        return error_response(
+            code='AUTH_OTP_REQUIRED', message='OTP is required',
+            field='otp', issue='Missing required field',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    role, otp_error = _consume_otp(phone_number, str(otp).strip())
+    if otp_error is not None:
+        return otp_error
+    if role not in SELF_SERVICE_ROLES:
+        # A proof is only ever for a role that may be self-served.
+        return error_response(
+            code='AUTH_INVALID_ROLE', message=f'Role must be one of {SELF_SERVICE_ROLES}',
+            field='role', issue='Invalid role specified',
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    logger.info('phone_verified_for_signup phone=%s*** role=%s', phone_number[:5], role)
+    return success_response(
+        data={
+            'phone_proof': phone_proof.issue(phone_number, role),
+            'expires_in': phone_proof.ttl_seconds(),
+        },
+        status_code=status.HTTP_200_OK,
+    )
+
+
 @api_view(['POST'])
 def refresh(request):
     """
@@ -413,8 +607,23 @@ def refresh(request):
                     "is not installed."
                 )
 
+            # A DEACTIVATED ACCOUNT GETS NO NEW TOKENS (AUDIT 27.78, Low 3).
+            # This used to mint a pair for any user id in a valid token, so a
+            # suspended driver or a removed operator kept a working session for
+            # the refresh token's 14 days. The presented token is already
+            # blacklisted above, so it cannot be retried either.
+            user = user_model.objects.filter(pk=user_id).first()
+            if user is None or not user.is_active:
+                logger.warning('refresh_refused reason=inactive user_id=%s', user_id)
+                return error_response(
+                    code='AUTH_ACCOUNT_INACTIVE',
+                    message='This account is not active.',
+                    field='refresh_token',
+                    issue='The account this token belongs to is deactivated',
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+
             # Mint a fresh refresh + access token pair for the same user.
-            user = user_model.objects.get(pk=user_id)
             new_refresh_obj = RefreshToken.for_user(user)
             new_refresh_token = str(new_refresh_obj)
             new_access_token = str(new_refresh_obj.access_token)
@@ -517,6 +726,30 @@ def logout(request):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        # Stop pushing to the device that just signed out.
+        #
+        # The refresh token is revoked above, but `fcm_token` was left on the
+        # row -- so dispatch kept addressing ride offers to that handset. The
+        # consequences are concrete: a driver who logs out still gets woken by
+        # offers they cannot accept, and a shared or resold phone delivers one
+        # driver's ride offers to whoever holds it next. The token is a device
+        # credential, and a session that has ended should not leave one behind.
+        #
+        # Narrow write, and deliberately not fatal: a logout must succeed even
+        # if this does not. The client also deletes its local token, so the
+        # two halves are independent.
+        try:
+            type(request.user).objects.filter(pk=request.user.id).update(
+                fcm_token=None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # No token in the log line: anyone holding one can push to that
+            # device.
+            logger.error(
+                'could not clear the push token at logout for user %s: %s',
+                request.user.id, exc,
+            )
+
         logger.info(f"User {request.user.id} logged out (refresh blacklisted)")
         return success_response(
             data={'message': 'Logged out'},
@@ -542,6 +775,136 @@ def logout(request):
         )
 
 
+def _truthy(value):
+    return str(value).strip().lower() in ('true', '1', 'yes', 'on')
+
+
+_NO_LANGUAGE = object()
+
+
+def _preference(update_data, field, choices, message):
+    """`(value, error)` for a UserPreference `field`, popped out of `update_data` (2026-11-06).
+
+    `_NO_LANGUAGE` when the key was not sent; None clears it. Only `choices` count.
+    """
+    if field not in update_data:
+        return _NO_LANGUAGE, None
+    value = update_data.pop(field)
+    if isinstance(value, list):
+        value = value[0] if value else None
+    value = (str(value).strip().lower() or None) if value is not None else None
+    if value is not None and value not in dict(choices):
+        return _NO_LANGUAGE, message
+    return value, None
+
+
+def _preferred_language(update_data):
+    from .models import UserPreference
+
+    return _preference(update_data, 'preferred_language', UserPreference.LANGUAGE_CHOICES,
+                       'preferred_language must be en, te or hi.')
+
+
+def _preferred_theme(update_data):
+    from .models import UserPreference
+
+    return _preference(update_data, 'preferred_theme', UserPreference.THEME_CHOICES,
+                       'preferred_theme must be light, dark or auto.')
+
+
+def _save_preference(user, **values):
+    from .models import UserPreference
+
+    UserPreference.objects.update_or_create(user=user, defaults=values)
+    if hasattr(user, '_state') and 'preference' in getattr(user._state, 'fields_cache', {}):
+        del user._state.fields_cache['preference']
+
+
+def _save_preferred_language(user, value):
+    _save_preference(user, preferred_language=value)
+
+
+def _home_city(user, update_data):
+    """The rider's or driver's chosen city, popped out of `update_data`.
+
+    The app sends `home_city` as a city code from app-config `cities[]` (e.g. `IN-TG-HYD`). It sets
+    `Rider.home_city` (R6) or `Driver.home_city`, the anchor for operator scope: a driver with no
+    home city is invisible to every city-scoped operator, so their KYC could never be approved by
+    the city's own team (found by the QA payout run, AUDIT 27.76). Only a live city counts.
+
+    A driver chooses it during onboarding, until approved. After approval the city decides which
+    operations team is responsible for them, so a move goes through Support, not the driver.
+
+    Returns (node, error): node None and error None means nothing was sent (or the account is
+    neither), so nothing changes.
+    """
+    if 'home_city' not in update_data:
+        return None, None
+    code = str(update_data.pop('home_city') or '').strip()
+    role = getattr(user, 'role', None)
+    if role not in ('rider', 'driver') or not code:
+        return None, None
+    if role == 'driver':
+        from servers.driver.models import Driver
+
+        driver = Driver.objects.filter(user_id=user).only('approved').first()
+        if driver is not None and driver.approved:
+            return None, 'Your city can be changed by support once you are approved.'
+    from servers.admin_access.models import ACTIVE, CITY, GeoNode
+
+    node = GeoNode.objects.filter(code=code, kind=CITY, status=ACTIVE).first()
+    if node is None:
+        return None, 'Choose one of the cities we serve.'
+    return node, None
+
+
+def _save_home_city(user, node):
+    if getattr(user, 'role', None) == 'driver':
+        from servers.driver.models import Driver
+
+        Driver.objects.filter(user_id=user, approved=False).update(home_city=node)
+    else:
+        Rider.objects.filter(user_id=user).update(home_city=node)
+
+
+def _driver_name_error(user, update_data):
+    """A driver must give a real name when they complete their profile.
+
+    Owner ruling (AUDIT 27.62, D7): the name is required at sign-up. A driver
+    account is created by the OTP login with no name, and the profile is
+    completed by this endpoint, so the rule is applied here and only to a
+    driver:
+
+    - a request that sends a NEW `full_name` must send a valid one
+      (`is_valid_driver_name`, the rule the driver app applies: 2+ characters,
+      letters, spaces and . ' - only); and
+    - a driver who is completing their profile now (`is_updated` going from
+      false to true) must end up with a valid name, sent or already stored.
+
+    Existing drivers' other saves are untouched: a request that does not
+    change `full_name` (not sent, or sent back exactly as stored) and does not
+    complete the profile is never checked, so an account that predates the
+    rule can still save unrelated changes.
+    Returns the message for a 400, or None.
+    """
+    if getattr(user, 'role', None) != 'driver':
+        return None
+    completing = (
+        'is_updated' in update_data
+        and _truthy(update_data.get('is_updated'))
+        and not user.is_updated
+    )
+    if 'full_name' in update_data:
+        sent = update_data.get('full_name')
+        unchanged = (sent or '').strip() == (user.full_name or '').strip()
+        if (completing or not unchanged) and not is_valid_driver_name(sent):
+            return 'Enter your full name.'
+        return None
+    if completing and not has_valid_driver_name(user):
+        return 'Enter your full name.'
+    return None
+
+
 @api_view(['PATCH'])
 @permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser, JSONParser])
@@ -563,6 +926,7 @@ def update_user(request):
         "city": str,
         "zip_code": str,
         "emergency_contact": str,
+        "home_city": str (rider, or a driver before approval: a live city code from app-config),
         "avatar": file or null,
         "phone_number": str
     }
@@ -584,7 +948,9 @@ def update_user(request):
             )
         
         update_data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
-        avatar_provided, avatar_value, avatar_error = resolve_file_input(request, 'avatar')
+        avatar_provided, avatar_value, avatar_error = resolve_file_input(
+            request, 'avatar', kind='avatar'
+        )
         if avatar_error:
             return error_response(
                 code='UPLOAD_FAILED',
@@ -596,6 +962,56 @@ def update_user(request):
         if avatar_provided:
             update_data['avatar'] = avatar_value
         
+        home_city, city_error = _home_city(user, update_data)
+        if city_error:
+            return error_response(
+                code='AUTH_VALIDATION_ERROR',
+                message=city_error,
+                field='home_city',
+                issue=city_error,
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        language, language_error = _preferred_language(update_data)
+        if language_error:
+            return error_response(
+                code='AUTH_VALIDATION_ERROR',
+                message=language_error,
+                field='preferred_language',
+                issue=language_error,
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        theme, theme_error = _preferred_theme(update_data)
+        if theme_error:
+            return error_response(
+                code='AUTH_VALIDATION_ERROR',
+                message=theme_error,
+                field='preferred_theme',
+                issue=theme_error,
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if language is not _NO_LANGUAGE:
+            _save_preferred_language(user, language)
+        if theme is not _NO_LANGUAGE:
+            _save_preference(user, preferred_theme=theme)
+
+        name_error = _driver_name_error(user, update_data)
+        if name_error:
+            return error_response(
+                code='AUTH_VALIDATION_ERROR',
+                message=name_error,
+                field='full_name',
+                issue=name_error,
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not update_data and home_city is not None:
+            _save_home_city(user, home_city)
+            return success_response(UserModelSerializer(user).data, status.HTTP_200_OK)
+
+        if not update_data and (language is not _NO_LANGUAGE or theme is not _NO_LANGUAGE):
+            return success_response(UserModelSerializer(user).data, status.HTTP_200_OK)
+
         if not update_data:
             logger.warning(f"Update request with no data for user: {user_id}")
             return error_response(
@@ -610,7 +1026,9 @@ def update_user(request):
             user_serializer = UserModelSerializer(
                 user,
                 data=update_data,
-                partial=True
+                partial=True,
+                # An avatar key must be this account's own upload.
+                context={'upload_owner': request.user},
             )
             
             if not user_serializer.is_valid():
@@ -623,7 +1041,15 @@ def update_user(request):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            user_serializer.save()
+            old_email = user.email
+            with transaction.atomic():
+                user_serializer.save()
+                if home_city is not None:
+                    _save_home_city(user, home_city)
+                # A new address is not the one that was verified.
+                if (user.email or '') != (old_email or '') and user.email_verified_at is not None:
+                    user.email_verified_at = None
+                    user.save(update_fields=['email_verified_at'])
             logger.info(f"User profile updated successfully: {user_id}")
             return success_response(
                 user_serializer.data,
@@ -679,6 +1105,53 @@ def get_user_profile(request):
         )
     except Exception as e:
         logger.error(f"Unexpected error in get_user_profile: {str(e)}")
+        return error_response(
+            code='AUTH_INTERNAL_ERROR',
+            message='An unexpected error occurred',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def update_bank_details(request):
+    """
+    Update driver's bank account details.
+    """
+    from servers.driver.models import DriverBankAccount
+    from servers.driver.serializers import DriverBankAccountSerializer
+    
+    try:
+        user = request.user
+        if not hasattr(user, 'driver'):
+            return error_response(
+                code='AUTH_NOT_DRIVER',
+                message='Only drivers can have bank accounts',
+                field='user',
+                issue='User is not a driver',
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
+        driver = user.driver
+        bank_account, created = DriverBankAccount.objects.get_or_create(driver=driver)
+        
+        serializer = DriverBankAccountSerializer(bank_account, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return success_response(
+                serializer.data,
+                status.HTTP_200_OK if not created else status.HTTP_201_CREATED
+            )
+        return error_response(
+            code='AUTH_INVALID_DATA',
+            message='Invalid bank details',
+            field='data',
+            issue=serializer.errors,
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error in update_bank_details: {str(e)}")
         return error_response(
             code='AUTH_INTERNAL_ERROR',
             message='An unexpected error occurred',

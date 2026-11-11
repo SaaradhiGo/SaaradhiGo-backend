@@ -33,7 +33,20 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 
+from base.money import DEFAULT_CURRENCY, MoneyTypeError, parse_input, quantize
 from servers.rider.models import Notification, Wallet, WalletTransaction
+
+
+def _brand():
+    """The customer-facing product name.
+
+    A helper rather than an inline getattr so the brand can be interpolated
+    without nesting quotes inside an f-string, which is a syntax error before
+    Python 3.12.
+    """
+    from django.conf import settings
+
+    return getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo')
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +69,20 @@ class CreditResult:
         }
 
 
-def _to_decimal(amount) -> Optional[Decimal]:
+def _rider_currency(user):
+    wallet = Wallet.objects.filter(user_id=user, scope=Wallet.SCOPE_RIDER).first()
+    return wallet.currency if wallet and wallet.currency else DEFAULT_CURRENCY
+
+
+def _to_decimal(amount, user) -> Optional[Decimal]:
+    """The credit amount, rounded once by the money helper in the rider's
+    currency, or None if it is not a positive amount."""
     try:
-        v = Decimal(str(amount)).quantize(Decimal('0.01'))
+        v = quantize(parse_input(amount), _rider_currency(user))
         if v <= 0:
             return None
         return v
-    except (InvalidOperation, TypeError, ValueError):
+    except (InvalidOperation, MoneyTypeError, TypeError, ValueError):
         return None
 
 
@@ -129,7 +149,7 @@ def _issue_credit(
             raise
 
         wallet.balance = projected
-        wallet.save(update_fields=['balance'])
+        wallet.save(update_fields=['balance_minor'])
 
     # Best-effort notification outside the transaction (don't fail the credit
     # if the notification table is unavailable for any reason).
@@ -157,12 +177,12 @@ def _issue_credit(
 
 
 def issue_refund_credit(user, amount, trip_id, idempotency_key) -> CreditResult:
-    """Credit a rider for a cancelled/refunded trip as VahanGo Credits.
+    """Credit a rider for a cancelled/refunded trip as wallet credits.
 
     Prefer this over `gateway.create_refund(...)` when the rider has opted
     in to "instant credit" (vs the 5-7 day refund-to-original-method).
     """
-    amt = _to_decimal(amount)
+    amt = _to_decimal(amount, user)
     if amt is None:
         return CreditResult(False, None, Decimal('0.00'), reason='invalid_amount')
     return _issue_credit(
@@ -171,9 +191,10 @@ def issue_refund_credit(user, amount, trip_id, idempotency_key) -> CreditResult:
         purpose='refund',
         idempotency_key=idempotency_key,
         reference_id=f'TRIP_{trip_id}',
-        notify_title='Refund credited as VahanGo Credits',
+        notify_title='Refund credited as ' + _brand() + ' Credits',
         notify_message=(
-            f"Rs.{amt} for Trip #{trip_id} has been added to your VahanGo "
+            f"Rs.{amt} for Trip #{trip_id} has been added to your "
+            f"{_brand()} "
             f"Credits. Use the balance towards your next ride."
         ),
     )
@@ -181,7 +202,7 @@ def issue_refund_credit(user, amount, trip_id, idempotency_key) -> CreditResult:
 
 def issue_promo_credit(user, amount, campaign, idempotency_key) -> CreditResult:
     """Credit a rider with a promo / referral / cashback amount."""
-    amt = _to_decimal(amount)
+    amt = _to_decimal(amount, user)
     if amt is None:
         return CreditResult(False, None, Decimal('0.00'), reason='invalid_amount')
     return _issue_credit(
@@ -190,9 +211,10 @@ def issue_promo_credit(user, amount, campaign, idempotency_key) -> CreditResult:
         purpose=f'promo:{campaign}',
         idempotency_key=idempotency_key,
         reference_id=campaign,
-        notify_title='You got VahanGo Credits!',
+        notify_title='You got ' + _brand() + ' Credits!',
         notify_message=(
-            f"Rs.{amt} promo credit added to your VahanGo Credits. "
+            f"Rs.{amt} promo credit added to your "
+            f"{_brand()} Credits. "
             f"Apply at checkout on your next ride."
         ),
     )
@@ -200,7 +222,7 @@ def issue_promo_credit(user, amount, campaign, idempotency_key) -> CreditResult:
 
 def issue_support_credit(user, amount, ticket_ref, idempotency_key, reason_note='') -> CreditResult:
     """Customer-service goodwill credit (issued by support staff via admin)."""
-    amt = _to_decimal(amount)
+    amt = _to_decimal(amount, user)
     if amt is None:
         return CreditResult(False, None, Decimal('0.00'), reason='invalid_amount')
     return _issue_credit(
@@ -209,9 +231,28 @@ def issue_support_credit(user, amount, ticket_ref, idempotency_key, reason_note=
         purpose=f'support:{ticket_ref}',
         idempotency_key=idempotency_key,
         reference_id=ticket_ref,
-        notify_title='VahanGo Credits added by Support',
+        notify_title=_brand() + ' Credits added by Support',
         notify_message=(
             f"Rs.{amt} credit applied to your account."
             + (f" ({reason_note})" if reason_note else "")
         ),
+    )
+
+
+def issue_admin_credit(user, amount_minor, currency, approval_request_id) -> CreditResult:
+    """A closed-loop credit an operator added (Finance, through a checker).
+
+    Idempotent on the approval request: running the executor twice credits
+    once. No push text is written here: the console speaks to the rider
+    through the support ticket, and a push would need the country's wording.
+    """
+    from base.money import from_minor
+
+    amt = from_minor(int(amount_minor), currency)
+    if amt <= 0:
+        return CreditResult(False, None, Decimal('0.00'), reason='invalid_amount')
+    return _issue_credit(
+        user=user, amount=amt, purpose='admin_credit',
+        idempotency_key=f'admin_credit:{approval_request_id}',
+        reference_id=f'admin_credit_{approval_request_id}',
     )

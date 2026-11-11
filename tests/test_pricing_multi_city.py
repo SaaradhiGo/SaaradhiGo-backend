@@ -9,11 +9,13 @@ Covers the new pricing layer added in feat/multi-city-pricing:
   * Admin endpoints (zone CRUD, rate card CRUD) honour IsPlatformAdmin
   * Legacy base.service_area.validate_service_area still works on top
 """
-from datetime import timedelta
-from decimal import Decimal
 
+from datetime import datetime, timedelta
+from decimal import Decimal
 import pytest
 from django.utils import timezone
+
+from test_zones_module import geo, world  # noqa: F401  (fixtures)
 
 
 # Hyderabad city centre — inside the seeded polygon
@@ -207,18 +209,21 @@ def test_quote_fare_uses_rate_card_when_zone_known():
 
     zone = ServiceZone.objects.get(code='IN-TG-HYD')
     vt, _ = VehicleType.objects.get_or_create(type='hatchback')
-    RateCard.objects.update_or_create(
-        zone=zone, vehicle_type=vt, version=1,
-        defaults={
-            'base_fare': Decimal('50.00'), 'per_km_fare': Decimal('15.00'),
-            'per_min_fare': Decimal('2.00'), 'min_fare': Decimal('80.00'),
-            'is_active': True,
-        },
+    # RateCard pricing is immutable, so the fixture retires whatever is seeded and
+    # creates a fresh version rather than editing a row in place -- the same path
+    # production now uses for a price change.
+    RateCard.objects.filter(zone=zone, vehicle_type=vt).update(is_active=False)
+    RateCard.objects.create(
+        zone=zone, vehicle_type=vt, version=99,
+        base_fare=Decimal('50.00'), per_km_fare=Decimal('15.00'),
+        per_min_fare=Decimal('2.00'), min_fare=Decimal('80.00'),
+        is_active=True,
     )
     fare = quote_fare(
         distance_km=Decimal('10'), duration_min=Decimal('20'),
         vehicle_type='hatchback',
         pickup_lat=HYD_CENTRE_LAT, pickup_lon=HYD_CENTRE_LON,
+        at=timezone.now().replace(hour=12, minute=0, second=0, microsecond=0),
     )
     assert fare['source'] == 'db'
     assert fare['zone_code'] == 'IN-TG-HYD'
@@ -249,13 +254,12 @@ def test_quote_fare_enforces_minimum_fare():
 
     zone = ServiceZone.objects.get(code='IN-TG-HYD')
     vt, _ = VehicleType.objects.get_or_create(type='auto')
-    RateCard.objects.update_or_create(
-        zone=zone, vehicle_type=vt, version=1,
-        defaults={
-            'base_fare': Decimal('10.00'), 'per_km_fare': Decimal('5.00'),
-            'per_min_fare': Decimal('1.00'), 'min_fare': Decimal('60.00'),
-            'is_active': True,
-        },
+    RateCard.objects.filter(zone=zone, vehicle_type=vt).update(is_active=False)
+    RateCard.objects.create(
+        zone=zone, vehicle_type=vt, version=99,
+        base_fare=Decimal('10.00'), per_km_fare=Decimal('5.00'),
+        per_min_fare=Decimal('1.00'), min_fare=Decimal('60.00'),
+        is_active=True,
     )
     fare = quote_fare(
         distance_km=Decimal('1'), duration_min=Decimal('1'),
@@ -292,31 +296,31 @@ def test_admin_zones_list_requires_admin(auth_client_rider, auth_client_admin):
 
 
 @pytest.mark.django_db
-def test_admin_can_create_new_city_zone(auth_client_admin):
-    admin_client, _ = auth_client_admin
-    payload = {
-        'code': 'IN-KA-BLR',
-        'name': 'Bangalore',
-        'country': 'IN',
-        'state_code': 'KA',
-        'city': 'Bangalore',
-        'zone_type': 'city',
-        'priority': 10,
-        'polygon_geojson': {
-            'type': 'Polygon',
-            'coordinates': [[
-                [77.50, 12.85], [77.50, 13.10],
-                [77.75, 13.10], [77.75, 12.85],
-                [77.50, 12.85],
-            ]],
-        },
-        'is_active': True,
-    }
-    resp = admin_client.post('/api/v1/pricing/admin/zones/', payload, format='json')
-    assert resp.status_code == 201, resp.content
-    assert resp.json()['code'] == 'IN-KA-BLR'
-
+def test_admin_can_create_new_city_zone(world):
+    """Creating a zone is a request (202); the zone serves pickups once a checker approves."""
+    from servers.approvals.models import ApprovalRequest
+    from servers.pricing.models import ServiceZone
     from servers.pricing.services import find_zone_for_point
+    from test_finance_actions import approve_request, checker
+    from test_zones_module import new_body
+
+    admin_client, _ = world.super
+    payload = new_body(code='IN-KA-BLR', polygon_geojson={
+        'type': 'Polygon',
+        'coordinates': [[
+            [77.50, 12.85], [77.50, 13.10],
+            [77.75, 13.10], [77.75, 12.85],
+            [77.50, 12.85],
+        ]],
+    })
+    resp = admin_client.post('/api/v1/pricing/admin/zones/', payload, format='json')
+    assert resp.status_code == 202, resp.content
+    assert not ServiceZone.objects.filter(code='IN-KA-BLR').exists()
+    assert find_zone_for_point(BLR_LAT, BLR_LON) is None
+
+    request_id = resp.json()['data']['approval_request']['id']
+    assert ApprovalRequest.objects.get(pk=request_id).action_key == 'zone.change'
+    assert approve_request(checker()[0], request_id).status_code == 200
     z = find_zone_for_point(BLR_LAT, BLR_LON)
     assert z is not None and z.code == 'IN-KA-BLR'
 

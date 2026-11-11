@@ -7,7 +7,9 @@ from rest_framework_simplejwt.tokens import AccessToken
 from django.contrib.auth import get_user_model
 
 logger = logging.getLogger(__name__)
-User = get_user_model()
+
+#: Sockets that authenticate with a ticket instead of `?token=`.
+ADMIN_WS_PREFIX = '/ws/admin/'
 
 
 @database_sync_to_async
@@ -22,11 +24,16 @@ def get_user_from_token(token_str):
         User instance or AnonymousUser if token is invalid
     """
     try:
+        User = get_user_model()
         token = AccessToken(token_str)
         user_id = token['user_id']
-        return User.objects.get(id=user_id)
-    except Exception as e:
-        logger.warning(f"WebSocket JWT auth failed: {str(e)}")
+        # is_active: a deactivated account's access token is still unexpired
+        # for up to 15 minutes, and a socket opened with it would stay open
+        # far longer than that -- dispatch offers to a deactivated driver
+        # (AUDIT 27.78, Low 3). The HTTP side refuses it in JWTAuthentication.
+        return User.objects.get(id=user_id, is_active=True)
+    except Exception:
+        logger.warning("WebSocket JWT authentication failed")
         return AnonymousUser()
 
 
@@ -38,14 +45,25 @@ class JWTAuthMiddleware(BaseMiddleware):
     """
 
     async def __call__(self, scope, receive, send):
+        # The admin live-map socket does not take a JWT in the URL: it takes a
+        # single-use ticket (`servers.live_ops.tickets`) and authenticates in the
+        # consumer. Leave it anonymous here, whatever `?token=` says.
+        if scope.get('path', '').startswith(ADMIN_WS_PREFIX):
+            scope['user'] = AnonymousUser()
+            return await super().__call__(scope, receive, send)
+
         # Parse token from query string
         query_string = scope.get('query_string', b'').decode('utf-8')
         query_params = parse_qs(query_string)
         token_list = query_params.get('token', [])
         # print(token_list)
         if token_list:
-            scope['user'] = await get_user_from_token(token_list[0])
-        else:
+            user = await get_user_from_token(token_list[0])
+            if user and user.is_authenticated:
+                scope['user'] = user
+            else:
+                scope['user'] = AnonymousUser()
+        elif 'user' not in scope:
             scope['user'] = AnonymousUser()
 
         # Extract coordinates if provided

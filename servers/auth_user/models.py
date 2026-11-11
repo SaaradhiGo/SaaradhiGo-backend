@@ -1,14 +1,35 @@
-from django.db import models
+from django.conf import settings
+from django.db import models, transaction
+from django.db.models.functions import Lower
+
 from .usermanager import customUserManager
 from django.contrib.auth.models import AbstractUser
 from base.media import PrefixedUUIDPath, validate_file_size, validate_image_file
 from base.storage_backends import public_media_storage
+from base.db_indexes import PatternPrefixIndex, phone_tail
 
 
 class customUser(AbstractUser):
     full_name = models.CharField(max_length=256, blank=True, null=True)
     phone_number = models.CharField(max_length=20, unique=True)
-    email = models.CharField(max_length=256, blank=True, null=True)
+    # An EmailField, and unique when present -- see the constraint in Meta.
+    #
+    # This was `CharField(max_length=256)` with no validation and no
+    # uniqueness, which was adequate while email was decoration (a receipt
+    # address) and is not adequate now that it is an identity you can sign in
+    # with. Two accounts sharing an address means two wallets and two trip
+    # histories for one person, and a password reset that could reach either.
+    #
+    # 254 is the RFC 5321 maximum; the old 256 allowed addresses no mail
+    # system would accept.
+    email = models.EmailField(max_length=254, blank=True, null=True)
+
+    # When this account proved it controls its address, or NULL.
+    #
+    # Password reset requires it. Without this gate, anyone who could set an
+    # unverified address on an account could request a reset to an inbox they
+    # own -- which is account takeover with extra steps.
+    email_verified_at = models.DateTimeField(blank=True, null=True)
     gender = models.CharField(max_length=10, choices=[('male', 'Male'), ('female', 'Female'), ('other', 'Other')], blank=True, null=True)
     dob = models.DateField(blank=True, null=True)
     house_no = models.CharField(max_length=50, blank=True, null=True)
@@ -26,13 +47,190 @@ class customUser(AbstractUser):
         validators=[validate_image_file, validate_file_size],
     )
     fcm_token = models.CharField(max_length=255, blank=True, null=True)
+
+    # Which authority an OPERATOR holds. Meaningless on a rider or driver account:
+    # `base.permissions.ops_role_of` returns None unless the account is already an
+    # operator (role admin AND is_staff), so this field grants nothing on its own
+    # and cannot be used to escalate.
+    #
+    # Defaults to 'admin' deliberately. Every account this field can affect is one
+    # that already has full operator authority today, so defaulting to
+    # least-privilege would not be a safer default -- it would be a silent
+    # behaviour change that strips authority from operators created by existing
+    # code paths, dressed up as a default. The RBAC split is opt-in per account,
+    # and the migration backfills 'admin' for the same reason.
+    ops_role = models.CharField(
+        max_length=20, blank=True, default='admin',
+        choices=[
+            ('support', 'Support'),
+            ('driver_ops', 'Driver operations'),
+            ('finance', 'Finance'),
+            ('admin', 'Administrator'),
+        ],
+        help_text='Operator authority. Ignored unless the account is an operator.',
+    )
+
+    # A SHARED EMERGENCY ACCOUNT, NOT A PERSON.
+    #
+    # Super Admins must be named individuals, so an account that several
+    # people can reach cannot be one. This flag marks the one account that
+    # is kept for the case where no named Super Admin can sign in -- its
+    # credentials live offline, and it is expected to be unused.
+    #
+    # Because nobody owns it, its use is made loud rather than prevented:
+    # signing in requires a typed reason, every Super Admin is notified,
+    # and the reason is written to the audit log. See
+    # `servers.admin_access.breakglass`.
+    #
+    # It grants NO authority by itself. Authority still comes from an
+    # assignment, which is why the flag can be set on an account before
+    # anybody decides what it may do.
+    is_break_glass = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            'Shared emergency account. Sign-in demands a reason, alerts '
+            'every Super Admin and is audited. Never a named individual.'
+        ),
+    )
+
+    # THE PASSWORD IS TEMPORARY UNTIL ITS OWNER HAS CHOSEN ONE.
+    #
+    # `create_operator` hands a new operator a generated password through
+    # the terminal of whoever ran it. That person has seen it, so it is not
+    # yet a secret the operator alone holds. While this is set,
+    # `/auth/admin/login/` accepts the temporary password only together
+    # with a new one (`AUTH_PASSWORD_CHANGE_REQUIRED` otherwise) and issues
+    # no token until the change has happened. Cleared by that change or by
+    # `/auth/password/change/`.
+    must_change_password = models.BooleanField(
+        default=False,
+        help_text=(
+            'Set on an account whose password was issued by someone else. '
+            'Sign-in demands a new password first and issues no token until '
+            'it is set.'
+        ),
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_updated = models.BooleanField(default=False)
     USERNAME_FIELD = 'phone_number'
     REQUIRED_FIELDS = ['email']
-    
+
     objects = customUserManager()
-    
+
+    class Meta:
+        constraints = [
+            # Unique on the LOWER-CASED address, and only for rows that have
+            # one.
+            #
+            # A plain `unique=True` would not do: it is case-sensitive, so
+            # A@b.com and a@b.com would be two accounts, and it would forbid
+            # more than one NULL on some backends. The condition keeps the
+            # thousands of phone-only accounts out of the constraint
+            # entirely.
+            models.UniqueConstraint(
+                Lower('email'),
+                condition=~models.Q(email=None) & ~models.Q(email=''),
+                name='uniq_user_email_ci',
+            ),
+        ]
+        indexes = [
+            # Console search by the last ten digits of a number -- what a
+            # person reads off a call screen -- without a sequential scan
+            # over every account. The unique index on `phone_number` serves
+            # the full E.164; this serves the national part and a typed
+            # prefix of it. See `base.db_indexes`.
+            PatternPrefixIndex(phone_tail('phone_number'), name='user_phone_tail_idx'),
+        ]
+
     def __str__(self) -> str:
         return self.full_name if self.full_name else self.phone_number
+
+    def save(self, *args, **kwargs):
+        # A change to this account's authority (see `is_break_glass` above
+        # and `servers.admin_audit.access_audit`) appends an audit row from
+        # a post_save receiver. Inside one transaction, so the flag cannot
+        # end up flipped with the row missing -- a savepoint when the
+        # caller is already in one, and a few microseconds otherwise.
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        # Staff are deactivated, never deleted, and nobody who appears as an
+        # audit actor is deleted either (owner ruling, 2026-10-27). Checked
+        # here, before the collector opens a transaction, so a refusal is a
+        # clean exception and not a poisoned transaction. The queryset path
+        # is `customUserQuerySet.delete`; cascades are caught by the
+        # `pre_delete` receiver in `servers.auth_user.erasure`.
+        from . import erasure
+
+        erasure.refuse_if_undeletable(self)
+        return super().delete(*args, **kwargs)
+
+
+class DataRequest(models.Model):
+    """A rider's or driver's request to export or erase their data (DPDP / CCPA).
+
+    Self-service requests from the app are logged here already completed;
+    ones arriving by email or ticket are handled from the console. Erasure
+    always runs through a second approver (`privacy.erasure`).
+    """
+
+    EXPORT, ERASURE = 'export', 'erasure'
+    KIND_CHOICES = [(EXPORT, 'Export'), (ERASURE, 'Erasure')]
+    APP, EMAIL, TICKET, OTHER = 'app', 'email', 'ticket', 'other'
+    CHANNEL_CHOICES = [(APP, 'In the app'), (EMAIL, 'Email'), (TICKET, 'Support ticket'),
+                       (OTHER, 'Other')]
+    OPEN, WAITING, COMPLETED, REFUSED = 'open', 'waiting_approval', 'completed', 'refused'
+    STATUS_CHOICES = [(OPEN, 'Open'), (WAITING, 'Waiting for approval'),
+                      (COMPLETED, 'Completed'), (REFUSED, 'Refused')]
+
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES)
+    subject = models.ForeignKey('auth_user.customUser', on_delete=models.PROTECT,
+                                related_name='data_requests')
+    subject_role = models.CharField(max_length=10)
+    country = models.CharField(max_length=2, blank=True, default='')
+    channel = models.CharField(max_length=10, choices=CHANNEL_CHOICES)
+    reference = models.CharField(max_length=128, blank=True, default='')
+    note = models.TextField(blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=OPEN,
+                              db_index=True)
+    received_at = models.DateTimeField(db_index=True)
+    due_at = models.DateTimeField()
+    closed_at = models.DateTimeField(null=True, blank=True)
+    outcome = models.TextField(blank=True, default='')
+    approval_request = models.ForeignKey('approvals.ApprovalRequest', on_delete=models.PROTECT,
+                                         null=True, blank=True, related_name='+')
+    created_by = models.ForeignKey('auth_user.customUser', on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='+')
+    handled_by = models.ForeignKey('auth_user.customUser', on_delete=models.SET_NULL,
+                                   null=True, blank=True, related_name='+')
+
+    class Meta:
+        ordering = ['-received_at', '-id']
+
+    def __str__(self):
+        return f'DataRequest {self.pk} {self.kind} user={self.subject_id} {self.status}'
+
+
+class UserPreference(models.Model):
+    """App settings kept on the account (2026-11-06). Its own table so the
+    user table, which the migration tests rebuild at old states, is untouched.
+
+    `preferred_language` is the app language the user picked, synced from the
+    device so a reinstall or a second phone starts in it. `preferred_theme` is the
+    app theme the same way (light, dark or auto). Both are null until sent.
+    """
+
+    LANGUAGE_CHOICES = [('en', 'English'), ('te', 'Telugu'), ('hi', 'Hindi')]
+    THEME_CHOICES = [('light', 'Light'), ('dark', 'Dark'), ('auto', 'Automatic')]
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                                related_name='preference')
+    preferred_language = models.CharField(max_length=5, choices=LANGUAGE_CHOICES,
+                                          null=True, blank=True)
+    preferred_theme = models.CharField(max_length=5, choices=THEME_CHOICES,
+                                       null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)

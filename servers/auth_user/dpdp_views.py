@@ -12,22 +12,13 @@ We anonymise rather than hard-delete because:
     PII unreadable from then on; aggregate / pseudonymised data may
     legitimately be retained.
 
-What we anonymise on /me/delete/:
-  - phone_number → "+91-deleted-{user_id}"
-  - email → ""
-  - full_name → "Deleted user"
-  - dob, address fields, emergency_contact, avatar, fcm_token → cleared
-  - is_active=False so the user can no longer log in
-  - all refresh tokens blacklisted so existing sessions die
-
-What we keep:
-  - User row with the placeholder phone (FKs from Trip/Payment continue
-    to work)
-  - Trip rows
-  - Payment / TransactionHistory rows
-  - Rating rows
-
-The deletion event is recorded in AdminAuditLog (actor=self).
+The anonymisation itself is `servers.auth_user.erasure.anonymise_user`, the
+same service the `anonymise_user` management command runs for a request
+that arrives by email or ticket. There is ONE definition of what erasure
+wipes and what it keeps, and it lives there; this view only decides that a
+signed-in rider may ask for it about themselves. The event is recorded in
+AdminAuditLog as `account_anonymised`, with the person as the actor, their
+identifiers snapshotted as they were before the wipe.
 """
 
 import logging
@@ -38,6 +29,8 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 
 from base.utils import success_response, error_response
+
+from .erasure import AnonymisationRefused, anonymise_user
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +45,15 @@ def me_export(request):
     handled by a follow-up job for users with deep history. For Phase-0
     riders this is fine; trip volume per rider is small.
     """
-    user = request.user
+    payload = export_payload(request.user)
+    from .data_request_views import log_self_service
+    log_self_service(request.user, 'export')
+    return success_response(payload, status.HTTP_200_OK)
 
-    payload = {
+
+def export_payload(user):
+    """Everything we hold about `user`, one key per domain (also used by the console)."""
+    return {
         'user': _serialize_user(user),
         'rider': _serialize_rider(user),
         'driver': _serialize_driver(user),
@@ -64,7 +63,6 @@ def me_export(request):
         'wallet_transactions': _serialize_wallet_transactions(user),
         'notifications': _serialize_notifications(user),
     }
-    return success_response(payload, status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -94,9 +92,28 @@ def me_delete(request):
 
     try:
         with transaction.atomic():
-            _anonymise_user(user)
-            _blacklist_user_refresh_tokens(user)
-            _record_audit(user, reason, request)
+            from .data_request_views import log_self_service
+            log_self_service(user, 'erasure')
+            anonymise_user(
+                user,
+                reason=reason or 'self-service DPDP delete',
+                # The request IS the reference for a self-service erasure:
+                # there is no ticket, and the row's target and timestamp
+                # identify it.
+                reference=f'self-service user {user.pk}',
+                actor=user,
+                request=request,
+            )
+    except AnonymisationRefused as e:
+        # An operator signed in to the rider app and asked to be erased.
+        # Staff are deactivated through the access tooling, never wiped.
+        return error_response(
+            code='NOT_ALLOWED',
+            message='This account cannot be deleted through self-service. Contact operations.',
+            field='general',
+            issue=str(e),
+            status=status.HTTP_403_FORBIDDEN,
+        )
     except Exception as e:
         logger.exception(f"me_delete failed for user {user.id}: {e}")
         return error_response(
@@ -173,40 +190,54 @@ def _serialize_wallet(user):
         return None
 
 
+def _export_rows(qs, fields, money=()):
+    """`fields` of each row as strings, with each `money` field read from its
+    minor-unit column and written in major units -- '135.68', the shape this
+    export has always had."""
+    from base.money import from_minor
+
+    columns = [f'{f}_minor' if f in money else f for f in fields]
+    if money:
+        columns.append('currency')
+    out = []
+    for row in qs.values(*columns)[:500]:
+        record = {}
+        for f in fields:
+            v = from_minor(row[f'{f}_minor'], row['currency']) if f in money else row[f]
+            record[f] = str(v) if v is not None else None
+        out.append(record)
+    return out
+
+
 def _serialize_trips(user):
     from servers.ride.models import Trip
-    qs = (
-        Trip.objects.filter(user_id=user)
-        .order_by('-requested_at')
-        .values(
-            'id', 'pickup_address', 'destination_address',
-            'estimated_fare', 'final_fare', 'payment_method',
-            'payment_status', 'requested_at', 'completed_at',
-            'cancelled_at',
-        )[:500]
+    return _export_rows(
+        Trip.objects.filter(user_id=user).order_by('-requested_at'),
+        ['id', 'pickup_address', 'destination_address',
+         'estimated_fare', 'final_fare', 'payment_method',
+         'payment_status', 'requested_at', 'completed_at',
+         'cancelled_at'],
+        money=('estimated_fare', 'final_fare'),
     )
-    return [{k: str(v) if v is not None else None for k, v in row.items()} for row in qs]
 
 
 def _serialize_payments(user):
     from servers.payments.models import Payment
-    qs = (
-        Payment.objects.filter(user_id=user)
-        .order_by('-created_at')
-        .values('id', 'trip_id', 'amount', 'method', 'status', 'created_at')[:500]
+    return _export_rows(
+        Payment.objects.filter(user_id=user).order_by('-created_at'),
+        ['id', 'trip_id', 'amount', 'method', 'status', 'created_at'],
+        money=('amount',),
     )
-    return [{k: str(v) if v is not None else None for k, v in row.items()} for row in qs]
 
 
 def _serialize_wallet_transactions(user):
     try:
         from servers.rider.models import WalletTransaction
-        qs = (
-            WalletTransaction.objects.filter(user_id=user)
-            .order_by('-created_at')
-            .values('id', 'amount', 'txn_type', 'status', 'created_at')[:500]
+        return _export_rows(
+            WalletTransaction.objects.filter(user_id=user).order_by('-created_at'),
+            ['id', 'amount', 'txn_type', 'status', 'created_at'],
+            money=('amount',),
         )
-        return [{k: str(v) if v is not None else None for k, v in row.items()} for row in qs]
     except Exception:
         return []
 
@@ -222,60 +253,3 @@ def _serialize_notifications(user):
         return [{k: str(v) if v is not None else None for k, v in row.items()} for row in qs]
     except Exception:
         return []
-
-
-def _anonymise_user(user):
-    """Replace PII fields with placeholders. Keep the User row so FKs
-    from Trip / Payment / TransactionHistory keep working."""
-    placeholder_phone = f"+91-deleted-{user.id}"
-    fields_cleared = []
-    user.phone_number = placeholder_phone
-    fields_cleared.append('phone_number')
-    for name in (
-        'email', 'full_name', 'gender', 'dob', 'house_no', 'street',
-        'city', 'zip_code', 'emergency_contact', 'avatar', 'fcm_token',
-    ):
-        if hasattr(user, name):
-            try:
-                setattr(user, name, None if name in ('dob', 'avatar') else '')
-                fields_cleared.append(name)
-            except Exception:
-                pass
-    user.is_active = False
-    user.save()
-    logger.info(f"DPDP anonymise: user {user.id} fields cleared: {fields_cleared}")
-
-
-def _blacklist_user_refresh_tokens(user):
-    """Best-effort revocation of every active refresh token for this
-    user. Requires rest_framework_simplejwt.token_blacklist (already
-    installed in this project)."""
-    try:
-        from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
-        for ot in OutstandingToken.objects.filter(user=user):
-            try:
-                from rest_framework_simplejwt.tokens import RefreshToken
-                RefreshToken(ot.token).blacklist()
-            except Exception:
-                # ignore tokens already blacklisted or malformed
-                continue
-    except Exception as e:
-        logger.warning(f"refresh-token blacklist on delete failed: {e}")
-
-
-def _record_audit(user, reason, request):
-    try:
-        from servers.admin_audit.services import record_admin_action
-        record_admin_action(
-            request,
-            action='dpdp_delete',
-            target_type='user',
-            target_id=user.id,
-            before={'is_active': True},
-            after={'is_active': False, 'anonymised': True},
-            reason=reason or 'self-service DPDP delete',
-        )
-    except Exception:
-        # Auditing is best-effort; user has already been anonymised by
-        # the time we reach this. Don't fail their delete.
-        pass

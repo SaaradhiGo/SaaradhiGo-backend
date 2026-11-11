@@ -1,6 +1,4 @@
-import boto3
 import logging
-import random
 import secrets
 from typing import Dict, Any, Optional
 from django.utils import timezone
@@ -8,7 +6,10 @@ from rest_framework.response import Response
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from celery import shared_task
-from botocore.exceptions import ClientError, BotoCoreError
+from celery.exceptions import Retry
+from integrations.sms.sns_otp import (  # noqa: F401  (get_sns_client is patched by tests here)
+    OtpTerminalError, OtpTransientError, get_sns_client, publish_otp,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,25 +22,6 @@ CHARACTERS = (
     list(map(str, range(0, 10)))
 )
 
-
-
-def get_sns_client():
-    """
-    Get AWS SNS client with error handling.
-    
-    Returns:
-        boto3 SNS client or None if initialization fails
-    """
-    try:
-        return boto3.client(
-            "sns",
-            region_name=settings.AWS_REGION,
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-        )
-    except Exception as e:
-        logger.error(f"Failed to initialize SNS client: {str(e)}")
-        return None
 
 
 def success_response(data: Any, status_code: int) -> Response:
@@ -117,74 +99,125 @@ def generate_otp(n: int) -> str:
     return ''.join(secrets.choice(digits) for _ in range(n))
 
 
-@shared_task
-def send_otp_via_sns(phone_number: str, message: str) -> Dict[str, Any]:
+# The SMS text never travels as a task argument. It carries the login OTP, and
+# task arguments are copied to places a secret must not go: the Redis broker,
+# the worker's "received" log line, and Sentry, whose CeleryIntegration
+# attaches args/kwargs to every event from a failing task. The caller stashes
+# the text in the cache (Redis, shared by web and worker) under a random id,
+# and only that id is enqueued. The task reads the text and deletes it once
+# the send is final, so it lives no longer than one delivery.
+SMS_MESSAGE_CACHE_PREFIX = 'sms_message:'
+SMS_MESSAGE_TTL_SECONDS = 600  # the login OTP's own lifetime; a later send is useless anyway
+
+
+def stash_sms_message(message: str, ttl: int = SMS_MESSAGE_TTL_SECONDS) -> str:
+    """Store an SMS text for `send_otp_via_sns` and return the reference to enqueue."""
+    import uuid
+    from django.core.cache import cache
+
+    ref = uuid.uuid4().hex
+    cache.set(f'{SMS_MESSAGE_CACHE_PREFIX}{ref}', message, ttl)
+    return ref
+
+
+@shared_task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=5,
+    retry_backoff=True,
+    retry_jitter=True,
+)
+def send_otp_via_sns(self, phone_number: str, message_ref: str) -> Dict[str, Any]:
     """
     Send OTP via AWS SNS service.
-    
+
+    This is the first step of every rider and driver session, and it is also used
+    to notify an SOS. It used to catch every failure and return a dict, which made
+    Celery record the task as SUCCEEDED even when no SMS was sent -- and there was
+    no retry, so a moment of SNS throttling or a credentials blip meant the OTP
+    was silently never delivered and the user simply could not log in.
+
+    Transient failures now raise so Celery retries them, with backoff. Terminal
+    failures (a malformed number, an opted-out recipient) still return a dict,
+    because retrying those only delays the same answer.
+
     Args:
         phone_number: Recipient phone number (E.164 format)
-        message: OTP message content
-    
+        message_ref: what `stash_sms_message` returned. Never the text itself:
+            see SMS_MESSAGE_CACHE_PREFIX for why.
+
     Returns:
-        dict: Status and response or error details
+        dict: Status and response, or terminal error details.
+
+    Raises:
+        Retry: transient AWS or network failure; Celery will try again.
     """
+    from django.core.cache import cache
+
+    message_key = f'{SMS_MESSAGE_CACHE_PREFIX}{message_ref}'
     try:
         # Validate inputs
+        message = cache.get(message_key) if message_ref else None
         if not phone_number or not message:
-            logger.warning("Missing phone_number or message")
+            # Missing, expired (the TTL outlived every retry) or already sent.
+            # Terminal: retrying cannot bring the text back.
+            logger.warning("Missing phone_number or SMS message (expired or already sent)")
             return {
                 "success": False,
-                "error": "Phone number and message are required"
+                "error": "Phone number and message are required",
+                "terminal": True,
             }
         
         client = get_sns_client()
         if client is None:
-            logger.error("SNS client initialization failed")
-            return {
-                "success": False,
-                "error": "AWS SNS service unavailable"
-            }
+            # Configuration or credentials. Retry: this is commonly transient
+            # (a credential refresh, a metadata endpoint hiccup) and returning
+            # "success: False" here told Celery the task had completed.
+            logger.error(
+                "otp_send_failure reason=sns_client_unavailable retry=%s/%s",
+                self.request.retries, self.max_retries,
+            )
+            raise self.retry(exc=RuntimeError('SNS client unavailable'))
         
-        resp = client.publish(
-            PhoneNumber=phone_number,
-            Message=message,
-            MessageAttributes={
-                'AWS.SNS.SMS.SenderID': {
-                    'DataType': 'String',
-                    'StringValue': settings.AWS_SNS_SENDER_ID
-                },
-                'AWS.SNS.SMS.SMSType': {
-                    'DataType': 'String',
-                    'StringValue': 'Transactional'
-                }
-            }
-        )
-        
+        message_id = publish_otp(client, phone_number, message)
+        cache.delete(message_key)
+
         logger.info(f"OTP sent successfully to {phone_number}")
         return {
             "success": True,
-            "message_id": resp.get('MessageId')
+            "message_id": message_id
         }
-    
-    except ClientError as e:
-        logger.error(f"AWS ClientError sending OTP: {str(e)}")
+
+    except OtpTerminalError as e:
+        # Retrying will not help. Terminal, and reported as such.
+        cache.delete(message_key)
+        logger.error(
+            "otp_send_terminal reason=sns_client_error code=%s", e.code,
+        )
         return {
             "success": False,
-            "error": f"AWS error: {e.response.get('Error', {}).get('Message', str(e))}"
+            "error": e.message,
+            "terminal": True,
         }
-    except BotoCoreError as e:
-        logger.error(f"BotoCoreError sending OTP: {str(e)}")
-        return {
-            "success": False,
-            "error": f"AWS service error: {str(e)}"
-        }
+    except OtpTransientError as e:
+        logger.error(
+            "otp_send_failure reason=%s retry=%s/%s",
+            'botocore_error' if e.code == 'botocore_error' else f'sns_client_error code={e.code}',
+            self.request.retries, self.max_retries,
+        )
+        # Connection, endpoint and timeout errors, throttling and credentials blips: always
+        # worth another attempt.
+        raise self.retry(exc=e.cause)
+    except Retry:
+        # self.retry() signals by raising. Never swallow it into the generic
+        # handler below, which is what would turn a retry into a silent success.
+        raise
     except Exception as e:
-        logger.error(f"Unexpected error sending OTP via SNS: {str(e)}")
-        return {
-            "success": False,
-            "error": f"Unexpected error: {str(e)}"
-        }
+        logger.exception(
+            "otp_send_failure reason=unexpected retry=%s/%s",
+            self.request.retries, self.max_retries,
+        )
+        raise self.retry(exc=e)
 
 
 def wallet_payment(user, amount, purpose='Trip payment', reference_id=None, idempotency_key=None):
@@ -206,7 +239,9 @@ def wallet_payment(user, amount, purpose='Trip payment', reference_id=None, idem
     from servers.rider.models import WalletTransaction, Wallet
     
     try:
-        amount_val = float(amount)
+        # Exact from the request onwards; no float touches the ledger.
+        from base.money import parse_input
+        amount_val = parse_input(amount)
         if amount_val <= 0:
             return {'success': False, 'error': 'Amount must be positive'}
     except (ValueError, TypeError):
@@ -233,15 +268,21 @@ def wallet_payment(user, amount, purpose='Trip payment', reference_id=None, idem
                 user_id=user, scope=Wallet.SCOPE_RIDER,
             )
             
-            if float(wallet.balance) < amount_val:
+            from base.money import to_minor
+            amount_minor = to_minor(amount_val, wallet.currency)
+            from servers.fraud.money import held_minor
+
+            # A reward pending review (AUDIT 27.56) is in the wallet but not spendable.
+            if wallet.balance_minor - held_minor(user, wallet.currency) < amount_minor:
                 return {'success': False, 'error': 'Insufficient wallet balance'}
             
-            wallet.balance = float(wallet.balance) - amount_val
+            wallet.balance_minor = wallet.balance_minor - amount_minor
             wallet.save()
             
             txn = WalletTransaction.objects.create(
                 user_id=user,
-                amount=amount_val,
+                currency=wallet.currency,
+                amount_minor=amount_minor,
                 txn_type='debit',
                 status='completed',
                 purpose=purpose,
@@ -255,7 +296,7 @@ def wallet_payment(user, amount, purpose='Trip payment', reference_id=None, idem
             return {
                 'success': True,
                 'transaction_id': txn.id,
-                'amount': str(amount_val),
+                'amount': str(float(amount_val)),  # legacy response text, e.g. '100.0'
                 'new_balance': str(wallet.balance),
                 'purpose': purpose,
                 'reference_id': reference_id,

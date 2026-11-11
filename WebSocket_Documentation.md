@@ -5,11 +5,13 @@ It details the sequence of events, connections, request payloads, and server-emi
 
 ---
 
-## 1. Driver Location System (`DriverLocationConsumer`)
+## 1. Driver Location System (``)
 This consumer tracks the driver's real-time live location, activates them to an "online" status upon connection, and receives incoming ride requests.
 
 **Endpoint:** `ws://<host>/ws/driver/location/?token=<JWT>&lat=<lat>&lng=<lng>`
 **Role:** Driver Only
+
+**Close code 4004** (driver not eligible to operate): sent when a connect is refused, and also when an operator suspends a connected driver. The server closes the socket, drops the driver from the dispatch index, and refuses further location pings until reinstatement and a fresh connect.
 
 ### Connection Flow
 1. Connect with JWT Token, latitude, and longitude.
@@ -154,6 +156,20 @@ Triggered when the driver accepts the ride, marks reached, starts, or completes 
 }
 ```
 
+**Event: Nobody accepted (terminal)**
+Sent when the accept deadline (`TRIP_ACCEPT_TIMEOUT_SECONDS`, 90 s) passes with no driver. The trip is already `cancelled`; the app should leave the search screen, show `message` and offer a new request.
+```json
+{
+    "type": "trip_update",
+    "trip_id": 101,
+    "status": "cancel",
+    "reason": "no_driver_accepted",
+    "message": "No driver accepted your request. Please try again.",
+    "driver_id": null,
+    "driver_name": ""
+}
+```
+
 **Event: Driver Live Tracking Update**
 Once a trip is accepted, the specific driver's location updates stream out dynamically here.
 ```json
@@ -230,3 +246,90 @@ Emitted to all participants inside the `trip_id` socket group successfully evalu
 }
 ```
 *(Note: Initial `accept` payload also includes `otp`, `driver_info` and `vehicle_info` similarly to the `trip_update` payload in the Request Consumer)*
+
+---
+
+## 4. Admin Live Map Consumer (`AdminDashboardConsumer`)
+The Live Ops map's feed (console module 10). Scoped to what the signed-in operator may see,
+authenticated by a single-use ticket instead of the JWT.
+
+**Endpoints:** `ws://<host>/ws/admin/live-locations/?ticket=<ticket>` (and the alias
+`/ws/admin/dashboard/`)
+**Role:** an operator holding `liveops.read` (driver dots) or `liveops.aggregate` (counts only)
+
+### Getting a ticket
+`POST /api/v1/live-ops/admin/ws-ticket/` (normal `Authorization: Bearer` header, no body) returns
+`{"ticket": "...", "expires_in": 30, "path": "/ws/admin/live-locations/", "mode": "full|aggregate"}`.
+The ticket works for ONE connection within 30 seconds (stored hashed, consumed with GETDEL,
+bound to the user). **`?token=<JWT>` is no longer accepted on this socket.**
+
+### Close codes
+| Code | Meaning |
+|------|---------|
+| 4001 | no ticket, or it is unknown, expired or already used (or the account is inactive) |
+| 4003 | signed in but holds neither capability, or access was revoked while connected |
+| 1013 | the ticket store is unavailable, try again |
+
+The refusal is sent after the socket is accepted so a browser can read the code.
+
+### Frames (server to client)
+* `hello` : `{mode, session, recheck_seconds, frame_interval_seconds, cities}`
+* `initial_drivers` : `{drivers: [dot], truncated}` (mode `full` only)
+* `driver_location_update` : a dot plus `type`; at most one per driver per second
+* `driver_status_update` : `{driver_id, status: "offline"}`, a removal (offline, or moved out of scope)
+* `city_status` : `{cities: [{code, network_status, online_drivers, on_trip_drivers, unassigned_trips, ...}]}` every 30 s
+
+A dot is `{driver_id, status (online|on_trip|offline), vehicle_class, lat, lng (5 dp), heading, updated_at, trip_id, city}`.
+It never carries a name, phone, plate or rider data. A driver outside the operator's scope is never
+sent, and is not counted. Capabilities and scope are re-read every 60 seconds.
+
+---
+
+## 5. In-App Chat Consumer (`TripChatConsumer`)
+This consumer handles real-time messaging between a rider and driver during an active trip. Both participants join the same trip-specific chat group.
+
+**Endpoint:** `ws://<host>/ws/ride/trip/<trip_id>/chat/?token=<JWT>`
+**Role:** Rider & Driver
+
+### Connection Flow
+1. Connect with JWT Token.
+2. **Response on Success:**
+   ```json
+   {
+       "type": "connection_established",
+       "trip_id": "101",
+       "role": "rider"
+   }
+   ```
+
+### Client -> Server Events
+**Action: Send Message**
+Send a message to the peer.
+```json
+{
+    "action": "send",
+    "body": "Where are you?"
+}
+```
+
+**Action: Mark All Read**
+Mark all unread messages from the peer as read.
+```json
+{
+    "action": "read_all"
+}
+```
+
+### Server -> Client Broadcasts
+**Event: New Chat Message**
+Pushed when a peer (or system) sends a message.
+```json
+{
+    "type": "message",
+    "id": 42,
+    "sender_role": "driver",
+    "body": "I am arriving in 2 minutes",
+    "created_at": "2023-10-01T12:34:56Z",
+    "is_system": false
+}
+```

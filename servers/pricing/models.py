@@ -29,12 +29,82 @@ data-only: insert a new RateCard with a future effective_from and the
 resolver will pick it up at that timestamp.
 """
 
+import json
+import logging
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from base.currency_stamp import CurrencyStampedModel
+from base.money import MinorUnitsAmount
 from servers.driver.models import VehicleType
+
+logger = logging.getLogger(__name__)
+
+
+class PlatformSettings(models.Model):
+    """Runtime config stored in the database so operators can change it
+    without restarting the web process.
+
+    This avoids downtime caused by editing env vars and rolling a new app
+    container just to tweak business settings like the platform commission.
+    """
+
+    SETTING_TYPES = [
+        ('decimal', 'Decimal'),
+        ('integer', 'Integer'),
+        ('string', 'String'),
+        ('boolean', 'Boolean'),
+        ('json', 'JSON'),
+    ]
+
+    key = models.CharField(
+        max_length=256,
+        unique=True,
+        db_index=True,
+        help_text='Stable setting key, e.g. "SOME_FLAG". (PLATFORM_COMMISSION_PERCENT is '
+                  'deprecated: commission comes from CommissionRule.)',
+    )
+    value = models.TextField(help_text='Serialized value; typed by setting_type.')
+    setting_type = models.CharField(max_length=20, choices=SETTING_TYPES, default='string')
+    description = models.TextField(blank=True, default='')
+    #: A sensitive key changes only through a checker (`platform.setting_change`) and its value is
+    #: never shown in a list (module 15).
+    is_sensitive = models.BooleanField(default=False)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='platform_settings_updates',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name_plural = 'Platform Settings'
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return f'{self.key} = {self.value}'
+
+    def get_value(self):
+        if self.setting_type == 'decimal':
+            return Decimal(self.value)
+        if self.setting_type == 'integer':
+            return int(self.value)
+        if self.setting_type == 'boolean':
+            return self.value.lower() in {'true', '1', 'yes', 'y'}
+        if self.setting_type == 'json':
+            return json.loads(self.value)
+        return self.value
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        from django.core.cache import cache
+        cache.delete(f'platform_setting:{self.key}')
 
 
 class ServiceZone(models.Model):
@@ -59,7 +129,9 @@ class ServiceZone(models.Model):
         help_text='Stable identifier, e.g. "IN-TG-HYD" or "IN-TG-HYD-AIRPORT".',
     )
     name = models.CharField(max_length=128)
-    country = models.CharField(max_length=2, default='IN')
+    # No default: a zone is always in a country somebody chose. `default='IN'`
+    # silently put every zone created without one into India (AUDIT 27.37 B).
+    country = models.CharField(max_length=2)
     state_code = models.CharField(
         max_length=8,
         blank=True,
@@ -85,10 +157,91 @@ class ServiceZone(models.Model):
     # an airport sub-zone (priority 100) wins over the city (priority 10).
     priority = models.IntegerField(default=10)
 
-    # Currency + timezone metadata. We're INR-only for now but storing
-    # this on the zone keeps later expansion clean.
-    currency = models.CharField(max_length=3, default='INR')
-    timezone_name = models.CharField(max_length=64, default='Asia/Kolkata')
+    # ---------------------------------------------------------------
+    # MARKET SEMANTICS
+    # ---------------------------------------------------------------
+    # The zone is the source of truth for what a market means, because a
+    # geographic market has exactly one currency and one tax convention --
+    # whereas a COUNTRY may have several timezones (the US has six) and a
+    # DEPLOYMENT serves several countries. The zone is the only level that
+    # covers both shapes.
+    #
+    # All four default from `base.countries` at save() when left blank, so
+    # creating a Hyderabad zone still means setting `country='IN'` and
+    # nothing else.
+    currency = models.CharField(
+        max_length=3, blank=True,
+        help_text='ISO 4217. Blank defaults from the country.',
+    )
+    timezone_name = models.CharField(
+        max_length=64, blank=True,
+        help_text="IANA name, e.g. 'Asia/Kolkata', 'America/Los_Angeles'. "
+                  "Blank defaults from the country. SET THIS EXPLICITLY for "
+                  "countries with several timezones -- a single national value "
+                  "rolls a Californian driver's earnings over at 9pm the day "
+                  "before.",
+    )
+    distance_unit = models.CharField(
+        max_length=2, blank=True,
+        choices=[('km', 'Kilometres'), ('mi', 'Miles')],
+        help_text='Unit this zone is PRICED and displayed in. Storage is '
+                  'always metric; this drives rate-card entry and display so '
+                  'a US zone is configured in the units its operator thinks '
+                  'in, rather than requiring a silent 1.609x conversion.',
+    )
+    tax_mode = models.CharField(
+        max_length=10, blank=True,
+        choices=[('inclusive', 'Included in the fare'),
+                 ('additive', 'Added on top of the fare')],
+        help_text="'inclusive' = the quoted fare already contains the tax and "
+                  "the receipt extracts it (India's GST). 'additive' = the tax "
+                  "is a separate line added on top (US sales tax). Getting this "
+                  "wrong understates the fare on the receipt.",
+    )
+    # Flat per-trip charge, in this zone's currency, on top of the fare and
+    # independent of tax. Several US jurisdictions levy one (the NYC congestion
+    # surcharge, Chicago's ground transportation tax) and they are a fixed
+    # amount per trip, not a percentage -- so a percentage-only tax model
+    # cannot express them.
+    per_trip_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal('0.00'),
+        help_text='Flat regulatory charge per trip, in this zone currency. '
+                  '0 for most zones.',
+    )
+    per_trip_fee_label = models.CharField(
+        max_length=64, blank=True,
+        help_text='What the rider sees for the flat fee, e.g. '
+                  "'Congestion surcharge'. Required if per_trip_fee > 0.",
+    )
+
+    # ------------------------------------------------------------------
+    # THE ADMIN SCOPE SPINE
+    # ------------------------------------------------------------------
+    # A zone says what a MARKET is: geometry, currency, tax, units, rate
+    # cards. It does not say who may operate it, and it cannot: an admin
+    # scope has to exist for a country that has launched nothing yet, while
+    # `polygon_geojson` is required here. The four-level `parent` chain above
+    # was never populated either -- every seeded zone is a flat city with
+    # `parent=None` -- so there has never been a country or state row to
+    # assign anybody to.
+    #
+    # `admin_access.GeoNode` is that tree. This FK is the ONE join between
+    # them, so there is one answer to "which country is this trip in" rather
+    # than a zone's `country` column and a scope tree that can disagree.
+    # Both use the same code convention ('IN-TG-HYD'), and the backfill in
+    # pricing/0010 matches on it.
+    #
+    # Nullable because a zone may be drawn before its node exists. A zone
+    # with no node is invisible to every scoped admin, which is the safe
+    # direction and is reported by `check_geo_links`.
+    geo_node = models.ForeignKey(
+        'admin_access.GeoNode',
+        null=True, blank=True,
+        on_delete=models.PROTECT,
+        related_name='service_zones',
+        help_text='Admin scope this zone belongs to. Normally the node whose '
+                  'code equals this zone code.',
+    )
 
     is_active = models.BooleanField(default=True, db_index=True)
 
@@ -106,8 +259,79 @@ class ServiceZone(models.Model):
         ]
         ordering = ['-priority', 'code']
 
+    # ------------------------------------------------------------------
+    # Country-derived defaults
+    # ------------------------------------------------------------------
+    def apply_country_defaults(self):
+        """Fill blank market fields from `base.countries`. Idempotent.
+
+        Blank-means-inherit rather than a column default, because a column
+        default is evaluated once at migration time and then silently applies
+        India's conventions to a US zone created later. Inheriting at save()
+        means the registry stays the single source of truth.
+        """
+        from base.countries import get_country, is_supported
+
+        if self.country and not is_supported(self.country):
+            # Logged, not raised: refusing to save would lose the zone, and the
+            # fallback is visible in the fields it fills.
+            logger.error(
+                'ServiceZone %s has unsupported country %r; market defaults '
+                'fall back to %s. Add it to base.countries before launching '
+                'this zone.',
+                self.code, self.country, get_country(None).code,
+            )
+
+        country = get_country(self.country)
+        if not self.currency:
+            self.currency = country.currency
+        if not self.timezone_name:
+            self.timezone_name = country.default_timezone
+        if not self.distance_unit:
+            self.distance_unit = country.distance_unit
+        if not self.tax_mode:
+            self.tax_mode = country.tax_mode
+        self.currency = str(self.currency).upper().strip()
+
+    def save(self, *args, **kwargs):
+        if not str(self.country or '').strip():
+            from django.core.exceptions import ValidationError
+            raise ValidationError({'country': 'A service zone needs a country.'})
+        self.apply_country_defaults()
+        super().save(*args, **kwargs)
+
+    @property
+    def country_profile(self):
+        from base.countries import get_country
+        return get_country(self.country)
+
+    @property
+    def tax_label(self):
+        """What the rider sees: 'GST' in India, 'Sales tax' in the US."""
+        return self.country_profile.tax_label
+
     def __str__(self):
         return f'{self.code} ({self.name})'
+
+
+class RateCardQuerySet(models.QuerySet):
+    """Closes the `.update()` bypass.
+
+    `Model.save()` is not the only write path: `RateCard.objects.filter(...).update(
+    per_km_fare=...)` goes straight to SQL and never calls save(), so a guard on
+    save() alone would be one queryset away from useless. Lifecycle columns stay
+    updatable in bulk, because retiring a batch of cards is a legitimate operation.
+    """
+
+    def update(self, **kwargs):
+        pricing = set(RateCard.PRICING_FIELDS) & set(kwargs)
+        if pricing:
+            from django.core.exceptions import ValidationError
+            raise ValidationError(
+                'RateCard pricing is immutable: refusing a bulk update of '
+                f'{sorted(pricing)}. Create new versions instead.'
+            )
+        return super().update(**kwargs)
 
 
 class RateCard(models.Model):
@@ -146,23 +370,39 @@ class RateCard(models.Model):
     night_surge_end_hour = models.IntegerField(default=5)
 
     # Maximum dynamic surge multiplier permitted in this zone. MVA 2020
-    # caps aggregator surge at 1.5x normal fare; configurable per zone
+    # capped aggregator surge at 1.5x; MVAG 2025 allows up to 2x by state
+    # notification. The quote applies the lowest of this, the state cap and
+    # the country cap (`regulation.fare_limits`); configurable per zone
     # because different state regulators may pick different caps.
     surge_cap_multiplier = models.DecimalField(
         max_digits=4, decimal_places=2, default=Decimal('1.50'),
     )
 
-    # Driver commission percentage taken by SaaradhiGo (informational;
-    # actual driver payout computed in payments service).
+    # DEPRECATED (module 8, AUDIT 27.36). Nothing reads this column any more:
+    # the commission comes from `CommissionRule` (servers/pricing/commission.py)
+    # and each trip snapshots what it was charged. The column stays so old rows
+    # and migrations keep their shape; a guard test fails if code reads it.
     commission_percent = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal('18.00'),
+        help_text='DEPRECATED: not read by any code. See CommissionRule.',
     )
 
-    # GST rate. Phase-0: 5% on taxi services without ITC. Configurable
-    # because RBI/CBIC may shift this.
+    # The zone's tax rate: GST in India, sales tax in the US. Configurable
+    # because RBI/CBIC may shift the Indian rate, and because every US
+    # jurisdiction sets its own.
+    #
+    # THREE decimal places, not two. Indian GST is a whole 5%, but US combined
+    # state-plus-local sales tax is routinely quoted to a thousandth -- 8.625%
+    # in parts of California, 9.875% in parts of New York. At two places the
+    # rate was silently rounded to 8.62%, so the receipt stated a rate the
+    # jurisdiction does not levy and the tax was computed from it.
+    #
+    # India is unaffected: 5.00 and 5.000 are the same number.
     gst_percent = models.DecimalField(
-        max_digits=5, decimal_places=2, default=Decimal('5.00'),
+        max_digits=6, decimal_places=3, default=Decimal('5.000'),
     )
+
+    objects = RateCardQuerySet.as_manager()
 
     effective_from = models.DateTimeField(default=timezone.now, db_index=True)
     effective_to = models.DateTimeField(null=True, blank=True, db_index=True)
@@ -190,6 +430,143 @@ class RateCard(models.Model):
     def __str__(self):
         return f'{self.zone.code} / {self.vehicle_type.type} v{self.version}'
 
+    # Fields that define what a ride COST. Once a card exists, these are history:
+    # a trip's fare snapshot points at this row by version, so editing one of them
+    # silently rewrites what past rides were priced under. Changing pricing means
+    # creating a new version.
+    PRICING_FIELDS = (
+        'base_fare', 'per_km_fare', 'per_min_fare', 'min_fare',
+        'night_surge_multiplier', 'night_surge_start_hour', 'night_surge_end_hour',
+        'surge_cap_multiplier', 'commission_percent', 'gst_percent',
+    )
+
+    # Fields an operator must still be able to change on an existing card, because
+    # they are lifecycle rather than price: retiring a card, closing its window,
+    # annotating it.
+    LIFECYCLE_FIELDS = ('is_active', 'effective_to', 'notes')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Snapshot the pricing fields as loaded, so save() can tell what changed
+        # without a second query.
+        self._loaded_pricing = self._pricing_snapshot() if self.pk else None
+        # Set by new_version() and by an audited correction; never by a caller
+        # that simply forgot.
+        self._allow_pricing_edit = False
+
+    def _pricing_snapshot(self):
+        return {f: getattr(self, f, None) for f in self.PRICING_FIELDS}
+
+    def changed_pricing_fields(self):
+        """Which pricing fields differ from what was loaded from the database."""
+        if self._loaded_pricing is None:
+            return []
+        now = self._pricing_snapshot()
+        return [f for f, was in self._loaded_pricing.items() if now[f] != was]
+
+    def save(self, *args, **kwargs):
+        """Refuse an in-place pricing edit unless it is an audited correction.
+
+        This is the guard that makes `rate_card_version` on a fare snapshot mean
+        something. Without it, "which rates priced this trip" is answerable only
+        as "whatever the row says today", and a fare from last month can change
+        because someone edited a card this morning.
+
+        Retiring a card, closing its effective window and editing its notes all
+        stay allowed -- operational correction must not become impossible.
+        """
+        if self.pk and not self._allow_pricing_edit:
+            changed = self.changed_pricing_fields()
+            # `update_fields` restricted to lifecycle columns is always fine: it
+            # cannot touch a pricing column by definition.
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None:
+                changed = [f for f in changed if f in set(update_fields)]
+            if changed:
+                from django.core.exceptions import ValidationError
+                raise ValidationError(
+                    'RateCard pricing is immutable once the card exists. '
+                    f'Refusing to change {sorted(changed)} on card id={self.pk} '
+                    f'(zone={self.zone_id}, version={self.version}). '
+                    'Create a new version with RateCard.new_version(...), or use '
+                    'apply_audited_correction() if this is a genuine correction '
+                    'to a card that never priced a ride.'
+                )
+        super().save(*args, **kwargs)
+        self._loaded_pricing = self._pricing_snapshot()
+        self._allow_pricing_edit = False
+
+    def new_version(self, *, effective_from=None, close_current=True, **changes):
+        """Supersede this card with a new version carrying `changes`.
+
+        This is how a price change is made. The new card inherits everything not
+        overridden, gets `version + 1`, and the current card's window is closed at
+        the same instant so the resolver never sees two live cards for the same
+        (zone, vehicle_type).
+        """
+        from django.db import transaction as _tx
+
+        at = effective_from or timezone.now()
+        fields = {
+            f.name: getattr(self, f.name)
+            for f in self._meta.fields
+            if f.name not in ('id', 'created_at', 'updated_at', 'version',
+                              'effective_from', 'effective_to')
+        }
+        fields.update(changes)
+
+        with _tx.atomic():
+            successor = type(self)(
+                version=(self.version or 1) + 1,
+                effective_from=at,
+                effective_to=None,
+                **fields,
+            )
+            successor.save()
+            if close_current:
+                # Lifecycle only -- allowed on an existing card.
+                self.effective_to = at
+                self.save(update_fields=['effective_to'])
+        return successor
+
+    def apply_audited_correction(self, *, reason, actor_label='unknown', **changes):
+        """Edit pricing in place, deliberately and with a record of why.
+
+        The escape hatch. Intended for a card that was mistyped before it priced
+        anything; using it on a card that has priced rides rewrites their history,
+        which is exactly what the guard exists to prevent -- so it says so, loudly,
+        in the log.
+        """
+        import logging
+
+        if not reason:
+            raise ValueError('An audited correction requires a reason.')
+        before = self._pricing_snapshot()
+        for field, value in changes.items():
+            if field not in self.PRICING_FIELDS:
+                raise ValueError(
+                    f'{field} is not a pricing field; set it normally.'
+                )
+            setattr(self, field, value)
+        self._allow_pricing_edit = True
+        self.save()
+        logging.getLogger(__name__).warning(
+            'ratecard_pricing_corrected',
+            extra={
+                'event': 'ratecard_pricing_corrected',
+                'rate_card_id': self.pk,
+                'zone_id': self.zone_id,
+                'version': self.version,
+                'changed': sorted(changes.keys()),
+                'before': {k: str(v) for k, v in before.items()
+                           if k in changes},
+                'after': {k: str(getattr(self, k)) for k in changes},
+                'reason': reason,
+                'actor': actor_label,
+            },
+        )
+        return self
+
     def is_currently_effective(self, at=None):
         at = at or timezone.now()
         if not self.is_active:
@@ -199,3 +576,109 @@ class RateCard(models.Model):
         if self.effective_to and at >= self.effective_to:
             return False
         return True
+
+
+class TripFareShadow(CurrencyStampedModel, models.Model):
+    """What a metered fare *would* have charged, recorded without charging it.
+
+    The platform quotes an up-front estimate and never writes `final_fare`, so
+    nobody knows whether metering would collect more or less, or how often the
+    two disagree badly enough to anger a rider. Answering that from production
+    traffic is a prerequisite for changing billing, and it cannot be answered by
+    reasoning about the formula -- only by measuring real trips.
+
+    One row per completed trip. Nothing here is money: no payment, wallet,
+    commission or settlement reads this table, and nothing in the fare path
+    writes it. It exists to be queried by a human deciding a pricing policy.
+
+    Three amounts, because a single difference would be uninterpretable:
+
+    * `quoted_fare`      what the rider was actually told at booking.
+    * `shadow_estimate`  the estimated distance/duration re-quoted *now*.
+    * `shadow_actual`    the measured distance/duration quoted at the same
+                         instant, under the same rate card and surge.
+
+    `shadow_actual - shadow_estimate` is therefore attributable to the trip
+    metrics alone, while `shadow_estimate - quoted_fare` isolates drift in the
+    pricing context (a rate card edited since booking, night surge crossing
+    midnight, a different live surge multiplier). Collapsing those two into one
+    number is how a fare investigation reaches the wrong conclusion.
+    """
+
+    trip = models.OneToOneField(
+        'ride.Trip', on_delete=models.CASCADE, related_name='fare_shadow',
+    )
+
+    # What the rider was told, copied at observation time so a later edit to
+    # the trip cannot silently rewrite history in this table.
+    # Minor units of `currency`, the trip's (base/money.py).
+    quoted_fare_minor = models.BigIntegerField(null=True, blank=True)
+
+    shadow_estimate_minor = models.BigIntegerField(null=True, blank=True)
+    shadow_actual_minor = models.BigIntegerField(null=True, blank=True)
+    quoted_fare = MinorUnitsAmount('quoted_fare_minor')
+    shadow_estimate = MinorUnitsAmount('shadow_estimate_minor')
+    shadow_actual = MinorUnitsAmount('shadow_actual_minor')
+    currency_source_fields = ('trip',)
+    currency = models.CharField(max_length=3, db_index=True)
+
+    # Inputs, so a surprising row can be understood without re-deriving them.
+    estimated_distance_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    actual_distance_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    estimated_duration_min = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    actual_duration_min = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    # Evidence quality behind `actual_distance_km`. A 40%-covered trail and a
+    # 95%-covered one must not be averaged together in the analysis.
+    coverage_ratio = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    trail_points = models.IntegerField(default=0)
+
+    # Pricing context at observation time, for grouping the analysis.
+    zone_code = models.CharField(max_length=64, blank=True, default='')
+    vehicle_type = models.CharField(max_length=64, blank=True, default='')
+    rate_card_version = models.IntegerField(null=True, blank=True)
+    surge_multiplier = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    quote_source = models.CharField(max_length=16, blank=True, default='')
+
+    # Why a row has no amounts: 'computed', 'no_actuals', 'pricing_unavailable',
+    # 'no_vehicle_type'. Stored rather than logged, so the denominator of any
+    # "metering would collect X% more" claim is visible in the same query.
+    status = models.CharField(max_length=32, default='computed')
+
+    observed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'trip_fare_shadow'
+        indexes = [
+            models.Index(fields=['observed_at'], name='fareshadow_observed_idx'),
+            models.Index(fields=['zone_code', 'observed_at'], name='fareshadow_zone_idx'),
+            models.Index(fields=['status'], name='fareshadow_status_idx'),
+        ]
+
+    def __str__(self):
+        return f'shadow(trip={self.trip_id}, {self.quoted_fare} -> {self.shadow_actual})'
+
+    @property
+    def metric_delta(self):
+        """Difference attributable to distance/duration alone."""
+        if self.shadow_actual is None or self.shadow_estimate is None:
+            return None
+        return self.shadow_actual - self.shadow_estimate
+
+    @property
+    def context_delta(self):
+        """Difference attributable to the pricing context having moved."""
+        if self.shadow_estimate is None or self.quoted_fare is None:
+            return None
+        return self.shadow_estimate - self.quoted_fare
+
+
+# Commission models live in their own module and are imported here so Django finds them.
+from servers.pricing.commission_models import (  # noqa: E402,F401
+    CommissionCountryConfig, CommissionRule, CommissionStateCap, DriverNotice,
+)
+from servers.pricing.regulation_models import MarketRegulation  # noqa: E402,F401
+from servers.pricing.fee_plan_models import (  # noqa: E402,F401
+    DriverDailyFee, DriverFeePlan, MonthlyFixedCost,
+)
+from servers.pricing.zone_models import ServiceZoneRevision  # noqa: E402,F401

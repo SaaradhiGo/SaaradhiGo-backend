@@ -3,7 +3,8 @@
 Django + Django Channels backend that powers the SaaradhiGo / VahanGo ride-hailing platform. Serves the rider Flutter app ([SaaradhiGo-mobile](../SaaradhiGo-mobile)) and the web/native clients ([SaaradhiGo-web](../SaaradhiGo-web)).
 
 - **Branch:** `dev` (deployed automatically to EC2 — see `.github/workflows/deploy.yml`)
-- **Base URL (dev):** `https://dev.api.saaradhigo.in`
+- **Base URL (QA):** `https://backend-qa-811d.up.railway.app`
+- **Base URL (production target):** `https://api.saaradhigo.com` _(DNS not yet configured)_
 - **API prefix:** `/api/v1/`
 - **Admin:** `/admin/`
 
@@ -14,7 +15,7 @@ Django + Django Channels backend that powers the SaaradhiGo / VahanGo ride-haili
 - Celery 5 (Redis broker) for background tasks
 - PostgreSQL (production) / SQLite (default local fallback)
 - Redis 7 — broker, cache, channel layer, and driver spatial index
-- Cashfree PG (`cashfree-pg`) for payments and payouts; Razorpay settings retained
+- Razorpay (payments) and RazorpayX (payouts) for India, over plain HTTPS (`requests`, no SDK); the Cashfree adapter is kept but configured nowhere by default
 - AWS S3 via `django-storages` for media; AWS SNS for OTP delivery
 - Firebase Admin for FCM push notifications
 - Docker / Docker Compose for local dev and production
@@ -114,10 +115,24 @@ Settings load environment variables via `python-dotenv` (see [base/settings.py](
 | `FRONTEND_URL`, `BACKEND_URL`  | App URLs used in emails / links                             |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_SNS_SENDER_ID` | AWS creds (SNS for OTP) |
 | `AWS_S3_BUCKET_NAME`, `AWS_S3_REGION`, `AWS_QUERYSTRING_EXPIRE` | S3 media storage              |
-| `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_WEBHOOK_SECRET`, `CASHFREE_ENVIRONMENT`, `CASHFREE_PG_BASE_URL`, `CASHFREE_API_VERSION` | Cashfree gateway |
-| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Razorpay (legacy)                       |
-| `PAYMENT_GATEWAY`, `PAYOUT_GATEWAY` | Active gateways (default `cashfree`)                   |
-| `PLATFORM_COMMISSION_PERCENT`  | Trip commission                                             |
+| `NOTIFY_LIVE_SEND` (default `false`), `NOTIFY_TEST_RECIPIENTS` | Notifications master switch: off forces every channel to the stub; on outside production sends only to the comma-separated phones/emails listed (module 11) |
+| `MSG91_AUTH_KEY`, `MSG91_WHATSAPP_NUMBER`, `MSG91_WEBHOOK_SECRET` | MSG91 (India SMS and WhatsApp) |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_MESSAGING_SERVICE_SID` or `TWILIO_FROM_NUMBER` | Twilio (US SMS) |
+| `SES_AWS_ACCESS_KEY_ID`, `SES_AWS_SECRET_ACCESS_KEY`, `SES_AWS_REGION`, `SES_FROM_EMAIL`, `SES_CONFIGURATION_SET`, `SES_SNS_TOPIC_ARNS` | AWS SES email and its SNS delivery topic (separate from the S3/SNS-OTP credentials) |
+| `NOTIFY_WEBHOOK_BASE_URL` | Public base URL Twilio signs against (behind a proxy) |
+| `NOTIFY_MAX_ATTEMPTS`, `NOTIFY_BACKOFF_BASE_SECONDS`, `NOTIFY_FAILURE_RATE_THRESHOLD`, `NOTIFY_FAILURE_MIN_SAMPLE` | Dispatcher retry and provider-health tuning |
+| `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_ENVIRONMENT` (`sandbox`\|`production`) | Cashfree payment gateway. Hosts are derived from the environment; `CASHFREE_WEBHOOK_SECRET` is optional (PG webhooks are signed with the secret key); `CASHFREE_PG_BASE_URL` / `CASHFREE_PAYOUTS_BASE_URL` are optional overrides, ignored if they name the other environment's host |
+| `CASHFREE_PAYOUTS_CLIENT_ID`, `CASHFREE_PAYOUTS_CLIENT_SECRET` | Cashfree Payouts (the old `CASHFREE_PAYOUT_APP_ID` / `CASHFREE_PAYOUT_SECRET_KEY` are deprecated aliases) |
+| `PAYMENT_PROVIDERS_JSON`, `PAYOUT_PROVIDERS_JSON` | Provider per country. Default `{"IN": "razorpay", "US": null}`. Names: payments `cashfree`, `razorpay`, `stripe`*; payouts `cashfree`, `razorpay` (alias `razorpayx`), `stripe_connect`* (*stub). Cashfree is selected only by naming it here. A country with no entry has no provider; `PAYMENT_GATEWAY` / `PAYOUT_GATEWAY` are legacy and have no default |
+| `NOTIFY_PROVIDERS_JSON` | Notification provider per channel and country, merged over the defaults, e.g. `{"sms": {"US": "sns"}}` (sms: `msg91`, `twilio`, `sns`; push: `fcm`, `sns`; email: `ses`) |
+| `SNS_LIVE_CONFIRMED` (default `false`), `SNS_AWS_ACCESS_KEY_ID`, `SNS_AWS_SECRET_ACCESS_KEY`, `SNS_AWS_REGION`, `SNS_SMS_SENDER_ID`, `SNS_PLATFORM_APPLICATION_ARN_FCM`, `SNS_PLATFORM_APPLICATION_ARN_APNS` | AWS SNS SMS and push adapters, sandbox-only: no AWS call unless `NOTIFY_LIVE_SEND` and `SNS_LIVE_CONFIRMED` are both true (owner confirms the AWS account) |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | Razorpay payments (required). A `rzp_live_` key is refused unless `ENVIRONMENT=production`; test vs live follows the key prefix |
+| `RAZORPAY_WEBHOOK_SECRET` | Secret of the dashboard webhook to `/api/v1/webhooks/razorpay/` (missing: deliveries are rejected; readiness warns) |
+| `RAZORPAYX_ACCOUNT_NUMBER` | RazorpayX account that payouts debit (required for payouts; differs between test and live) |
+| `RAZORPAYX_KEY_ID`, `RAZORPAYX_KEY_SECRET` | Optional; default to the `RAZORPAY_*` pair |
+| `RAZORPAYX_WEBHOOK_SECRET` | Secret of the dashboard webhook to `/api/v1/webhooks/razorpayx/` |
+
+Razorpay checks: `python manage.py razorpay_test_mode_check` (test keys only; refuses `rzp_live_`) creates a test order, signature round-trip, test contact + vpa fund account and a Rs 1 test payout, re-sends the same idempotency key and asserts no duplicate. Webhooks to subscribe: `/api/v1/webhooks/razorpay/` -> `payment.authorized`, `payment.captured`, `payment.failed`, `order.paid`, `refund.processed`, `refund.failed`; `/api/v1/webhooks/razorpayx/` -> `payout.queued`, `payout.pending`, `payout.initiated`, `payout.processed`, `payout.reversed`, `payout.failed`, `payout.rejected`.
 | `TRIP_ACCEPT_TIMEOUT_SECONDS`  | Driver accept window (default `600`)                        |
 | `GOOGLE_MAPS_API_KEY`          | Maps API key                                                |
 
@@ -190,3 +205,11 @@ The prod stack runs Django via Daphne (ASGI) and a Celery worker, both reading `
 
 - [SaaradhiGo-mobile](../SaaradhiGo-mobile) — Flutter rider app (VahanGo)
 - [SaaradhiGo-web](../SaaradhiGo-web) — Web client + branch protection rules
+
+## The Django console is off
+
+There is no Django sign-in, second-factor challenge, sign-out, admin site (`/admin/`) or server-rendered console page: none of those paths is routed, so each answers 404. The only public surface is the API under `/api/v1/`, the health probes (`/healthz`, `/version`) and the websockets. Emergency access is the console's break-glass account (`servers/admin_access`) and Railway / `manage.py`. `tests/test_django_console_off.py` pins every removed route to 404 (anonymous and signed-in superuser, GET and POST).
+
+## Vendor boundary
+
+Every third-party adapter lives in the top-level `integrations/` package (grouped by capability: `email`, `sms`, `push`, `payments`, `payouts`, `storage`). Business code in `base/` and `servers/` imports only the interfaces and registries, never a vendor SDK; `tests/test_vendor_boundary.py` (part of the normal `pytest` run, so part of CI) fails on any vendor import or vendor hostname outside `integrations/`. The only allowlisted exception is the `sentry_sdk` bootstrap in `base/settings.py`.

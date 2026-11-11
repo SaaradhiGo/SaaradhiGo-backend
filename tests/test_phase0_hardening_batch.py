@@ -34,6 +34,43 @@ def test_healthz_ok(api_client):
     assert 'version' in body
 
 
+@pytest.mark.django_db
+def test_a_platform_commission_db_setting_is_no_longer_read():
+    """The PlatformSettings commission override was REMOVED (module 8, AUDIT 27.36).
+
+    It used to win over everything but a rate card. Now the commission is the layered
+    CommissionRule model and nothing reads this key, so a stale row cannot change a
+    settlement. With no rule for the trip's country the lookup raises (it has no
+    fallback), instead of answering with the old override.
+    """
+    from decimal import Decimal
+
+    from servers.pricing.commission import CommissionNotConfigured
+    from servers.pricing.commission_models import CommissionRule
+    from servers.pricing.models import PlatformSettings
+    from servers.pricing.services import commission_percent_for_trip
+
+    PlatformSettings.objects.update_or_create(
+        key='PLATFORM_COMMISSION_PERCENT',
+        defaults={'value': '24.50', 'setting_type': 'decimal', 'description': 'stale row'},
+    )
+
+    class _DummyTrip:
+        requested_vehicle_type = None
+        requested_at = None
+        pickup_lat = 17.385
+        pickup_long = 78.486
+        zone = None
+        commission_percent_snapshot = None
+
+    # The suite gives every DB test the owner's 15% rule; the stale 24.50 is not read.
+    assert commission_percent_for_trip(_DummyTrip()) == Decimal('15.00')
+    # And with no rule in force there is no fallback to that row either: it raises.
+    CommissionRule.objects.all().delete()
+    with pytest.raises(CommissionNotConfigured):
+        commission_percent_for_trip(_DummyTrip())
+
+
 # -------------------------------------------------------------------------
 # Service area (Hyderabad polygon)
 # -------------------------------------------------------------------------
@@ -56,7 +93,9 @@ def test_estimate_fare_rejects_outside_hyderabad(auth_client_rider):
     assert resp.json()['error']['code'] == 'OUT_OF_SERVICE_AREA'
 
 
+@pytest.mark.django_db
 def test_service_area_helper_polygon():
+    """The zone table is the authority (the legacy polygon fallback is gone, module 9)."""
     from base.service_area import is_inside_service_area, validate_service_area
     # Center of Hyderabad
     assert is_inside_service_area(17.385, 78.486) is True
@@ -163,7 +202,11 @@ def test_me_delete_anonymises_and_deactivates(auth_client_rider):
     user.refresh_from_db()
     assert user.is_active is False
     assert user.phone_number != original_phone
-    assert user.phone_number.startswith('+91-deleted-')
+    # No country code. The placeholder used to be '+91-deleted-{id}', which
+    # made every anonymised account look Indian in the operator console --
+    # including US ones. A deleted account belongs to no market.
+    assert user.phone_number.startswith('deleted-')
+    assert '+91' not in user.phone_number
     # email / name fields cleared
     assert (user.full_name or '') == ''
     assert (user.email or '') == ''

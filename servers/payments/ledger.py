@@ -1,0 +1,397 @@
+"""One driver's statement: opening balance, movements, closing balance.
+
+WHAT THE BALANCE IS MADE OF
+---------------------------
+The driver's settlement balance (`Wallet`, scope driver) moves only through
+`WalletTransaction` rows carrying one of `DRIVER_LEDGER_PURPOSES`:
+
+  * `trip_earnings`  credit   an online or wallet trip: the platform owes the net fare
+  * `trip_commission` debit   a cash trip: the driver owes the commission
+  * `platform_funded_trip_end`  credit   an operator ended a started trip as a safety incident
+                      or platform fault: the rider paid nothing and the platform pays the
+                      driver the earnings (fare minus the commission that would have applied)
+  * `promo_discount_platform_funded`  credit   a CASH trip with a rider promo: the driver collected
+                      the fare less the discount, and the platform pays them the discount (module 12)
+  * `tax_collected`, `regulatory_fee_collected`  debit   a US CASH trip: the driver holds the rider's
+                      sales tax and per-trip fee and owes both to SaaradhiGo, which remits them
+                      (pass-through, AUDIT 27.62 item 1); each is its own line, never earnings
+  * `fare_collected_by_platform`  credit   a cash trip the rider then paid from the wallet: the
+                      platform collected what the driver was assumed to hold (AUDIT 27.71)
+  * `trip_refund_reversal`  debit   the rider was refunded the whole trip: what the trip had added to
+                      the driver's balance is taken back once (AUDIT 27.76)
+  * `cancellation_compensation`  credit   the rider's MVAG 2025 cancellation fee, paid to the driver
+                      who was let down once the rider's next trip settles
+  * `cancellation_penalty`  debit   the driver cancelled an accepted trip without a reason that
+                      exempts it (MVAG 2025: 10% of the fare, capped)
+  * `cancellation_fee_collected`  debit   a cash trip carried a rider's earlier cancellation fee:
+                      the driver collected it and owes it on
+  * `incentive_reward` credit   a driver incentive reward: no commission, paid out with the next
+                      weekly payout, its own line (tax: not configured, go-live blocker 15)
+  * `referral_reward` credit    a driver referral reward: same treatment
+  * `reward_recovery` debit     an approved recovery of a reward (Finance adjustment, maker-checker),
+                      taken from a payout within the country's per-payout cap; its own line
+  * `withdrawal`     debit    a payout request (taken at request time)
+  * `refund_rejected_withdrawal` / `refund_failed_withdrawal`  credit   money
+    returned because the payout was rejected, or failed at the gateway
+  * `refund_reversed_withdrawal`  credit   a payout the provider paid and the bank then
+    reversed (AUDIT 27.71): the money came back
+  * `platform_fee_refund`  credit   a platform fee the driver's plan did not ask for, returned
+    (one row per trip, `fee_plans.refund_overcharged`, 11 Nov)
+  * `adjustment`     credit or debit   a manual correction by Finance through a
+    maker-checker request (Part B); the entry carries its reason code and note
+
+A row counts when it is `completed`, or when it is the pending debit of a
+withdrawal (taken from the balance at request time). So
+
+    balance == sum(credits) - sum(debits)   over those rows, for ever,
+
+and the statement for a date range is `opening + movements = closing`, where
+`opening` is that same sum over everything BEFORE the range. A test pins
+`closing == calculate_available_balance(driver)` when the range ends now.
+
+WHAT THE LEDGER DOES NOT HIDE
+-----------------------------
+`unexplained_minor` is `wallet balance - sum over all rows to date`. It is zero
+when the two agree. A wallet that was seeded or edited without a ledger row
+shows a non-zero number HERE rather than a statement that quietly closes on a
+different figure. The balance function is never changed to fit the ledger.
+
+Memo lines (`affects_balance` false) are shown in time order but are not in any
+sum: a payout being PAID moves no money in the wallet (it left at request
+time), and a manual fare adjustment is recorded against the trip, not the
+wallet.
+
+FEES
+----
+The commission is on the settlement line. The withdrawal transfer fee
+(`payout_config.withdrawal_fee`) is 0 in every configured country and is taken
+from the PAYOUT, not the wallet (the wallet is debited the full amount), so the
+statement has no fee line; a non-zero fee is stamped on the withdrawal row
+(`fee_minor`).
+"""
+
+import re
+
+from django.db.models import BigIntegerField, Case, F, Q, Sum, Value, When
+from django.db.models.functions import Coalesce
+
+from servers.payments.scope import DRIVER_LEDGER_PURPOSES
+
+SIGNED = Case(
+    When(txn_type='credit', then=F('amount_minor')),
+    When(txn_type='debit', then=-F('amount_minor')),
+    default=Value(0), output_field=BigIntegerField(),
+)
+
+#: `withdrawal_12`, `refund_withdrawal_12`, `refund_withdrawal_12_r1`,
+#: `refund_rejected_withdrawal_12` -> 12.
+WITHDRAWAL_REF = re.compile(
+    r'^(?:refund_rejected_withdrawal|refund_reversed_withdrawal|refund_withdrawal|withdrawal)_(\d+)')
+
+ENTRY_KINDS = {
+    'adjustment': 'adjustment',
+    'trip_earnings': 'settlement',
+    'trip_commission': 'settlement',
+    'platform_funded_trip_end': 'platform_funded_trip_end',
+    'promo_discount_platform_funded': 'promo_discount_platform_funded',
+    'incentive_reward': 'incentive_reward',
+    'referral_reward': 'referral_reward',
+    'reward_recovery': 'reward_recovery',
+    'tax_collected': 'tax_collected',
+    'regulatory_fee_collected': 'regulatory_fee_collected',
+    'fare_collected_by_platform': 'fare_collected_by_platform',
+    'trip_refund_reversal': 'trip_refund_reversal',
+    'cancellation_compensation': 'cancellation_compensation',
+    'cancellation_penalty': 'cancellation_penalty',
+    'cancellation_fee_collected': 'cancellation_fee_collected',
+    'platform_fee': 'platform_fee',
+    'platform_fee_refund': 'platform_fee',
+    'withdrawal': 'withdrawal_requested',
+    'refund_rejected_withdrawal': 'withdrawal_rejected',
+    'refund_failed_withdrawal': 'withdrawal_returned',
+    'refund_reversed_withdrawal': 'withdrawal_reversed',
+}
+
+#: What a statement line is called, by wallet purpose. The console and the driver app show this text
+#: as-is, so a platform-funded line is never shown as a raw purpose code.
+PROMO_PAID_LABEL = 'Promo paid by SaaradhiGo'
+#: US pass-through lines on a cash trip (AUDIT 27.62 item 1). The fee line takes the zone's own fee
+#: name where the trip's zone has one (`fee_collected_label`).
+TAX_COLLECTED_LABEL = 'Sales tax collected (remitted by SaaradhiGo)'
+FEE_COLLECTED_LABEL = 'Regulatory fee collected (remitted by SaaradhiGo)'
+
+
+def fee_collected_label(fee_name):
+    return f'{fee_name} collected (remitted by SaaradhiGo)' if fee_name else FEE_COLLECTED_LABEL
+
+
+ENTRY_LABELS = {
+    'trip_earnings': 'Trip earnings (online trip)',
+    'trip_commission': 'Commission on a cash trip',
+    'platform_funded_trip_end': 'Trip ended by SaaradhiGo: earnings paid by SaaradhiGo',
+    'promo_discount_platform_funded': PROMO_PAID_LABEL,
+    'incentive_reward': 'Incentive reward',
+    'referral_reward': 'Referral reward',
+    'reward_recovery': 'Recovery of reward (reviewed)',
+    'tax_collected': TAX_COLLECTED_LABEL,
+    'regulatory_fee_collected': FEE_COLLECTED_LABEL,
+    'fare_collected_by_platform': 'Rider paid SaaradhiGo (no cash collected)',
+    'trip_refund_reversal': 'Trip refunded to the rider (earnings reversed)',
+    'cancellation_compensation': 'Cancellation fee paid by the rider (to you)',
+    'cancellation_penalty': 'Cancellation fee (you cancelled after accepting)',
+    'cancellation_fee_collected': 'Cancellation fee collected for another trip',
+    'platform_fee': 'Platform fee (the day)',
+    'platform_fee_refund': 'Platform fee refunded',
+    'withdrawal': 'Withdrawal requested',
+    'refund_rejected_withdrawal': 'Withdrawal rejected (returned)',
+    'refund_failed_withdrawal': 'Payout failed (returned)',
+    'refund_reversed_withdrawal': 'Payout reversed by the bank (returned)',
+    'adjustment': 'Balance adjustment',
+}
+
+
+def counted(queryset):
+    """Only the rows that are part of the balance.
+
+    A withdrawal debit counts in every state: pending while the payout is in flight, completed
+    once paid, failed once its reversal row has returned the money (`withdrawal_ledger`)."""
+    return queryset.filter(Q(status='completed') | Q(purpose='withdrawal', status__in=('pending', 'failed')))
+
+
+def driver_rows(driver, currency):
+    from servers.rider.models import WalletTransaction
+
+    return counted(WalletTransaction.objects.filter(
+        user_id=driver.user_id_id, purpose__in=DRIVER_LEDGER_PURPOSES, currency=currency))
+
+
+def wallet_of(driver):
+    from servers.rider.models import Wallet
+
+    return Wallet.objects.filter(user_id=driver.user_id_id, scope=Wallet.SCOPE_DRIVER).first()
+
+
+def signed_total(queryset):
+    return queryset.aggregate(t=Coalesce(Sum(SIGNED), Value(0), output_field=BigIntegerField()))['t']
+
+
+def build_statement(driver, start, end):
+    """The ledger totals for `[start, end)` (aware datetimes), without entries.
+
+    Returns a dict, or None when the driver has no driver wallet.
+    """
+    wallet = wallet_of(driver)
+    if wallet is None:
+        return None
+    currency = wallet.currency
+    rows = driver_rows(driver, currency)
+    opening = signed_total(rows.filter(created_at__lt=start))
+    in_range = rows.filter(created_at__gte=start, created_at__lt=end)
+    credits = in_range.filter(txn_type='credit').aggregate(
+        t=Coalesce(Sum('amount_minor'), Value(0), output_field=BigIntegerField()))['t']
+    debits = in_range.filter(txn_type='debit').aggregate(
+        t=Coalesce(Sum('amount_minor'), Value(0), output_field=BigIntegerField()))['t']
+    all_to_date = signed_total(rows)
+    from servers.rider.models import WalletTransaction
+
+    excluded = WalletTransaction.objects.filter(
+        user_id=driver.user_id_id, purpose__in=DRIVER_LEDGER_PURPOSES,
+    ).exclude(currency=currency).count()
+    return {
+        'currency': currency,
+        'opening_minor': opening,
+        'credits_minor': credits,
+        'debits_minor': debits,
+        'closing_minor': opening + credits - debits,
+        'balance_minor': wallet.balance_minor,
+        'unexplained_minor': wallet.balance_minor - all_to_date,
+        'other_currency_rows': excluded,
+        'rows': in_range,
+    }
+
+
+def entry_dicts(driver, in_range_rows, opening_minor, offset, limit):
+    """One page of statement entries with a running balance.
+
+    The running balance is the opening plus every earlier row in the range, so
+    a page deep into the range still starts from the right figure.
+    """
+    from servers.payments.models import TripSettlement
+
+    ordered = in_range_rows.order_by('created_at', 'id')
+    before_page = signed_total(ordered[:offset]) if offset else 0
+    page = list(ordered[offset:offset + limit])
+    running = opening_minor + before_page
+
+    trip_ids = []
+    for txn in page:
+        ref = txn.reference_id or ''
+        if ref.startswith('TRIP_') and ref[5:].isdigit():
+            trip_ids.append(int(ref[5:]))
+    settlements = {}
+    fee_names = {}
+    if trip_ids:
+        from servers.ride.models import Trip
+
+        for tid, name in (Trip.objects.filter(id__in=trip_ids, zone__isnull=False)
+                          .values_list('id', 'zone__per_trip_fee_label')):
+            fee_names[tid] = name
+        for s in (TripSettlement.objects.filter(trip_id__in=trip_ids, wallet_transaction__isnull=False)
+                  .order_by('version')):
+            settlements[s.trip_id] = s
+
+    adjustments = _adjustment_details([t.reference_id for t in page if t.purpose == 'adjustment'])
+    instant = _instant_fees([t.reference_id for t in page if t.purpose == 'withdrawal'])
+
+    out = []
+    for txn in page:
+        signed = txn.amount_minor if txn.txn_type == 'credit' else -txn.amount_minor
+        running += signed
+        entry = {
+            'id': txn.id,
+            'at': txn.created_at,
+            'kind': ENTRY_KINDS.get(txn.purpose, txn.purpose),
+            'purpose': txn.purpose,
+            'label': ENTRY_LABELS.get(txn.purpose, txn.purpose),
+            'direction': txn.txn_type,
+            'amount_minor': signed,
+            'currency': txn.currency,
+            'running_balance_minor': running,
+            'status': txn.status,
+            'affects_balance': True,
+            'reference': txn.reference_id,
+            'trip_id': None,
+            'withdrawal_id': None,
+        }
+        ref = txn.reference_id or ''
+        if ref.startswith('TRIP_') and ref[5:].isdigit():
+            entry['trip_id'] = int(ref[5:])
+            s = settlements.get(entry['trip_id'])
+            # Only the settlement line carries the fare breakdown; a promo or platform-funded
+            # credit on the same trip is its own line.
+            if s is not None and txn.purpose in ('trip_earnings', 'trip_commission'):
+                entry['settlement'] = {
+                    'gross_fare_minor': s.gross_fare_minor,
+                    'commission_percent': str(s.commission_percent),
+                    'commission_amount_minor': s.commission_amount_minor,
+                    'driver_net_minor': s.driver_net_minor,
+                    'payment_method': s.payment_method,
+                    'version': s.version,
+                }
+                if s.tax_collected_minor is not None:
+                    # US pass-through: not part of gross, net or commission (see TripSettlement).
+                    entry['settlement']['tax_collected_minor'] = s.tax_collected_minor
+                    entry['settlement']['regulatory_fee_collected_minor'] = (
+                        s.regulatory_fee_collected_minor)
+        if txn.purpose == 'regulatory_fee_collected':
+            entry['label'] = fee_collected_label(fee_names.get(entry['trip_id']))
+        if txn.purpose in ('tax_collected', 'regulatory_fee_collected'):
+            entry['pass_through'] = True
+        if txn.purpose in ('promo_discount_platform_funded', 'platform_funded_trip_end'):
+            entry['funded_by'] = 'platform'
+        if txn.purpose in ('incentive_reward', 'referral_reward'):
+            # Paid in the weekly payout, no commission; tax is go-live blocker 15, so nothing is
+            # computed or withheld here and the line says so.
+            entry['commission'] = 'none'
+            entry['tax'] = 'not configured'
+        match = WITHDRAWAL_REF.match(ref)
+        if match:
+            entry['withdrawal_id'] = int(match.group(1))
+            fee = instant.get(entry['withdrawal_id']) if txn.purpose == 'withdrawal' else None
+            if fee is not None:
+                entry.update(fee_line(txn.amount_minor, fee, txn.currency))
+        elif txn.purpose == 'adjustment':
+            entry['adjustment'] = adjustments.get(txn.reference_id)
+        out.append(entry)
+    return out
+
+
+def fee_line(amount_minor, fee_minor, currency):
+    """A Withdraw now line (10 Nov): "Withdrawn ₹200.00 · provider fee ₹4.72 · received ₹195.28"."""
+    from base.money import format_money, from_minor
+
+    received = max(0, amount_minor - fee_minor)
+
+    def m(x):
+        return format_money(from_minor(x, currency), currency)
+    return {'label': f'Withdrawn {m(amount_minor)} · provider fee {m(fee_minor)} · received {m(received)}',
+            'provider_fee_minor': fee_minor, 'received_minor': received, 'instant': True}
+
+
+def _instant_fees(references):
+    """`{withdrawal_id: provider_fee_minor}` for the Withdraw now requests among `references`."""
+    from servers.driver.models import WithdrawalRequest
+
+    ids = []
+    for ref in references:
+        match = WITHDRAWAL_REF.match(ref or '')
+        if match:
+            ids.append(int(match.group(1)))
+    if not ids:
+        return {}
+    return dict(WithdrawalRequest.objects.filter(pk__in=ids, origin='instant')
+                .values_list('id', 'fee_minor'))
+
+
+def _adjustment_details(references):
+    """`{reference: {request_id, reason_code, note, ...}}` for adjustment rows."""
+    from servers.approvals.models import ApprovalRequest
+
+    ids = {}
+    for ref in references:
+        if ref and ref.startswith('adjustment_') and ref[11:].isdigit():
+            ids[int(ref[11:])] = ref
+    if not ids:
+        return {}
+    out = {}
+    for row in ApprovalRequest.objects.filter(pk__in=list(ids)):
+        payload = row.payload or {}
+        out[ids[row.pk]] = {
+            'approval_request_id': row.pk,
+            'reason_code': payload.get('reason_code'),
+            'note': payload.get('note'),
+            'maker': {'label': row.maker_label, 'role': row.maker_role},
+            'checker': {'label': row.checker_label, 'role': row.checker_role} if row.checker_id else None,
+        }
+    return out
+
+
+def memo_lines(driver, currency, start, end):
+    """Events worth showing that move no money in the wallet."""
+    from servers.driver.models import WithdrawalRequest
+    from servers.payments.models import TransactionHistory
+    from servers.ride.models import TripMoneyAction
+
+    lines = []
+    paid = (TransactionHistory.objects
+            .filter(driver_id=driver, withdrawal_request__isnull=False, status='completed',
+                    currency=currency, created_at__gte=start, created_at__lt=end)
+            .order_by('created_at', 'id'))
+    for t in paid:
+        lines.append({
+            'id': f'paid-{t.id}', 'at': t.created_at, 'kind': 'withdrawal_paid',
+            'amount_minor': t.amount_minor, 'currency': t.currency,
+            'affects_balance': False, 'withdrawal_id': t.withdrawal_request_id,
+            'note': 'The payout reached the gateway as paid; the money left the wallet when it was requested.',
+        })
+    for w in (WithdrawalRequest.objects.filter(driver=driver, status='rejected', currency=currency,
+                                               processed_at__gte=start, processed_at__lt=end)):
+        lines.append({
+            'id': f'rejected-{w.id}', 'at': w.processed_at, 'kind': 'withdrawal_rejected_decision',
+            'amount_minor': w.amount_minor, 'currency': w.currency,
+            'affects_balance': False, 'withdrawal_id': w.id,
+            'note': 'The request was rejected; the refund line carries the money back.',
+        })
+    adjustments = (TripMoneyAction.objects
+                   .filter(trip__driver_id=driver, kind=TripMoneyAction.ADJUSTMENT,
+                           currency=currency, created_at__gte=start, created_at__lt=end)
+                   .order_by('created_at', 'id'))
+    for a in adjustments:
+        lines.append({
+            'id': f'adjustment-{a.id}', 'at': a.created_at, 'kind': 'adjustment',
+            'amount_minor': a.amount_minor, 'currency': a.currency,
+            'affects_balance': False, 'trip_id': a.trip_id, 'status': a.status,
+            'note': 'A fare adjustment recorded against the trip; it does not move the wallet.',
+        })
+    lines.sort(key=lambda line: (line['at'], str(line['id'])))
+    return lines

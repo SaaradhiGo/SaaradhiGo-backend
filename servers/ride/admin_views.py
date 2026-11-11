@@ -3,82 +3,51 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from base.utils import success_response, error_response
 from base.permissions import IsAdmin
+from servers.admin_access.bridge import ScopedPermission
+from servers.admin_access.scoping import (
+    ScopeNotHeld, scoped, scoped_or_none, scoped_to_request,
+)
 from servers.ride.models import Trip, Receipt, ChatMessage, PromoRedemption, FarePricing, Rating
-from servers.ride.serializers import TripListSerializer
-from rest_framework.pagination import PageNumberPagination
-from servers.redis_client import get_all_active_drivers, get_all_active_riders
+from servers.ride.admin_trips import detail_extras
+from base.money import format_totals, sum_by_currency
+from servers.command_centre.services import open_alert_count
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('trip.read')])
 def admin_list_trips(request):
+    """Admin trip list: scoped, filtered, sorted and paged server-side.
+
+    Filters (all optional, combinable): status (csv), id, driver_id,
+    rider_id (alias user_id), payment_method (csv), vehicle_type (csv),
+    date_from / date_to (YYYY-MM-DD, each trip's own city day), has_sos,
+    has_ticket, flagged, stale; `?scope=` narrows to a held city or country;
+    `?ordering=` one of requested_at, completed_at, fare, status, id (prefix
+    `-` for descending). Pages: `?page=`, `?page_size=` (max 100).
+
+    The body lives in `admin_trips.list_response`; this view keeps the gate
+    and the URL the console already calls.
     """
-    Admin view to list all trips with pagination and filtering.
-    Filters:
-    - status: pending | accepted | arriving | in_progress | completed | cancelled
-    - driver_id: (int)
-    - user_id: (int) (rider)
-    """
+    from .admin_trips import annotate_markers, list_response
+
     try:
-        trips = Trip.objects.select_related(
-            'status_id', 'driver_id', 'vehicle_id', 'user_id', 'requested_vehicle_type'
-        ).all().order_by('-requested_at')
-
-        status_filter = request.query_params.get('status')
-        if status_filter:
-            trips = trips.filter(status_id__status_code=status_filter)
-
-        driver_id = request.query_params.get('driver_id')
-        if driver_id:
-            trips = trips.filter(driver_id=driver_id)
-            
-        user_id = request.query_params.get('user_id')
-        if user_id:
-            trips = trips.filter(user_id=user_id)
-
-        paginator = PageNumberPagination()
-        paginator.page_size = 20
-        paginator.page_size_query_param = 'page_size'
-        paginator.max_page_size = 100
-        
-        result_page = paginator.paginate_queryset(trips, request)
-        serializer = TripListSerializer(result_page, many=True)
-        return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
-
-    except Exception as e:
+        trips = scoped_to_request(request, annotate_markers(Trip.objects.select_related(
+            'status_id', 'driver_id', 'driver_id__user_id', 'vehicle_id',
+            'vehicle_id__vehicle_type_id', 'user_id', 'requested_vehicle_type',
+            'zone', 'zone__geo_node',
+        )))
+        return list_response(request, trips)
+    except ScopeNotHeld as exc:
+        # A refused scope is an authorization answer, not a server fault.
         return error_response(
-            code='INTERNAL_ERROR',
-            message='An unexpected error occurred',
-            field='general',
-            issue=str(e),
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            code='SCOPE_NOT_HELD',
+            message=str(exc),
+            field='scope',
+            issue='Requested scope is outside your assignments',
+            status=status.HTTP_403_FORBIDDEN,
         )
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
-def admin_live_locations(request):
-    """
-    Admin view to get all active riders and drivers from Redis.
-    """
-    try:
-        drivers = get_all_active_drivers()
-        riders = get_all_active_riders()
-        
-        return success_response({
-            "drivers": drivers,
-            "riders": riders
-        }, status.HTTP_200_OK)
-    except Exception as e:
-        return error_response(
-            code='INTERNAL_ERROR',
-            message='An unexpected error occurred fetching live locations',
-            field='general',
-            issue=str(e),
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('trip.read')])
 def admin_trip_detail(request, trip_id):
     """Single endpoint returning everything ops needs to investigate
     one trip.
@@ -96,11 +65,16 @@ def admin_trip_detail(request, trip_id):
     chat_offset = max(0, int(request.query_params.get('chat_offset', 0)))
 
     try:
-        trip = Trip.objects.select_related(
+        # A trip is the gateway to its rider's and driver's details, so it
+        # is fetched through scope: out of scope reports NOT_FOUND, the
+        # same answer as a trip that does not exist.
+        trip = scoped_or_none(request.user, Trip.objects.select_related(
             'status_id', 'driver_id', 'driver_id__user_id',
             'vehicle_id', 'vehicle_id__vehicle_type_id', 'user_id',
-            'requested_vehicle_type',
-        ).get(id=trip_id)
+            'requested_vehicle_type', 'zone', 'zone__geo_node',
+        ), id=trip_id)
+        if trip is None:
+            raise Trip.DoesNotExist
     except Trip.DoesNotExist:
         return error_response(
             code='NOT_FOUND', message='Trip not found.',
@@ -348,29 +322,33 @@ def admin_trip_detail(request, trip_id):
             'sos_events': sos_payload,
             'promo': promo_payload,
             'zone': zone_payload,
-            'otp': trip.otp,
+            # No 'otp': the pickup code is the rider's alone, never shown to any admin role
+            # (owner ruling, AUDIT 27.74). Support re-sends it with resend-pickup-code.
+            # Trips module (console module 2): timeline, fare in minor units,
+            # payment summary, tickets, flags, notes, money actions, audit.
+            **detail_extras(request, trip),
         },
         status.HTTP_200_OK,
     )
 
 
-@api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
-def admin_dashboard(request):
-    """Daily ops dashboard KPIs.
+def build_admin_dashboard_kpis(day_date=None):
+    """Compute the daily ops dashboard KPI payload.
 
-    Returns a single payload the admin web console can render as
-    headline tiles. Defaults to "today in Asia/Kolkata" but a `?date=`
-    query param (YYYY-MM-DD) lets ops backfill yesterday's numbers.
+    Pure helper (no request / no HTTP) so both the DRF API view
+    (`admin_dashboard`) and the server-rendered admin web console
+    (`admin_dashboard.views.dashboard`) can share the exact same numbers.
 
-    Tile set:
-      trips.requested / accepted / completed / cancelled
-      gmv (sum of completed trips' final_fare)
-      drivers.online_now / online_24h
-      riders.active_24h
-      cancellations.driver_24h (counter for the rolling penalty rule)
-      withdrawals.pending / completed_today (Rs)
-      receipts.issued_today / send_failures_today
+    Args:
+        day_date: a ``date`` object for the reporting day. Defaults to
+            "today in the project's current timezone" -- the deployment's day,
+            deliberately, since these are platform-wide ops tiles. See the
+            note on `admin_dashboard` about which "today" this is and why the
+            money tiles are per currency.
+
+    Returns:
+        dict with the same shape the API endpoint returns, with all
+        Decimal values coerced to ``str`` so it is JSON/template safe.
     """
     from datetime import datetime, time, timedelta
     from decimal import Decimal
@@ -378,19 +356,10 @@ def admin_dashboard(request):
     from django.db.models import Count, Sum
     from servers.driver.models import Driver, DriverCancellation, WithdrawalRequest
     from servers.ride.models import Trip, Receipt
+    from base.money import charged_fare
 
     tz = timezone.get_current_timezone()
-    date_str = request.query_params.get('date')
-    if date_str:
-        try:
-            day_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-        except ValueError:
-            return error_response(
-                code='INVALID_DATE', message='date must be YYYY-MM-DD',
-                field='date', issue=f'Got {date_str!r}',
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-    else:
+    if day_date is None:
         day_date = timezone.localtime(timezone.now()).date()
 
     day_start = timezone.make_aware(datetime.combine(day_date, time.min), tz)
@@ -406,9 +375,20 @@ def admin_dashboard(request):
     completed_today = Trip.objects.filter(
         completed_at__gte=day_start, completed_at__lt=day_end,
     )
-    gmv = completed_today.aggregate(
-        s=Sum('final_fare'),
-    )['s'] or Decimal('0.00')
+    # GMV, per currency.
+    #
+    # A single Sum() here was correct while the platform served one market and
+    # becomes a meaningless number the moment it serves two -- it would add
+    # dollars to rupees and present the result as money. `gmv` keeps the old
+    # shape for a single-market deployment so nothing downstream breaks, and
+    # `gmv_by_currency` is the honest answer that an operator reading a
+    # multi-market dashboard needs.
+    # `charged_fare()`, not 'final_fare': that column is only written when a
+    # promo is applied, so summing it reported GMV of zero for every ordinary
+    # trip. Trip #81 settled 135.68 INR in cash and this tile said 0.00.
+    gmv_by_currency = sum_by_currency(completed_today, charged_fare())
+    gmv = (next(iter(gmv_by_currency.values()), Decimal('0.00'))
+           if len(gmv_by_currency) <= 1 else None)
 
     online_now = Driver.objects.filter(status='online').count()
     online_24h = Driver.objects.filter(sessions__started_at__gte=last_24h).distinct().count()
@@ -421,45 +401,147 @@ def admin_dashboard(request):
     withdrawals_pending = WithdrawalRequest.objects.filter(
         status__in=('pending', 'approved', 'processing'),
     ).count()
+    _withdrawals_today = WithdrawalRequest.objects.filter(
+        status='completed', processed_at__gte=day_start, processed_at__lt=day_end,
+    )
+    withdrawals_completed_today_by_currency = sum_by_currency(
+        _withdrawals_today, 'amount_minor')
     withdrawals_completed_today_amount = (
-        WithdrawalRequest.objects.filter(
-            status='completed', processed_at__gte=day_start, processed_at__lt=day_end,
-        ).aggregate(s=Sum('amount'))['s'] or Decimal('0.00')
+        next(iter(withdrawals_completed_today_by_currency.values()),
+             Decimal('0.00'))
+        if len(withdrawals_completed_today_by_currency) <= 1 else None
     )
 
     receipts_today = Receipt.objects.filter(issued_at__gte=day_start, issued_at__lt=day_end)
     receipts_issued = receipts_today.count()
     receipts_failed = receipts_today.exclude(send_failure_reason='').count()
 
-    return success_response(
-        {
-            'date': day_date.isoformat(),
-            'trips': {
-                'requested': by_status.get('requested', 0),
-                'accepted': by_status.get('accepted', 0),
-                'completed': by_status.get('completed', 0),
-                'cancelled': by_status.get('cancelled', 0),
-                'total': sum(by_status.values()),
-            },
-            'gmv': str(gmv),
-            'drivers': {
-                'online_now': online_now,
-                'online_24h': online_24h,
-            },
-            'riders': {
-                'active_24h': riders_active_24h,
-            },
-            'cancellations': {
-                'driver_24h': driver_cancels_24h,
-            },
-            'withdrawals': {
-                'pending': withdrawals_pending,
-                'completed_today_amount': str(withdrawals_completed_today_amount),
-            },
-            'receipts': {
-                'issued_today': receipts_issued,
-                'send_failures_today': receipts_failed,
-            },
+    return {
+        'date': day_date.isoformat(),
+        'trips': {
+            'requested': by_status.get('requested', 0),
+            'accepted': by_status.get('accepted', 0),
+            'completed': by_status.get('completed', 0),
+            'cancelled': by_status.get('cancelled', 0),
+            'total': sum(by_status.values()),
         },
+        # str(None) would print the literal 'None' on a multi-market dashboard.
+        'gmv': (str(gmv) if gmv is not None else None),
+        # The honest shape. Always present, and the only one an operator should
+        # read once a second market exists.
+        'gmv_by_currency': {k: str(v) for k, v in gmv_by_currency.items()},
+        'gmv_display': format_totals(gmv_by_currency),
+        'drivers': {
+            'online_now': online_now,
+            'online_24h': online_24h,
+        },
+        'riders': {
+            'active_24h': riders_active_24h,
+        },
+        'cancellations': {
+            'driver_24h': driver_cancels_24h,
+        },
+        'withdrawals': {
+            'pending': withdrawals_pending,
+            # `completed_today_amount` is None when the day spans markets,
+            # so a console rendering it bare printed "None" there and a
+            # symbol-less number everywhere else. `_display` is the same
+            # treatment GMV already gets, and is what a screen should show.
+            'completed_today_amount': (
+                str(withdrawals_completed_today_amount)
+                if withdrawals_completed_today_amount is not None else None),
+            'completed_today_by_currency': {
+                k: str(v) for k, v in withdrawals_completed_today_by_currency.items()},
+            'completed_today_display': format_totals(
+                withdrawals_completed_today_by_currency),
+        },
+        'receipts': {
+            'issued_today': receipts_issued,
+            'send_failures_today': receipts_failed,
+        },
+        # Command Centre: alerts nobody has acknowledged yet (an SOS with
+        # no anchor, for now). Counted here so the shift's shared picture
+        # shows "something is waiting on a person" without a second poll.
+        'alerts': {
+            'open': open_alert_count(),
+        },
+    }
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, ScopedPermission('trip.read')])
+def admin_dashboard(request):
+    """Daily ops dashboard KPIs.
+
+    Returns a single payload the admin web console can render as
+    headline tiles. A `?date=` query param (YYYY-MM-DD) lets ops backfill
+    yesterday's numbers.
+
+    WHICH "TODAY"
+    -------------
+    The DEPLOYMENT's day, not any one market's -- this is a platform-wide ops
+    view and the team reading it sits in one place, so one cut-off is what
+    makes the tiles comparable day to day. That is a reporting convention and
+    it is stated here rather than implied: with two markets live, a day
+    boundary at Indian midnight splits a US afternoon.
+
+    The money tiles are NOT a single number for this reason. `gmv_by_currency`
+    and `withdrawals.completed_today_by_currency` give one amount per market;
+    the flat `gmv` is `None` when the day spans currencies rather than adding
+    them. For per-market revenue over a date range, the executive revenue
+    report scopes to one market at a time.
+
+    Tile set:
+      trips.requested / accepted / completed / cancelled
+      gmv / gmv_by_currency (completed trips' final_fare)
+      drivers.online_now / online_24h
+      riders.active_24h
+      cancellations.driver_24h (counter for the rolling penalty rule)
+      withdrawals.pending / completed_today_by_currency
+      receipts.issued_today / send_failures_today
+
+    WHO SEES WHAT
+    -------------
+    Gated on `trip.read`, which every operational role holds, because this
+    is the shift's shared picture -- a Support Agent who cannot see how
+    many trips are running is working blind. It is NOT gated on
+    `report.read`: that would refuse Support, KYC and Safety, which is what
+    the strict-mode rehearsal caught.
+
+    The MONEY tiles are a different question. GMV and payout totals are
+    withheld unless the caller holds `finance.read`, so the shared picture
+    does not quietly hand every operator the day's revenue. The keys are
+    removed from the payload rather than zeroed: a zero is a number
+    somebody will act on.
+    """
+    from datetime import datetime
+    from django.utils import timezone
+
+    date_str = request.query_params.get('date')
+    if date_str:
+        try:
+            day_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return error_response(
+                code='INVALID_DATE', message='date must be YYYY-MM-DD',
+                field='date', issue=f'Got {date_str!r}',
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    else:
+        day_date = timezone.localtime(timezone.now()).date()
+
+    payload = build_admin_dashboard_kpis(day_date)
+
+    # Money is finance's, even on a shared dashboard.
+    from servers.admin_access.bridge import granted
+
+    may_see_money, _how = granted(request.user, 'finance.read')
+    if not may_see_money:
+        for key in ('gmv', 'gmv_by_currency', 'gmv_display',
+                    'withdrawals', 'receipts'):
+            payload.pop(key, None)
+
+    return success_response(
+        payload,
         status.HTTP_200_OK,
     )

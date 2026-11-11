@@ -13,11 +13,58 @@ from django.views.decorators.http import require_POST
 from django.http import JsonResponse
 from django.db import models, transaction, IntegrityError
 from base.utils import success_response, error_response
+from base.money import (
+    currency_for_trip, format_money, from_minor, normalize_currency, parse_input, to_minor,
+)
 from servers.payments.models import Payment, TransactionHistory, PaymentGateway, WebhookEvent
-from servers.payments.payment_gateways.factory import get_payment_gateway, get_payment_gateway_for_payments, get_payment_gateway_for_payouts
+from servers.payments.payment_gateways.factory import (
+    country_for_trip, get_payment_gateway, get_payment_gateway_for_payments,
+    get_payment_gateway_for_payouts, get_webhook_verifier,
+)
 from servers.ride.models import Trip
 
 logger = logging.getLogger(__name__)
+
+
+def _online_payment_currency(gateway, trip):
+    """Resolve the currency for an online order, or refuse the order.
+
+    Returns `(currency, error_response_or_None)`.
+
+    Every `create_order` call passed `currency='INR'` as a literal. With one
+    market that was simply true. With two it becomes a silent mischarge: a
+    $30.83 fare sent to a rupee-only gateway is charged as Rs.30.83 -- about a
+    ninetieth of what is owed -- and the Payment row records a currency the
+    rider never paid in. Nothing errors; the money is just wrong.
+
+    So the currency comes from the trip, and a gateway that cannot settle it
+    refuses the order instead of charging the wrong amount. This does not
+    enable any gateway in any new market -- it is the guard that makes the
+    absence of one visible.
+    """
+    currency = normalize_currency(currency_for_trip(trip))
+    supported = tuple(gateway.supported_currencies())
+    if currency in supported:
+        return currency, None
+
+    logger.error(
+        'online payment refused: trip=%s is priced in %s and gateway %s '
+        'settles only in %s. No gateway is configured for this market.',
+        getattr(trip, 'id', None), currency, gateway.get_name(), supported,
+    )
+    return None, error_response(
+        code='CURRENCY_NOT_SUPPORTED',
+        message=(
+            'Online payment is not available for this trip. '
+            'Please choose another payment method.'
+        ),
+        field='payment_method',
+        issue=(
+            f'Trip is priced in {currency}; gateway '
+            f'{gateway.get_name()} settles only in {", ".join(supported)}'
+        ),
+        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
 
 
 @api_view(['POST'])
@@ -72,6 +119,14 @@ def create_order(request):
         )
 
     # Check if payment already exists
+    if trip.end_rule == 'platform_funded':
+        return error_response(
+            code='NOT_CHARGED',
+            message='This trip was ended by SaaradhiGo and you were not charged.',
+            field='trip_id', issue='Platform-funded operator end',
+            status=status.HTTP_409_CONFLICT
+        )
+
     existing = Payment.objects.filter(trip_id=trip, status='completed').first()
     if existing:
         return error_response(
@@ -82,8 +137,20 @@ def create_order(request):
             status=status.HTTP_409_CONFLICT
         )
 
-    # Use final_fare if available, otherwise estimated_fare
-    amount = trip.final_fare or trip.estimated_fare
+    from servers.promotions.rider_promos import is_fully_covered
+    if is_fully_covered(trip):
+        return error_response(
+            code='NOT_CHARGED',
+            message='A promotion covered this trip, so you were not charged.',
+            field='trip_id', issue='Fully covered by a promotion',
+            status=status.HTTP_409_CONFLICT
+        )
+
+    # What the RIDER pays: the fare less any promo discount (platform-funded, module 12).
+    # Settlement and driver earnings still read the full fare.
+    from servers.promotions.rider_promos import payable_minor
+    amount_minor = payable_minor(trip)
+    amount = from_minor(amount_minor, trip.currency)
     if not amount or amount <= 0:
         return error_response(
             code='INVALID_AMOUNT',
@@ -93,8 +160,8 @@ def create_order(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Get payment gateway
-    gateway = get_payment_gateway()
+    # Get the payment gateway configured for the trip's country (never another country's)
+    gateway = get_payment_gateway(country=country_for_trip(trip))
     if not gateway:
         return error_response(
             code='PAYMENT_GATEWAY_ERROR',
@@ -108,9 +175,14 @@ def create_order(request):
     # so receipts and Cashfree-dashboard rows carry the actual customer's
     # identity, not the placeholder phone/email that used to ship on every
     # order (security audit H5).
+    pay_currency, currency_error = _online_payment_currency(gateway, trip)
+    if currency_error is not None:
+        return currency_error
+
     order = gateway.create_order(
-        amount=amount,
+        amount_minor=amount_minor,
         trip_id=trip.id,
+        currency=pay_currency,
         customer_id=str(request.user.id),
         customer_phone=request.user.phone_number,
         customer_email=request.user.email,
@@ -153,6 +225,11 @@ def create_order(request):
             cashfree_order_id=str(order.get('order_id') or order.get('gateway_order_id', '')),
             cashfree_payment_session_id=order.get('payment_session_id'),
         )
+    # Every order this payment is issued is kept (AUDIT 27.76): a rider who opened checkout twice and
+    # paid the first one is still matched.
+    from servers.payments.orders import remember
+
+    remember(payment, payment.gateway_order_id, gateway.get_name())
     logger.info(f"Payment created/updated: {payment}")
 
     # Prepare response based on gateway
@@ -161,8 +238,8 @@ def create_order(request):
         'gateway': gateway.get_name(),
         'gateway_order_id': order.get('id') or order.get('order_id'),
         'amount': str(amount),
-        'amount_paise': order.get('amount') or str(int(amount * 100)),
-        'currency': order.get('currency', 'INR'),
+        'amount_paise': order.get('amount') or str(amount_minor),
+        'currency': order.get('currency') or pay_currency,
         'trip_id': trip.id,
         'description': f'Payment for Trip #{trip.id}',
         'prefill': {
@@ -176,6 +253,12 @@ def create_order(request):
     response_data['cashfree_payment_session_id'] = order.get('payment_session_id')
     response_data['cashfree_app_id'] = getattr(settings, 'CASHFREE_APP_ID', '')
     response_data['order_token'] = order.get('order_token')
+
+    # Razorpay Checkout needs: the order id, the PUBLIC key id, the amount (paise) and currency.
+    # Added only for a Razorpay order, so the Cashfree response keeps exactly its old shape.
+    if gateway.get_name() == PaymentGateway.RAZORPAY:
+        response_data['order_id'] = order.get('order_id')
+        response_data['key_id'] = order.get('key_id')
 
     return success_response(response_data, status.HTTP_201_CREATED)
 
@@ -193,54 +276,52 @@ def verify_payment(request):
         "gateway": "cashfree" (optional, auto-detected from payment)
     }
     """
-    gateway_order_id = request.data.get('gateway_order_id')
-    # gateway_payment_id = request.data.get('gateway_payment_id')
-    # gateway_signature = request.data.get('gateway_signature')
-    gateway_name = request.data.get('gateway','cashfree')
+    gateway_order_id = (request.data.get('gateway_order_id')
+                        or request.data.get('razorpay_order_id'))
+    # Razorpay Checkout returns razorpay_order_id / razorpay_payment_id / razorpay_signature; the
+    # generic names are accepted too. Cashfree sends only the order id (confirmed server side).
+    gateway_payment_id = (request.data.get('razorpay_payment_id')
+                          or request.data.get('gateway_payment_id'))
+    gateway_signature = (request.data.get('razorpay_signature')
+                         or request.data.get('gateway_signature'))
+    gateway_name = request.data.get('gateway')
 
     if not all([gateway_order_id]):
         return error_response(
             code='MISSING_FIELDS',
-            message='gateway_order_id, gateway_payment_id, and gateway_signature are required',
+            message='gateway_order_id (or razorpay_order_id) is required',
             field='request_body',
-            issue='All payment verification fields must be provided',
+            issue='Provide the order id returned by create-order',
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Find the payment - try multiple fields for backward compatibility
-    try:
-        # First try gateway_order_id (new field)
-        payment = Payment.objects.select_related('trip_id', 'trip_id__driver_id').get(
-            gateway_order_id=gateway_order_id,
-            user_id=request.user
-        )
-    except Payment.DoesNotExist:
-        try:
-            # Try cashfree_order_id
-            payment = Payment.objects.select_related('trip_id', 'trip_id__driver_id').get(
-                cashfree_order_id=gateway_order_id,
-                user_id=request.user
-            )
-        except Payment.DoesNotExist:
-            return error_response(
-                code='NOT_FOUND',
-                message='Payment not found for this order',
-                field='gateway_order_id',
-                issue=f'No payment found for order {gateway_order_id}',
-                status=status.HTTP_404_NOT_FOUND
-            )
+    # Find the payment by ANY order it was issued (AUDIT 27.76), not only the latest.
+    from servers.payments.orders import payment_for_order
 
-    if payment.status == 'completed':
+    payment = payment_for_order(gateway_order_id, user=request.user)
+    if payment is None:
+        return error_response(
+            code='NOT_FOUND',
+            message='Payment not found for this order',
+            field='gateway_order_id',
+            issue=f'No payment found for order {gateway_order_id}',
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    from servers.payments.orders import is_late_capture
+
+    if payment.status == 'completed' and not is_late_capture(
+            payment, gateway_order_id, request.data.get('razorpay_payment_id')
+            or request.data.get('gateway_payment_id')):
         return success_response({
             'message': 'Payment already verified',
             'payment_id': payment.id,
             'status': 'completed',
         }, status.HTTP_200_OK)
 
-    # Determine gateway
-    if not gateway_name:
-        gateway_name = payment.payment_gateway or PaymentGateway.CASHFREE
-    
+    # The payment row, not the request, says which provider took this order.
+    gateway_name = payment.payment_gateway or gateway_name or PaymentGateway.CASHFREE
+
     # Get payment gateway
     gateway = get_payment_gateway(gateway_name)
     if not gateway:
@@ -252,10 +333,46 @@ def verify_payment(request):
             status=status.HTTP_503_SERVICE_UNAVAILABLE
         )
 
-    # Verify signature using gateway
-    is_valid = gateway.verify_payment_signature(
-        order_id=gateway_order_id
-    )
+    if gateway.get_name() == PaymentGateway.RAZORPAY:
+        # HMAC-SHA256(order_id|payment_id, key secret), checked in constant time. A bad or missing
+        # signature changes nothing (it does not mark the payment failed: the signed webhook or
+        # reconciliation still settles a payment that really was captured).
+        if not (gateway_payment_id and gateway_signature):
+            return error_response(
+                code='MISSING_FIELDS',
+                message='razorpay_order_id, razorpay_payment_id and razorpay_signature are required',
+                field='request_body',
+                issue='Post the three values Razorpay Checkout returned',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not gateway.verify_payment_signature(
+                gateway_order_id, gateway_payment_id, gateway_signature):
+            return error_response(
+                code='SIGNATURE_INVALID',
+                message='Payment verification failed',
+                field='razorpay_signature',
+                issue='razorpay signature verification failed',
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        # Auto capture is the normal case; a payment left `authorized` is captured here.
+        captured = gateway.ensure_captured(
+            gateway_payment_id, payment.amount_minor, payment.currency)
+        if captured not in ('captured', 'refunded'):
+            return error_response(
+                code='PAYMENT_NOT_CAPTURED',
+                message='Your payment is still being confirmed. Please check again shortly.',
+                field='razorpay_payment_id',
+                issue=f'payment status at gateway: {captured}',
+                status=status.HTTP_409_CONFLICT
+            )
+        payment.gateway_payment_id = str(gateway_payment_id)
+        payment.gateway_signature = str(gateway_signature)[:512]
+        is_valid = True
+    else:
+        # Verify via the gateway (Cashfree: order status API)
+        is_valid = gateway.verify_payment_signature(
+            order_id=gateway_order_id
+        )
     if not is_valid:
         payment.status = 'failed'
         payment.save()
@@ -267,11 +384,43 @@ def verify_payment(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Mark payment as completed
+    # Mark payment as completed: under the row lock (a concurrent webhook or poll may be settling the
+    # same order), and never for an order the trip no longer stands on (AUDIT 27.75).
+    verified_ids = (payment.gateway_payment_id, payment.gateway_signature)
     with transaction.atomic():
+        payment = Payment.objects.select_for_update(of=('self',)).select_related(
+            'trip_id', 'trip_id__driver_id').get(pk=payment.pk)
+        from servers.payments.late_paid import record as record_late_paid, superseded
+        from servers.payments.orders import is_late_capture, settled_by
+
+        if is_late_capture(payment, gateway_order_id, verified_ids[0]):
+            record_late_paid(payment, gateway_name=gateway.get_name(),
+                             gateway_payment_id=verified_ids[0], source='verify',
+                             order_id=gateway_order_id)
+            return error_response(
+                code='ALREADY_PAID',
+                message='This trip was already paid. This payment will be refunded to you.',
+                field='payment', issue='The trip was paid by another checkout first',
+                status=status.HTTP_409_CONFLICT)
+        if payment.status == 'completed':
+            return success_response({
+                'message': 'Payment already verified',
+                'payment_id': payment.id,
+                'status': 'completed',
+            }, status.HTTP_200_OK)
+        payment.gateway_payment_id, payment.gateway_signature = verified_ids
+
+        if superseded(payment):
+            record_late_paid(payment, gateway_name=gateway.get_name(),
+                             gateway_payment_id=verified_ids[0], source='verify',
+                             order_id=gateway_order_id)
+            return error_response(
+                code='ALREADY_PAID',
+                message='This trip was already paid. This payment will be refunded to you.',
+                field='payment', issue='The trip was paid another way first',
+                status=status.HTTP_409_CONFLICT)
+        settled_by(payment, gateway_order_id)
         payment.status = 'completed'
-        
-        
         payment.save()
 
         # Update replaced payment if exists (for switched payments)
@@ -300,9 +449,10 @@ def verify_payment(request):
                 status='completed',
             )
 
-            # Create driver earning for online payment
-            from servers.driver.utils import credit_driver_wallet
-            credit_driver_wallet(trip)
+            # Driver earning for the online payment: exactly once, also after a cash
+            # settlement (a trip switched to online after completion, AUDIT 27.72).
+            from servers.driver.utils import settle_paid_by_platform
+            settle_paid_by_platform(trip, payment.amount_minor)
 
     return success_response({
         'message': 'Payment verified successfully',
@@ -311,100 +461,157 @@ def verify_payment(request):
         'amount': str(payment.amount),
         'gateway': gateway.get_name(),
     }, status.HTTP_200_OK)
-
-
 @csrf_exempt
 @require_POST
 def payment_webhook(request):
     """
     Payment gateway webhook endpoint.
     Handles webhooks from Cashfree.
-    POST-only (enforced by @require_POST so GETs from probes return
-    405 not 200). No JWT auth — verified via gateway signature header.
+    POST-only. No JWT auth — verified via gateway signature header.
     """
     if request.method != 'POST':
-        return JsonResponse({'error': 'Method not allowed'}, status=405)
+        return JsonResponse(
+            {'error': 'Method not allowed'},
+            status=405,
+        )
 
     body = request.body
-    
+
     # Cashfree V3 uses x-webhook-signature and x-webhook-timestamp
-    signature = request.headers.get('x-webhook-signature') or request.headers.get('X-Cashfree-Signature')
+    signature = (
+        request.headers.get('x-webhook-signature')
+        or request.headers.get('X-Cashfree-Signature')
+    )
     timestamp = request.headers.get('x-webhook-timestamp')
-    
+
     # Determine gateway from headers
     gateway_name = None
     if signature:
         gateway_name = PaymentGateway.CASHFREE
-    
+
     if not gateway_name:
-        return JsonResponse({'error': 'Missing signature header'}, status=400)
+        return JsonResponse(
+            {'error': 'Missing signature header'},
+            status=400,
+        )
 
-    # Get payment gateway
+    # Verify the signature first (it needs only the secret, so a deployment whose API credentials
+    # are absent still answers a forged delivery with 400), then resolve the usable gateway.
     gateway = get_payment_gateway(gateway_name)
-    if not gateway:
-        return JsonResponse({'error': f'Gateway {gateway_name} not configured'}, status=503)
+    if not get_webhook_verifier('payments', gateway_name).verify_webhook_signature(
+        body,
+        signature,
+        timestamp,
+    ):
+        logger.warning(
+            f"Webhook signature verification failed "
+            f"for {gateway_name}"
+        )
+        return JsonResponse(
+            {'error': 'Invalid signature'},
+            status=400,
+        )
 
-    # Verify webhook signature
-    if not gateway.verify_webhook_signature(body, signature, timestamp):
-        logger.warning(f"Webhook signature verification failed for {gateway_name}")
-        return JsonResponse({'error': 'Invalid signature'}, status=400)
+    if not gateway:
+        return JsonResponse(
+            {
+                'error': (
+                    f'Gateway {gateway_name} '
+                    'not configured'
+                )
+            },
+            status=503,
+        )
 
     try:
         payload = json.loads(body)
 
-        # Idempotency gate. The signature is a function of (body, timestamp,
-        # secret) and is unique per delivery, so it doubles as a perfect
-        # dedupe key for both legitimate retries and forged replays.
-        #
-        # The INSERT runs inside `transaction.atomic()` so an IntegrityError
-        # from the unique constraint rolls back just the savepoint instead
-        # of poisoning the surrounding transaction. Without the explicit
-        # savepoint, Django's autocommit hides the bug in production but
-        # any caller that wraps webhook handling in a transaction (and the
-        # test runner does) sees a TransactionManagementError on the next
-        # query.
-        event_type = (payload.get('type') or payload.get('event') or '')[:64]
+        # ---------------------------------------------------------
+        # IDEMPOTENCY / WEBHOOK DEDUPLICATION
+        # ---------------------------------------------------------
+        event_type = (
+            payload.get('type')
+            or payload.get('event')
+            or ''
+        )[:64]
+
+        dedupe_key = signature[:512]
+
         try:
             with transaction.atomic():
                 WebhookEvent.objects.create(
                     gateway=gateway_name,
-                    dedupe_key=signature[:512],
+                    dedupe_key=dedupe_key,
                     event_type=event_type,
                     raw_payload=payload,
                 )
         except IntegrityError:
             logger.info(
-                f"Webhook deduplicated (gateway={gateway_name}, "
-                f"sig={signature[:16]}…)"
+                f"Payment webhook deduplicated "
+                f"(gateway={gateway_name}, "
+                f"sig={signature[:16]}...)"
             )
-            return JsonResponse({'status': 'already_processed'}, status=200)
+            return JsonResponse(
+                {'status': 'already_processed'},
+                status=200,
+            )
 
-        # Handle Cashfree webhook payload
-        response = _handle_cashfree_webhook(payload, gateway)
+        # ---------------------------------------------------------
+        # PROCESS PAYMENT WEBHOOK
+        # ---------------------------------------------------------
+        response = _handle_cashfree_webhook(
+            payload,
+            gateway,
+        )
 
-        # Mark this event as processed for observability.
+        # ---------------------------------------------------------
+        # MARK WEBHOOK AS PROCESSED
+        # ---------------------------------------------------------
         try:
             WebhookEvent.objects.filter(
-                gateway=gateway_name, dedupe_key=signature[:512]
+                gateway=gateway_name,
+                dedupe_key=dedupe_key,
             ).update(
                 processed_at=timezone.now(),
-                result='ok' if response.status_code == 200 else 'error',
+                result=(
+                    'ok'
+                    if response.status_code == 200
+                    else 'error'
+                ),
             )
         except Exception:
+            # Observability failure must not turn a processed
+            # payment into a 500 response.
             pass
 
         return response
 
     except (json.JSONDecodeError, KeyError) as e:
-        logger.error(f"Webhook: Invalid payload: {e}")
-        return JsonResponse({'error': 'Invalid payload'}, status=400)
-    except Exception as e:
-        logger.error(f"Webhook: Error processing: {e}")
-        return JsonResponse({'error': 'Internal error'}, status=500)
+        logger.error(
+            f"Webhook: Invalid payload: {e}"
+        )
+        return JsonResponse(
+            {'error': 'Invalid payload'},
+            status=400,
+        )
 
+    except Exception as e:
+        logger.error(
+            f"Webhook: Error processing: {e}"
+        )
+        return JsonResponse(
+            {'error': 'Internal error'},
+            status=500,
+        )
 
 def _handle_cashfree_webhook(payload, gateway):
-    """Handle Cashfree webhook payload."""
+    """Handle a payment webhook payload in Cashfree's shape.
+
+    Razorpay deliveries are normalised into this shape by `razorpay_webhooks` and arrive here, so
+    one settle path serves every provider. `gateway` names which one (it labels the history row).
+    """
+    provider = gateway.get_name() if gateway else 'cashfree'
+    is_cf = provider == 'cashfree'
     event_type = payload.get('type', '')
     data = payload.get('data', {})
     order_data = data.get('order', {})
@@ -466,7 +673,7 @@ def _handle_cashfree_webhook(payload, gateway):
                     status=200,
                 )
             try:
-                gateway_amount = Decimal(str(order_info.get('order_amount'))).quantize(Decimal('0.01'))
+                gateway_amount = parse_input(order_info.get('order_amount'))
             except (InvalidOperation, TypeError):
                 logger.error(
                     f"Cashfree Webhook: malformed amount from gateway "
@@ -487,7 +694,9 @@ def _handle_cashfree_webhook(payload, gateway):
                 if wallet_txn.status == 'completed':
                     return JsonResponse({'status': 'already_completed'}, status=200)
 
-                if wallet_txn.amount != gateway_amount:
+                # Compared in minor units: the gateway's major-unit number is
+                # converted by the money helper, once.
+                if wallet_txn.amount_minor != to_minor(gateway_amount, wallet_txn.currency):
                     logger.error(
                         f"Cashfree Webhook: wallet amount mismatch order={order_id} "
                         f"txn={wallet_txn.amount} gateway={gateway_amount}; refusing"
@@ -498,15 +707,16 @@ def _handle_cashfree_webhook(payload, gateway):
                     )
 
                 wallet_txn.status = 'completed'
-                wallet_txn.cashfree_payment_id = str(payment_id)
+                if is_cf:
+                    wallet_txn.cashfree_payment_id = str(payment_id)
                 wallet_txn.gateway_payment_id = str(payment_id)
                 wallet_txn.save(update_fields=['status', 'cashfree_payment_id', 'gateway_payment_id'])
 
                 wallet, _ = Wallet.objects.select_for_update().get_or_create(
                     user_id=wallet_txn.user_id, scope=Wallet.SCOPE_RIDER,
                 )
-                wallet.balance = wallet.balance + gateway_amount  # Decimal + Decimal
-                wallet.save(update_fields=['balance'])
+                wallet.balance_minor = wallet.balance_minor + wallet_txn.amount_minor
+                wallet.save(update_fields=['balance_minor'])
 
             logger.info(
                 f"Cashfree Webhook: Wallet Top-up {wallet_txn.id} "
@@ -519,18 +729,15 @@ def _handle_cashfree_webhook(payload, gateway):
         # webhook, which Cashfree then retries forever — whenever two rows
         # ended up carrying the same order id (retry_payment + switch method
         # both write these columns). Take the newest deterministically.
-        payment = (
-            Payment.objects
-            .select_related('trip_id', 'trip_id__driver_id')
-            .filter(models.Q(cashfree_order_id=order_id) | models.Q(gateway_order_id=order_id))
-            .order_by('-created_at', '-id')
-            .first()
-        )
+        # Matched on ANY order the payment was issued (AUDIT 27.76), newest row on a tie.
+        from servers.payments.orders import is_late_capture, payment_for_order, settled_by
+
+        payment = payment_for_order(order_id)
         if payment is None:
             logger.warning(f"Cashfree Webhook: No payment/wallet matching order {order_id}")
             return JsonResponse({'status': 'skipped', 'reason': 'payment not found'}, status=200)
 
-        if payment.status == 'completed':
+        if payment.status == 'completed' and not is_late_capture(payment, order_id, payment_id):
             return JsonResponse({'status': 'already_completed'}, status=200)
 
         # Confirm with the gateway before moving money, exactly as the wallet
@@ -549,7 +756,7 @@ def _handle_cashfree_webhook(payload, gateway):
             )
 
         try:
-            gateway_amount = Decimal(str(order_info.get('order_amount'))).quantize(Decimal('0.01'))
+            gateway_amount = parse_input(order_info.get('order_amount'))
         except (InvalidOperation, TypeError):
             logger.error(
                 "Cashfree Webhook: malformed amount from gateway for trip order %s: %s",
@@ -559,7 +766,7 @@ def _handle_cashfree_webhook(payload, gateway):
                 {'status': 'skipped', 'reason': 'malformed gateway amount'}, status=200,
             )
 
-        if Decimal(str(payment.amount)).quantize(Decimal('0.01')) != gateway_amount:
+        if payment.amount_minor != to_minor(gateway_amount, payment.currency):
             logger.error(
                 "Cashfree Webhook: trip amount mismatch order=%s payment=%s gateway=%s; refusing",
                 order_id, payment.amount, gateway_amount,
@@ -571,14 +778,25 @@ def _handle_cashfree_webhook(payload, gateway):
         with transaction.atomic():
             # Re-read under a row lock so a concurrent /payments/verify/ for
             # the same order cannot settle it twice.
-            payment = Payment.objects.select_for_update().select_related(
+            payment = Payment.objects.select_for_update(of=('self',)).select_related(
                 'trip_id', 'trip_id__driver_id',
             ).get(pk=payment.pk)
+            from servers.payments.late_paid import record as record_late_paid, superseded
+
+            # Paid by another checkout first (AUDIT 27.76), or the trip was paid another way first
+            # (AUDIT 27.75): record, alert, refund this capture.
+            if is_late_capture(payment, order_id, payment_id) or (
+                    payment.status != 'completed' and superseded(payment)):
+                record_late_paid(payment, gateway_name=provider, gateway_payment_id=payment_id,
+                                 source='webhook', order_id=order_id)
+                return JsonResponse({'status': 'superseded_refunding'}, status=200)
             if payment.status == 'completed':
                 return JsonResponse({'status': 'already_completed'}, status=200)
 
+            settled_by(payment, order_id)
             payment.status = 'completed'
-            payment.cashfree_payment_id = str(payment_id)
+            if is_cf:
+                payment.cashfree_payment_id = str(payment_id)
             payment.gateway_payment_id = str(payment_id)
             payment.save()
 
@@ -596,16 +814,17 @@ def _handle_cashfree_webhook(payload, gateway):
                         'driver_id': trip.driver_id,
                         'amount': payment.amount,
                         'method': 'online',
-                        'payment_gateway': PaymentGateway.CASHFREE,
-                        'cashfree_payment_id': str(payment_id),
+                        'payment_gateway': provider,
+                        'cashfree_payment_id': str(payment_id) if is_cf else None,
                         'user_name': payment.user_id.full_name or payment.user_id.phone_number,
                         'status': 'completed',
                     }
                 )
 
-                # Credit driver's wallet for online payment
-                from servers.driver.utils import credit_driver_wallet
-                credit_driver_wallet(trip)
+                # Driver earning for the online payment: exactly once, also after a cash
+                # settlement (a trip switched to online after completion, AUDIT 27.72).
+                from servers.driver.utils import settle_paid_by_platform
+                settle_paid_by_platform(trip, payment.amount_minor)
 
         logger.info(f"Cashfree Webhook: Payment {payment.id} completed for trip {trip.id}")
         return JsonResponse({'status': 'ok'}, status=200)
@@ -619,7 +838,6 @@ def _handle_cashfree_webhook(payload, gateway):
     logger.info(f"Cashfree Webhook: Received event {event_type or payload.get('event')}, ignoring")
     return JsonResponse({'status': 'ok'}, status=200)
 
-
 @csrf_exempt
 @require_POST
 def payout_webhook(request):
@@ -629,179 +847,638 @@ def payout_webhook(request):
     POST-only. No JWT auth — verified via gateway signature header.
     """
     if request.method != 'POST':
-        return JsonResponse({'error': 'Method not allowed'}, status=405)
+        return JsonResponse(
+            {'error': 'Method not allowed'},
+            status=405,
+        )
 
     body = request.body
-    
+
     # Cashfree V3 uses x-webhook-signature and x-webhook-timestamp
-    signature = request.headers.get('x-webhook-signature') or request.headers.get('X-Cashfree-Signature')
+    signature = (
+        request.headers.get('x-webhook-signature')
+        or request.headers.get('X-Cashfree-Signature')
+    )
     timestamp = request.headers.get('x-webhook-timestamp')
-    
+
     # Determine gateway from headers
     gateway_name = None
     if signature:
         gateway_name = PaymentGateway.CASHFREE
-    
+
     if not gateway_name:
-        return JsonResponse({'error': 'Missing signature header'}, status=400)
+        return JsonResponse(
+            {'error': 'Missing signature header'},
+            status=400,
+        )
 
-    # Get payment gateway for payouts
-    gateway = get_payment_gateway_for_payouts()
-    if not gateway:
-        return JsonResponse({'error': f'Gateway {gateway_name} not configured'}, status=503)
-
+    # Verify the signature first (needs only the secret, so a deployment whose API credentials are
+    # absent still answers a forged delivery with 400), then resolve the usable gateway for payouts
+    gateway = get_payment_gateway_for_payouts(gateway_name=gateway_name)
     # Verify webhook signature
-    if not gateway.verify_webhook_signature(body, signature, timestamp):
-        logger.warning(f"Payout webhook signature verification failed for {gateway_name}")
-        return JsonResponse({'error': 'Invalid signature'}, status=400)
+    if not get_webhook_verifier('payouts', gateway_name).verify_webhook_signature(
+        body,
+        signature,
+        timestamp,
+    ):
+        logger.warning(
+            f"Payout webhook signature verification failed "
+            f"for {gateway_name}"
+        )
+        return JsonResponse(
+            {'error': 'Invalid signature'},
+            status=400,
+        )
+
+    if not gateway:
+        return JsonResponse(
+            {
+                'error': (
+                    f'Gateway {gateway_name} '
+                    'not configured'
+                )
+            },
+            status=503,
+        )
 
     try:
         payload = json.loads(body)
-        
-        # Handle Cashfree payout webhook payload
-        return _handle_cashfree_payout_webhook(payload, gateway)
+
+        # ---------------------------------------------------------
+        # IDEMPOTENCY / WEBHOOK DEDUPLICATION
+        # ---------------------------------------------------------
+        event_type = (
+            payload.get('type')
+            or payload.get('event')
+            or ''
+        )[:64]
+
+        dedupe_key = signature[:512]
+
+        try:
+            with transaction.atomic():
+                WebhookEvent.objects.create(
+                    gateway=gateway_name,
+                    dedupe_key=dedupe_key,
+                    event_type=event_type,
+                    raw_payload=payload,
+                )
+        except IntegrityError:
+            logger.info(
+                f"Payout webhook deduplicated "
+                f"(gateway={gateway_name}, "
+                f"sig={signature[:16]}...)"
+            )
+            return JsonResponse(
+                {'status': 'already_processed'},
+                status=200,
+            )
+
+        # ---------------------------------------------------------
+        # PROCESS PAYOUT WEBHOOK
+        # ---------------------------------------------------------
+        response = _handle_cashfree_payout_webhook(
+            payload,
+            gateway,
+        )
+
+        # ---------------------------------------------------------
+        # MARK WEBHOOK AS PROCESSED
+        # ---------------------------------------------------------
+        try:
+            WebhookEvent.objects.filter(
+                gateway=gateway_name,
+                dedupe_key=dedupe_key,
+            ).update(
+                processed_at=timezone.now(),
+                result=(
+                    'ok'
+                    if response.status_code == 200
+                    else 'error'
+                ),
+            )
+        except Exception:
+            # Observability failure must not turn a processed
+            # payout into a 500 response.
+            pass
+
+        return response
 
     except (json.JSONDecodeError, KeyError) as e:
-        logger.error(f"Payout webhook: Invalid payload: {e}")
-        return JsonResponse({'error': 'Invalid payload'}, status=400)
-    except Exception as e:
-        logger.error(f"Payout webhook: Error processing: {e}")
-        return JsonResponse({'error': 'Internal error'}, status=500)
+        logger.error(
+            f"Payout webhook: Invalid payload: {e}"
+        )
+        return JsonResponse(
+            {'error': 'Invalid payload'},
+            status=400,
+        )
 
+    except Exception as e:
+        logger.error(
+            f"Payout webhook: Error processing: {e}"
+        )
+        return JsonResponse(
+            {'error': 'Internal error'},
+            status=500,
+        )
 
 def _handle_cashfree_payout_webhook(payload, gateway):
-    """Handle Cashfree payout webhook payload."""
-    event = payload.get('event', '')
-    # Extract payout IDs (supporting both V2 and V3 structures)
-    payout_id = payload.get('transfer_id') or payload.get('payoutId')
-    reference_id = payload.get('cf_transfer_id') or payload.get('referenceId')
-    status = payload.get('status')
-    failure_reason = payload.get('failureReason', '')
-    
-    logger.info(f"Cashfree Payout Webhook: Received event {event} for payout {payout_id}, status: {status}")
-    
-    # Import models here to avoid circular imports
-    from servers.driver.models import WithdrawalRequest
-    from servers.driver.services import trigger_payout_creation
-    
-    if not payout_id:
-        logger.warning("Cashfree Payout Webhook: No payout_id in payload")
-        return JsonResponse({'status': 'skipped', 'reason': 'no payout_id'}, status=200)
-    
-    # Find withdrawal request by payout_reference_id (stores Cashfree payout ID)
-    withdrawal = WithdrawalRequest.objects.filter(payout_reference_id=payout_id).first()
-    if not withdrawal:
-        logger.warning(f"Cashfree Payout Webhook: No withdrawal found for payout_id {payout_id}")
-        return JsonResponse({'status': 'skipped', 'reason': 'withdrawal not found'}, status=200)
-    
-    # Check if already processed (idempotency)
-    if withdrawal.payout_status == status and withdrawal.status == 'completed':
-        logger.info(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} already processed with status {status}")
-        return JsonResponse({'status': 'already_processed'}, status=200)
-    
-    # Handle payout events
-    if event == 'TRANSFER_SUCCESS' or event == 'PAYOUT_SUCCESS':
-        with transaction.atomic():
-            withdrawal.status = 'completed'
-            withdrawal.payout_status = status if status else 'success'
-            withdrawal.save(update_fields=['status', 'payout_status'])
+    """Handle Cashfree payout webhook payload safely and idempotently."""
 
-            # Stamp last_withdrawal_at on the driver ONLY now — at confirmed
-            # TRANSFER_SUCCESS. trigger_payout_creation used to set this at
-            # request time, which meant a failed payout still blocked the
-            # driver from new withdrawals for 7 days even though no money
-            # moved. Audit M8.
+    event = payload.get("event", "")
+    provider = gateway.get_name() if gateway else 'cashfree'
+    is_cf = provider == 'cashfree'
+
+    # Support Cashfree payload variations (Razorpay deliveries are normalised into this shape
+    # by `razorpay_webhooks`: transfer_id = our reference, cf_transfer_id = the provider's id).
+    payout_id = payload.get("transfer_id") or payload.get("payoutId")
+    reference_id = payload.get("cf_transfer_id") or payload.get("referenceId")
+    status = payload.get("status")
+    failure_reason = payload.get("failureReason", "")
+
+    logger.info(
+        "Cashfree Payout Webhook: event=%s payout_id=%s status=%s",
+        event,
+        payout_id,
+        status,
+    )
+
+    from servers.driver.models import WithdrawalRequest
+    from servers.driver.models import Driver
+    from servers.payments.models import (
+        PaymentGateway,
+        TransactionHistory,
+    )
+    from servers.rider.models import Wallet, WalletTransaction
+
+    if not payout_id and not reference_id:
+        logger.warning(
+            "Cashfree Payout Webhook: No payout ID or reference ID in payload"
+        )
+        return JsonResponse(
+            {
+                "status": "skipped",
+                "reason": "no payout_id_or_reference_id",
+            },
+            status=200,
+        )
+
+    # ---------------------------------------------------------
+    # FIND WITHDRAWAL
+    # ---------------------------------------------------------
+    withdrawal = None
+
+    if payout_id:
+        withdrawal = (
+            WithdrawalRequest.objects
+            .select_related("driver", "driver__user_id")
+            .filter(payout_reference_id=str(payout_id))
+            .first()
+        )
+
+    # Fallback to our stable reference ID.
+    if withdrawal is None and reference_id:
+        withdrawal = (
+            WithdrawalRequest.objects
+            .select_related("driver", "driver__user_id")
+            .filter(
+                payout_reference_id=str(reference_id)
+            )
+            .first()
+        )
+
+    if withdrawal is None and reference_id:
+        # Our application reference has the form:
+        # withdrawal_<id>_driver_<driver_id>
+        reference_text = str(reference_id)
+
+        if reference_text.startswith("withdrawal_"):
+            try:
+                withdrawal_id = int(
+                    reference_text.split("_")[1]
+                )
+
+                withdrawal = (
+                    WithdrawalRequest.objects
+                    .select_related("driver", "driver__user_id")
+                    .filter(id=withdrawal_id)
+                    .first()
+                )
+            except (IndexError, ValueError):
+                withdrawal = None
+
+    if not withdrawal:
+        logger.warning(
+            "Cashfree Payout Webhook: No withdrawal found "
+            "for payout_id=%s reference_id=%s",
+            payout_id,
+            reference_id,
+        )
+
+        # Return 200 so Cashfree does not repeatedly retry a webhook
+        # that cannot be matched to an application withdrawal.
+        return JsonResponse(
+            {
+                "status": "skipped",
+                "reason": "withdrawal not found",
+            },
+            status=200,
+        )
+
+    # ---------------------------------------------------------
+    # HELPER: REFUND DRIVER WALLET EXACTLY ONCE
+    # ---------------------------------------------------------
+    def refund_failed_payout(withdrawal_obj):
+        """
+        Refund the wallet exactly once.
+
+        The wallet was already debited when the withdrawal request
+        was created.
+        """
+        # Attempt-aware (AUDIT 27.75): a payout Finance retried was debited again,
+        # so its failure at the provider is refunded again under its own key.
+        from servers.payments.payout_actions import failed_refund_reference
+
+        refund_reference = failed_refund_reference(withdrawal_obj.id)
+        refund_idempotency_key = refund_reference
+
+        wallet = Wallet.objects.select_for_update().get(
+            user_id=withdrawal_obj.driver.user_id,
+            scope=Wallet.SCOPE_DRIVER,
+        )
+
+        existing_refund = WalletTransaction.objects.filter(
+            reference_id=refund_reference,
+            purpose="refund_failed_withdrawal",
+            txn_type="credit",
+            status="completed",
+        ).exists()
+
+        if existing_refund:
+            logger.info(
+                "Wallet refund already exists for withdrawal %s. "
+                "Skipping duplicate webhook refund.",
+                withdrawal_obj.id,
+            )
+            return False
+
+        wallet.balance_minor += withdrawal_obj.amount_minor
+        wallet.save(update_fields=["balance_minor"])
+
+        WalletTransaction.objects.create(
+            user_id=withdrawal_obj.driver.user_id,
+            amount=withdrawal_obj.amount,
+            txn_type="credit",
+            status="completed",
+            purpose="refund_failed_withdrawal",
+            reference_id=refund_reference,
+            idempotency_key=refund_idempotency_key,
+        )
+
+        logger.info(
+            "Wallet refunded for failed/reversed withdrawal %s: amount=%s",
+            withdrawal_obj.id,
+            withdrawal_obj.amount,
+        )
+
+        return True
+
+    # ---------------------------------------------------------
+    # TRANSFER SUCCESS
+    # ---------------------------------------------------------
+    if event in ("TRANSFER_SUCCESS", "PAYOUT_SUCCESS"):
+
+        with transaction.atomic():
+            withdrawal = (
+                WithdrawalRequest.objects
+                .select_for_update()
+                .select_related("driver", "driver__user_id")
+                .get(pk=withdrawal.pk)
+            )
+
+            # Already completed: webhook is a duplicate. A payout reversed after it was
+            # paid stays reversed: a late success must not mark it paid again. One already
+            # in conflict is waiting for Finance.
+            if withdrawal.status in ("completed", "reversed", "conflict"):
+                logger.info(
+                    "Cashfree Payout Webhook: Withdrawal %s "
+                    "already completed.",
+                    withdrawal.id,
+                )
+                return JsonResponse(
+                    {"status": "already_processed"},
+                    status=200,
+                )
+
+            # Failed (or rejected) and refunded, now reported paid (AUDIT 27.72): never mark it
+            # paid and never credit again. Freeze it for Finance.
+            from servers.payments.payout_conflict import REFUNDED_STATUSES, freeze
+
+            if withdrawal.status in REFUNDED_STATUSES:
+                freeze(withdrawal, provider_status=status, provider=provider,
+                       payout_id=payout_id)
+                return JsonResponse(
+                    {"status": "conflict"},
+                    status=200,
+                )
+
+            withdrawal.status = "completed"
+            withdrawal.payout_status = (
+                status or "success"
+            )
+
+            withdrawal.failure_reason = None
+
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "payout_status",
+                    "failure_reason",
+                ]
+            )
+
+            # Only confirmed successful transfers update the
+            # driver's withdrawal cooldown timestamp.
             driver = withdrawal.driver
             driver.last_withdrawal_at = timezone.now()
-            driver.save(update_fields=['last_withdrawal_at'])
-
-            # Create transaction history entry
-            TransactionHistory.objects.get_or_create(
-                withdrawal_request=withdrawal,
-                gateway_transaction_id=str(reference_id),
-                defaults={
-                    'user_id': withdrawal.driver.user_id,
-                    'driver_id': withdrawal.driver,
-                    'amount': withdrawal.amount,
-                    'method': withdrawal.payout_method,
-                    'payment_gateway': PaymentGateway.CASHFREE,
-                    'gateway_payment_id': str(payout_id),
-                    'cashfree_payment_id': str(payout_id),
-                    'user_name': withdrawal.driver.user_id.full_name or withdrawal.driver.user_id.phone_number,
-                    'status': 'completed',
-                    'txn_type': 'payout',
-                }
+            driver.save(
+                update_fields=["last_withdrawal_at"]
             )
 
-        logger.info(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} completed successfully")
-        return JsonResponse({'status': 'ok'}, status=200)
-    
-    elif event == 'TRANSFER_FAILED' or event == 'PAYOUT_FAILED':
+            # Record successful payout.
+            TransactionHistory.objects.get_or_create(
+                withdrawal_request=withdrawal,
+                gateway_transaction_id=(
+                    str(reference_id)
+                    if reference_id
+                    else str(payout_id)
+                ),
+                defaults={
+                    "user_id": withdrawal.driver.user_id,
+                    "driver_id": withdrawal.driver,
+                    "amount": withdrawal.amount,
+                    "method": withdrawal.payout_method,
+                    "payment_gateway": provider,
+                    "gateway_payment_id": str(payout_id),
+                    "cashfree_payment_id": str(payout_id) if is_cf else None,
+                    "cashfree_transfer_id": str(payout_id) if is_cf else None,
+                    "user_name": (
+                        withdrawal.driver.user_id.full_name
+                        or withdrawal.driver.user_id.phone_number
+                    ),
+                    "status": "completed",
+                    "txn_type": "credit",
+                },
+            )
+
+        logger.info(
+            "Cashfree Payout Webhook: Withdrawal %s "
+            "completed successfully.",
+            withdrawal.id,
+        )
+
+        return JsonResponse(
+            {"status": "ok"},
+            status=200,
+        )
+
+    # ---------------------------------------------------------
+    # TRANSFER FAILED
+    # ---------------------------------------------------------
+    if event in ("TRANSFER_FAILED", "PAYOUT_FAILED"):
+
         with transaction.atomic():
-            withdrawal.status = 'failed'
-            withdrawal.payout_status = status if status else 'failed'
-            withdrawal.failure_reason = failure_reason[:255] if failure_reason else 'Payout failed via webhook'
-            withdrawal.failure_count = (withdrawal.failure_count or 0) + 1
-            withdrawal.save(update_fields=['status', 'payout_status', 'failure_reason', 'failure_count'])
-            
-            # Create transaction history entry for failed payout
+            withdrawal = (
+                WithdrawalRequest.objects
+                .select_for_update()
+                .select_related("driver", "driver__user_id")
+                .get(pk=withdrawal.pk)
+            )
+
+            if withdrawal.status in ("completed", "failed", "conflict", "reversed"):
+                logger.info(
+                    "Ignoring duplicate/late failed payout webhook "
+                    "for withdrawal %s with status=%s.",
+                    withdrawal.id,
+                    withdrawal.status,
+                )
+                return JsonResponse(
+                    {"status": "already_processed"},
+                    status=200,
+                )
+
+            withdrawal.status = "failed"
+            withdrawal.payout_status = (
+                status or "failed"
+            )
+            withdrawal.failure_reason = (
+                failure_reason[:255]
+                if failure_reason
+                else "Payout failed via Cashfree webhook"
+            )
+            withdrawal.failure_count = (
+                withdrawal.failure_count or 0
+            ) + 1
+
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "payout_status",
+                    "failure_reason",
+                    "failure_count",
+                ]
+            )
+
+            # CRITICAL:
+            # Cashfree failed the transfer, so return the amount
+            # to the driver's wallet exactly once.
+            refund_failed_payout(withdrawal)
+
             TransactionHistory.objects.get_or_create(
                 withdrawal_request=withdrawal,
                 gateway_payment_id=str(payout_id),
                 defaults={
-                    'user_id': withdrawal.driver.user_id,
-                    'driver_id': withdrawal.driver,
-                    'amount': withdrawal.amount,
-                    'method': withdrawal.payout_method,
-                    'payment_gateway': PaymentGateway.CASHFREE,
-                    'cashfree_payment_id': str(payout_id),
-                    'user_name': withdrawal.driver.user_id.full_name or withdrawal.driver.user_id.phone_number,
-                    'status': 'failed',
-                    'txn_type': 'payout',
-                }
+                    "user_id": withdrawal.driver.user_id,
+                    "driver_id": withdrawal.driver,
+                    "amount": withdrawal.amount,
+                    "method": withdrawal.payout_method,
+                    "payment_gateway": provider,
+                    "cashfree_payment_id": str(payout_id) if is_cf else None,
+                    "cashfree_transfer_id": str(payout_id) if is_cf else None,
+                    "user_name": (
+                        withdrawal.driver.user_id.full_name
+                        or withdrawal.driver.user_id.phone_number
+                    ),
+                    "status": "failed",
+                    "txn_type": "credit",
+                },
             )
-        
-        logger.warning(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} failed: {failure_reason}")
-        return JsonResponse({'status': 'ok'}, status=200)
-    
-    elif event == 'PAYOUT_PENDING':
-        # Update status but don't change withdrawal status (remains 'processing')
-        withdrawal.payout_status = status if status else 'pending'
-        withdrawal.save(update_fields=['payout_status'])
-        
-        logger.info(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} is pending")
-        return JsonResponse({'status': 'ok'}, status=200)
-    
-    elif event == 'TRANSFER_REVERSED' or event == 'PAYOUT_REVERSED':
+
+        logger.warning(
+            "Cashfree Payout Webhook: Withdrawal %s failed: %s",
+            withdrawal.id,
+            failure_reason,
+        )
+
+        return JsonResponse(
+            {"status": "ok"},
+            status=200,
+        )
+
+    # ---------------------------------------------------------
+    # PAYOUT PENDING
+    # ---------------------------------------------------------
+    if event == "PAYOUT_PENDING":
+
         with transaction.atomic():
-            withdrawal.status = 'reversed'
-            withdrawal.payout_status = status if status else 'reversed'
-            withdrawal.save(update_fields=['status', 'payout_status'])
-            
-            # Create transaction history entry for reversal
+            withdrawal = (
+                WithdrawalRequest.objects
+                .select_for_update()
+                .get(pk=withdrawal.pk)
+            )
+
+            # Don't move a completed/failed payout backwards.
+            if withdrawal.status not in (
+                "completed",
+                "failed",
+            ):
+                withdrawal.payout_status = (
+                    status or "pending"
+                )
+                withdrawal.save(
+                    update_fields=["payout_status"]
+                )
+
+        logger.info(
+            "Cashfree Payout Webhook: Withdrawal %s is pending.",
+            withdrawal.id,
+        )
+
+        return JsonResponse(
+            {"status": "ok"},
+            status=200,
+        )
+
+    # ---------------------------------------------------------
+    # TRANSFER REVERSED
+    # ---------------------------------------------------------
+    if event in (
+        "TRANSFER_REVERSED",
+        "PAYOUT_REVERSED",
+    ):
+
+        with transaction.atomic():
+            withdrawal = (
+                WithdrawalRequest.objects
+                .select_for_update()
+                .select_related("driver", "driver__user_id")
+                .get(pk=withdrawal.pk)
+            )
+
+            # Paid, then reversed by the bank (AUDIT 27.71): mark it reversed, credit the
+            # amount back as a new ledger line, alert Finance and tell the driver.
+            if withdrawal.status == "completed":
+                from servers.payments.payout_reversal import reverse_paid_payout
+
+                reverse_paid_payout(withdrawal, provider_status=status)
+                logger.warning(
+                    "Payout Webhook: Withdrawal %s reversed after it was paid.",
+                    withdrawal.id,
+                )
+                return JsonResponse(
+                    {"status": "ok"},
+                    status=200,
+                )
+
+            # Reported paid after the refund, now reversed: the money came back, so the
+            # original refund stands (AUDIT 27.72).
+            if withdrawal.status == "conflict":
+                from servers.payments.payout_conflict import reverse_conflict
+
+                reverse_conflict(withdrawal, provider_status=status)
+                return JsonResponse(
+                    {"status": "ok"},
+                    status=200,
+                )
+
+            # Reversed before it was paid: a failed payout (below).
+            if withdrawal.status in ("failed", "reversed"):
+                logger.info(
+                    "Ignoring duplicate/late reversed payout webhook "
+                    "for withdrawal %s with status=%s.",
+                    withdrawal.id,
+                    withdrawal.status,
+                )
+                return JsonResponse(
+                    {"status": "already_processed"},
+                    status=200,
+                )
+            withdrawal.status = "failed"
+            withdrawal.payout_status = (
+                status or "reversed"
+            )
+            withdrawal.failure_reason = (
+                "Cashfree payout was reversed"
+            )
+            withdrawal.failure_count = (
+                withdrawal.failure_count or 0
+            ) + 1
+
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "payout_status",
+                    "failure_reason",
+                    "failure_count",
+                ]
+            )
+
+            # A reversed payout means the transfer did not remain
+            # with the driver. Refund the wallet exactly once.
+            refund_failed_payout(withdrawal)
+
             TransactionHistory.objects.get_or_create(
                 withdrawal_request=withdrawal,
                 gateway_payment_id=str(payout_id),
                 defaults={
-                    'user_id': withdrawal.driver.user_id,
-                    'driver_id': withdrawal.driver,
-                    'amount': withdrawal.amount,
-                    'method': withdrawal.payout_method,
-                    'payment_gateway': PaymentGateway.CASHFREE,
-                    'cashfree_payment_id': str(payout_id),
-                    'user_name': withdrawal.driver.user_id.full_name or withdrawal.driver.user_id.phone_number,
-                    'status': 'reversed',
-                    'txn_type': 'payout',
-                }
+                    "user_id": withdrawal.driver.user_id,
+                    "driver_id": withdrawal.driver,
+                    "amount": withdrawal.amount,
+                    "method": withdrawal.payout_method,
+                    "payment_gateway": provider,
+                    "cashfree_payment_id": str(payout_id) if is_cf else None,
+                    "cashfree_transfer_id": str(payout_id) if is_cf else None,
+                    "user_name": (
+                        withdrawal.driver.user_id.full_name
+                        or withdrawal.driver.user_id.phone_number
+                    ),
+                    "status": "reversed",
+                    "txn_type": "credit",
+                },
             )
-        
-        logger.info(f"Cashfree Payout Webhook: Withdrawal {withdrawal.id} reversed")
-        return JsonResponse({'status': 'ok'}, status=200)
-    
-    # Log other events but don't process
-    logger.info(f"Cashfree Payout Webhook: Received event {event}, ignoring")
-    return JsonResponse({'status': 'ok'}, status=200)
 
+        logger.warning(
+            "Cashfree Payout Webhook: Withdrawal %s reversed.",
+            withdrawal.id,
+        )
+
+        return JsonResponse(
+            {"status": "ok"},
+            status=200,
+        )
+
+    # ---------------------------------------------------------
+    # OTHER EVENTS
+    # ---------------------------------------------------------
+    logger.info(
+        "Cashfree Payout Webhook: Received event %s, ignoring.",
+        event,
+    )
+
+    return JsonResponse(
+        {"status": "ok"},
+        status=200,
+    )
 
 class PaymentPagination(PageNumberPagination):
     page_size = 10
@@ -853,7 +1530,7 @@ def payment_history(request):
         
         data.append(payment_data)
 
-    return paginator.get_paginated_response(data)
+    return success_response(paginator.get_paginated_response(data).data, status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -869,7 +1546,7 @@ def refund_payment(request):
 
     mode="original" -- refund goes back to the card/UPI/bank that paid for
         the trip. Settles in 5-7 business days via the payment gateway.
-    mode="credit"   -- amount is added instantly to the rider's VahanGo
+    mode="credit"   -- amount is added instantly to the rider's wallet
         Credits (closed-loop wallet). Subject to the credit balance cap.
         The original payment is still marked refunded on our side so the
         driver wallet is reversed as usual; the rider keeps the value as
@@ -961,6 +1638,9 @@ def refund_payment(request):
     refund_order_id = None
     if gateway_name == PaymentGateway.CASHFREE:
         refund_order_id = payment.cashfree_order_id or payment.gateway_order_id
+    elif gateway_name == PaymentGateway.RAZORPAY:
+        # Razorpay refunds a PAYMENT (pay_...); an order id is resolved to its captured payment.
+        refund_order_id = payment.gateway_payment_id or payment.gateway_order_id
 
     if not refund_order_id:
         return error_response(
@@ -983,7 +1663,6 @@ def refund_payment(request):
         )
 
     from servers.rider.models import Wallet
-    from decimal import Decimal
 
     # The whole refund flow runs inside one atomic block so the gateway call,
     # the payment status flip, the driver wallet reversal, and the ledger row
@@ -1012,6 +1691,22 @@ def refund_payment(request):
                 status=status.HTTP_409_CONFLICT
             )
 
+        # Never more than was paid less every refund already issued (AUDIT 27.76): Support or
+        # Finance may have refunded part of it, or an operator end may have returned the excess.
+        from servers.ride.admin_trips import refundable_minor
+        from servers.ride.models import TripMoneyAction
+
+        refund_minor = min(locked_payment.amount_minor, refundable_minor(trip))
+        if refund_minor <= 0:
+            return error_response(
+                code='ALREADY_REFUNDED',
+                message='This trip has already been refunded',
+                field='trip_id',
+                issue='Nothing is left to refund',
+                status=status.HTTP_409_CONFLICT
+            )
+        refund_amount = from_minor(refund_minor, locked_payment.currency)
+
         credit_result = None
         refund = None
         if refund_mode == 'credit':
@@ -1021,7 +1716,7 @@ def refund_payment(request):
             from servers.rider.credits import issue_refund_credit
             credit_result = issue_refund_credit(
                 user=request.user,
-                amount=locked_payment.amount,
+                amount=refund_amount,
                 trip_id=trip.id,
                 idempotency_key=f'refund-credit:payment={locked_payment.pk}',
             )
@@ -1035,7 +1730,9 @@ def refund_payment(request):
                 )
                 refund_mode = 'original'
         if refund_mode == 'original':
-            refund = gateway.create_refund(refund_order_id, amount=locked_payment.amount)
+            refund = gateway.create_refund(
+                refund_order_id, amount_minor=refund_minor,
+                currency=locked_payment.currency)
             if not refund:
                 return error_response(
                     code='REFUND_FAILED',
@@ -1045,41 +1742,42 @@ def refund_payment(request):
                     status=status.HTTP_502_BAD_GATEWAY
                 )
 
-        locked_payment.status = 'refunded'
-        locked_payment.save(update_fields=['status', 'updated_at'])
+        # The refund is a money action on the trip like every other, so the next refund (from
+        # here, Support or Finance) sees it.
+        TripMoneyAction.objects.create(
+            trip=trip, kind=TripMoneyAction.REFUND, amount_minor=refund_minor,
+            currency=locked_payment.currency,
+            method=(TripMoneyAction.WALLET_CREDIT if refund_mode == 'credit'
+                    else TripMoneyAction.GATEWAY),
+            status=(TripMoneyAction.COMPLETED if refund_mode == 'credit'
+                    else TripMoneyAction.PENDING_GATEWAY),
+            wallet_transaction_id=credit_result.transaction_id if refund_mode == 'credit' else None,
+            reason='Rider refund on a cancelled trip', created_by=request.user)
 
-        trip.payment_status = 'refunded'
-        trip.save(update_fields=['payment_status'])
+        # Refunded in full only when nothing is left to refund.
+        fully_refunded = refundable_minor(trip) == 0
+        if fully_refunded:
+            locked_payment.status = 'refunded'
+            locked_payment.save(update_fields=['status', 'updated_at'])
 
-        # If we previously credited the driver for this trip, reverse that
-        # credit now. Without this, the platform pays out the driver AND
-        # refunds the rider, leaking the full net amount on every cancel.
+            trip.payment_status = 'refunded'
+            trip.save(update_fields=['payment_status'])
+
+        # The whole trip went back to the rider: take back what it added to the driver's
+        # balance, as one append-only ledger line (never a bare balance edit), once.
         driver = locked_payment.trip_id.driver_id
-        credit_txn = TransactionHistory.objects.filter(
-            trip_id=trip,
-            driver_id=driver,
-            txn_type='credit',
-            status='completed',
-        ).order_by('-created_at').first() if driver else None
+        reversal = None
+        if driver and fully_refunded:
+            from servers.driver.utils import reverse_trip_earnings
 
-        if credit_txn:
-            credit_amount = Decimal(str(credit_txn.amount))
-            driver_wallet = (
-                Wallet.objects.select_for_update()
-                .filter(user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER)
-                .first()
-            )
-            if driver_wallet:
-                driver_wallet.balance = (
-                    Decimal(str(driver_wallet.balance)) - credit_amount
-                )
-                driver_wallet.save(update_fields=['balance'])
+            reversal = reverse_trip_earnings(trip)
 
+        if reversal is not None:
             TransactionHistory.objects.create(
                 trip_id=trip,
                 user_id=request.user,
                 driver_id=driver,
-                amount=credit_amount,
+                amount=reversal.amount,
                 method='online',
                 payment_gateway=gateway_name,
                 gateway_payment_id=locked_payment.cashfree_payment_id or locked_payment.gateway_payment_id,
@@ -1107,7 +1805,7 @@ def refund_payment(request):
                 trip_id=trip,
                 user_id=request.user,
                 driver_id=driver,
-                amount=locked_payment.amount,
+                amount=refund_amount,
                 method='online',
                 payment_gateway=gateway_name,
                 gateway_payment_id=locked_payment.cashfree_payment_id or locked_payment.gateway_payment_id,
@@ -1127,17 +1825,20 @@ def refund_payment(request):
                 user_id=request.user,
                 title='Refund Processed',
                 message=(
-                    f"Your refund of Rs.{locked_payment.amount} for Trip "
-                    f"#{trip.id} has been initiated. It may take 5-7 business "
-                    f"days to reflect in your account."
+                    # Formatted in the payment's own currency; this was a
+                    # literal "Rs." on every refund notice.
+                    f"Your refund of "
+                    f"{format_money(refund_amount, locked_payment.currency)} "
+                    f"for Trip #{trip.id} has been initiated. It may take 5-7 "
+                    f"business days to reflect in your account."
                 ),
             )
 
     if refund_mode == 'credit':
         return success_response({
-            'message': 'Refund credited as VahanGo Credits',
+            'message': f'Refund credited as {settings.PLATFORM_BRAND_NAME} Credits',
             'mode': 'credit',
-            'amount': str(locked_payment.amount),
+            'amount': str(refund_amount),
             'trip_id': trip.id,
             'credit_transaction_id': credit_result.transaction_id if credit_result else None,
             'new_credit_balance': str(credit_result.new_balance) if credit_result else None,
@@ -1146,7 +1847,7 @@ def refund_payment(request):
         'message': 'Refund initiated successfully',
         'mode': 'original',
         'refund_id': (refund or {}).get('refund_id') or (refund or {}).get('id'),
-        'amount': str(locked_payment.amount),
+        'amount': str(refund_amount),
         'trip_id': trip.id,
         'gateway': gateway.get_name(),
     }, status.HTTP_200_OK)
@@ -1178,27 +1879,39 @@ def _settle_payment_if_paid_at_gateway(trip_id_value, gateway):
     if payment.status == 'completed':
         return True
 
-    order_id = payment.cashfree_order_id or payment.gateway_order_id
-    if not order_id:
-        return False
+    # Every order the payment was issued (AUDIT 27.76), newest first: the first PAID one settles.
+    from servers.payments.orders import order_ids, settled_by
 
-    try:
-        info = gateway.get_order_status(order_id)
-    except Exception as e:
-        logger.warning(f"Gateway status check failed for order {order_id}: {e}")
-        return False
-    if not info or info.get('order_status') != 'PAID':
+    order_id, info = None, None
+    for candidate in order_ids(payment):
+        try:
+            seen = gateway.get_order_status(candidate)
+        except Exception as e:
+            logger.warning(f"Gateway status check failed for order {candidate}: {e}")
+            continue
+        if seen and seen.get('order_status') == 'PAID':
+            order_id, info = candidate, seen
+            break
+    if order_id is None:
         return False
 
     with transaction.atomic():
-        p = Payment.objects.select_for_update().select_related(
+        p = Payment.objects.select_for_update(of=('self',)).select_related(
             'trip_id', 'trip_id__driver_id', 'user_id'
         ).get(pk=payment.pk)
         if p.status == 'completed':
             return True
+        from servers.payments.late_paid import record as record_late_paid, superseded
 
+        if superseded(p):
+            record_late_paid(p, gateway_name=gateway.get_name(),
+                             gateway_payment_id=info.get('cf_payment_id') or info.get('payment_id'),
+                             source='poll', order_id=order_id)
+            return False
+
+        settled_by(p, order_id)
         p.status = 'completed'
-        p.save(update_fields=['status', 'updated_at'])
+        p.save(update_fields=['status', 'updated_at', 'gateway_order_id', 'cashfree_order_id'])
 
         trip = p.trip_id
         trip.payment_status = 'completed'
@@ -1223,8 +1936,9 @@ def _settle_payment_if_paid_at_gateway(trip_id_value, gateway):
                     'txn_type': 'payment',
                 },
             )
-            from servers.driver.utils import credit_driver_wallet
-            credit_driver_wallet(trip)
+            # Exactly once, also after a cash settlement (AUDIT 27.72).
+            from servers.driver.utils import settle_paid_by_platform
+            settle_paid_by_platform(trip, p.amount_minor)
 
     logger.info(
         f"Settled payment {payment.pk} for trip {trip_id_value} via gateway poll "
@@ -1267,6 +1981,18 @@ def switch_payment_method(request):
             status=status.HTTP_400_BAD_REQUEST
         )
     
+    # Online payment only (a rider restricted after a payment-abuse review).
+    if new_method == 'cash':
+        from servers.rider.models import (
+            CASH_NOT_AVAILABLE, CASH_NOT_AVAILABLE_MESSAGE, cash_disabled_for,
+        )
+
+        if cash_disabled_for(request.user):
+            return error_response(
+                code=CASH_NOT_AVAILABLE, message=CASH_NOT_AVAILABLE_MESSAGE,
+                field='new_method', issue='Cash is not available for this account',
+                status=status.HTTP_400_BAD_REQUEST)
+
     # Map UPI/wallet to online for backend
     if new_method in ('upi', 'wallet', 'online'):
         actual_method = 'online'
@@ -1323,7 +2049,7 @@ def switch_payment_method(request):
     # tapping "switch", the late webhook would otherwise land on a now-
     # deactivated payment row, leaving the trip paid AND a fresh order
     # outstanding (and the driver potentially double-credited).
-    poll_gateway = get_payment_gateway_for_payments()
+    poll_gateway = get_payment_gateway_for_payments(country_for_trip(trip))
     if _settle_payment_if_paid_at_gateway(trip.id, poll_gateway):
         return error_response(
             code='ALREADY_PAID',
@@ -1352,15 +2078,27 @@ def switch_payment_method(request):
         existing.save()
         
         # Create new payment
-        amount = trip.final_fare or trip.estimated_fare
+        from servers.promotions.rider_promos import payable, payable_minor
+        amount = payable(trip)
+        from servers.promotions.rider_promos import is_fully_covered, not_charged
+        if trip.end_rule == 'platform_funded' or (
+                actual_method == 'online' and is_fully_covered(trip)):
+            return error_response(
+                code='NOT_CHARGED',
+                message=not_charged(trip),
+                field='trip_id', issue='The rider owes nothing for this trip',
+                status=status.HTTP_409_CONFLICT)
         
         if actual_method == 'online':
             # Use payment gateway abstraction
-            gateway = get_payment_gateway_for_payments()
+            gateway = get_payment_gateway_for_payments(country_for_trip(trip))
+            pay_currency, currency_error = _online_payment_currency(gateway, trip)
+            if currency_error is not None:
+                return currency_error
             order = gateway.create_order(
-                amount=float(amount),
+                amount_minor=payable_minor(trip),
                 trip_id=trip.id,
-                currency='INR',
+                currency=pay_currency,
                 customer_id=str(request.user.id),
                 customer_phone=request.user.phone_number,
                 customer_email=request.user.email,
@@ -1376,12 +2114,32 @@ def switch_payment_method(request):
                 cashfree_order_id=order.get('order_id') if order else None,
             )
         else:
+            # Cash. Selecting it is NOT settlement: the money has not
+            # moved, and the row has to stay findable by whoever settles
+            # it later.
+            #
+            # This branch used to write method='wallet', status='processing'
+            # -- wrong on both counts. The driver confirms collection over
+            # the trip WebSocket, and that handler finds the row with
+            # `trip.payments.filter(method='cash')`. Labelled 'wallet', the
+            # row was invisible to it: the driver got 'No cash payment found
+            # for this trip' and the trip could never settle. It also
+            # reported a cash fare as a wallet payment in every report that
+            # groups by method.
+            #
+            # 'cash'/'pending' is exactly what _create_payment_on_complete
+            # writes for a trip booked as cash, so a switched trip and a
+            # natively-cash trip are now the same shape downstream.
+            #
+            # No credit_driver_wallet() here on purpose: the driver is
+            # credited when collection is confirmed, not when the rider
+            # says they intend to pay cash.
             new_payment = Payment.objects.create(
                 trip_id=trip,
                 user_id=request.user,
                 amount=amount,
-                method='wallet',
-                status='processing',
+                method='cash',
+                status='pending',
             )
         
         # Link payments
@@ -1459,7 +2217,7 @@ def retry_payment(request):
         )
 
     # Use payment gateway abstraction
-    gateway = get_payment_gateway_for_payments()
+    gateway = get_payment_gateway_for_payments(country_for_trip(trip))
 
     # Before re-issuing an order, ask the gateway whether the failed payment
     # was actually paid. Cashfree may report PAID even when our local row is
@@ -1476,7 +2234,18 @@ def retry_payment(request):
         }, status.HTTP_200_OK)
 
     # D-07: Manual retry - create new payment order
-    amount = trip.final_fare or trip.estimated_fare
+    from servers.promotions.rider_promos import not_charged
+    reason = not_charged(trip)
+    if reason:
+        return error_response(
+            code='NOT_CHARGED',
+            message=reason,
+            field='trip_id', issue='The rider owes nothing for this trip',
+            status=status.HTTP_409_CONFLICT
+        )
+
+    from servers.promotions.rider_promos import payable, payable_minor
+    amount = payable(trip)
 
     with transaction.atomic():
         payment = Payment.objects.select_for_update().get(pk=payment.pk)
@@ -1487,10 +2256,13 @@ def retry_payment(request):
                 'status': 'completed',
             }, status.HTTP_200_OK)
 
+        pay_currency, currency_error = _online_payment_currency(gateway, trip)
+        if currency_error is not None:
+            return currency_error
         order = gateway.create_order(
-            amount=float(amount),
+            amount_minor=payable_minor(trip),
             trip_id=trip.id,
-            currency='INR',
+            currency=pay_currency,
             customer_id=str(request.user.id),
             customer_phone=request.user.phone_number,
             customer_email=request.user.email,

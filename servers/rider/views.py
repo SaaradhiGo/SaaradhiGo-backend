@@ -12,6 +12,27 @@ from ..redis_client import nearby_drivers
 logger = logging.getLogger(__name__)
 
 
+def _coordinate(raw, limit):
+    """A latitude/longitude sent as a JSON number or a numeric string.
+
+    Returns (Decimal rounded to 10 places, None) or (None, problem). Booleans,
+    blanks, non-numbers, NaN/Infinity and values outside -limit..limit are refused.
+    """
+    if raw is None or isinstance(raw, bool) or (isinstance(raw, str) and not raw.strip()):
+        return None, 'is required'
+    if not isinstance(raw, (int, float, str, Decimal)):
+        return None, 'must be a number'
+    try:
+        value = Decimal(str(raw).strip())
+    except (InvalidOperation, ValueError):
+        return None, 'must be a number'
+    if not value.is_finite():
+        return None, 'must be a finite number'
+    if abs(value) > limit:
+        return None, f'must be between -{limit} and {limit}'
+    return value.quantize(Decimal('0.0000000001')), None
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def save_favorite_locations(request):
@@ -26,9 +47,19 @@ def save_favorite_locations(request):
     }
     """
     try:
-        request.data['latitude']=request.data['latitude'][:12]
-        request.data['longitude']=request.data['longitude'][:12]
-        instance = FavoritePlaceSerializer(data=request.data)
+        data = {k: request.data.get(k) for k in request.data.keys()}
+        for field, limit in (('latitude', 90), ('longitude', 180)):
+            value, problem = _coordinate(data.get(field), limit)
+            if problem:
+                return error_response(
+                    code='VALIDATION_ERROR',
+                    message=f'{field.capitalize()} {problem}.',
+                    field=field,
+                    issue=problem,
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            data[field] = value
+        instance = FavoritePlaceSerializer(data=data)
         if instance.is_valid():
             instance.save(user_id=request.user)
             return success_response(
@@ -294,7 +325,7 @@ def list_notifications(request):
     paginator.page_size = 20
     result_page = paginator.paginate_queryset(notifs, request)
     serializer = NotificationSerializer(result_page, many=True)
-    return paginator.get_paginated_response(serializer.data)
+    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
 
 
 @api_view(['PATCH'])
@@ -337,7 +368,11 @@ def get_wallet_balance(request):
     
     try:
         wallet = Wallet.objects.get(user_id=request.user, scope=Wallet.SCOPE_RIDER)
-        return success_response({'balance': str(wallet.balance)}, status.HTTP_200_OK)
+        from servers.fraud.money import pending_review_lines
+
+        # Additive: a reward pending review is in the balance but not spendable yet.
+        return success_response({'balance': str(wallet.balance),
+                                 **pending_review_lines(request.user)}, status.HTTP_200_OK)
     except Wallet.DoesNotExist:
         # Create wallet if not exists
         wallet = Wallet.objects.create(
@@ -361,130 +396,38 @@ def get_wallet_transactions(request):
     paginator.page_size = 20
     result_page = paginator.paginate_queryset(transactions, request)
     serializer = WalletTransactionSerializer(result_page, many=True)
-    return success_response(serializer.data,status.HTTP_200_OK)
+    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def wallet_payment(request):
     """
-    Initiate a direct payment from wallet without Razorpay.
-    
+    Pay a completed trip from the rider's wallet. The server sets the amount.
+
     Expected: {
-        "amount": "100.00",
-        "purpose": "Trip payment",
-        "reference_id": "TRIP_123",
-        "idempotency_key": "unique-key-123"
+        "trip_id": 123,            (or the legacy "reference_id": "123" / "TRIP_123")
+        "amount": "100.00"         (optional; refused with AMOUNT_MISMATCH if it differs)
     }
+    The trip's payable amount is charged once (`servers/rider/trip_wallet_payment.py`). A client
+    `idempotency_key` is ignored: the key is the trip's own. A repeat returns the original
+    transaction with `duplicate: true` and charges nothing.
     """
-    from .models import WalletTransaction, Wallet
-    from django.db import transaction
-    import uuid
-    
-    amount = request.data.get('amount')
-    purpose = request.data.get('purpose', 'Payment')
-    reference_id = request.data.get('reference_id')
-    idempotency_key = request.data.get('idempotency_key')
-    
-    # Validate required fields
-    if not amount:
-        return error_response(
-            code='MISSING_FIELDS',
-            message='amount is required',
-            field='amount',
-            issue='Provide the amount to pay from wallet',
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    # Generate idempotency key if not provided
-    if not idempotency_key:
-        idempotency_key = str(uuid.uuid4())
-    
+    from .trip_wallet_payment import Refusal, pay_trip
+
     try:
-        amount_val = float(amount)
-        if amount_val <= 0:
-            raise ValueError("Amount must be positive")
-    except ValueError:
-        return error_response(
-            code='INVALID_AMOUNT',
-            message='Invalid amount provided',
-            field='amount',
-            issue='Amount must be a positive number',
-            status=status.HTTP_400_BAD_REQUEST
+        payload, created = pay_trip(request.user, request.data)
+    except Refusal as refusal:
+        response = error_response(
+            code=refusal.code,
+            message=refusal.message,
+            field=refusal.field,
+            issue=refusal.message,
+            status=refusal.http_status
         )
-    
-    # Check for duplicate idempotency key
-    existing_txn = WalletTransaction.objects.filter(
-        idempotency_key=idempotency_key
-    ).first()
-    
-    if existing_txn:
-        return success_response({
-            'message': 'Duplicate request detected - using existing transaction',
-            'transaction_id': existing_txn.id,
-            'status': existing_txn.status,
-            'amount': str(existing_txn.amount)
-        }, status.HTTP_200_OK)
-    
-    try:
-        with transaction.atomic():
-            # Lock wallet row for update
-            wallet = Wallet.objects.select_for_update().get(
-                user_id=request.user, scope=Wallet.SCOPE_RIDER,
-            )
-            
-            # Check balance with lock
-            if float(wallet.balance) < amount_val:
-                return error_response(
-                    code='INSUFFICIENT_BALANCE',
-                    message='Insufficient wallet balance',
-                    field='wallet',
-                    issue='Wallet balance is less than the amount to pay',
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Deduct amount from wallet
-            wallet.balance = float(wallet.balance) - amount_val
-            wallet.save()
-            
-            # Create direct debit transaction
-            txn = WalletTransaction.objects.create(
-                user_id=request.user,
-                amount=amount_val,
-                txn_type='debit',
-                status='completed',
-                purpose=purpose,
-                reference_id=reference_id,
-                idempotency_key=idempotency_key
-            )
-            
-            logger.info(f"Direct wallet payment successful for user {request.user.id}: "
-                        f"Deducted {amount_val}, new balance: {wallet.balance}")
-            
-            return success_response({
-                'transaction_id': txn.id,
-                'amount': str(amount_val),
-                'new_balance': str(wallet.balance),
-                'purpose': purpose,
-                'reference_id': reference_id,
-                'idempotency_key': idempotency_key,
-                'message': 'Payment successful'
-            }, status.HTTP_201_CREATED)
-            
-    except Wallet.DoesNotExist:
-        return error_response(
-            code='WALLET_NOT_FOUND',
-            message='Wallet not found',
-            field='wallet',
-            issue='User wallet does not exist',
-            status=status.HTTP_404_NOT_FOUND
-        )
-    
-    except Exception as e:
-        logger.error(f"Direct wallet payment failed: {str(e)}")
-        return error_response(
-            code='PAYMENT_FAILED',
-            message='Payment failed',
-            field='general',
-            issue=str(e),
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        response.data['error']['details'].update(refusal.extra)
+        return response
+    if created:
+        logger.info('trip_wallet_payment', extra={
+            'event': 'trip_wallet_payment', 'trip_id': payload['trip_id'],
+            'transaction_id': payload['transaction_id']})
+    return success_response(payload, status.HTTP_201_CREATED if created else status.HTTP_200_OK)

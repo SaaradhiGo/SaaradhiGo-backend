@@ -46,6 +46,7 @@ def storage_fields(monkeypatch):
     storage_map = {
         User._meta.get_field("avatar"): public_storage,
         Driver._meta.get_field("license_doc"): private_storage,
+        Driver._meta.get_field("license_doc_back"): private_storage,
         Vehicle._meta.get_field("rc_doc"): private_storage,
         Vehicle._meta.get_field("vehicle_pic"): public_storage,
     }
@@ -67,7 +68,7 @@ def test_update_user_avatar_upload_replaces_old_file(auth_client_rider, storage_
         "/api/v1/auth/update/",
         data={
             "full_name": "Avatar User",
-            "avatar": SimpleUploadedFile("avatar.png", b"avatar-bytes", content_type="image/png"),
+            "avatar": SimpleUploadedFile("avatar.png", b"\x89PNG\r\n\x1a\n avatar", content_type="image/png"),
         },
         format="multipart",
     )
@@ -93,8 +94,8 @@ def test_create_vehicle_uploads_files_via_django_storage(auth_client_driver):
             "vehicle_number": "KA01AB1234",
             "vehicle_type": "Auto",
             "brand": "Bajaj",
-            "rc_doc": SimpleUploadedFile("vehicle.pdf", b"pdf-bytes", content_type="application/pdf"),
-            "vehicle_pic": SimpleUploadedFile("vehicle.png", b"img-bytes", content_type="image/png"),
+            "rc_doc": SimpleUploadedFile("vehicle.pdf", b"%PDF-1.4 test", content_type="application/pdf"),
+            "vehicle_pic": SimpleUploadedFile("vehicle.png", b"\x89PNG\r\n\x1a\n test", content_type="image/png"),
         },
         format="multipart",
     )
@@ -127,8 +128,8 @@ def test_update_vehicle_replaces_old_files_and_cleans_them(auth_client_driver, s
         f"/api/v1/driver/vehicles/{vehicle.id}/",
         data={
             "brand": "Toyota",
-            "rc_doc": SimpleUploadedFile("rc.pdf", b"pdf-bytes", content_type="application/pdf"),
-            "vehicle_pic": SimpleUploadedFile("vehicle.png", b"img-bytes", content_type="image/png"),
+            "rc_doc": SimpleUploadedFile("rc.pdf", b"%PDF-1.4 test", content_type="application/pdf"),
+            "vehicle_pic": SimpleUploadedFile("vehicle.png", b"\x89PNG\r\n\x1a\n test", content_type="image/png"),
         },
         format="multipart",
     )
@@ -161,7 +162,7 @@ def test_update_driver_profile_uploads_private_doc_and_signed_url(auth_client_dr
         data={
             "active_vehicle": str(vehicle.id),
             "license_expiry": "2030-01-01",
-            "license_doc": SimpleUploadedFile("license.png", b"license-bytes", content_type="image/png"),
+            "license_doc": SimpleUploadedFile("license.png", b"\x89PNG\r\n\x1a\n license", content_type="image/png"),
         },
         format="multipart",
     )

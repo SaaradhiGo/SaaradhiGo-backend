@@ -32,6 +32,18 @@ from rest_framework.permissions import AllowAny
 from base.utils import success_response
 
 
+def _brand():
+    """The customer-facing product name.
+
+    A helper rather than an inline getattr so the brand can be interpolated
+    without nesting quotes inside an f-string, which is a syntax error before
+    Python 3.12.
+    """
+    from django.conf import settings
+
+    return getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo')
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def public_config(request):
@@ -43,7 +55,9 @@ def public_config(request):
                 'balance_cap': str(getattr(settings, 'RIDER_CREDIT_BALANCE_CAP', '2000.00')),
                 'credit_expiry_days': int(getattr(settings, 'RIDER_CREDIT_EXPIRY_DAYS', 365)),
                 'refund_modes': ['original', 'credit'],
-                'display_name': 'VahanGo Credits',
+                # The rider's wallet label comes from here, which is why the app
+                # showed "VahanGo Credits" -- the server told it to.
+                'display_name': _brand() + ' Credits',
             },
             'service_area': {
                 'public_zones_url': '/api/v1/pricing/zones/',

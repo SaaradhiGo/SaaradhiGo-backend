@@ -6,14 +6,21 @@ from celery import shared_task
 
 logger = logging.getLogger(__name__)
 
+# How long the emergency-contact SMS text waits in the cache for the send task. Longer than
+# a login OTP's: a backed-up queue should delay this message, not lose it.
+SOS_SMS_TTL_SECONDS = 3600
+
 
 @shared_task(name='sos.dispatch_sos', bind=True, max_retries=2, default_retry_delay=10)
 def dispatch_sos(self, sos_id):
     """Fan an SOS event out to ops + the caller's emergency contact.
 
     Three channels:
-      1. FCM push to every staff user with role='admin' (the ops on-call
-         crowd). Reuses the async push facade so we don't block.
+      1. FCM push to the operators holding `safety.respond` at the event's
+         anchor (Global holders included; an unanchored event goes to every
+         holder). It used to go to every staff user with the legacy role
+         'admin' in every city, which paged Austin for Hyderabad. Reuses the
+         async push facade so we don't block.
       2. SMS to the caller's emergency_contact (if set), via the
          existing SNS helper. Best-effort.
       3. (Future) Real-time event on /ops/sos/live WebSocket — wired
@@ -25,8 +32,8 @@ def dispatch_sos(self, sos_id):
     in case of full-channel outage.
     """
     from servers.sos.models import SOSEvent
-    from django.contrib.auth import get_user_model
     from servers.auth_user.services import send_push_notification
+    from servers.safety.scope import responders_for
 
     try:
         event = SOSEvent.objects.select_related('user', 'trip').get(id=sos_id)
@@ -34,7 +41,6 @@ def dispatch_sos(self, sos_id):
         logger.warning(f"dispatch_sos: SOSEvent {sos_id} vanished")
         return False
 
-    User = get_user_model()
     title = "SOS — immediate response required"
     body_lines = [
         f"SOS #{event.id} ({event.event_type}) by {event.user_label or 'unknown'}",
@@ -47,10 +53,9 @@ def dispatch_sos(self, sos_id):
 
     # 1. Ops on-call push.
     try:
-        ops_users = User.objects.filter(
-            is_staff=True,
-            role='admin',
-        ).exclude(fcm_token__isnull=True).exclude(fcm_token='')
+        ops_users = [
+            u for u in responders_for(event.anchor_node) if u.fcm_token
+        ]
         notified = 0
         for u in ops_users:
             if send_push_notification(
@@ -67,16 +72,29 @@ def dispatch_sos(self, sos_id):
     try:
         emergency = getattr(event.user, 'emergency_contact', None) if event.user else None
         if emergency:
-            from base.utils import send_otp_via_sns
+            from base.utils import send_otp_via_sns, stash_sms_message
+            # The task takes a reference, never the text (base.utils explains).
             send_otp_via_sns.delay(
                 emergency,
-                f"SaaradhiGo SOS: {event.user_label or 'A user'} has raised an "
-                f"SOS. Please call them. SOS#{event.id}.",
+                stash_sms_message(
+                    f"SaaradhiGo SOS: {event.user_label or 'A user'} has raised an "
+                    f"SOS. Please call them. SOS#{event.id}.",
+                    ttl=SOS_SMS_TTL_SECONDS,
+                ),
             )
             logger.warning(
                 f"dispatch_sos[{sos_id}]: SMS queued to emergency contact"
             )
     except Exception as e:
         logger.error(f"dispatch_sos[{sos_id}]: emergency SMS failed: {e}")
+
+    # 3. The rider's trusted contacts (servers/sharing): the live trip link, by SMS.
+    try:
+        if event.trip_id and event.initiated_by == 'rider' and event.user:
+            from servers.sharing.services import on_sos
+            sent = on_sos(event.trip, event.user)
+            logger.warning(f"dispatch_sos[{sos_id}]: trip link sent to {sent} trusted contacts")
+    except Exception as e:
+        logger.error(f"dispatch_sos[{sos_id}]: trusted contact SMS failed: {e}")
 
     return True

@@ -93,7 +93,8 @@ def get_driver_vehicle_type(driver_id, refresh=False):
 
     if redis_client is not None:
         try:
-            redis_client.setex(key, VEHICLE_TYPE_TTL_SECONDS, vehicle_type or '-')
+            if vehicle_type:
+                redis_client.setex(key, VEHICLE_TYPE_TTL_SECONDS, vehicle_type)
         except Exception as exc:  # noqa: BLE001
             logger.debug('vehicle-type cache write failed: %s', exc)
     return vehicle_type
@@ -124,6 +125,64 @@ def add_offered_drivers(trip_id, driver_ids):
         return False
 
 
+def _generation_offers_key(trip_id, epoch):
+    return f'{OFFERED_PREFIX}{trip_id}:gen:{epoch}'
+
+
+def add_generation_offers(trip_id, epoch, driver_ids):
+    """Record who one dispatch generation has already been offered to.
+
+    Distinct from `add_offered_drivers`, which keeps the union across the
+    whole trip and drives the `trip_taken` fanout. This set is scoped to a
+    single search generation so a rider-triggered retry re-reaches drivers
+    who ignored the first search — matching the previous behaviour, where
+    each dispatch call started with an empty in-process `offered` set.
+
+    Best-effort by design: losing this set can only cause a duplicate
+    notification, never a duplicate assignment.
+    """
+    if redis_client is None or not driver_ids:
+        return False
+    try:
+        key = _generation_offers_key(trip_id, epoch)
+        redis_client.sadd(key, *[str(d) for d in driver_ids])
+        redis_client.expire(key, OFFERED_TTL_SECONDS)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            'add_generation_offers failed for trip %s epoch %s: %s', trip_id, epoch, exc,
+        )
+        return False
+
+
+def get_generation_offers(trip_id, epoch):
+    """Driver ids already offered within this generation, as a set of str.
+
+    Returns an empty set when Redis is unavailable, so a wave degrades to
+    "might re-offer" rather than failing.
+    """
+    if redis_client is None:
+        return set()
+    try:
+        members = redis_client.smembers(_generation_offers_key(trip_id, epoch)) or set()
+        return {str(m) for m in members}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            'get_generation_offers failed for trip %s epoch %s: %s', trip_id, epoch, exc,
+        )
+        return set()
+
+
+def clear_generation_offers(trip_id, epoch):
+    if redis_client is None:
+        return False
+    try:
+        redis_client.delete(_generation_offers_key(trip_id, epoch))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def pop_offered_drivers(trip_id):
     """Read and delete the offer set. Returns a list of driver id strings."""
     if redis_client is None:
@@ -138,6 +197,21 @@ def pop_offered_drivers(trip_id):
         return []
 
 
+def peek_offered_drivers(trip_id):
+    """Who has been offered this trip, without deleting the set.
+
+    Returns a list of driver id strings, or None when Redis cannot answer —
+    so a caller can tell "nobody was offered" from "we do not know".
+    """
+    if redis_client is None:
+        return None
+    try:
+        return [str(m) for m in (redis_client.smembers(f'{OFFERED_PREFIX}{trip_id}') or set())]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('peek_offered_drivers failed for trip %s: %s', trip_id, exc)
+        return None
+
+
 def clear_offered_drivers(trip_id):
     if redis_client is None:
         return False
@@ -146,6 +220,130 @@ def clear_offered_drivers(trip_id):
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+LOCATION_STREAM = 'driver_location_stream'
+
+# Redis database map for this project, because it is not obvious and getting it
+# wrong is silent:
+#
+#   db 0  Celery broker
+#   db 1  Django cache (django_redis)
+#   db 2  THIS module: geo index, offers, heartbeat, active-trip, trip cache
+#   db 3  driver_location_stream, written by servers.driver.utils
+#   db 4  Channels layer
+#
+# The location stream lives in db 3 because servers/driver/utils.py builds its
+# own client against `REDIS_URL + '/3'`. This module's client is db 2. Reading
+# the stream through the db-2 client therefore finds NOTHING -- an empty
+# result, no error -- which would make the durable trail writer silently
+# persist zero rows in production.
+#
+# So the stream helpers deliberately borrow the exact client that writes the
+# stream rather than defining a second one. A duplicated connection string
+# could drift; a shared object cannot.
+
+
+def _stream_client():
+    """The client that owns driver_location_stream (db 3).
+
+    Imported lazily and by module attribute, not `from ... import redis_client`,
+    so a reconnect or a test patch on driver.utils is observed here too.
+    """
+    from servers.driver import utils as driver_utils
+    return getattr(driver_utils, 'redis_client', None)
+# A consumer group, not a bare XREAD: it tracks what has been acknowledged, so
+# a restarted worker resumes where it left off instead of re-reading the stream
+# or skipping it, and an entry whose processing died is redelivered rather than
+# lost. That is at-least-once, which is exactly what the durable writer's
+# idempotency key is designed for.
+LOCATION_STREAM_GROUP = 'trip_trail_writer'
+
+
+def ensure_location_stream_group():
+    """Create the consumer group if it does not exist. Idempotent.
+
+    `mkstream=True` so the group can be created before the stream has ever
+    received an entry -- otherwise the first drain on a quiet environment would
+    fail instead of returning nothing.
+    """
+    client = _stream_client()
+    if client is None:
+        return False
+    try:
+        client.xgroup_create(
+            LOCATION_STREAM, LOCATION_STREAM_GROUP, id='0', mkstream=True,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        # BUSYGROUP simply means it already exists, which is the normal path.
+        if 'BUSYGROUP' in str(exc):
+            return True
+        logger.warning('ensure_location_stream_group failed: %s', exc)
+        return False
+
+
+def read_location_events(count, consumer='worker-1', block_ms=None):
+    """Claim up to `count` unacknowledged location events for this consumer.
+
+    Returns a list of (entry_id, {field: value}) with str keys and values.
+    Returns [] when Redis is unavailable, so a drain degrades to doing nothing
+    rather than raising into the caller.
+    """
+    client = _stream_client()
+    if client is None:
+        return []
+    try:
+        resp = client.xreadgroup(
+            LOCATION_STREAM_GROUP, consumer,
+            {LOCATION_STREAM: '>'}, count=count, block=block_ms,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('read_location_events failed: %s', exc)
+        return []
+
+    events = []
+    for _stream, entries in resp or []:
+        for entry_id, fields in entries:
+            eid = entry_id.decode() if isinstance(entry_id, bytes) else str(entry_id)
+            clean = {}
+            for k, v in (fields or {}).items():
+                k = k.decode() if isinstance(k, bytes) else str(k)
+                v = v.decode() if isinstance(v, bytes) else v
+                clean[k] = v
+            events.append((eid, clean))
+    return events
+
+
+def ack_location_events(entry_ids):
+    """Acknowledge processed entries so they are not redelivered.
+
+    Called only after the durable rows are committed. If this fails the entries
+    stay pending and are re-processed later, which the writer's unique
+    constraint makes harmless.
+    """
+    client = _stream_client()
+    if client is None or not entry_ids:
+        return 0
+    try:
+        return client.xack(LOCATION_STREAM, LOCATION_STREAM_GROUP, *entry_ids)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('ack_location_events failed: %s', exc)
+        return 0
+
+
+def location_stream_pending():
+    """How many claimed-but-unacknowledged entries exist. Observability only."""
+    client = _stream_client()
+    if client is None:
+        return 0
+    try:
+        info = client.xpending(LOCATION_STREAM, LOCATION_STREAM_GROUP)
+        if isinstance(info, dict):
+            return int(info.get('pending') or 0)
+        return int(info[0]) if info else 0
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def sweep_stale_drivers():
@@ -178,16 +376,28 @@ def sweep_stale_drivers():
     return evicted
 
 
+class DriverTripStateUnavailable(RuntimeError):
+    """Redis could not answer whether a driver is on a trip.
+
+    Distinct from "the driver is free", which is what the old code returned for
+    both cases. Callers must choose a conservative default rather than inherit a
+    silent one -- see the three call sites in this module.
+    """
+
+
 def set_driver_active_trip(driver_id, trip_id):
     """
     Set the active trip for a driver to mark them as busy.
+
+    Returns True only if Redis confirmed the write. It used to return True
+    unconditionally after calling `set()`, without looking at the result, so a
+    caller could not tell a stored key from a lost one.
     """
     if redis_client is None:
         return False
     try:
         key = f"{ACTIVE_TRIP_PREFIX}{driver_id}"
-        redis_client.set(key, str(trip_id))
-        return True
+        return bool(redis_client.set(key, str(trip_id)))
     except Exception as e:
         logger.error(f"Failed to set active trip for driver {driver_id}: {str(e)}")
         return False
@@ -196,16 +406,46 @@ def set_driver_active_trip(driver_id, trip_id):
 def get_driver_active_trip(driver_id):
     """
     Get the active trip for a driver. Returns trip_id if busy, None if available.
+
+    Raises DriverTripStateUnavailable if Redis could not answer.
+
+    This used to catch every exception and return None, which every caller reads
+    as "this driver is free". The consequences were all silent:
+
+      * add_driver_location() skips the `zrem` that takes a busy driver out of
+        the geo index, so a driver already on a trip stays discoverable as
+        nearby and available.
+      * find_nearby_drivers() reports status 'online' instead of 'busy'.
+      * the admin driver listing shows a driver on a trip as online.
+
+    So a Redis blip quietly degraded driver exclusivity and showed operators the
+    wrong state, with nothing in the logs above DEBUG to say so. The row lock in
+    the trip-accept path is what actually prevents a double assignment from
+    committing, but a driver being offered rides it cannot take, and a console
+    that disagrees with reality, are both real failures.
     """
     if redis_client is None:
         return None
+    key = f"{ACTIVE_TRIP_PREFIX}{driver_id}"
     try:
-        key = f"{ACTIVE_TRIP_PREFIX}{driver_id}"
         trip_id = redis_client.get(key)
-        return int(trip_id) if trip_id else None
     except Exception as e:
-        logger.error(f"Failed to get active trip for driver {driver_id}: {str(e)}")
+        logger.error(
+            "Redis could not report active trip for driver %s: %s", driver_id, e,
+        )
+        raise DriverTripStateUnavailable(str(e)) from e
+    if not trip_id:
         return None
+    try:
+        return int(trip_id)
+    except (TypeError, ValueError) as e:
+        # A non-numeric value here means something else wrote this key. Treating
+        # it as "free" would be the same mistake in a different disguise.
+        logger.error(
+            "Active-trip key for driver %s holds a non-numeric value %r",
+            driver_id, trip_id,
+        )
+        raise DriverTripStateUnavailable(f'corrupt active-trip value: {trip_id!r}') from e
 
 
 def clear_driver_active_trip(driver_id):
@@ -239,13 +479,17 @@ def cache_trip(trip_id, **fields):
             destination_lng (str): Destination longitude
             estimated_fare (str): String-serialized Decimal fare
             payment_method (str): Payment method (cash/online)
-            otp (str): Otp for the trip
+        The pickup OTP is never cached: it is dropped if passed. The start-trip
+        check reads Trip.otp from the database, so a plaintext copy here would
+        only widen who can read it (anyone with Redis access).
     Returns:
         bool: True on success, False on failure
     """
     if redis_client is None:
         logger.error("Redis client not available for cache_trip")
         return False
+    if fields.pop('otp', None) is not None:
+        logger.warning(f"cache_trip({trip_id}) was passed an otp; it was not cached")
     try:
         key = f"{RIDE_CACHE_PREFIX}{trip_id}"
         # Convert all values to strings for Redis compatibility
@@ -351,7 +595,32 @@ def _validate_coordinates(lng, lat):
     return True, None
 
 
-def add_driver_location(driver_id, lng, lat):
+def _record_live_position(driver_id, lat, lng, heading):
+    """Last known position of every live driver, on a trip or not (Live Ops map).
+
+    The geo index drops a driver who is on a trip, so it cannot answer "where is
+    everybody". One short-lived key per driver can. Best effort: the map losing
+    a dot must never cost a driver a location ping.
+    """
+    try:
+        import json
+        import time
+
+        from servers.live_ops.config import LIVEPOS_PREFIX, LIVEPOS_TTL_SECONDS
+
+        try:
+            heading = round(float(heading), 1) if heading is not None else None
+        except (TypeError, ValueError):
+            heading = None
+        redis_client.setex(
+            f'{LIVEPOS_PREFIX}{driver_id}', LIVEPOS_TTL_SECONDS,
+            json.dumps([lat, lng, heading, round(time.time(), 1)], separators=(',', ':')),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug('live position not recorded for driver %s: %s', driver_id, exc)
+
+
+def add_driver_location(driver_id, lng, lat, heading=None):
     """
     Add or update driver location in Redis geospatial index.
     
@@ -359,6 +628,7 @@ def add_driver_location(driver_id, lng, lat):
         driver_id: Unique driver identifier
         lng: Longitude coordinate
         lat: Latitude coordinate
+        heading: Optional compass bearing, only for the Live Ops map
 
     Returns:
         dict: Status and message
@@ -394,11 +664,25 @@ def add_driver_location(driver_id, lng, lat):
         # Refresh the presence heartbeat on every ping. The geo entry is
         # only trusted while this key is alive (see sweep_stale_drivers).
         redis_client.setex(f'{HEARTBEAT_PREFIX}{driver_id}', HEARTBEAT_TTL_SECONDS, '1')
+        _record_live_position(driver_id, lat, lng, heading)
 
         update_driver_location(driver_id=driver_id, lat=lat, lng=lng)
 
-        # Check if driver is on an active trip
-        active_trip_id = get_driver_active_trip(driver_id)
+        # Check if driver is on an active trip.
+        #
+        # If Redis cannot say, treat the driver as busy. That keeps them out of
+        # the geo index for this tick, so dispatch does not offer a ride to a
+        # driver who may already be on one; the next successful tick puts them
+        # back. The opposite default -- assuming free -- is what the swallowed
+        # exception used to do, and it is the one that breaks exclusivity.
+        try:
+            active_trip_id = get_driver_active_trip(driver_id)
+        except DriverTripStateUnavailable:
+            logger.warning(
+                "Treating driver %s as busy: active-trip state unavailable.",
+                driver_id,
+            )
+            active_trip_id = 'unknown'
         if active_trip_id:
             # Driver is busy, remove from geo index but return trip_id for streaming
             redis_client.zrem(geo_key, member)
@@ -460,7 +744,11 @@ def nearby_drivers(lng, lat, radius=5000, count=50, vehicle_type=None):
         is_valid, error_msg = _validate_coordinates(lng, lat)
         if not is_valid:
             raise ValueError(error_msg)
-        
+        # redis-py rejects Decimal outright, and model coordinate fields are
+        # Decimal. The validator already proved these are numbers, so coerce here
+        # rather than trusting every caller to remember.
+        lng, lat = float(lng), float(lat)
+
         if radius <= 0:
             raise ValueError("Radius must be greater than 0")
         
@@ -502,9 +790,15 @@ def nearby_drivers(lng, lat, radius=5000, count=50, vehicle_type=None):
             # Multi-key union is not distance-sorted; restore ASC by distance.
             live.sort(key=lambda e: float(e[1]) if isinstance(e, (list, tuple)) else 0.0)
 
+        # Counts and vehicle type only. The query point is a rider's pickup
+        # location; logging it puts a precise position for a named trip into
+        # whatever ships the logs, and the counts are the whole diagnostic value.
+        # This line is DEBUG, so it is silent at the production default of
+        # WARNING -- but an engineer debugging dispatch sets LOG_LEVEL=DEBUG, and
+        # that is exactly when every pickup point would start being emitted.
         logger.debug(
-            'nearby_drivers: %s live of %s indexed at lng=%s lat=%s (types=%s)',
-            len(live), len(drivers), lng, lat, vehicle_type or 'all',
+            'nearby_drivers: %s live of %s indexed (types=%s)',
+            len(live), len(drivers), vehicle_type or 'all',
         )
         return live[:count]
 
@@ -551,6 +845,12 @@ def remove_driver(driver_id):
                 removed += redis_client.zrem(GEO_KEY, member)
 
         redis_client.delete(f'{HEARTBEAT_PREFIX}{driver_id}')
+        try:
+            from servers.live_ops.config import LIVEPOS_PREFIX
+
+            redis_client.delete(f'{LIVEPOS_PREFIX}{driver_id}')
+        except Exception:  # noqa: BLE001 - the map's key is best effort
+            pass
 
         if removed > 0:
             logger.info(f"Driver {driver_id} removed from geo index")
@@ -568,6 +868,61 @@ def remove_driver(driver_id):
     except Exception as e:
         logger.error(f"Unexpected error removing driver {driver_id}: {str(e)}")
         return {"success": False, "error": "An unexpected error occurred"}
+
+
+def get_all_online_drivers():
+    """
+    Retrieve current coordinates and status for all active/online drivers.
+
+    Returns:
+        list: List of dicts with driver_id, lat, lng, status, vehicle_type
+    """
+    if redis_client is None:
+        return []
+    drivers = []
+    seen_driver_ids = set()
+    try:
+        for key in redis_client.scan_iter(match=f'{GEO_KEY_PREFIX}*', count=100):
+            members = redis_client.zrange(key, 0, -1) or []
+            for member in members:
+                # member format: driver:<driver_id>:<vehicle_type>
+                parts = member.split(':')
+                if len(parts) >= 2:
+                    driver_id_str = parts[1]
+                    try:
+                        driver_id = int(driver_id_str)
+                    except ValueError:
+                        continue
+                    if driver_id in seen_driver_ids:
+                        continue
+                    if not redis_client.exists(f'{HEARTBEAT_PREFIX}{driver_id}'):
+                        continue
+                    pos = redis_client.geopos(key, member)
+                    if pos and pos[0]:
+                        lng, lat = pos[0]
+                        # Unknown state means skip, not offer. An unavailable
+                        # answer used to read as 'online'.
+                        try:
+                            active_trip_id = get_driver_active_trip(driver_id)
+                        except DriverTripStateUnavailable:
+                            logger.warning(
+                                "Skipping driver %s in nearby search: "
+                                "active-trip state unavailable.", driver_id,
+                            )
+                            continue
+                        vehicle_type = parts[2] if len(parts) >= 3 else get_driver_vehicle_type(driver_id)
+                        seen_driver_ids.add(driver_id)
+                        drivers.append({
+                            'driver_id': driver_id,
+                            'lat': lat,
+                            'lng': lng,
+                            'status': 'busy' if active_trip_id else 'online',
+                            'active_trip_id': active_trip_id,
+                            'vehicle_type': vehicle_type,
+                        })
+    except Exception as exc:
+        logger.error(f"Error fetching online drivers from Redis: {exc}")
+    return drivers
 
 
 def publish_ride_request(ride_id, rider_id, pickup_lng, pickup_lat, destination_lng, destination_lat):
@@ -649,7 +1004,10 @@ def count_nearby_active_riders(lng, lat, radius=3000):
     try:
         is_valid, _ = _validate_coordinates(lng, lat)
         if not is_valid: return 0
-        
+        # See nearby_drivers: Decimal coordinates reach here from the pricing
+        # path, which reads them off a Trip row.
+        lng, lat = float(lng), float(lat)
+
         riders = redis_client.geosearch(
             'riders:geo',
             longitude=lng,
@@ -685,6 +1043,7 @@ def get_all_active_drivers():
         # legacy `drivers:geo` key, which nothing writes to any more — the
         # ops live map would have shown an empty city.
         result = []
+        seen_driver_ids = set()
         for key in redis_client.scan_iter(match=f'{GEO_KEY_PREFIX}*', count=100):
             members = redis_client.zrange(key, 0, -1)
             if not members:
@@ -697,12 +1056,81 @@ def get_all_active_drivers():
                     # member format: driver:{driver_id}:{vehicle_type}
                     parts = member.split(':')
                     if len(parts) >= 3:
+                        driver_id = parts[1]
+                        if driver_id in seen_driver_ids:
+                            continue
+                        if not redis_client.exists(f'{HEARTBEAT_PREFIX}{driver_id}'):
+                            continue
+                        seen_driver_ids.add(driver_id)
                         result.append({
-                            'driver_id': parts[1],
+                            'driver_id': driver_id,
                             'vehicle_type': parts[2],
                             'lng': pos[0],
                             'lat': pos[1],
                         })
+        if not result:
+            return []
+
+        # Batch-enrich active drivers with DB/vehicle details for ops dashboard
+        try:
+            from servers.driver.models import Driver
+            numeric_ids = [int(item['driver_id']) for item in result if str(item['driver_id']).isdigit()]
+            if numeric_ids:
+                drivers_qs = Driver.objects.filter(id__in=numeric_ids).select_related(
+                    'user_id', 'active_vehicle'
+                )
+                driver_map = {d.id: d for d in drivers_qs}
+                for item in result:
+                    did = int(item['driver_id']) if str(item['driver_id']).isdigit() else None
+                    driver = driver_map.get(did)
+                    if driver:
+                        u = driver.user_id
+                        v = driver.active_vehicle
+                        # An operator is better served by "unknown" than by a
+                        # confident "online" that is really a Redis failure.
+                        trip_state_known = True
+                        try:
+                            active_trip_id = get_driver_active_trip(did) if did else None
+                        except DriverTripStateUnavailable:
+                            active_trip_id = None
+                            trip_state_known = False
+                        item.update({
+                            'driver_name': str(u.full_name or u.phone_number or f'Driver {driver.id}') if u else f'Driver {driver.id}',
+                            'phone_number': str(u.phone_number or '') if u else '',
+                            'ratings': str(driver.ratings or '0.00'),
+                            'vehicle_model': str(v.model if v else ''),
+                            'vehicle_number': str(v.vehicle_number if v else ''),
+                            'status': (
+                                'busy' if active_trip_id
+                                else ('online' if trip_state_known else 'unknown')
+                            ),
+                            'active_trip_id': active_trip_id,
+                        })
+                    else:
+                        item.setdefault('driver_name', f"Driver {item['driver_id']}")
+                        item.setdefault('phone_number', '')
+                        item.setdefault('ratings', '0.00')
+                        item.setdefault('vehicle_model', '')
+                        item.setdefault('vehicle_number', '')
+                        item.setdefault('status', 'online')
+            else:
+                for item in result:
+                    item.setdefault('driver_name', f"Driver {item['driver_id']}")
+                    item.setdefault('phone_number', '')
+                    item.setdefault('ratings', '0.00')
+                    item.setdefault('vehicle_model', '')
+                    item.setdefault('vehicle_number', '')
+                    item.setdefault('status', 'online')
+        except Exception as enrich_err:
+            logger.warning(f"Failed to enrich active drivers with DB details: {enrich_err}")
+            for item in result:
+                item.setdefault('driver_name', f"Driver {item['driver_id']}")
+                item.setdefault('phone_number', '')
+                item.setdefault('ratings', '0.00')
+                item.setdefault('vehicle_model', '')
+                item.setdefault('vehicle_number', '')
+                item.setdefault('status', 'online')
+
         return result
     except Exception as e:
         logger.error(f"Failed to get active drivers: {e}")

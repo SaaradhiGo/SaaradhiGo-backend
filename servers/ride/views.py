@@ -1,10 +1,24 @@
 import logging
-from decimal import Decimal
+from datetime import datetime, time, timedelta
+from decimal import Decimal, InvalidOperation
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from base.utils import success_response, error_response
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.decorators import (
+    api_view,
+    permission_classes,
+    throttle_classes,
+)
+
+from base.throttles import (
+    GuestFareGlobalThrottle,
+    GuestFareThrottle,
+    GuestMapsGlobalThrottle,
+    GuestMapsThrottle,
+    GuestRouteGlobalThrottle,
+    GuestRouteThrottle,
+)
 from servers.ride.models import Trip, FarePricing
 from servers.ride.serializers import TripListSerializer, TripDetailSerializer
 from servers.ride.utils import estimate_amount, validate_distance
@@ -15,11 +29,70 @@ from django.db import transaction
 logger = logging.getLogger(__name__)
 
 
+def _money_str(value):
+    """Money as a string, or None when there is genuinely no value.
+
+    Money crosses JSON as a string so a client's float parser cannot round
+    0.01 off a fare. `None` is preserved rather than becoming "None": a field
+    that is absent for a market is different from one that is zero, and
+    str(None) would be rendered to a rider as a price.
+    """
+    return None if value is None else str(value)
+
+
+
+def _cancellation_due(user):
+    from .cancellation_penalty import due_for_rider
+
+    try:
+        return due_for_rider(user)
+    except Exception:  # noqa: BLE001 - a quote never fails over the due line
+        logger.exception('cancellation_due lookup failed')
+        return None
+
+
+def _rider_reason(fare):
+    """"Higher demand near {area}" when the quote's demand multiplier is above 1, else None.
+
+    Rider-facing copy for the choose-a-ride screen. Never the word "surge"
+    (owner's ruling). The area is the pricing zone's name; with no zone it is
+    "Higher demand right now". Reads the multiplier, never changes it.
+    """
+    try:
+        multiplier = Decimal(str(fare.get('surge_multiplier') or '1'))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if multiplier <= 1:
+        return None
+    code = fare.get('zone_code') or ''
+    name = ''
+    if code:
+        from servers.pricing.models import ServiceZone
+        name = (ServiceZone.objects.filter(code=code).values_list('name', flat=True).first() or '').strip()
+    return f'Higher demand near {name}' if name else 'Higher demand right now'
+
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+@throttle_classes([GuestFareThrottle, GuestFareGlobalThrottle])
 def estimate_fare(request):
     """
     Estimate fare for a trip before rider confirms.
+
+    OPEN TO A VISITOR WHO HAS NOT SIGNED IN, DELIBERATELY. Asking someone to
+    create an account before telling them what a ride costs is asking them
+    to commit before they know the price, and it is the one number they came
+    for. Sign-in moves to the point of CONFIRMING a trip, which is where it
+    belongs: that is when a ride is actually being created against a person.
+
+    What that does NOT mean is an open distance API. Each distinct trip
+    costs one Google Distance Matrix call -- cached, so quoting four vehicle
+    classes for one trip costs one call -- and anonymous callers are bounded
+    by a per-IP cap and an un-evadable global ceiling. A signed-in rider
+    skips both.
+
+    Nothing here reads the caller's identity except `rider_id`, which is
+    optional: it records a demand ping for surge and is simply absent for a
+    guest.
     
     Expected request data:
     {
@@ -82,19 +155,28 @@ def estimate_fare(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Service-area enforcement. Phase-0 only serves Hyderabad metro; both
-    # pickup and drop must sit inside the polygon. Without this check, a
-    # tampered client can have us produce fares for any city.
-    from base.service_area import validate_service_area
-    area_ok, area_msg = validate_service_area(
+    # Module 15: a rider build below the minimum supported version is told to update (426), but
+    # ONLY when it sends X-App-Version. An absent header is allowed.
+    from servers.platform_ops import versions as app_versions
+    update = app_versions.check_request(request, 'rider')
+    if update is not None:
+        return app_versions.update_required_response(update)
+
+    # Service-area enforcement: both pickup and drop must sit inside an active
+    # ServiceZone polygon. Without this check, a tampered client can have us
+    # produce fares for any city. The zone table is the authority -- the
+    # message no longer says "Hyderabad", because which cities are served is
+    # now a row, not a constant.
+    from base.service_area import validate_service_area_detail
+    area_ok, area_code, area_msg = validate_service_area_detail(
         pickup_lat, pickup_long, destination_lat, destination_long,
     )
     if not area_ok:
         return error_response(
-            code='OUT_OF_SERVICE_AREA',
+            code=area_code,
             message=area_msg,
             field='pickup / destination',
-            issue='Coordinates fall outside the SaaradhiGo Hyderabad service area',
+            issue='Coordinates fall outside every active SaaradhiGo service zone',
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -120,18 +202,89 @@ def estimate_fare(request):
         vehicle_type=vehicle_type,
         pickup_lat=pickup_lat,
         pickup_long=pickup_long,
-        rider_id=request.user.id,
+        # None for a guest. `estimate_amount` takes it as optional and
+        # only uses it to record a demand ping for surge.
+        rider_id=getattr(request.user, 'id', None),
+    )
+
+    from .pickup_eta import pickup_eta
+    eta_min, drivers_nearby = pickup_eta(pickup_lat, pickup_long, fare['vehicle_type'])
+    rider_reason = _rider_reason(fare)
+
+    # The fare shown is a quote the rider can book at, exactly (owner ruling, 2026-11-06).
+    from .quotes import issue as issue_quote
+    quote_id, quote_expires_at = issue_quote(
+        fare, rider_id=getattr(request.user, 'id', None),
+        pickup=(pickup_lat, pickup_long), drop=(destination_lat, destination_long),
+        validated_km=validated_km, validated_min=validated_min)
+
+    # Seats for the choose-a-ride row; None when the class has none set.
+    from servers.driver.models import VehicleType
+    seats = (
+        VehicleType.objects.filter(type=fare['vehicle_type'])
+        .values_list('seats', flat=True).first()
     )
 
     return success_response({
         'estimated_fare': str(fare['total_fare']),
+        # Minutes to the nearest free driver of this class, or None with
+        # drivers_nearby False. Never a position (pickup_eta).
+        'pickup_eta_min': eta_min,
+        'drivers_nearby': drivers_nearby,
+        'seats': seats,
+        # Additive (MVAG 2025): a cancellation fee from an earlier trip that this booking will
+        # carry, shown BEFORE booking; None when there is none (or for a guest).
+        'cancellation_due': _cancellation_due(request.user),
+        # One plain line for the rider when demand pricing is above 1x, or None.
+        # Copy only: the multiplier itself is untouched (2026-11-06).
+        'rider_reason': rider_reason,
+        # Book with this id before it expires and the trip is booked at exactly this fare.
+        'quote_id': quote_id,
+        'quote_expires_at': quote_expires_at.isoformat(),
+        # The market this quote was priced in. A client that cannot see this
+        # does not know whether 135.22 is rupees or dollars, and `distance_unit`
+        # is what stops a US rider being quoted a per-kilometre rate.
+        #
+        # Same lesson as `fare_adjustments` below: quote_fare returning a field
+        # is not enough, because this layer and `estimate_amount` both rebuild
+        # the payload key by key. Verified at the HTTP boundary, not at the
+        # service call -- the live QA quote returned null for all seven of these
+        # while the service layer had been producing them correctly all along.
+        'currency': fare.get('currency'),
+        'distance_unit': fare.get('distance_unit'),
         'fare_breakdown': {
             'base_fare': str(fare['base_fare']),
             'distance_fare': str(fare['distance_fare']),
             'time_fare': str(fare['time_fare']),
             'surge_multiplier': str(fare['surge_multiplier']),
+            # Additive (MVAG 2025 disclosure): "Higher demand" / "Lower demand" or None, and
+            # the band the multiplier was held inside.
+            'demand_label': fare.get('demand_label'),
+            'fare_limits': fare.get('fare_limits'),
             'min_fare_applied': fare['min_fare_applied'],
+            # `tax_mode` tells the client what `tax_amount` means: `inclusive`
+            # (India) is already inside `estimated_fare`, `additive` (US) was
+            # added on top of the metered components. Adding them without
+            # knowing which would double-count the tax.
+            'tax_mode': fare.get('tax_mode'),
+            'tax_label': fare.get('tax_label'),
+            'tax_percent': _money_str(fare.get('tax_percent')),
+            'tax_amount': _money_str(fare.get('tax_amount')),
+            'per_trip_fee': _money_str(fare.get('per_trip_fee')),
         },
+        # Named lines that close the gap between the metered components and the
+        # amount charged -- the surge uplift, a minimum-fare uplift, and at most a
+        # paisa of rounding.
+        #
+        # This view builds its own response dict, so forwarding the field in
+        # quote_fare and again in estimate_amount was not enough: the API still
+        # returned three components beside a total they did not sum to. Verified
+        # against the live QA quote, where base+distance+time came to 135.21 next
+        # to a charged 169.02 and `fare_adjustments` was absent entirely.
+        'fare_adjustments': [
+            {'code': a['code'], 'label': a['label'], 'amount': str(a['amount'])}
+            for a in fare.get('fare_adjustments', [])
+        ],
         'vehicle_type': fare['vehicle_type'],
         'pricing_source': fare['source'],
         'distance_km': distance_km,
@@ -332,7 +485,7 @@ def ride_history(request):
     trips = Trip.objects.filter(
         user_id=request.user
     ).select_related(
-        'status_id', 'driver_id', 'driver_id__user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id'
+        'status_id', 'driver_id', 'driver_id__user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
     ).order_by('-requested_at')
 
     # Optional status filter
@@ -344,7 +497,7 @@ def ride_history(request):
     page = paginator.paginate_queryset(trips, request)
     serializer = TripListSerializer(page, many=True)
 
-    return paginator.get_paginated_response(serializer.data)
+    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -358,6 +511,8 @@ def driver_history(request):
         ?page=1         - Page number
         ?page_size=10   - Items per page (max 50)
         ?status=completed - Filter by status (optional)
+        ?start_date=YYYY-MM-DD - Filter trips requested from this day (inclusive) (optional)
+        ?end_date=YYYY-MM-DD   - Filter trips requested up to this day (inclusive) (optional)
     """
     try:
         driver = request.user.driver
@@ -373,7 +528,7 @@ def driver_history(request):
     trips = Trip.objects.filter(
         driver_id=driver
     ).select_related(
-        'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id'
+        'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
     ).order_by('-requested_at')
 
     # Optional status filter
@@ -381,11 +536,43 @@ def driver_history(request):
     if status_filter:
         trips = trips.filter(status_id__status_code=status_filter)
 
+    # Optional date range filter (inclusive calendar days, matched on
+    # requested_at — the field this endpoint orders by). Accepts either
+    # a bare 'YYYY-MM-DD' or a full ISO-8601 datetime; invalid values
+    # are ignored so a typo in one param never breaks the listing.
+    from django.utils import timezone
+
+    current_tz = timezone.get_current_timezone()
+    start_date = (request.query_params.get('start_date') or '').strip()
+    end_date = (request.query_params.get('end_date') or '').strip()
+    if start_date:
+        try:
+            start_day = datetime.strptime(start_date, '%Y-%m-%d').date()
+        except ValueError:
+            try:
+                start_day = datetime.fromisoformat(start_date.replace('Z', '+00:00')).date()
+            except (ValueError, TypeError):
+                start_day = None
+        if start_day:
+            trips = trips.filter(requested_at__gte=timezone.make_aware(
+                datetime.combine(start_day, time.min), current_tz))
+    if end_date:
+        try:
+            end_day = datetime.strptime(end_date, '%Y-%m-%d').date()
+        except ValueError:
+            try:
+                end_day = datetime.fromisoformat(end_date.replace('Z', '+00:00')).date()
+            except (ValueError, TypeError):
+                end_day = None
+        if end_day:
+            trips = trips.filter(requested_at__lt=timezone.make_aware(
+                datetime.combine(end_day + timedelta(days=1), time.min), current_tz))
+
     paginator = TripPagination()
     page = paginator.paginate_queryset(trips, request)
     serializer = TripListSerializer(page, many=True)
 
-    return paginator.get_paginated_response(serializer.data)
+    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -489,7 +676,9 @@ def trip_driver_details(request,trip_id):
             'id': trip_id,
             'status': cached.get('status'),
             'driver_name': cached.get('driver_name'),
-            'driver_phone': cached.get('driver_phone'),
+            # Masked calls only (9 Nov): the rider never receives the driver's number. The key
+            # stays, always null, so installed apps parse the response as before.
+            'driver_phone': None,
             'driver_rating': cached.get('driver_rating'),
             'vehicle_info': {
                 'vehicle_number': cached.get('vehicle_number'),
@@ -518,8 +707,8 @@ def trip_driver_details(request,trip_id):
     data = {
         'id': trip.id,
         'status': trip.status_id.status_code if trip.status_id else 'pending',
-        'driver_name': str(trip.driver_id) if trip.driver_id else None,
-        'driver_phone': trip.driver_id.user_id.phone_number if trip.driver_id and trip.driver_id.user_id else None,
+        'driver_name': trip.driver_id.public_name if trip.driver_id else None,
+        'driver_phone': None,  # masked calls only (9 Nov); see the cache path above
         'driver_rating': str(trip.driver_id.ratings) if trip.driver_id else None,
         'vehicle_info': None,
         'source': 'database'
@@ -736,7 +925,7 @@ def apply_promo_endpoint(request):
     """Preview a promo code against a fare quote.
 
     Body: {"code": str, "fare": "150.00",
-           "pickup_lat": ..., "pickup_long": ...}
+           "pickup_lat": ..., "pickup_long": ..., "vehicle_type": optional}
     The pickup is used to scope zone-bound promos. We don't redeem
     yet; that happens once the trip is created. The response is the
     same shape as PromoResult.to_dict().
@@ -767,7 +956,15 @@ def apply_promo_endpoint(request):
             zone = find_zone_for_point(float(p_lat), float(p_lon))
         except Exception:
             zone = None
-    result = apply_promo(code, request.user, fare_dec, zone=zone)
+    # US (additive tax): the preview shows tax on the fare AFTER the discount (AUDIT 27.59 ruling 2),
+    # using the card of the vehicle class when the client names one. Inclusive tax: nothing changes.
+    tax = None
+    vt_name = (request.data.get('vehicle_type') or '').strip()
+    if zone is not None and vt_name:
+        from servers.driver.models import VehicleType
+        from servers.pricing.promo_tax import additive_context
+        tax = additive_context(zone, VehicleType.objects.filter(type__iexact=vt_name).first())
+    result = apply_promo(code, request.user, fare_dec, zone=zone, tax=tax)
     http_status = status.HTTP_200_OK if result.ok else status.HTTP_400_BAD_REQUEST
     return success_response(result.to_dict(), http_status) if result.ok else error_response(
         code=result.reason or 'PROMO_INVALID',
@@ -826,7 +1023,7 @@ def trip_chat_history(request, trip_id):
         ChatMessage.objects.filter(trip=trip).exclude(
             sender_role=role,
         ).filter(read_at__isnull=True).update(read_at=timezone.now())
-    return paginator.get_paginated_response(payload)
+    return success_response(paginator.get_paginated_response(payload).data, status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -885,6 +1082,28 @@ def resend_receipt(request, trip_id):
     )
 
 
+def _broadcast_cancel(trip_id, rider_id, cancelled_by, message):
+    """Tell both apps' sockets a trip was cancelled over REST (2026-11-06).
+
+    The socket cancel always broadcast; these REST cancels did not, so a rider
+    whose driver cancelled here stayed on "on the way". Same frames as the socket.
+    """
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        layer = get_channel_layer()
+        if layer is None:
+            return
+        event = {'trip_id': str(trip_id), 'status': 'cancel', 'message': message,
+                 'driver_id': None, 'cancelled_by': cancelled_by}
+        async_to_sync(layer.group_send)(f'trip_{trip_id}', {**event, 'type': 'trip_status_update'})
+        async_to_sync(layer.group_send)(f'rider_{rider_id}',
+                                        {**event, 'type': 'trip_update', 'driver_name': ''})
+    except Exception:  # noqa: BLE001
+        logger.warning('cancel socket event failed for trip %s', trip_id, exc_info=True)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, IsDriver])
 def driver_cancel_trip(request, trip_id):
@@ -922,7 +1141,7 @@ def driver_cancel_trip(request, trip_id):
 
     try:
         with transaction.atomic():
-            trip = Trip.objects.select_for_update().select_related(
+            trip = Trip.objects.select_for_update(of=('self',)).select_related(
                 'status_id', 'driver_id', 'driver_id__user_id', 'user_id',
             ).get(id=trip_id)
 
@@ -963,6 +1182,9 @@ def driver_cancel_trip(request, trip_id):
 
             driver = trip.driver_id
             penalty = apply_cancellation_penalty(driver, trip, reason, note)
+            # MVAG 2025: an unjustified cancel also costs the driver 10% of the fare (capped).
+            from .cancellation_penalty import assess as _assess_cancel
+            _assess_cancel(trip)
 
         # Free the driver from the Redis active-trip map so they can be
         # offered new requests once any lockout expires.
@@ -971,6 +1193,16 @@ def driver_cancel_trip(request, trip_id):
             clear_driver_active_trip(driver.id)
         except Exception:  # noqa: BLE001
             logger.exception('clear_driver_active_trip failed for driver=%s', driver.id)
+
+        # Dismiss any candidate offer still outstanding for this trip. A
+        # driver cancelling an already-assigned trip normally has no
+        # candidates left, but a cancel racing a dispatch wave can, and the
+        # helper is a no-op when the set is empty.
+        try:
+            from servers.ride.dispatch import dismiss_outstanding_offers
+            dismiss_outstanding_offers(trip.id, reason='driver_cancelled')
+        except Exception:  # noqa: BLE001
+            logger.exception('offer dismissal failed for trip=%s', trip.id)
 
         try:
             Notification.objects.create(
@@ -985,6 +1217,9 @@ def driver_cancel_trip(request, trip_id):
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning('Rider cancel notification failed: %s', exc)
+
+        transaction.on_commit(lambda t=trip: _broadcast_cancel(
+            t.id, t.user_id_id, 'driver', 'Your driver cancelled the trip.'))
 
         return success_response(
             {
@@ -1042,7 +1277,7 @@ def rider_cancel_trip(request, trip_id):
 
     try:
         with transaction.atomic():
-            trip = Trip.objects.select_for_update().select_related(
+            trip = Trip.objects.select_for_update(of=('self',)).select_related(
                 'status_id', 'driver_id', 'driver_id__user_id', 'user_id',
             ).get(id=trip_id)
 
@@ -1092,9 +1327,14 @@ def rider_cancel_trip(request, trip_id):
             trip.save(update_fields=[
                 'status_id', 'cancelled_at', 'cancelled_by', 'cancellation_reason',
             ])
+            # MVAG 2025: an unjustified cancel is due on the rider's next trip (never charged now).
+            from .cancellation_penalty import assess as _assess_cancel
+            cancel_penalty = _assess_cancel(trip)
 
             # 4. Process refund if applicable
             refund_result = process_refund_on_cancel(trip)
+            transaction.on_commit(lambda t=trip: _broadcast_cancel(
+                t.id, t.user_id_id, 'rider', 'Your ride has been cancelled.'))
 
             # 5. Notification for the rider
             try:
@@ -1137,6 +1377,13 @@ def rider_cancel_trip(request, trip_id):
         try:
             from servers.redis_client import invalidate_trip
             invalidate_trip(trip.id)
+
+            # Candidate drivers were left holding a live request card by this
+            # path: it cleared neither the offer set nor the cards, so a
+            # cancelled trip stayed on screen until it timed out and the
+            # driver tapped a dead ride.
+            from servers.ride.dispatch import dismiss_outstanding_offers
+            dismiss_outstanding_offers(trip.id, reason='rider_cancelled')
         except Exception:
             logger.exception('invalidate_trip failed for trip=%s', trip.id)
 
@@ -1177,6 +1424,10 @@ def rider_cancel_trip(request, trip_id):
                 'amount': str(refund_result['amount']),
                 'status': 'initiated',
             }
+        # Additive (MVAG 2025): the cancellation fee now due on the next ride, or None.
+        response_data['cancellation_fee'] = (
+            {'amount': str(cancel_penalty.amount), 'currency': cancel_penalty.currency,
+             'note': 'Added to your next ride.'} if cancel_penalty is not None else None)
 
         return success_response(response_data, status.HTTP_200_OK)
 
@@ -1202,14 +1453,21 @@ def get_active_trip(request):
     """
     # Active trips are those not completed and not cancelled
     active_statuses = ['requested','accepted', 'reached', 'in_progress']
-
-    trip = Trip.objects.filter(
-        user_id=request.user,
-        status_id__status_code__in=active_statuses
-    ).select_related(
-        'status_id', 'driver_id', 'driver_id__user_id',
-        'vehicle_id', 'vehicle_id__vehicle_type_id'
-    ).order_by('-requested_at').first()
+    if request.user.role=='rider':
+        trip = Trip.objects.filter(
+            user_id=request.user,
+            status_id__status_code__in=active_statuses
+        ).select_related(
+            'status_id', 'driver_id', 'driver_id__user_id',
+            'vehicle_id', 'vehicle_id__vehicle_type_id'
+        ).order_by('-requested_at').first()
+    else:
+        trip= Trip.objects.filter(
+            driver_id__user_id=request.user,
+            status_id__status_code__in=active_statuses
+        ).select_related(
+            'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
+        ).order_by('-requested_at').first()
 
     # If no active trip, check for recently completed (within 1 hour)
     # This handles the case where app was killed after trip completion
@@ -1218,33 +1476,93 @@ def get_active_trip(request):
         from datetime import timedelta
 
         one_hour_ago = timezone.now() - timedelta(hours=1)
-        trip = Trip.objects.filter(
-            user_id=request.user,
-            status_id__status_code='completed',
-            completed_at__gte=one_hour_ago
-        ).select_related(
-            'status_id', 'driver_id', 'vehicle_id'
-        ).order_by('-completed_at').first()
+        
+        if request.user.role == 'rider':
+            trip = Trip.objects.filter(
+                user_id=request.user,
+                status_id__status_code='completed',
+                completed_at__gte=one_hour_ago
+            ).select_related(
+                'status_id', 'driver_id', 'driver_id__user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
+            ).order_by('-completed_at').first()
+        else:
+            trip = Trip.objects.filter(
+                driver_id__user_id=request.user,
+                status_id__status_code='completed',
+                completed_at__gte=one_hour_ago
+            ).select_related(
+                'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
+            ).order_by('-completed_at').first()
 
     if not trip:
         return error_response(
             code='NO_ACTIVE_TRIP',
             message='No active trip found',
             field='trip',
+            issue="No active trip found",
             status=status.HTTP_404_NOT_FOUND
         )
 
     serializer = TripDetailSerializer(trip, context={'request': request})
-    return success_response(serializer.data, status.HTTP_200_OK)
+    data = dict(serializer.data)
+    # A trip completed in the last hour comes back for receipt and cash-collection
+    # recovery, not as a live trip (driver saw trip 138 named "active", 2026-11-06).
+    data['is_active'] = trip.status_id.status_code in active_statuses
+    data['recovery'] = None if data['is_active'] else 'recently_completed'
+    return success_response(data, status.HTTP_200_OK)
 
 from servers.redis_client import check_maps_rate_limit, get_cached_map_data, cache_map_data
 from servers.ride.maps_utils import (
     google_places_autocomplete, google_directions, google_place_details,
     google_geocode,
+    MapsFailure, NOT_CONFIGURED, QUOTA_EXCEEDED, PERMISSION_DENIED,
 )
 
+
+AUTOCOMPLETE_CACHE_TTL_SECONDS = 3600
+
+
+def _maps_error_response():
+    """Turn the adapter's failure reason into an answer that explains itself.
+
+    The CODE stays `API_ERROR` in every case on purpose: the website and both
+    apps already treat that code as "maps is unavailable, say so and do not
+    invent places", and changing it would silently break that handling. What
+    changes is the message -- an unconfigured deployment, an exhausted quota
+    and a rejected key used to be indistinguishable, so the most common
+    situation in QA (no key at all) read as an outage.
+    """
+    reason = MapsFailure.reason()
+    if reason == NOT_CONFIGURED:
+        message = ('Maps is not configured on this deployment. Destination '
+                   'search is unavailable until a provider key is set.')
+        issue = 'GOOGLE_MAPS_API_KEY is not set'
+    elif reason == QUOTA_EXCEEDED:
+        message = ('The maps provider has refused further requests for now '
+                   '(quota exceeded). Try again later.')
+        issue = 'provider quota exceeded'
+    elif reason == PERMISSION_DENIED:
+        message = ('The maps provider rejected this request. The key may be '
+                   'invalid, or this API may not be enabled for the project.')
+        issue = 'provider rejected the credentials or the API is not enabled'
+    else:
+        message = 'Failed to fetch data from Maps API'
+        issue = 'Upstream service error'
+
+    return error_response(
+        code='API_ERROR',
+        message=message,
+        field='api',
+        issue=issue,
+        status=status.HTTP_502_BAD_GATEWAY,
+    )
+
+# Place SEARCH is open to guests so the public homepage can offer a real
+# pickup and destination before asking anyone to sign in. It looks a place
+# up and nothing else. Ride operations below stay authenticated.
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+@throttle_classes([GuestMapsThrottle, GuestMapsGlobalThrottle])
 def proxy_geocode(request):
     """
     Proxy for Google Places Autocomplete/Geocode.
@@ -1262,6 +1580,17 @@ def proxy_geocode(request):
 
     search_text = request.data.get('input')
     location = request.data.get('location')
+    # `zone`: a service-zone code. Suggestions are then RESTRICTED to that zone's
+    # area and country, so "for" typed in Hyderabad cannot offer Vijayawada (2026-11-06).
+    zone_code = str(request.data.get('zone') or '').strip()
+    bounds = country = None
+    if zone_code:
+        from servers.pricing.models import ServiceZone
+        from servers.ride.maps_utils import zone_bounds
+        zone = ServiceZone.objects.filter(code=zone_code, is_active=True).first()
+        if zone is not None:
+            bounds = zone_bounds(zone.polygon_geojson)
+            country = zone.country
 
     if not search_text:
         return error_response(
@@ -1272,23 +1601,24 @@ def proxy_geocode(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    cache_key = f"maps:geocode:{search_text.lower().strip()}:{location or ''}"
+    # v2: entries cached before predictions carried `structured_formatting`
+    # would serve blank rows for 30 days.
+    # v3: v2 entries were cached for 30 days; the 1 h cap (M4) applies only to new keys.
+    cache_key = (f"maps:geocode:v3:{search_text.lower().strip()}:{location or ''}"
+                 f"{':' + zone_code if bounds else ''}")
     cached_data = get_cached_map_data(cache_key)
     if cached_data:
         return success_response(cached_data, status.HTTP_200_OK)
 
-    result = google_places_autocomplete(search_text, location=location)
+    session_token = request.query_params.get('session_token') or request.data.get('session_token')
+    result = google_places_autocomplete(
+        search_text, location=location, session_token=session_token,
+        bounds=bounds, country=country)
     if result is None:
-        return error_response(
-            code='API_ERROR',
-            message='Failed to fetch data from Maps API',
-            field='api',
-            issue='Upstream service error',
-            status=status.HTTP_502_BAD_GATEWAY
-        )
+        return _maps_error_response()
 
-    # Cache for 30 days
-    cache_map_data(cache_key, result, ttl_seconds=30*24*60*60)
+    # Short TTL: predictions go stale, and the key ignores the session token.
+    cache_map_data(cache_key, result, ttl_seconds=AUTOCOMPLETE_CACHE_TTL_SECONDS)
     return success_response(result, status.HTTP_200_OK)
 
 
@@ -1332,20 +1662,18 @@ def proxy_reverse_geocode(request):
 
     result = google_geocode(latlng=f'{lat},{lng}')
     if result is None:
-        return error_response(
-            code='API_ERROR',
-            message='Failed to fetch data from Maps API',
-            field='api',
-            issue='Upstream service error',
-            status=status.HTTP_502_BAD_GATEWAY
-        )
+        return _maps_error_response()
 
     cache_map_data(cache_key, result, ttl_seconds=7*24*60*60)
     return success_response(result, status.HTTP_200_OK)
 
 
+# Open to guests for the same reason as `proxy_geocode`: resolving the
+# suggestion a visitor picked into coordinates is part of searching, and
+# without it the homepage could only hand over free text.
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+@throttle_classes([GuestMapsThrottle, GuestMapsGlobalThrottle])
 def proxy_place_details(request):
     """Proxy for Google Place Details.
 
@@ -1367,7 +1695,7 @@ def proxy_place_details(request):
         )
 
     place_id = request.data.get('place_id')
-    session_token = request.data.get('session_token')
+    session_token = request.query_params.get('session_token') or request.data.get('session_token')
 
     if not place_id:
         return error_response(
@@ -1385,21 +1713,29 @@ def proxy_place_details(request):
 
     result = google_place_details(place_id, session_token=session_token)
     if result is None:
-        return error_response(
-            code='API_ERROR',
-            message='Failed to fetch data from Maps API',
-            field='api',
-            issue='Upstream service error',
-            status=status.HTTP_502_BAD_GATEWAY
-        )
+        return _maps_error_response()
 
     # A place's coordinates don't move. Cache for 30 days like geocode.
     cache_map_data(cache_key, result, ttl_seconds=30*24*60*60)
     return success_response(result, status.HTTP_200_OK)
 
 
+# The ROUTE LINE is part of the same picture as the markers, and a guest
+# already has the markers.
+#
+# This was `IsAuthenticated` while place search and place details had
+# already been opened to guests, so a visitor who had not signed in saw the
+# map, their pickup and their drop -- and no road drawn between them, plus a
+# 401 on the console of every booking page. Two halves of one picture
+# disagreeing about who may see it.
+#
+# Capped on its own budget rather than sharing the place-search one: a route
+# is the more expensive call, and a visitor who has spent their search
+# budget should still see the trip they have already built. The result is
+# cached for five minutes server-side, so panning the map buys nothing.
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
+@throttle_classes([GuestRouteThrottle, GuestRouteGlobalThrottle])
 def proxy_directions(request):
     """
     Proxy for Google Directions.
@@ -1408,8 +1744,13 @@ def proxy_directions(request):
         "dest_lat": float, "dest_lng": float
     }
     """
-    user_id = request.user.id
-    if not check_maps_rate_limit(user_id, limit=100, period=3600):
+    # Anonymous callers have no id to key the per-user counter on; the two
+    # throttle classes above are what bounds them. A signed-in rider keeps
+    # the existing per-user cap as well.
+    user_id = getattr(request.user, 'id', None)
+    if user_id is not None and not check_maps_rate_limit(
+        user_id, limit=100, period=3600
+    ):
         return error_response(
             code='RATE_LIMIT_EXCEEDED',
             message='You have exceeded your API rate limit',
@@ -1447,21 +1788,66 @@ def proxy_directions(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    cache_key = f"maps:directions:{origin_lat},{origin_lng}:{dest_lat},{dest_lng}"
-    cached_data = get_cached_map_data(cache_key)
-    if cached_data:
-        return success_response(cached_data, status.HTTP_200_OK)
+    from servers.ride.route_cache import get_route
 
-    result = google_directions(origin_lat, origin_lng, dest_lat, dest_lng)
-    if result is None:
-        return error_response(
-            code='API_ERROR',
-            message='Failed to fetch data from Maps API',
-            field='api',
-            issue='Upstream service error',
-            status=status.HTTP_502_BAD_GATEWAY
-        )
+    route, _ = get_route(origin_lat, origin_lng, dest_lat, dest_lng)
+    if route is None:
+        return _maps_error_response()
 
-    # Cache for 5 minutes
-    cache_map_data(cache_key, result, ttl_seconds=300)
-    return success_response(result, status.HTTP_200_OK)
+    return success_response({'status': 'OK', 'routes': [route['route']]}, status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def trip_eta(request, trip_id):
+    """GET /ride/trip/<id>/eta/: the current arrival estimate (servers/ride/eta.py).
+
+    For the rider and the assigned driver only. `eta` is null when there is no
+    honest estimate (no live driver position, or the trip is not active); the
+    screens then hide the line. The live channel pushes the same payload every
+    15 seconds as `trip_eta_update`.
+    """
+    from . import eta as eta_mod
+
+    trip = Trip.objects.select_related('status_id', 'zone', 'driver_id').filter(pk=trip_id).first()
+    is_driver = bool(trip and trip.driver_id and trip.driver_id.user_id_id == request.user.id)
+    if trip is None or not (trip.user_id_id == request.user.id or is_driver):
+        return error_response(code='NOT_FOUND', message='Trip not found', field='trip_id',
+                              issue=f'No trip with id {trip_id}', status=status.HTTP_404_NOT_FOUND)
+    return success_response({'trip_id': trip.id, 'eta': eta_mod.compute(trip)}, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+@throttle_classes([GuestMapsThrottle, GuestMapsGlobalThrottle])
+def maps_client_meter(request):
+    """POST /ride/maps/meter/ {sku: 'dynamic_maps', surface, trip_id?}: a client tells the meter it
+    loaded a billed Google map (the web's Maps JS), so the console counts every surface (9 Nov).
+    Only client-billed SKUs are accepted; the server counts its own calls itself."""
+    from servers.ride import maps_meter
+
+    sku = str(request.data.get('sku') or '')
+    surface = str(request.data.get('surface') or request.headers.get('X-SG-Surface') or '')
+    if sku not in maps_meter.CLIENT_SKUS or surface not in maps_meter.SURFACES:
+        return error_response(code='INVALID_VALUE', message='Unknown SKU or surface.', field='sku',
+                              issue=sku, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        trip_id = int(request.data.get('trip_id') or 0)
+    except (TypeError, ValueError):
+        trip_id = 0
+    maps_meter.record(sku, surface=surface, trip_id=trip_id or None)
+    return success_response({'counted': True}, status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def rider_cancel_preview(request, trip_id):
+    """GET /ride/trip/<id>/cancel-preview/  What cancelling now costs the rider (9 Nov): free (and
+    until when), or the fee. The rider's own trip only."""
+    from .cancellation_penalty import preview
+
+    trip = Trip.objects.select_related('zone').filter(pk=trip_id, user_id=request.user).first()
+    if trip is None:
+        return error_response(code='NOT_FOUND', message='Trip not found.', field='trip_id',
+                              issue=f'No trip with id={trip_id}', status=status.HTTP_404_NOT_FOUND)
+    return success_response(preview(trip), status.HTTP_200_OK)

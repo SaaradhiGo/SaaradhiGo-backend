@@ -24,10 +24,14 @@ from decimal import Decimal
 from typing import Optional
 
 from django.conf import settings
-from django.core.mail import EmailMultiAlternatives
+from base.auth_email import send_message
 from django.db import transaction
 from django.utils import timezone
 from django.utils.html import escape
+from base.countries import get_country
+from base.money import (
+    DEFAULT_CURRENCY, currency_for_trip, format_money, quantize,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +43,140 @@ logger = logging.getLogger(__name__)
 # clients (Gmail, Outlook, Apple Mail). Intentionally minimal CSS so
 # we do not depend on a styling pipeline.
 
+
+def _demand_line(multiplier):
+    """The dynamic multiplier's line (MVAG 2025 disclosure): never the word "surge"."""
+    from servers.pricing.regulation import demand_label
+
+    return demand_label(Decimal(str(multiplier))) or 'Demand multiplier'
+
+
+def _due_lines_and_charged(trip):
+    """`(lines, charged)`: the cancellation fees this trip carried (MVAG 2025) and, when there are
+    any and no promo line will state it, the amount charged; else `([], None)`."""
+    try:
+        from servers.promotions import rider_promos
+        from servers.ride.cancellation_penalty import due_lines
+
+        lines = due_lines(trip)
+        if not lines:
+            return [], None
+        return lines, (None if promo_lines(trip) else rider_promos.payable(trip))
+    except Exception:  # noqa: BLE001 - a receipt must still render
+        logger.exception('cancellation fee receipt lines failed for trip=%s',
+                         getattr(trip, 'pk', None))
+        return [], None
+
+
+def _rider_fee_line(trip):
+    """('Platform fee', amount) when the fare carried a rider platform fee (9 Nov), else None."""
+    try:
+        from base.money import from_minor
+        from servers.ride.models import FarePricing
+
+        fp = FarePricing.objects.filter(trip_id=trip).only('rider_platform_fee_minor', 'currency').first()
+        if fp and fp.rider_platform_fee_minor:
+            return 'Platform fee (included above)', from_minor(fp.rider_platform_fee_minor, fp.currency or 'INR')
+    except Exception:  # noqa: BLE001 - a receipt must still render
+        logger.exception('rider fee receipt line failed for trip=%s', getattr(trip, 'pk', None))
+    return None
+
+
+def _due_rows_html(trip, currency):
+    fee = _rider_fee_line(trip)
+    head = (f'<tr><td>{escape(fee[0])}</td><td style="text-align:right;">'
+            f'{format_money(fee[1], currency)}</td></tr>') if fee else ''
+    lines, charged = _due_lines_and_charged(trip)
+    rows = head + ''.join(f'<tr><td>{escape(label)}</td><td style="text-align:right;">'
+                   f'+{format_money(amount, currency)}</td></tr>' for label, amount in lines)
+    if charged is not None:
+        rows += ('<tr style="background: #f9fafb;"><td><b>Amount charged</b></td>'
+                 f'<td style="text-align:right;"><b>{format_money(charged, currency)}</b></td></tr>')
+    return rows
+
+
+def _due_rows_pdf(trip, currency):
+    fee = _rider_fee_line(trip)
+    lines, charged = _due_lines_and_charged(trip)
+    rows = ([[fee[0], format_money(fee[1], currency, with_symbol=False)]] if fee else []) + [
+        [label, '+' + format_money(amount, currency, with_symbol=False)] for label, amount in lines]
+    if charged is not None:
+        rows.append(['Amount charged', format_money(charged, currency, with_symbol=False)])
+    return rows
+
+
+def _brand():
+    """The customer-facing product name.
+
+    Read from settings rather than hardcoded. This file used to name two different
+    brands in the same document: the HTML heading said "SaaradhiGo / VahanGo" and the
+    body thanked the rider for riding with VahanGo.
+
+    A helper rather than an inline getattr so the value can be interpolated without
+    nesting quotes inside an f-string.
+    """
+    return getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo')
+
+
+def _legal_entity():
+    """The registered entity, which is not the same thing as the brand.
+
+    Appears on the GST receipt beside the MVA-2020 aggregator statement. The name
+    itself is unchanged from what was already shipping -- only the "(operating
+    VahanGo)" parenthetical was removed. Whether this is the correct registered name,
+    and whether a GSTIN and registered address must also appear, is a question for the
+    business and its accountants.
+    """
+    return getattr(settings, 'PLATFORM_LEGAL_ENTITY', 'SaaradhiGo Mobility')
+
+
+def _total_fare(trip):
+    """What the receipt charges. A platform-funded operator end charged 0, which the usual
+    `final_fare or estimated_fare` would read as "no final fare" and show the quote."""
+    if getattr(trip, 'end_rule', '') == 'platform_funded':
+        return Decimal('0.00')
+    return trip.final_fare or trip.estimated_fare or Decimal('0.00')
+
+
+def promo_lines(trip):
+    """`[(label, discount, charged)]` for a trip that held a promo, else []. The receipt's total
+    stays the FULL fare (that is what the driver's earnings are computed on); the discount is
+    platform-funded and the rider is charged the fare less it (module 12)."""
+    try:
+        from servers.promotions import rider_promos
+        from servers.ride.models import PromoRedemption
+
+        discount = rider_promos.discount_minor(trip)
+        if not discount:
+            return []
+        redemption = (PromoRedemption.objects.filter(trip=trip).select_related('promo')
+                      .order_by('-id').first())
+        label = f'Promo discount ({redemption.promo.code})' if redemption else 'Promo discount'
+        return [(label, rider_promos.dec(discount, trip.currency),
+                 rider_promos.payable(trip))]
+    except Exception:  # noqa: BLE001 - a receipt must still render
+        logger.exception('promo receipt lines failed for trip=%s', getattr(trip, 'pk', None))
+        return []
+
+
+def operator_end_note(trip):
+    """The extra receipt line for a trip an operator ended, or ''."""
+    from servers.ride.operator_end import PLATFORM_FUNDED, RECEIPT_NOT_CHARGED_LINE
+
+    rule = getattr(trip, 'end_rule', '')
+    if rule == PLATFORM_FUNDED:
+        return RECEIPT_NOT_CHARGED_LINE
+    if rule:
+        return 'Ended by SaaradhiGo support: the fare is for the distance driven.'
+    return ''
+
+
 _RECEIPT_TEMPLATE = """\
 <html>
 <body style="font-family: Arial, sans-serif; color: #1f2937; max-width: 640px;">
-  <h2 style="color: #EEBD2B;">SaaradhiGo / VahanGo</h2>
+  <h2 style="color: #EEBD2B;">{brand}</h2>
   <p>Hi {rider_name},</p>
-  <p>Thank you for riding with VahanGo. Here is your receipt.</p>
+  <p>Thank you for riding with {brand}. Here is your receipt.</p>
 
   <table cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; border: 1px solid #e5e7eb;">
     <tr><td><b>Receipt number</b></td><td>{receipt_number}</td></tr>
@@ -52,26 +184,28 @@ _RECEIPT_TEMPLATE = """\
     <tr><td><b>Date</b></td><td>{date_str}</td></tr>
     <tr><td><b>Pickup</b></td><td>{pickup}</td></tr>
     <tr><td><b>Drop</b></td><td>{drop}</td></tr>
-    <tr><td><b>Distance</b></td><td>{distance_km} km</td></tr>
+    <tr><td><b>Distance</b></td><td>{distance_km}</td></tr>
     <tr><td><b>Driver</b></td><td>{driver_name}</td></tr>
     <tr><td><b>Vehicle</b></td><td>{vehicle}</td></tr>
   </table>
 
   <h3 style="margin-top: 24px;">Fare breakdown</h3>
   <table cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; border: 1px solid #e5e7eb;">
-    <tr><td>Base fare</td><td style="text-align:right;">Rs. {base_fare}</td></tr>
-    <tr><td>Distance fare</td><td style="text-align:right;">Rs. {distance_fare}</td></tr>
-    <tr><td>Time fare</td><td style="text-align:right;">Rs. {time_fare}</td></tr>
-    <tr><td>Surge multiplier</td><td style="text-align:right;">x {surge}</td></tr>
-    <tr><td>GST ({gst_rate}%)</td><td style="text-align:right;">Rs. {gst_amount}</td></tr>
-    <tr style="background: #f9fafb;"><td><b>Total fare</b></td><td style="text-align:right;"><b>Rs. {total_fare}</b></td></tr>
+    <tr><td>Base fare</td><td style="text-align:right;">{base_fare}</td></tr>
+    <tr><td>Distance fare</td><td style="text-align:right;">{distance_fare}</td></tr>
+    <tr><td>Time fare</td><td style="text-align:right;">{time_fare}</td></tr>
+    <tr><td>{demand_label}</td><td style="text-align:right;">x {surge}</td></tr>
+    <tr><td>{tax_label} ({gst_rate}%)</td><td style="text-align:right;">{gst_amount}</td></tr>
+    {note_row}
+    <tr style="background: #f9fafb;"><td><b>Total fare</b></td><td style="text-align:right;"><b>{total_fare}</b></td></tr>
+    {promo_rows}
   </table>
 
   <p style="margin-top: 16px;"><b>Payment method:</b> {payment_method} &nbsp; <b>Status:</b> {payment_status}</p>
 
   <p style="margin-top: 24px; color: #6b7280; font-size: 12px;">
-    SaaradhiGo Mobility (operating VahanGo) is an aggregator under the
-    Motor Vehicles Aggregator Guidelines 2020 issued by the Ministry of
+    {legal_entity} is an aggregator under the
+    Motor Vehicles Aggregator Guidelines 2025 issued by the Ministry of
     Road Transport &amp; Highways, Government of India. For any dispute
     about this fare, please contact support within 30 days quoting the
     Receipt number above.
@@ -91,7 +225,23 @@ def _get_active_rate_card_for_trip(trip):
     fall back to defaults in that case."""
     try:
         from servers.pricing.services import find_zone_for_point, get_active_rate_card
-        zone = find_zone_for_point(trip.pickup_lat, trip.pickup_long)
+
+        # Prefer the zone STAMPED ON THE TRIP over re-deriving it from the
+        # pickup coordinates.
+        #
+        # The trip records the zone its pickup fell in, for exactly this reason:
+        # re-running a point-in-polygon lookup against today's zone table means a
+        # re-parented zone, a changed boundary or a deactivated zone silently
+        # changes the tax rate on a receipt for a ride that happened months ago.
+        # A receipt is a legal document; the rate it shows must be the rate that
+        # was charged, which is a fact about the trip and not a lookup.
+        #
+        # Same reasoning as the already-stored `zone_code` and
+        # `rate_card_version`. The coordinate lookup stays as a fallback for
+        # legacy trips written before the zone column existed.
+        zone = getattr(trip, 'zone', None)
+        if zone is None:
+            zone = find_zone_for_point(trip.pickup_lat, trip.pickup_long)
         if not zone:
             return None
         vt = None
@@ -99,22 +249,75 @@ def _get_active_rate_card_for_trip(trip):
             vt = trip.vehicle_id.vehicle_type_id
         elif trip.requested_vehicle_type:
             vt = trip.requested_vehicle_type
-        if not vt:
-            return None
-        return get_active_rate_card(zone, vt)
+        if vt:
+            card = get_active_rate_card(zone, vt)
+            if card is not None:
+                return card
+
+        # No vehicle type, or no card for it. Fall back to ANY active card in
+        # this zone, because the only thing the caller wants from the card is
+        # the TAX RATE, and tax is a property of the jurisdiction rather than of
+        # the vehicle. Returning None here instead sent the caller to a
+        # hardcoded 5.00 -- India's GST rate -- which a multi-country drill
+        # caught being applied to a US trip, taxing a $27 fare at 5% instead of
+        # the zone's 8.625%.
+        from servers.pricing.models import RateCard
+        return (RateCard.objects
+                .filter(zone=zone, is_active=True)
+                .order_by('-version')
+                .first())
     except Exception:  # noqa: BLE001
         logger.exception('rate-card lookup failed for trip=%s', trip.pk)
         return None
 
 
-def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount, fare_pricing):
-    """Build the HTML body. Pure function; no IO."""
+# Kilometres are what we store; what the rider reads depends on their market.
+KM_PER_MILE = Decimal('1.609344')
+
+
+def format_distance(km, unit='km'):
+    """Render a stored metric distance in the zone's unit.
+
+    Storage stays metric everywhere -- converting at write time would make two
+    trips in different markets incomparable and break every distance aggregate.
+    Conversion happens here, at the edge, for display only.
+    """
+    if km in (None, ''):
+        return '—'
+    value = Decimal(str(km))
+    if unit == 'mi':
+        return f'{(value / KM_PER_MILE).quantize(Decimal("0.01"))} mi'
+    return f'{value.quantize(Decimal("0.01"))} km'
+
+
+def _format_distance(trip):
+    """The distance line on a receipt, in the trip's zone's unit."""
+    km = trip.actual_distance_km or trip.estimated_distance_km
+    zone = getattr(trip, 'zone', None)
+    unit = (getattr(zone, 'distance_unit', '') or
+            get_country(getattr(zone, 'country', None)).distance_unit)
+    return format_distance(km, unit)
+
+
+def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
+                         fare_pricing, currency=None, tax_label=None,
+                         tax_mode='inclusive'):
+    """Build the HTML body. Pure function; no IO.
+
+    `currency` and `tax_label` are parameters rather than constants because this
+    document used to say "Rs." and "GST" whatever market the trip was in. A US
+    rider would have received a dollar fare labelled in rupees with an Indian tax
+    name on it.
+    """
+    from base.money import DEFAULT_CURRENCY, format_money
+    currency = currency or DEFAULT_CURRENCY
+    tax_label = tax_label or 'Tax'
     rider_name = (getattr(rider, 'full_name', '') or rider.phone_number) or 'Rider'
     driver_name = ''
     vehicle = ''
     if trip.driver_id and trip.driver_id.user_id:
         driver_name = (
-            trip.driver_id.user_id.full_name or trip.driver_id.user_id.phone_number or ''
+            trip.driver_id.user_id.full_name or ''
         )
     if trip.vehicle_id:
         v = trip.vehicle_id
@@ -129,27 +332,44 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount, fare
         distance_fare = fare_pricing.distance_fare or Decimal('0.00')
         time_fare = fare_pricing.time_fare or Decimal('0.00')
         surge = fare_pricing.surge_multiplier or surge
+    if getattr(trip, 'end_rule', '') == 'platform_funded':
+        base_fare = distance_fare = time_fare = Decimal('0.00')
 
-    total = trip.final_fare or trip.estimated_fare or Decimal('0.00')
+    total = _total_fare(trip)
     date_str = (trip.completed_at or timezone.now()).strftime('%d %b %Y, %H:%M')
 
     return _RECEIPT_TEMPLATE.format(
+        # Read from settings, never hardcoded: this document used to name two
+        # different brands in the same page.
+        brand=escape(str(getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo'))),
+        legal_entity=escape(str(
+            getattr(settings, 'PLATFORM_LEGAL_ENTITY', 'SaaradhiGo Mobility'))),
         rider_name=escape(str(rider_name)),
         receipt_number=escape(receipt_number),
         trip_id=trip.id,
         date_str=escape(date_str),
         pickup=escape(str(trip.pickup_address or '—')),
         drop=escape(str(trip.destination_address or '—')),
-        distance_km=str(trip.actual_distance_km or trip.estimated_distance_km or '—'),
+        distance_km=escape(_format_distance(trip)),
         driver_name=escape(str(driver_name)),
         vehicle=escape(str(vehicle or '—')),
-        base_fare=str(round(base_fare, 2)),
-        distance_fare=str(round(distance_fare, 2)),
-        time_fare=str(round(time_fare, 2)),
+        base_fare=format_money(base_fare, currency),
+        distance_fare=format_money(distance_fare, currency),
+        time_fare=format_money(time_fare, currency),
         surge=str(round(surge, 2)),
+        demand_label=escape(_demand_line(surge)),
         gst_rate=str(gst_rate),
-        gst_amount=str(round(gst_amount, 2)),
-        total_fare=str(round(total, 2)),
+        gst_amount=format_money(gst_amount, currency),
+        total_fare=format_money(total, currency),
+        note_row=(f'<tr><td colspan="2"><b>{escape(operator_end_note(trip))}</b></td></tr>'
+                  if operator_end_note(trip) else ''),
+        promo_rows=_due_rows_html(trip, currency) + ''.join(
+            f'<tr><td>{escape(label)}</td><td style="text-align:right;">'
+            f'-{format_money(discount, currency)}</td></tr>'
+            f'<tr style="background: #f9fafb;"><td><b>Amount charged</b></td>'
+            f'<td style="text-align:right;"><b>{format_money(charged, currency)}</b></td></tr>'
+            for label, discount, charged in promo_lines(trip)),
+        tax_label=escape(str(tax_label)),
         payment_method=escape(str(trip.payment_method or '—')),
         payment_status=escape(str(trip.payment_status or '—')),
     )
@@ -180,7 +400,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         buf, pagesize=A4,
         leftMargin=18 * mm, rightMargin=18 * mm,
         topMargin=18 * mm, bottomMargin=18 * mm,
-        title=f'VahanGo receipt {receipt.receipt_number}',
+        title=f'{_brand()} receipt {receipt.receipt_number}',
         author='SaaradhiGo Mobility',
     )
     styles = getSampleStyleSheet()
@@ -195,13 +415,13 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     driver_name = ''
     vehicle = ''
     if trip.driver_id and trip.driver_id.user_id:
-        driver_name = trip.driver_id.user_id.full_name or trip.driver_id.user_id.phone_number or ''
+        driver_name = trip.driver_id.user_id.full_name or ''
     if trip.vehicle_id:
         v = trip.vehicle_id
         vehicle = f"{v.brand or ''} {v.model or ''} ({v.vehicle_number or ''})".strip()
 
     story = []
-    story.append(Paragraph('VahanGo / SaaradhiGo Mobility', h1))
+    story.append(Paragraph(f'{_brand()} / {_legal_entity()}', h1))
     story.append(Paragraph('Tax invoice / Trip receipt', h2))
     story.append(Spacer(1, 6))
 
@@ -239,15 +459,28 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     distance_fare = (fp.distance_fare if fp else None) or 0
     time_fare = (fp.time_fare if fp else None) or 0
     surge = (fp.surge_multiplier if fp else None) or 1
+    if getattr(trip, 'end_rule', '') == 'platform_funded':
+        base_fare = distance_fare = time_fare = 0
+
+    # Currency and tax label come from the receipt row and its trip's zone, not
+    # from a constant. This table said "Amount (Rs.)" and "GST" for every market.
+    _currency = getattr(receipt, 'currency', None) or DEFAULT_CURRENCY
+    _zone = getattr(getattr(receipt, 'trip_id', None), 'zone', None)
+    _tax_label = get_country(getattr(_zone, 'country', None)).tax_label
 
     fare_rows = [
-        ['Description', 'Amount (Rs.)'],
-        ['Base fare', f'{base_fare}'],
-        ['Distance fare', f'{distance_fare}'],
-        ['Time fare', f'{time_fare}'],
-        ['Surge multiplier', f'x {surge}'],
-        ['GST', f'{receipt.gst_amount}'],
-        ['Total fare', f'{receipt.total_fare}'],
+        ['Description', f'Amount ({_currency})'],
+        ['Base fare', format_money(base_fare, _currency, with_symbol=False)],
+        ['Distance fare', format_money(distance_fare, _currency, with_symbol=False)],
+        ['Time fare', format_money(time_fare, _currency, with_symbol=False)],
+        [_demand_line(surge), f'x {surge}'],
+        [_tax_label, format_money(receipt.gst_amount, _currency, with_symbol=False)],
+        *([[operator_end_note(trip), '']] if operator_end_note(trip) else []),
+        ['Total fare', format_money(receipt.total_fare, _currency, with_symbol=False)],
+        *_due_rows_pdf(trip, _currency),
+        *[row for label, discount, charged in promo_lines(trip) for row in (
+            [label, '-' + format_money(discount, _currency, with_symbol=False)],
+            ['Amount charged', format_money(charged, _currency, with_symbol=False)])],
     ]
     fare_table = Table(fare_rows, colWidths=[110 * mm, 55 * mm])
     fare_table.setStyle(TableStyle([
@@ -273,8 +506,8 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     ))
     story.append(Spacer(1, 16))
     story.append(Paragraph(
-        'SaaradhiGo Mobility (operating VahanGo) is an aggregator under the '
-        'Motor Vehicles Aggregator Guidelines 2020 issued by the Ministry of '
+        f'{_legal_entity()} is an aggregator under the '
+        'Motor Vehicles Aggregator Guidelines 2025 issued by the Ministry of '
         'Road Transport &amp; Highways, Government of India. For any dispute '
         'about this fare, please contact support within 30 days quoting the '
         'Receipt number above.',
@@ -313,38 +546,152 @@ def _attach_pdf_to_receipt(receipt) -> bool:
 
 
 def _send_receipt_email(receipt):
-    """Send via configured email backend. Returns (sent_ok, error_str).
+    """Send via the one outbound gate. Returns (sent_ok, error_str).
 
-    Attempts to attach the PDF blob as a file attachment; falls back to
-    HTML-only if PDF generation fails."""
+    WHY THIS NO LONGER BUILDS ITS OWN MESSAGE
+    -----------------------------------------
+    This used to construct an EmailMultiAlternatives and call send() directly.
+    It therefore answered to neither of the two safeguards the auth emails go
+    through:
+
+      * `delivery_is_configured()` -- so on a deployment with no mail
+        configuration it attempted a send to localhost:25, caught the
+        exception, and wrote the error into Receipt.send_failure_reason where
+        nobody was watching. That is the silent failure this column is full
+        of.
+      * `AUTH_EMAIL_ALLOWLIST` -- so "an empty QA allowlist blocks all
+        outbound email" was false for the one message type that goes to
+        customers. QA pointed at real SES, with a real address in a restored
+        dump, would have emailed that person a GST receipt for a test trip.
+
+    The subject, body, HTML and PDF attachment are unchanged. Only the way
+    out is.
+    """
     to_addr = receipt.sent_to_email
     if not to_addr:
         return False, 'no_email'
+
+    attachments = []
     try:
-        msg = EmailMultiAlternatives(
-            subject=f'Your VahanGo receipt {receipt.receipt_number}',
-            body='Your VahanGo trip receipt is enclosed (HTML + PDF).',
-            from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'no-reply@vahango.in'),
-            to=[to_addr],
-        )
-        msg.attach_alternative(receipt.html_body, 'text/html')
-        # Attach the PDF if we managed to render one.
-        try:
-            if receipt.pdf_file:
-                receipt.pdf_file.open('rb')
-                msg.attach(
-                    f'{receipt.receipt_number}.pdf',
-                    receipt.pdf_file.read(),
-                    'application/pdf',
-                )
-                receipt.pdf_file.close()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning('attach pdf failed for receipt=%s: %s', receipt.id, exc)
-        msg.send(fail_silently=False)
-        return True, ''
+        if receipt.pdf_file:
+            receipt.pdf_file.open('rb')
+            attachments.append((
+                f'{receipt.receipt_number}.pdf',
+                receipt.pdf_file.read(),
+                'application/pdf',
+            ))
+            receipt.pdf_file.close()
     except Exception as exc:  # noqa: BLE001
-        logger.warning('receipt email failed for receipt=%s: %s', receipt.id, exc)
-        return False, str(exc)[:512]
+        # HTML-only is a usable receipt; no PDF is not a reason to send none.
+        logger.warning('attach pdf failed for receipt=%s: %s', receipt.id, exc)
+
+    sent, reason = send_message(
+        to=to_addr,
+        subject=f'Your {_brand()} receipt {receipt.receipt_number}',
+        body=f'Your {_brand()} trip receipt is enclosed (HTML + PDF).',
+        html=receipt.html_body,
+        attachments=attachments,
+    )
+    if not sent:
+        logger.warning(
+            'receipt email not sent for receipt=%s: %s', receipt.id, reason,
+        )
+    return sent, reason[:512]
+
+
+def _resolve_tax_rate(trip):
+    """The tax rate this trip's receipt must state, for its market.
+
+    The rate comes from the zone's active rate card. When there is none the
+    fallback comes from the country registry -- NOT from a literal 5.00, which
+    is India's GST rate on taxi services and was silently applied to every
+    market. The US default is deliberately 0.00: there is no national US rate
+    to guess at, and guessing one onto a legal document is worse than stating
+    zero and logging the misconfiguration.
+    """
+    card = _get_active_rate_card_for_trip(trip)
+    if card is not None:
+        return Decimal(str(card.gst_percent or '0'))
+
+    country = get_country(getattr(getattr(trip, 'zone', None), 'country', None))
+    rate = Decimal(country.default_tax_percent)
+    logger.error(
+        'no rate card for trip=%s zone=%s; taxing at the %s default of %s%%. '
+        'This is a pricing misconfiguration -- the receipt is a legal '
+        'document and this rate is a guess.',
+        trip.pk, getattr(getattr(trip, 'zone', None), 'code', None),
+        country.code, rate,
+    )
+    return rate
+
+
+def _tax_basis(trip, total):
+    """The amount the receipt's tax is worked out on. Normally the total. A US (additive-tax) trip
+    that held a promo: the tax was charged on the fare AFTER the discount (AUDIT 27.59 ruling 2), so
+    it is worked out on what the rider was actually charged. India and no-promo trips: the total."""
+    zone = getattr(trip, 'zone', None)
+    if (getattr(zone, 'tax_mode', '') or 'inclusive') != 'additive':
+        return total
+    try:
+        from servers.promotions import rider_promos
+
+        if rider_promos.discount_minor(trip):
+            return rider_promos.payable(trip)
+    except Exception:  # noqa: BLE001 - a receipt must still render
+        logger.exception('promo tax basis failed for trip=%s', getattr(trip, 'pk', None))
+    return total
+
+
+def _receipt_tax(trip, total, rate):
+    """Tax, currency and label for one receipt, in this market's convention.
+
+    This used to be inclusive extraction done unconditionally:
+
+        gst = total * rate / (100 + rate)
+
+    which is right for India, where GST is levied on the fare the rider is
+    quoted so the quoted total already contains it. Applied to a US trip it
+    carves a notional tax out of a total that never had any tax in it, and so
+    both understates the fare and misstates the tax on the document the rider
+    keeps.
+
+    `inclusive`  the tax is already inside `total`; extract it for display and
+                 leave `total` exactly as quoted. India.
+    `additive`   `quote_fare` added the tax on top, so it is already part of
+                 `total` as a real charge. Recompute it the way the quote did
+                 -- on the pre-tax fare -- so the receipt's lines reconcile
+                 with what was charged instead of re-deriving a different
+                 number from the post-tax total.
+
+    One function because there are two receipt-issuing paths, and the second
+    one -- `reissue_receipt`, used after a fare adjustment -- carried a copy of
+    the old India-only arithmetic. A reissued US receipt stated a tax that was
+    never charged, at India's rate, in no stated currency. Two copies of tax
+    law is one copy too many.
+    """
+    zone = getattr(trip, 'zone', None)
+    mode = (getattr(zone, 'tax_mode', '') or 'inclusive')
+    rate = Decimal(str(rate or '0'))
+    total = Decimal(str(total))
+    currency = currency_for_trip(trip)
+
+    if mode == 'additive':
+        per_trip_fee = Decimal(str(getattr(zone, 'per_trip_fee', None) or '0'))
+        # total = fare + tax + fee, and tax = fare * rate/100, so
+        # fare = (total - fee) / (1 + rate/100).
+        taxable = max(Decimal('0'), total - per_trip_fee)
+        divisor = (Decimal('1') + rate / Decimal('100'))
+        pre_tax = (taxable / divisor) if divisor else taxable
+        amount = quantize(pre_tax * rate / Decimal('100'), currency)
+    else:
+        amount = quantize(total * rate / (Decimal('100.00') + rate), currency)
+
+    return {
+        'amount': amount,
+        'mode': mode,
+        'label': get_country(getattr(zone, 'country', None)).tax_label,
+        'currency': currency,
+    }
 
 
 def issue_receipt(trip, force_resend: bool = False):
@@ -374,14 +721,13 @@ def issue_receipt(trip, force_resend: bool = False):
         existing.save(update_fields=['last_sent_at', 'send_failure_reason'])
         return existing
 
-    card = _get_active_rate_card_for_trip(trip)
-    gst_rate = card.gst_percent if card else Decimal('5.00')
-
+    gst_rate = _resolve_tax_rate(trip)
     fare_pricing = FarePricing.objects.filter(trip_id=trip).order_by('-id').first()
-    total = trip.final_fare or trip.estimated_fare or Decimal('0.00')
-    # Inclusive GST extraction: gst = total * gst_rate / (100 + gst_rate)
-    gst_amount = (Decimal(str(total)) * Decimal(str(gst_rate)) /
-                  (Decimal('100.00') + Decimal(str(gst_rate)))).quantize(Decimal('0.01'))
+    total = _total_fare(trip)
+
+    tax = _receipt_tax(trip, _tax_basis(trip, total), gst_rate)
+    gst_amount, tax_mode = tax['amount'], tax['mode']
+    tax_label, currency = tax['label'], tax['currency']
 
     receipt_number = f"SG-{(trip.completed_at or timezone.now()).strftime('%Y%m')}-{trip.id}-v1"
 
@@ -392,12 +738,14 @@ def issue_receipt(trip, force_resend: bool = False):
             receipt_number=receipt_number,
             total_fare=total,
             gst_amount=gst_amount,
+            currency=currency,
             payment_method=trip.payment_method or '',
             payment_status=trip.payment_status or '',
             sent_to_email=rider.email or '',
             html_body=_render_receipt_html(
                 trip=trip, rider=rider, receipt_number=receipt_number,
                 gst_rate=gst_rate, gst_amount=gst_amount, fare_pricing=fare_pricing,
+                currency=currency, tax_label=tax_label, tax_mode=tax_mode,
             ),
             version=1,
         )
@@ -424,24 +772,26 @@ def reissue_receipt(trip):
     rider = trip.user_id
     if not rider:
         return None
-    card = _get_active_rate_card_for_trip(trip)
-    gst_rate = card.gst_percent if card else Decimal('5.00')
+    gst_rate = _resolve_tax_rate(trip)
     from servers.ride.models import FarePricing
     fare_pricing = FarePricing.objects.filter(trip_id=trip).order_by('-id').first()
-    total = trip.final_fare or trip.estimated_fare or Decimal('0.00')
-    gst_amount = (Decimal(str(total)) * Decimal(str(gst_rate)) /
-                  (Decimal('100.00') + Decimal(str(gst_rate)))).quantize(Decimal('0.01'))
+    total = _total_fare(trip)
+    tax = _receipt_tax(trip, _tax_basis(trip, total), gst_rate)
+    gst_amount = tax['amount']
     receipt_number = f"SG-{(trip.completed_at or timezone.now()).strftime('%Y%m')}-{trip.id}-v{new_version}"
 
     receipt = Receipt.objects.create(
         trip_id=trip, user_id=rider, receipt_number=receipt_number,
         total_fare=total, gst_amount=gst_amount,
+        currency=tax['currency'],
         payment_method=trip.payment_method or '',
         payment_status=trip.payment_status or '',
         sent_to_email=rider.email or '',
         html_body=_render_receipt_html(
             trip=trip, rider=rider, receipt_number=receipt_number,
             gst_rate=gst_rate, gst_amount=gst_amount, fare_pricing=fare_pricing,
+            currency=tax['currency'], tax_label=tax['label'],
+            tax_mode=tax['mode'],
         ),
         version=new_version,
     )

@@ -1,0 +1,355 @@
+"""The public app-config endpoint (module 15) and the server-side app-version gate.
+
+    GET /api/v1/app-config/?country=XX[&city=CODE][&app=rider|driver]
+
+Public, read-only, cacheable, rate limited; no PII and no secret; an unknown country is a 404 and
+NEVER India.
+"""
+
+import json
+from datetime import timedelta
+
+import pytest
+from django.core.cache import cache
+from django.utils import timezone
+from rest_framework.test import APIClient
+
+from servers.admin_access.models import GeoNode
+from servers.platform_ops.models import AppVersionPolicy, FeatureFlag, FeatureFlagOverride
+from test_sos_support_zones_matrix import _zone, geo  # noqa: F401 - fixtures
+from platform_support import data, error_code
+
+pytestmark = pytest.mark.django_db
+
+URL = '/api/v1/app-config/'
+
+
+def get(query='', **headers):
+    return APIClient().get(URL + query, **headers)
+
+
+@pytest.fixture
+def markets(geo):
+    """Hyderabad live with a zone; Austin live with a zone (the matrix polygon for both)."""
+    _zone('IN-TG-HYD', geo['IN-TG-HYD'])
+    _zone('US-TX-AUS', geo['US-TX-AUS'], country='US')
+    GeoNode.objects.filter(code='US-TX-AUS').update(status='active')
+    cache.clear()
+    return geo
+
+
+class TestConfigPerCountry:
+    def test_india(self, markets):
+        body = data(get('?country=IN'))
+        assert body['country']['code'] == 'IN'
+        assert body['country']['calling_code'] == '91'
+        assert body['country']['phone']['national_number_lengths'] == [10]
+        assert body['country']['currency'] == {
+            'code': 'INR', 'symbol': '₹', 'symbol_position': 'prefix', 'minor_units': 2}
+        assert body['country']['distance_unit'] == 'km'
+        assert body['country']['emergency']['numbers'] == [{'kind': 'unified', 'number': '112'}]
+        assert body['country']['emergency']['label'] == 'Emergency services'
+        assert body['languages'] == ['en', 'hi', 'te']
+        assert body['status'] == 'live'
+        hyd = {c['code']: c for c in body['cities']}['IN-TG-HYD']
+        assert set(hyd['service_area']) == {'center', 'bounds'}
+        assert hyd['service_area']['bounds']['south'] < hyd['service_area']['bounds']['north']
+
+    def test_united_states(self, markets):
+        body = data(get('?country=US'))
+        assert body['country']['calling_code'] == '1'
+        assert body['country']['currency']['code'] == 'USD' and \
+            body['country']['currency']['symbol'] == '$'
+        assert body['country']['distance_unit'] == 'mi'
+        assert body['country']['tax']['mode'] == 'additive'
+        assert body['country']['emergency']['numbers'] == [{'kind': 'unified', 'number': '911'}]
+        assert body['languages'] == ['en']
+        assert [c['code'] for c in body['cities']] == ['US-TX-AUS']
+
+    def test_no_support_number_is_null_never_a_placeholder(self, markets, settings):
+        """The apps showed 1800-000-0000; now they hide the row until one is set."""
+        settings.SUPPORT_PHONE_NUMBERS = {}
+        cache.clear()
+        assert data(get('?country=IN'))['country']['support'] == {'phone': None}
+
+    def test_policies_state_todays_behaviour_and_leave_the_undecided_unset(self, markets):
+        """No cancellation fee exists, no free-wait time is decided, and a refund takes up to
+        7 business days (the refund notice). Undecided values are None so the apps hide them."""
+        country = data(get('?country=IN'))['country']
+        assert country['cancel_policy'] == {'charges_fee': False, 'free_cancel_seconds': None}
+        assert country['free_wait_minutes'] is None
+        assert country['refund_days'] == 7
+
+    def test_a_country_with_no_policy_says_nothing(self):
+        from servers.platform_ops.app_config import _policy
+        assert _policy('ZZ') == {'cancel_policy': {'charges_fee': None, 'free_cancel_seconds': None},
+                                 'free_wait_minutes': None, 'refund_days': None,
+                                 'quote_valid_seconds': None, 'home_fare_places_max_km': None}
+
+    def test_support_number_is_per_country(self, markets, settings):
+        settings.SUPPORT_PHONE_NUMBERS = {'IN': '+914000000001'}
+        cache.clear()
+        assert data(get('?country=IN'))['country']['support'] == {'phone': '+914000000001'}
+        assert data(get('?country=US'))['country']['support'] == {'phone': None}
+
+    def test_a_draft_city_is_not_offered_and_a_live_one_without_a_zone_is_not_either(self, markets):
+        GeoNode.objects.filter(code='US-TX-AUS').update(status='draft')
+        assert data(get('?country=US'))['cities'] == []
+        GeoNode.objects.filter(code='IN-TG-WGL').update(status='active')   # live, zone inactive
+        from servers.pricing.models import ServiceZone
+
+        ServiceZone.objects.filter(code='IN-TG-WGL').update(is_active=False)
+        assert 'IN-TG-WGL' not in {c['code'] for c in data(get('?country=IN'))['cities']}
+
+    def test_a_city_query_scopes_flags_and_derives_the_country(self, markets):
+        flag = FeatureFlag.objects.create(key='cfg.test_flag', description='test only')
+        FeatureFlagOverride.objects.create(flag=flag, node=markets['IN'], enabled=True)
+        FeatureFlagOverride.objects.create(flag=flag, node=markets['IN-TG-HYD'], enabled=False)
+
+        assert data(get('?country=IN'))['flags']['cfg.test_flag'] is True
+        body = data(get('?city=IN-TG-HYD'))
+        assert body['country']['code'] == 'IN' and body['flags']['cfg.test_flag'] is False
+        assert data(get('?country=US'))['flags']['cfg.test_flag'] is False       # the default
+
+    def test_with_no_market_named_it_lists_the_live_countries_only(self, markets):
+        body = data(get())
+        assert {c['code'] for c in body['countries']} == {'IN', 'US'}
+        GeoNode.objects.filter(code='US-TX-AUS').update(status='draft')
+        assert {c['code'] for c in data(get())['countries']} == {'IN'}
+
+
+class TestNeverIndiaByDefault:
+    @pytest.mark.parametrize('query', ['?country=ZZ', '?country=XX', '?country=india',
+                                       '?country=IN%20', '?country=GB'])
+    def test_an_unknown_country_is_a_404_not_india(self, markets, query):
+        if query == '?country=IN%20':
+            assert get(query).status_code == 200            # whitespace is trimmed, not guessed
+            return
+        response = get(query)
+        assert response.status_code == 404 and error_code(response) == 'UNKNOWN_COUNTRY'
+        assert 'INR' not in response.content.decode()
+
+    def test_an_unknown_city_is_a_404(self, markets):
+        response = get('?city=IN-XX-NOWHERE')
+        assert response.status_code == 404 and error_code(response) == 'UNKNOWN_CITY'
+
+    def test_a_city_in_the_wrong_country_is_a_404(self, markets):
+        assert get('?country=US&city=IN-TG-HYD').status_code == 404
+
+    def test_a_bad_app_is_a_400(self, markets):
+        assert get('?country=IN&app=console').status_code == 400
+
+
+class TestSafety:
+    def test_no_pii_and_no_secret(self, markets, settings):
+        planted = {'CASHFREE_SECRET_KEY': 'zzzzzzzzzzzz-1', 'AWS_SECRET_ACCESS_KEY': 'zzzzzzzzzzzz-2',
+                   'GOOGLE_MAPS_API_KEY': 'zzzzzzzzzzzz-3', 'SENTRY_DSN': 'https://k@sentry.test/1'}
+        for name, value in planted.items():
+            setattr(settings, name, value)
+        text = get('?country=IN').content.decode()
+        for value in planted.values():
+            assert value not in text
+        body = json.loads(text)['data']
+
+        def keys(node):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    yield k
+                    yield from keys(v)
+            elif isinstance(node, list):
+                for item in node:
+                    yield from keys(item)
+
+        bad = [k for k in keys(body) if any(w in k.lower() for w in
+                                            ('phone_number', 'email', 'secret', 'token',
+                                             'password', 'address', 'user'))]
+        assert bad == []
+
+    def test_it_is_public_cacheable_and_read_only(self, markets):
+        response = get('?country=IN')
+        assert response.status_code == 200
+        assert 'public' in response['Cache-Control'] and 'max-age' in response['Cache-Control']
+        assert APIClient().post(URL, {}, format='json').status_code == 405
+
+    def test_it_is_rate_limited_per_client_address(self, markets):
+        cache.clear()
+        statuses = {get('?country=IN', HTTP_X_FORWARDED_FOR='198.51.100.7').status_code
+                    for _ in range(130)}
+        assert 429 in statuses
+        assert get('?country=IN', HTTP_X_FORWARDED_FOR='198.51.100.8').status_code == 200
+
+
+class TestVersionsAndNotices:
+    def test_the_version_policy_and_active_notices_are_in_the_document(self, markets):
+        from servers.platform_ops.models import MaintenanceNotice
+
+        AppVersionPolicy.objects.create(app='rider', platform='android', minimum_version='1.2.0',
+                                        latest_version='1.4.0', store_url='https://play.test/r',
+                                        message='Please update')
+        now = timezone.now()
+        MaintenanceNotice.objects.create(
+            audience='rider', starts_at=now - timedelta(hours=1), ends_at=now + timedelta(hours=1),
+            message='Short outage tonight', severity='warning')
+        MaintenanceNotice.objects.create(
+            audience='driver', starts_at=now - timedelta(hours=1), ends_at=now + timedelta(hours=1),
+            message='Driver only')
+
+        body = data(get('?country=IN&app=rider'))
+        assert body['app_versions']['rider']['android']['minimum_version'] == '1.2.0'
+        assert 'driver' not in body['app_versions']
+        assert [n['message'] for n in body['notices']] == ['Short outage tonight']
+        both = data(get('?country=IN'))
+        assert {n['message'] for n in both['notices']} == {'Short outage tonight', 'Driver only'}
+
+
+class TestServerSideGate:
+    """426 APP_UPDATE_REQUIRED only when X-App-Version is PRESENT and below the minimum."""
+
+    @pytest.fixture(autouse=True)
+    def policy(self, markets):
+        AppVersionPolicy.objects.create(app='rider', platform='android', minimum_version='2.0.0',
+                                        latest_version='2.1.0', store_url='https://play.test/r',
+                                        message='Please update the app')
+        cache.clear()
+
+    ESTIMATE = {'pickup_lat': 17.45, 'pickup_long': 78.40, 'destination_lat': 17.46,
+                'destination_long': 78.41, 'distance_km': 3, 'duration_min': 9,
+                'vehicle_type': 'sedan'}
+
+    def estimate(self, **headers):
+        return APIClient().post('/api/v1/ride/estimate-fare/', self.ESTIMATE, format='json',
+                                **headers)
+
+    def test_a_build_below_the_minimum_is_told_to_update(self):
+        response = self.estimate(HTTP_X_APP_VERSION='1.9.9', HTTP_X_APP_PLATFORM='android')
+        assert response.status_code == 426 and error_code(response) == 'APP_UPDATE_REQUIRED'
+        update = response.json()['error']['update']
+        assert update['minimum_version'] == '2.0.0' and update['store_url'] == 'https://play.test/r'
+
+    def test_an_absent_header_is_allowed_so_current_apps_keep_working(self):
+        assert self.estimate().status_code != 426
+
+    @pytest.mark.parametrize('headers', [
+        {'HTTP_X_APP_VERSION': '2.0.0', 'HTTP_X_APP_PLATFORM': 'android'},      # exactly the minimum
+        {'HTTP_X_APP_VERSION': '2.3.1+7', 'HTTP_X_APP_PLATFORM': 'android'},
+        {'HTTP_X_APP_VERSION': 'garbage', 'HTTP_X_APP_PLATFORM': 'android'},    # unparseable
+        {'HTTP_X_APP_VERSION': '1.0.0', 'HTTP_X_APP_PLATFORM': 'ios'},          # no policy for ios
+        {'HTTP_X_APP_VERSION': '1.0.0'},                                        # no platform
+    ])
+    def test_everything_else_is_allowed(self, headers):
+        assert self.estimate(**headers).status_code != 426
+
+    def test_the_same_gate_guards_sign_in(self):
+        response = APIClient().post('/api/v1/auth/otp/', {'phone_number': '+919876543210',
+                                                          'role': 'rider'}, format='json',
+                                    HTTP_X_APP_VERSION='1.0.0', HTTP_X_APP_PLATFORM='android')
+        assert response.status_code == 426
+        driver = APIClient().post('/api/v1/auth/otp/', {'phone_number': '+919876543210',
+                                                        'role': 'driver'}, format='json',
+                                  HTTP_X_APP_VERSION='1.0.0', HTTP_X_APP_PLATFORM='android')
+        assert driver.status_code != 426            # no driver policy exists
+
+
+class TestPromosAvailable:
+    """`promos_available`: true only while a rider promo is live in the market (rider app R1)."""
+
+    @staticmethod
+    def _campaign(code, *, state='live', country='IN', currency='INR', node=None, with_code=True,
+                  starts=-1, ends=5):
+        from servers.promotions.models import Campaign
+        from servers.ride.models import PromoCode
+
+        now = timezone.now()
+        promo = PromoCode.objects.create(
+            code=code, discount_type='flat', discount_flat_minor=1000, currency=currency,
+            valid_from=now + timedelta(days=starts), valid_to=now + timedelta(days=ends)) \
+            if with_code else None
+        return Campaign.objects.create(
+            kind='rider_promo', name=code, state=state, country=country, currency=currency,
+            geo_node=node, budget_minor=100000, starts_at=now + timedelta(days=starts),
+            ends_at=now + timedelta(days=ends), promo_code=promo)
+
+    def test_false_when_nothing_is_live(self, markets):
+        assert data(get('?country=IN'))['promos_available'] is False
+        assert data(get('?country=US'))['promos_available'] is False
+
+    def test_true_for_a_live_country_campaign_only_in_that_country(self, markets):
+        self._campaign('INLIVE', node=markets['IN'])
+        assert data(get('?country=IN'))['promos_available'] is True
+        assert data(get('?country=US'))['promos_available'] is False
+
+    @pytest.mark.parametrize('state', ['draft', 'paused', 'ended', 'exhausted', 'cancelled'])
+    def test_a_campaign_that_is_not_live_does_not_count(self, markets, state):
+        self._campaign('NOTLIVE', state=state, node=markets['IN'])
+        assert data(get('?country=IN'))['promos_available'] is False
+
+    def test_a_campaign_outside_its_window_does_not_count(self, markets):
+        self._campaign('LATER', node=markets['IN'], starts=2, ends=9)
+        self._campaign('GONE', node=markets['IN'], starts=-9, ends=-2)
+        assert data(get('?country=IN'))['promos_available'] is False
+
+    def test_a_city_campaign_counts_for_its_city_and_the_country_view_but_not_another_city(
+            self, markets):
+        self._campaign('HYDONLY', node=markets['IN-TG-HYD'])
+        assert data(get('?city=IN-TG-HYD'))['promos_available'] is True
+        assert data(get('?country=IN'))['promos_available'] is True
+        assert data(get('?city=IN-TG-WGL'))['promos_available'] is False
+
+    def test_an_active_code_that_never_got_a_campaign_counts(self, markets):
+        from servers.ride.models import PromoCode
+
+        now = timezone.now()
+        PromoCode.objects.create(
+            code='OLDCODE', discount_type='flat', discount_flat_minor=500, currency='INR',
+            valid_from=now - timedelta(days=1), valid_to=now + timedelta(days=1))
+        assert data(get('?country=IN'))['promos_available'] is True
+        assert data(get('?country=US'))['promos_available'] is False
+        PromoCode.objects.update(is_active=False)
+        assert data(get('?country=IN'))['promos_available'] is False
+
+    def test_absent_without_a_market(self, markets):
+        assert 'promos_available' not in data(get())
+
+
+class TestReferralsAvailable:
+    """`referrals_available`: true only while a referral offer is live for the named app."""
+
+    @staticmethod
+    def _referral(code, *, audience='rider', state='live', country='IN', currency='INR',
+                  node=None, legacy=False):
+        from servers.promotions.models import Campaign
+
+        return Campaign.objects.create(
+            kind='referral', name=code, state=state, country=country, currency=currency,
+            geo_node=node, budget_minor=100000, is_legacy=legacy,
+            config={'audience': audience, 'required_trips': 2, 'referrer_reward_minor': 10000,
+                    'referee_reward_minor': 5000})
+
+    def test_false_when_nothing_is_live(self, markets):
+        assert data(get('?country=IN&app=rider'))['referrals_available'] is False
+        assert data(get('?country=IN&app=driver'))['referrals_available'] is False
+
+    def test_true_only_for_the_audience_and_country_it_is_live_for(self, markets):
+        self._referral('RIDERIN', node=markets['IN'])
+        assert data(get('?country=IN&app=rider'))['referrals_available'] is True
+        assert data(get('?country=IN&app=driver'))['referrals_available'] is False
+        assert data(get('?country=US&app=rider'))['referrals_available'] is False
+
+    @pytest.mark.parametrize('state', ['draft', 'paused', 'ended', 'exhausted', 'cancelled'])
+    def test_a_referral_that_is_not_live_does_not_count(self, markets, state):
+        self._referral('NOTLIVE', state=state, node=markets['IN'])
+        assert data(get('?country=IN&app=rider'))['referrals_available'] is False
+
+    def test_a_wrapped_legacy_row_does_not_count(self, markets):
+        self._referral('OLD', node=markets['IN'], legacy=True)
+        assert data(get('?country=IN&app=rider'))['referrals_available'] is False
+
+    def test_a_city_offer_counts_for_its_city_but_not_another_city(self, markets):
+        self._referral('HYDONLY', node=markets['IN-TG-HYD'])
+        assert data(get('?city=IN-TG-HYD&app=rider'))['referrals_available'] is True
+        assert data(get('?city=IN-TG-WGL&app=rider'))['referrals_available'] is False
+
+    def test_absent_without_an_app_or_without_a_market(self, markets):
+        self._referral('RIDERIN', node=markets['IN'])
+        assert 'referrals_available' not in data(get('?country=IN'))
+        assert 'referrals_available' not in data(get('?app=rider'))

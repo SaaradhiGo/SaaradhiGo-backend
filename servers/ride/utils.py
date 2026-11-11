@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 import requests
 from django.conf import settings
 
+from base.countries import get_country
+
 # Fallback fare constants (used when VehicleFarePricing not found in DB)
 DEFAULT_BASE_FARE = Decimal('30.00')
 DEFAULT_PER_KM_FARE = Decimal('12.00')
@@ -25,6 +27,12 @@ MIN_STRAIGHT_LINE_KM = 0.1
 # as straight-line × this factor. Hyderabad's road network is dense; 1.4
 # is a conservative empirical multiplier (Manhattan-like grids tend to
 # 1.3, dense city centres tend to 1.5).
+#
+# These two remain as the India/deployment defaults AND as the fallback when
+# no zone can be resolved. The per-market values live on the country registry
+# and are resolved per trip by `_road_network_factors` below -- 25 km/h is
+# Hyderabad traffic, and applying it to a San Francisco trip inflated the
+# estimated duration by about 60%, which is a priced component.
 ROAD_DISTANCE_FACTOR = 1.4
 
 # Average speed (km/h) we assume for duration estimation when Google fails.
@@ -50,38 +58,76 @@ def _haversine_km(lat1, lon1, lat2, lon2):
     return R * 2 * math.asin(math.sqrt(a))
 
 
-def get_google_maps_distance(pickup_lat, pickup_long, dest_lat, dest_long):
+def _routing_api_version() -> str:
+    """'new' (Routes API, default) or 'legacy' (Distance Matrix / Directions).
+
+    Mirrors GOOGLE_PLACES_API_VERSION. Defaults to NEW for the same reason:
+    a Google Cloud project created after Google's legacy cut-off cannot enable
+    the legacy routing APIs, so defaulting to them would fail by default on
+    every new deployment.
     """
-    Fetch distance and duration from Google Maps Distance Matrix API.
+    from django.conf import settings as _s
+
+    value = (getattr(_s, 'GOOGLE_ROUTING_API_VERSION', '') or '').strip().lower()
+    return value if value in ('new', 'legacy') else 'new'
+
+
+def _duration_seconds(value):
+    """Routes API durations are strings like '420s'."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if text.endswith('s'):
+        text = text[:-1]
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def get_google_maps_distance(pickup_lat, pickup_long, dest_lat, dest_long):
+    """Road distance and duration from the shared per-pair route result.
+
+    One Routes call per rounded pickup/drop pair serves every vehicle-type quote,
+    /maps/directions and the planned route (see route_cache). The call is
+    TRAFFIC_AWARE, which bills as Routes Pro: the SKU follows routingPreference
+    and the requested fields, not the field mask alone.
+
     Returns:
         tuple: (distance_km, duration_min) or (None, None) if failed.
     """
-    api_key = getattr(settings, 'GOOGLE_MAPS_API_KEY', None)
-    if not api_key:
+    if not getattr(settings, 'GOOGLE_MAPS_API_KEY', None):
         return None, None
-
-    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
-    params = {
-        "origins": f"{pickup_lat},{pickup_long}",
-        "destinations": f"{dest_lat},{dest_long}",
-        "key": api_key,
-        "mode": "driving",
-    }
     try:
-        response = requests.get(url, params=params, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("status") == "OK":
-                elements = data["rows"][0]["elements"][0]
-                if elements.get("status") == "OK":
-                    distance_m = elements["distance"]["value"]
-                    duration_s = elements["duration"]["value"]
-                    print(distance_m / 1000.0, duration_s / 60.0)
-                    return distance_m / 1000.0, duration_s / 60.0
-        logger.warning(f"Google Maps API error: {response.text}")
-    except Exception as e:
+        from servers.ride.route_cache import get_route
+
+        route, _ = get_route(pickup_lat, pickup_long, dest_lat, dest_long)
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"Google Maps API request failed: {e}")
-    return None, None
+        return None, None
+    if not route:
+        return None, None
+    return route['distance_m'] / 1000.0, route['duration_s'] / 60.0
+
+
+def _road_network_factors(pickup_lat, pickup_long):
+    """(detour factor, average speed) for the market the pickup is in.
+
+    Only reached on the Google-unavailable fallback path, and deliberately
+    tolerant: if the zone lookup fails for any reason the deployment defaults
+    are used, because a failed quote is worse than an approximate one.
+    """
+    try:
+        from servers.pricing.services import find_zone_for_point
+
+        zone = find_zone_for_point(pickup_lat, pickup_long)
+        country = get_country(getattr(zone, 'country', None))
+        return float(country.road_distance_factor), float(country.fallback_avg_speed_kmh)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug('road-network factor lookup failed, using defaults: %s', exc)
+        return ROAD_DISTANCE_FACTOR, FALLBACK_AVG_SPEED_KMH
 
 
 def validate_distance(distance_km, duration_min, pickup_lat, pickup_long, dest_lat, dest_long):
@@ -137,8 +183,9 @@ def validate_distance(distance_km, duration_min, pickup_lat, pickup_long, dest_l
         if straight_line < MIN_STRAIGHT_LINE_KM:
             return False, 0, 0, 'Pickup and drop locations are too close'
 
-        road_km = round(straight_line * ROAD_DISTANCE_FACTOR, 2)
-        road_min = round((road_km / FALLBACK_AVG_SPEED_KMH) * 60, 2)
+        detour_factor, avg_speed_kmh = _road_network_factors(pickup_lat, pickup_long)
+        road_km = round(straight_line * detour_factor, 2)
+        road_min = round((road_km / avg_speed_kmh) * 60, 2)
 
         if client_km is not None and road_km > 0:
             deviation = abs(client_km - road_km) / road_km
@@ -195,12 +242,32 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=Non
         'base_fare': fare['base_fare'],
         'distance_fare': fare['distance_fare'],
         'time_fare': fare['time_fare'],
+        # Named lines that close the gap between the metered components and the
+        # amount charged. Without forwarding these the API would keep showing a
+        # decomposition that does not add up -- QA trip 45 displayed
+        # 60.00 + 55.59 + 19.62 beside a charged total of 135.22.
+        'fare_adjustments': fare.get('fare_adjustments', []),
+        'rider_platform_fee': fare.get('rider_platform_fee'),
         'surge_multiplier': fare['surge_multiplier'],
+        'demand_label': fare.get('demand_label'),
+        'fare_limits': fare.get('fare_limits'),
         'min_fare_applied': fare['min_fare_applied'],
         'vehicle_type': fare['vehicle_type'],
         'source': fare['source'],
         'zone_code': fare.get('zone_code', ''),
         'rate_card_version': fare.get('rate_card_version'),
+        # Market semantics. Forwarded through this wrapper for the same
+        # reason `fare_adjustments` had to be: this function rebuilds the
+        # payload field by field, so anything quote_fare starts returning is
+        # dropped here unless it is named. A client that cannot see `currency`
+        # does not know whether 135.22 means rupees or dollars.
+        'currency': fare.get('currency'),
+        'tax_mode': fare.get('tax_mode'),
+        'tax_percent': fare.get('tax_percent'),
+        'tax_label': fare.get('tax_label'),
+        'tax_amount': fare.get('tax_amount'),
+        'per_trip_fee': fare.get('per_trip_fee'),
+        'distance_unit': fare.get('distance_unit'),
     }
 
 def get_trip_details(trip_id):
@@ -242,7 +309,6 @@ def get_trip_details(trip_id):
         cache_data['vehicle_color'] = str(vehicle_info.get('color', ''))
     
     if obj.driver_id:
-        cache_data['driver_phone'] = str(obj.driver_id.user_id.phone_number)
         cache_data['driver_rating'] = str(obj.driver_id.ratings)
         
     return cache_data
@@ -269,8 +335,18 @@ def process_refund_on_cancel(trip):
     if not payment or not payment.gateway_payment_id:
         return {'refunded': False, 'amount': None}
 
-    gateway = get_payment_gateway()
-    refund = gateway.create_refund(payment.gateway_payment_id)
+    # Never more than was paid less every refund already issued (AUDIT 27.76).
+    from base.money import format_money, from_minor
+    from servers.ride.admin_trips import refundable_minor
+
+    refund_minor = min(payment.amount_minor, refundable_minor(trip))
+    if refund_minor <= 0:
+        return {'refunded': False, 'amount': None}
+
+    # Refund through the provider the payment was taken on (recorded on the row).
+    gateway = get_payment_gateway(payment.payment_gateway or 'cashfree')
+    refund = gateway.create_refund(payment.gateway_payment_id, amount_minor=refund_minor,
+                                   currency=payment.currency)
     if refund:
         payment.status = 'refunded'
         payment.save(update_fields=['status'])
@@ -282,10 +358,129 @@ def process_refund_on_cancel(trip):
             user_id=trip.user_id,
             title='Refund Processed',
             message=(
-                f'Your refund of ₹{payment.amount} has been initiated '
-                f'due to cancellation.'
+                f'Your refund of {format_money(from_minor(refund_minor, payment.currency), payment.currency)} '
+                f'has been initiated due to cancellation.'
             ),
         )
-        return {'refunded': True, 'amount': payment.amount}
+        return {'refunded': True, 'amount': from_minor(refund_minor, payment.currency)}
 
     return {'refunded': False, 'amount': None}
+
+
+def create_payment_on_complete(trip):
+    """Create a Payment record when trip is completed."""
+    from django.conf import settings
+    from servers.payments.models import Payment, TransactionHistory
+
+    if trip.payments.exists():
+        return
+
+    # What the RIDER pays: the fare less any promo discount. A promo is platform-funded
+    # (module 12), so settlement and driver earnings keep reading the full fare.
+    from servers.promotions.rider_promos import discount_minor, fare_minor, payable
+    amount = payable(trip)
+    if not amount and discount_minor(trip) and fare_minor(trip) > 0:
+        # A promo covered the whole fare: the rider owes nothing, so there is no payment to wait for
+        # and no gateway order. The trip still settles NOW, on the full fare, exactly as with a
+        # smaller promo (driver earnings and commission unchanged; the discount is platform-funded,
+        # and on a cash trip the driver, who collects 0, is credited it).
+        from servers.driver.utils import settle_or_defer
+        trip.payment_status = 'completed'
+        trip.save(update_fields=['payment_status'])
+        settle_or_defer(trip)
+        return
+    if not amount:
+        logger.warning(f"No fare amount for trip {trip.id}, skipping payment creation")
+        return
+
+    payment_method = trip.payment_method or 'deferred'
+
+    if payment_method == 'deferred':
+        # Create placeholder payment for deferred selection
+        Payment.objects.create(
+            trip_id=trip,
+            user_id=trip.user_id,
+            amount=amount,
+            method='deferred',
+            status='pending',
+        )
+        trip.payment_status = 'pending'
+        trip.save(update_fields=['payment_status'])
+        # No TransactionHistory or driver earnings yet - will be created when payment method is selected
+    elif payment_method == 'cash':
+        Payment.objects.create(
+            trip_id=trip,
+            user_id=trip.user_id,
+            amount=amount,
+            method='cash',
+            status='pending',
+        )
+        trip.payment_status = 'pending'
+        trip.save(update_fields=['payment_status'])
+
+        # No TransactionHistory row here: credit_driver_wallet writes
+        # exactly one, keyed on an idempotency key. Writing a second one
+        # inline meant every cash trip was counted twice in GMV and in
+        # the commission report — and a third time if the driver later
+        # tapped "confirm cash".
+        from servers.driver.utils import settle_or_defer
+        settle_or_defer(trip)
+    elif payment_method == 'wallet':
+        from base.utils import wallet_payment
+
+        wallet_result = wallet_payment(
+            user=trip.user_id,
+            amount=amount,
+            purpose='Trip payment',
+            reference_id=f'TRIP_{trip.id}',
+            idempotency_key=f'trip_{trip.id}_payment'
+        )
+
+        if wallet_result.get('success'):
+            Payment.objects.create(
+                trip_id=trip,
+                user_id=trip.user_id,
+                amount=amount,
+                method='wallet',
+                status='completed',
+            )
+            trip.payment_status = 'completed'
+            trip.save(update_fields=['payment_status'])
+
+            if trip.driver_id:
+                TransactionHistory.objects.create(
+                    trip_id=trip,
+                    user_id=trip.user_id,
+                    driver_id=trip.driver_id,
+                    amount=amount,
+                    method='wallet',
+                    user_name=trip.user_id.full_name or '',
+                    status='completed',
+                )
+
+            from servers.driver.utils import settle_or_defer
+            settle_or_defer(trip)
+        else:
+            logger.error(f"Wallet payment failed for trip {trip.id}: {wallet_result.get('error')}")
+            trip.payment_status = 'failed'
+            trip.save(update_fields=['payment_status'])
+    else:
+        # Online payment: record the intent only. The Cashfree order is
+        # created by POST /payments/create-order/, which the app calls
+        # from the payment screen. Doing the gateway round-trip here put
+        # a third-party HTTP call inside the trip-completion transaction
+        # — if it timed out, the trip failed to complete; if the
+        # transaction later rolled back, we had orphaned orders at
+        # Cashfree with no local row.
+        from servers.payments.payment_gateways.factory import country_for_trip, provider_name_for
+
+        Payment.objects.create(
+            trip_id=trip,
+            user_id=trip.user_id,
+            amount=amount,
+            method='online',
+            status='pending',
+            payment_gateway=provider_name_for('payments', country_for_trip(trip)) or '',
+        )
+        trip.payment_status = 'pending'
+        trip.save(update_fields=['payment_status'])

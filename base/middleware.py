@@ -1,7 +1,9 @@
 import logging
 
 from django.conf import settings
-from django.http import JsonResponse
+from django.core.exceptions import PermissionDenied
+from django.http import Http404, JsonResponse
+from django.shortcuts import render
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +29,50 @@ class ExceptionHandlingMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        return self.get_response(request)
+        response = self.get_response(request)
+
+        is_json_response = response.get('Content-Type', '').startswith('application/json')
+
+        if response.status_code == 404 and not is_json_response and request.accepts('text/html'):
+            return render(request, 'errors/404.html', status=404)
+
+        if response.status_code == 403 and not is_json_response and request.accepts('text/html'):
+            return render(request, 'errors/403.html', status=403)
+
+        if response.status_code == 400 and not is_json_response and request.accepts('text/html'):
+            return render(request, 'errors/400.html', status=400)
+
+        return response
 
     def process_exception(self, request, exception):
+        if isinstance(exception, Http404):
+            if request.accepts('text/html'):
+                return render(request, 'errors/404.html', status=404)
+            return JsonResponse(
+                {
+                    'status': 'error',
+                    'error': {
+                        'code': 'NOT_FOUND',
+                        'message': 'The requested resource was not found.',
+                    },
+                },
+                status=404,
+            )
+
+        if isinstance(exception, PermissionDenied):
+            if request.accepts('text/html'):
+                return render(request, 'errors/403.html', status=403)
+            return JsonResponse(
+                {
+                    'status': 'error',
+                    'error': {
+                        'code': 'FORBIDDEN',
+                        'message': 'You do not have permission to access this resource.',
+                    },
+                },
+                status=403,
+            )
+
         logger.exception(
             "Unhandled exception on %s %s",
             request.method,

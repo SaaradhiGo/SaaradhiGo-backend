@@ -2,7 +2,8 @@
 
 This document provides exhaustive, unrestrictive details for every API endpoint in the VahanGo platform.
 Each endpoint includes required variables, optional variables, and fully expanded request and response samples.
-**Base-URL**: https://dev.api.saaradhigo.in/
+**Base-URL (QA)**: https://backend-qa-811d.up.railway.app/  
+**Base-URL (production target)**: https://api.saaradhigo.com/ _(DNS not yet configured)_
 ---
 ## Universal Guidelines
 - **Content-Type**: `application/json` (except for profile/vehicle file uploads which require `multipart/form-data`).
@@ -152,7 +153,36 @@ Update user demographic data. Supports `multipart/form-data` for files.
 }
 ```
 
-### 1.5 Get User Profile
+### 1.5 Update Bank Details
+Update the driver's bank account details for payouts.
+- **URL**: `/auth/bank-details/`
+- **Method**: `PATCH`
+- **Auth Required**: Yes (Must be a driver)
+
+**Parameters (JSON)**: `bank_name`, `account_number`, `ifsc_code`.
+
+**Sample Request (JSON)**:
+```json
+{
+  "bank_name": "State Bank of India",
+  "account_number": "12345678901",
+  "ifsc_code": "SBIN0001234"
+}
+```
+
+**Sample Response (200 OK or 201 Created)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "bank_name": "State Bank of India",
+    "account_number": "12345678901",
+    "ifsc_code": "SBIN0001234"
+  }
+}
+```
+
+### 1.6 Get User Profile
 Fetch the current authenticated user's profile.
 - **URL**: `/auth/profile/`
 - **Method**: `GET`
@@ -191,6 +221,105 @@ Fetch all users. Requires Admin permissions.
         ...
       }
     ]
+  }
+}
+```
+
+### 1.7 Logout
+Log out the caller by blacklisting their refresh token.
+- **URL**: `/auth/logout/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+**Parameters**:
+| Name | Type | Required | Description |
+| ---- | ---- | -------- | ----------- |
+| `refresh_token` | string | **Yes** | The active refresh token to be blacklisted. |
+
+**Sample Request**:
+```json
+{
+  "refresh_token": "eyJhbG..."
+}
+```
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "message": "Successfully logged out"
+  }
+}
+```
+
+### 1.8 Admin Login
+Admin login using phone number and password.
+- **URL**: `/auth/admin/login/`
+- **Method**: `POST`
+- **Auth Required**: No
+
+**Parameters**:
+| Name | Type | Required | Description |
+| ---- | ---- | -------- | ----------- |
+| `phone_number` | string | **Yes** | Admin's phone number |
+| `password` | string | **Yes** | Admin's password |
+
+**Sample Request**:
+```json
+{
+  "phone_number": "+919876543210",
+  "password": "securepassword"
+}
+```
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "token": "eyJhbGciOi...",
+    "refresh_token": "eyJhbG...",
+    "user": {
+      "id": 1,
+      "username": "admin_user",
+      "role": "admin"
+    }
+  }
+}
+```
+
+### 1.9 Export My Data (DPDP)
+DPDP Act 2023 compliance. Exports all data related to the authenticated user.
+- **URL**: `/auth/me/export/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+**Sample Request**: `GET /auth/me/export/`
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "user": { "id": 1, "phone_number": "+919876543210" },
+    "trips_count": 5,
+    "transactions_count": 10,
+    "requested_at": "2026-08-22T10:00:00Z"
+  }
+}
+```
+
+### 1.10 Delete My Account (DPDP)
+DPDP Act 2023 compliance. Hard deletes the authenticated user and all associated PII data.
+- **URL**: `/auth/me/delete/`
+- **Method**: `DELETE`
+- **Auth Required**: Yes
+
+**Sample Request**: `DELETE /auth/me/delete/`
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "message": "Account successfully deleted."
   }
 }
 ```
@@ -439,6 +568,70 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 }
 ```
 
+### 2.11 Get Notification Preferences
+Get the caller's notification preferences.
+- **URL**: `/rider/notifications/preferences/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+**Sample Request**: `GET /rider/notifications/preferences/`
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "transactional": true,
+    "ride_event": true,
+    "payment": true,
+    "payout": true,
+    "sos": true,
+    "kyc": true,
+    "system": true,
+    "marketing": false,
+    "promo": false,
+    "push_enabled": true,
+    "email_enabled": true,
+    "sms_enabled": false,
+    "user_toggleable": ["marketing", "promo", "ride_event", "system"]
+  }
+}
+```
+
+### 2.12 Update Notification Preferences
+Update the caller's notification preferences (only user-toggleable fields).
+- **URL**: `/rider/notifications/preferences/update/`
+- **Method**: `PATCH`
+- **Auth Required**: Yes
+
+**Parameters**:
+Any subset of boolean keys from `user_toggleable` plus `push_enabled`, `email_enabled`, `sms_enabled`.
+
+**Sample Request**:
+```json
+{
+  "marketing": false,
+  "push_enabled": true
+}
+```
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "updated": ["marketing", "push_enabled"],
+    "preferences": {
+      "marketing": false,
+      "promo": false,
+      "ride_event": true,
+      "system": true,
+      "push_enabled": true,
+      "email_enabled": true,
+      "sms_enabled": false
+    }
+  }
+}
+```
+
 ---
 
 ## 3. Driver Functions (App: `driver`)
@@ -458,13 +651,33 @@ Initiate a direct payment from wallet without external gateway. Used for interna
     "user": { "id": 2, "full_name": "Driver A" },
     "status": "offline",
     "approved": true,
-    "license_doc": "/media/docs/l123.jpg",
+    "license_doc": "https://<bucket>.s3.amazonaws.com/license_docs/a1b2c3d4e5f60718293a4b5c6d7e8f90.jpg?X-Amz-Expires=900&X-Amz-Signature=...",
+    "license_doc_back": "https://<bucket>.s3.amazonaws.com/license_docs_back/b2c3d4e5f60718293a4b5c6d7e8f90a1.png?X-Amz-Expires=900&X-Amz-Signature=...",
     "license_expiry": "2028-10-10",
-    "active_vehicle": 1,
+    "active_vehicle_details": {
+      "id": 1,
+      "vehicle_number": "TS07AB1234",
+      "vehicle_type": { "id": 2, "type": "sedan", "description": "Sedan" },
+      "vehicle_type_id_val": 2,
+      "brand": "Maruti",
+      "model": "Swift Dzire",
+      "color": "White",
+      "year": 2020,
+      "capacity": 4,
+      "vehicle_pic": "https://<bucket>.s3.amazonaws.com/vehicle_pics/9f1c2b34d5e64f70a1b2c3d4e5f60718.png",
+      "rc_doc": "https://<bucket>.s3.amazonaws.com/rc_docs/6e53a6edee3f480dbb86045e26589872.pdf?X-Amz-Expires=900&X-Amz-Signature=...",
+      "status": "active"
+    },
     "ratings": "4.5"
   }
 }
 ```
+
+Field notes:
+- `license_doc` / `license_doc_back` / `active_vehicle_details.rc_doc` are
+  **short-lived signed URLs (~15 min expiry)** — refetch the endpoint to refresh.
+- `active_vehicle_details.vehicle_pic` is a **stable public URL** (no expiry).
+- `license_doc_back` and `active_vehicle_details` are `null` when not yet set.
 
 ### 3.2 Update Driver Profile
 - **URL**: `/driver/driver/update/`
@@ -473,13 +686,74 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 
 **Parameters (All Optional)**: `license_doc` (file), `license_expiry` (string YYYY-MM-DD), `active_vehicle` (int).
 
+**Parameters (All Optional)**: `license_doc` (file or S3 key), `license_doc_back` (file or S3 key — licence back side), `license_expiry` (string YYYY-MM-DD), `active_vehicle` (int).
+
 **Sample Request (JSON)**:
 ```json
-{ "active_vehicle": 2 }
+{
+  "active_vehicle": 2,
+  "license_doc_back": "license_docs_back/b2c3d4e5f60718293a4b5c6d7e8f90a1.png"
+}
 ```
 **Sample Response**: DriverProfile object (From 3.1).
 
-### 3.3 List Driver Earnings
+Notes:
+- `license_doc` / `license_doc_back` accept a multipart file, an S3 key from
+  §3.6 presign (`kind: license_doc` / `kind: license_doc_back`), or `null`
+  to clear the field.
+- The back side is **optional** today and is not required for KYC approval.
+
+### 3.3 Driver Incentives / Quest Progress
+Get active incentives/quests and the driver's progress towards completing them.
+- **URL**: `/driver/incentives/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsDriver)
+
+**Sample Request**: `GET /driver/incentives/`
+
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": [
+    {
+      "id": 1,
+      "title": "Complete 10 trips this week",
+      "description": "Earn an extra ₹500 by completing 10 trips.",
+      "target_trips": 10,
+      "reward_amount": "500.00",
+      "start_date": "2023-10-01T00:00:00Z",
+      "end_date": "2023-10-07T23:59:59Z",
+      "progress_trips": 4,
+      "is_completed": false
+    }
+  ]
+}
+```
+
+### 3.4 Driver Elite Status
+Get the driver's current elite tier status based on total trips.
+- **URL**: `/driver/elite-status/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsDriver)
+
+**Sample Request**: `GET /driver/elite-status/`
+
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "tier": "Gold",
+    "total_trips": 120,
+    "rating": "4.8",
+    "acceptance_rate": "100%",
+    "cancellation_rate": "0%"
+  }
+}
+```
+
+### 3.5 List Driver Earnings
 - **URL**: `/driver/earnings/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsDriver)
@@ -541,19 +815,91 @@ Initiate a direct payment from wallet without external gateway. Used for interna
     {
       "id": 1,
       "vehicle_number": "TS07AB1234",
-      "vehicle_type": { "type": "sedan", "name": "Sedan" },
+      "vehicle_type": { "id": 2, "type": "sedan", "description": "Sedan" },
+      "vehicle_type_id_val": 2,
       "brand": "Maruti",
       "model": "Swift Dzire",
       "color": "White",
       "year": 2020,
       "capacity": 4,
+      "vehicle_pic": "https://<bucket>.s3.amazonaws.com/vehicle_pics/9f1c2b34d5e64f70a1b2c3d4e5f60718.png",
+      "rc_doc": "https://<bucket>.s3.amazonaws.com/rc_docs/6e53a6edee3f480dbb86045e26589872.pdf?X-Amz-Expires=900&X-Amz-Signature=...",
       "status": "active"
     }
   ]
 }
 ```
 
-### 3.6 Create Vehicle
+Field notes:
+- The image field is named **`vehicle_pic`** — a single string holding the
+  full URL (`null` when no picture). There is no separate `*_url` field.
+- `vehicle_pic` is a **stable public S3 URL** (no expiry) — safe to cache
+  long-term; it does not follow the signed-URL/refetch pattern.
+- `rc_doc` is **private**: returned as a short-lived signed URL (~15 min);
+  refetch to refresh. Same object shape applies to create (§3.7),
+  update (§3.8), admin vehicle lists, and `active_vehicle_details` in §3.1.
+
+### 3.6 Presigned Upload (new)
+
+Direct-to-S3 upload flow. File bytes go browser → S3 and never transit the
+API, so large documents no longer block request workers.
+
+**Step 1** — mint a short-lived upload URL:
+
+- **URL**: `/uploads/presign/`
+- **Method**: `POST`
+- **Auth Required**: Yes. `avatar` is open to all users; `license_doc`,
+  `license_doc_back`, `rc_doc`, `vehicle_pic` require a driver profile.
+
+```json
+{ "kind": "rc_doc", "content_type": "image/png" }
+```
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `kind` | string | One of `avatar`, `license_doc`, `license_doc_back`, `rc_doc`, `vehicle_pic`. |
+| `content_type` | string | MIME type; images for pics/avatars, images+PDF for docs. |
+
+All kinds are capped at **5 MB**; pics/avatars accept JPG/PNG/WebP/GIF,
+documents (`license_doc`, `license_doc_back`, `rc_doc`) additionally accept
+PDF.
+
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "kind": "rc_doc",
+    "key": "rc_docs/6e53a6edee3f480dbb86045e26589872.png",
+    "upload_url": "https://<bucket>.s3.amazonaws.com/rc_docs/6e53...?X-Amz-...",
+    "expires_in": 900,
+    "method": "PUT",
+    "headers": { "Content-Type": "image/png" }
+  }
+}
+```
+
+**Step 2** — PUT the raw bytes to `upload_url` **with exactly that
+Content-Type header**, then submit `key` to the resource endpoint below.
+The key is verified server-side (prefix, existence, ≤5 MB, content type)
+before being saved.
+
+**Step 3 — read-back: how uploaded fields are returned.** Resource
+endpoints never echo the raw S3 key; the stored key is resolved to a full
+URL at serialization time under a single bare field name (no separate
+`*_url` companion):
+
+| Field | Returned as |
+| ----- | ----------- |
+| `avatar`, `vehicle_pic` | **Stable public S3 URL** — no expiry; safe to cache long-term (no refetch-to-refresh needed). |
+| `license_doc`, `license_doc_back`, `rc_doc` | **Short-lived signed GET URL (~15 min**, `expires_in` 900s**)** — refetch the resource endpoint to get a fresh signature when it expires. |
+
+Example: after presigning `kind: vehicle_pic` and PATCHing the returned
+key onto a vehicle, every vehicle response (`GET /driver/vehicles/`,
+§3.7 create, §3.8 update, and `active_vehicle_details` in §3.1) carries
+`vehicle_pic` as its display URL.
+
+### 3.7 Create Vehicle
 - **URL**: `/driver/vehicles/add/`
 - **Method**: `POST`
 - **Auth Required**: Yes (IsDriver)
@@ -565,7 +911,7 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 | `vehicle_type` | string | **Yes** | e.g. `sedan`, `auto`, `suv`. |
 | `brand`, `model`, `color` | string | No | Cosmetic details. |
 | `year`, `capacity` | int | No | Vehicle age and seater. |
-| `rc_doc`, `vehicle_pic` | file | No | Multipart file uploads. |
+| `rc_doc`, `vehicle_pic` | file or key | No | Multipart files, or S3 keys from §3.6 presign. |
 
 **Sample Request**:
 ```json
@@ -576,23 +922,51 @@ Initiate a direct payment from wallet without external gateway. Used for interna
   "model": "Innova",
   "color": "Silver",
   "year": 2023,
-  "capacity": 6
+  "capacity": 6,
+  "rc_doc": "rc_docs/6e53a6edee3f480dbb86045e26589872.pdf",
+  "vehicle_pic": "vehicle_pics/9f1c2b34d5e64f70a1b2c3d4e5f60718.png"
 }
 ```
-**Sample Response (201 Created)**: (returns Vehicle object same as 3.5).
+Multipart file uploads remain supported during migration.
 
-### 3.7 Update Vehicle
+**Sample Response (201 Created)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "id": 1,
+    "vehicle_number": "AP09XY8888",
+    "vehicle_type": { "id": 3, "type": "suv", "description": "SUV" },
+    "vehicle_type_id_val": 3,
+    "brand": "Toyota",
+    "model": "Innova",
+    "color": "Silver",
+    "year": 2023,
+    "capacity": 6,
+    "vehicle_pic": "https://<bucket>.s3.amazonaws.com/vehicle_pics/9f1c2b34d5e64f70a1b2c3d4e5f60718.png",
+    "rc_doc": "https://<bucket>.s3.amazonaws.com/rc_docs/6e53a6edee3f480dbb86045e26589872.pdf?X-Amz-Expires=900&X-Amz-Signature=...",
+    "status": "active"
+  }
+}
+```
+(Same object shape as §3.5 — `vehicle_pic` is the resolved public URL.)
+
+### 3.8 Update Vehicle
 - **URL**: `/driver/vehicles/<vehicle_id>/`
 - **Method**: `PATCH`
 - **Auth Required**: Yes (IsDriver)
 
 **Sample Request**:
 ```json
-{ "color": "Matte Black" }
+{ "color": "Matte Black", "rc_doc": "rc_docs/6e53a6edee3f480dbb86045e26589872.pdf", "vehicle_pic": "vehicle_pics/9f1c2b34d5e64f70a1b2c3d4e5f60718.png" }
 ```
-**Sample Response**: Updated vehicle object.
+`license_doc` / `license_doc_back` (`PATCH /driver/driver/update/`) and
+`avatar` (`PATCH /auth/update/`) accept keys the same way.
 
-### 3.8 Delete Vehicle
+**Sample Response**: Updated vehicle object (same shape as §3.5, with
+`vehicle_pic` resolved to its public URL).
+
+### 3.10 Delete Vehicle
 - **URL**: `/driver/vehicles/<vehicle_id>/delete/`
 - **Method**: `DELETE`
 - **Auth Required**: Yes (IsDriver)
@@ -606,7 +980,7 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 }
 ```
 
-### 3.9 Admin: List Drivers
+### 3.10 Admin: List Drivers
 - **URL**: `/driver/admin/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsAdmin)
@@ -614,14 +988,14 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 
 **Sample Response**: Paginated Driver profiles.
 
-### 3.10 Admin: Retrieve Driver
+### 3.11 Admin: Retrieve Driver
 - **URL**: `/driver/admin/<driver_id>/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsAdmin)
 
 **Sample Response**: Driver detail including user struct and vehicle relationships.
 
-### 3.11 Admin: Update KYC Status
+### 3.12 Admin: Update KYC Status
 - **URL**: `/driver/admin/<driver_id>/update-kyc/`
 - **Method**: `PATCH`
 - **Auth Required**: Yes (IsAdmin)
@@ -629,19 +1003,19 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 **Parameters**: Optional `approved` (bool), `status` (string).
 **Sample Request**: `{"approved": true}`
 
-### 3.12 Admin: Delete Driver
+### 3.13 Admin: Delete Driver
 - **URL**: `/driver/admin/<driver_id>/delete/`
 - **Method**: `DELETE`
 - **Auth Required**: Yes (IsAdmin)
 **Sample Response**: `{"message": "Driver deleted successfully"}`
 
-### 3.13 Admin: Get Driver Vehicles
+### 3.14 Admin: Get Driver Vehicles
 - **URL**: `/driver/admin/<driver_id>/vehicles/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsAdmin)
 **Sample Response**: Array of vehicle objects matching 3.5.
 
-### 3.14 Driver Withdrawal Balance
+### 3.15 Driver Withdrawal Balance
 - **URL**: `/driver/withdrawals/balance/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsDriver)
@@ -660,7 +1034,7 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 }
 ```
 
-### 3.15 Driver Withdrawal Request
+### 3.16 Driver Withdrawal Request
 - **URL**: `/driver/withdrawals/request/`
 - **Method**: `POST`
 - **Auth Required**: Yes (IsDriver)
@@ -689,7 +1063,7 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 }
 ```
 
-### 3.16 Driver Withdrawal History
+### 3.17 Driver Withdrawal History
 - **URL**: `/driver/withdrawals/history/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsDriver)
@@ -713,7 +1087,7 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 }
 ```
 
-### 3.17 Driver Withdrawal Block Status
+### 3.18 Driver Withdrawal Block Status
 - **URL**: `/driver/withdrawals/block-status/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsDriver)
@@ -733,7 +1107,7 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 }
 ```
 
-### 3.18 Admin: List Withdrawals
+### 3.19 Admin: List Withdrawals
 - **URL**: `/driver/admin/withdrawals/`
 - **Method**: `GET`
 - **Auth Required**: Yes (IsAdmin)
@@ -759,7 +1133,7 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 }
 ```
 
-### 3.19 Admin: Approve Withdrawal
+### 3.20 Admin: Approve Withdrawal
 - **URL**: `/driver/admin/withdrawals/<withdrawal_id>/approve/`
 - **Method**: `POST`
 - **Auth Required**: Yes (IsAdmin)
@@ -788,7 +1162,7 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 }
 ```
 
-### 3.20 Admin: Reject Withdrawal
+### 3.21 Admin: Reject Withdrawal
 - **URL**: `/driver/admin/withdrawals/<withdrawal_id>/reject/`
 - **Method**: `POST`
 - **Auth Required**: Yes (IsAdmin)
@@ -818,7 +1192,7 @@ Initiate a direct payment from wallet without external gateway. Used for interna
 }
 ```
 
-### 3.21 Admin: Bulk Action Withdrawals
+### 3.22 Admin: Bulk Action Withdrawals
 - **URL**: `/driver/admin/withdrawals/bulk-action/`
 - **Method**: `POST`
 - **Auth Required**: Yes (IsAdmin)
@@ -847,6 +1221,48 @@ Initiate a direct payment from wallet without external gateway. Used for interna
     "updated_ids": [1, 2, 3],
     "skipped_ids": [],
     "updated_count": 3
+  }
+}
+```
+
+### 3.23 Admin: Driver Full Detail
+Fetch aggregated driver details across 9 surfaces (core driver data, vehicles, earnings, fatigue, recent trips, etc.) for Ops view.
+- **URL**: `/driver/admin/<driver_id>/full/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsAdmin)
+
+**Sample Request**: `GET /driver/admin/15/full/`
+**Sample Response (200 OK)**:
+```json
+{
+  "status": "success",
+  "data": {
+    "core": {
+      "id": 15,
+      "status": "offline",
+      "rating": "4.8",
+      "approved": true
+    },
+    "user": {
+      "id": 5,
+      "full_name": "Driver A",
+      "phone_number": "+919000000000"
+    },
+    "earnings": {
+      "lifetime": "25000.00",
+      "today": "1500.00",
+      "this_month": "15000.00",
+      "last_withdrawal": "2026-08-20T10:00:00Z"
+    },
+    "vehicles": [],
+    "sessions": [],
+    "recent_trips": [],
+    "withdrawals": [],
+    "cancellations": {
+      "24h": 0,
+      "7d": 1,
+      "30d": 3
+    }
   }
 }
 ```
@@ -1094,8 +1510,10 @@ Driver cancels a trip AFTER accepting it (before the trip starts).
 
 **Sample Response**: Paginated TripList payloads.
 
-### 4.10 Admin: Live Locations
-- **URL**: `/ride/admin/live-locations/`
+### 4.10 Admin: Live Locations (RETIRED)
+> Removed after module 10. Use `GET /live-ops/admin/snapshot/` (scoped, `liveops.read`, masked). The section below is kept for history only.
+
+- **URL**: `/ride/admin/live-locations/` (no longer routed)
 - **Method**: `GET`
 - **Auth Required**: Yes (IsAdmin)
 
@@ -1109,6 +1527,74 @@ Driver cancels a trip AFTER accepting it (before the trip starts).
   }
 }
 ```
+
+### 4.11 Get Active Trip
+- **URL**: `/ride/active/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+**Sample Response**: Trip details.
+
+### 4.12 Resend Receipt
+- **URL**: `/ride/trip/<trip_id>/receipt/resend/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 4.13 PDF Receipt
+- **URL**: `/ride/trip/<trip_id>/receipt/pdf/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+### 4.14 Trip Chat History
+- **URL**: `/ride/trip/<trip_id>/chat/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+### 4.15 Apply Promo
+- **URL**: `/ride/promo/apply/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+**Promo codes at booking (module 12).** Send `"promo_code": "<CODE>"` on the booking frame of
+`ws/ride/request/` (optional). With none, the best live auto-applied promo is used. The promo is
+**platform-funded**: `estimated_fare` stays the full fare (the driver's earnings and commission are
+computed on it); the `trip_created` frame adds `promo_code`, `discount_amount` and `rider_payable`
+(what the rider is charged). A code that no longer applies (or whose campaign has run out of budget)
+refuses the booking with `{"type": "error", "code": "PROMO_NOT_FOUND" | "PROMO_BUDGET_EXHAUSTED" |
+"PROMO_USER_LIMIT" | ...}` and no trip is created, so re-quote with `/ride/promo/apply/`. The apply
+response gains the reasons `PROMO_BUDGET_EXHAUSTED` and `PROMO_NEW_RIDERS_ONLY`. A promo never makes a
+ride free: the rider always pays at least the minimum charge. The payment order, the payment row and the
+cash amount the driver collects are the fare less the discount; the driver earnings rows add
+`promo_discount` and `cash_to_collect`.
+
+### 4.16 Maps Proxy: Geocode
+- **URL**: `/ride/maps/geocode`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 4.17 Maps Proxy: Place Details
+- **URL**: `/ride/maps/place-details`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 4.18 Maps Proxy: Reverse Geocode
+- **URL**: `/ride/maps/reverse-geocode`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 4.19 Maps Proxy: Directions
+- **URL**: `/ride/maps/directions`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 4.20 Admin: Single Trip Detail
+- **URL**: `/ride/admin/trips/<trip_id>/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsAdmin)
+
+### 4.21 Admin: Dashboard
+- **URL**: `/ride/admin/dashboard/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsAdmin)
 
 ---
 
@@ -1276,3 +1762,156 @@ Trigger refunds gracefully.
 - Filters: `status`
 
 **Sample Response**: Paginated TransactionHistory payloads.
+
+### 5.8 Payout Webhook
+- **URL**: `/payments/payout-webhook/`
+- **Method**: `POST`
+- **Auth Required**: No
+
+### 5.9 Switch Payment Method
+- **URL**: `/payments/switch/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 5.10 Retry Payment
+- **URL**: `/payments/retry/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 5.11 Pending Payments
+- **URL**: `/payments/pending/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+---
+
+## 6. SOS (App: `sos`)
+### 6.1 Raise SOS
+- **URL**: `/sos/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 6.2 Admin List SOS
+- **URL**: `/sos/admin/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsAdmin)
+
+### 6.3 Admin Acknowledge SOS
+- **URL**: `/sos/<sos_id>/acknowledge/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsAdmin)
+
+### 6.4 Admin Resolve SOS
+- **URL**: `/sos/<sos_id>/resolve/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsAdmin)
+
+### 6.5 Admin False Alarm SOS
+- **URL**: `/sos/<sos_id>/false-alarm/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsAdmin)
+
+---
+
+## 7. Pricing (App: `pricing`)
+### 7.1 Public Zones
+- **URL**: `/pricing/zones/`
+- **Method**: `GET`
+- **Auth Required**: No
+
+### 7.2 Fare Quote
+- **URL**: `/pricing/quote/`
+- **Method**: `POST`
+- **Auth Required**: No
+
+### 7.3 Admin Zones CRUD
+- **URL**: `/pricing/admin/zones/`
+- **Method**: `GET`, `POST`, `PUT`, `DELETE`
+- **Auth Required**: Yes (IsAdmin)
+
+### 7.4 Admin Rate Cards CRUD
+- **URL**: `/pricing/admin/rate-cards/`
+- **Method**: `GET`, `POST`, `PUT`, `DELETE`
+- **Auth Required**: Yes (IsAdmin)
+
+---
+
+## 8. Support (App: `support`)
+### 8.1 List My Tickets
+- **URL**: `/support/tickets/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+### 8.2 Create Ticket
+- **URL**: `/support/tickets/create/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 8.3 Ticket Detail
+- **URL**: `/support/tickets/<ticket_id>/`
+- **Method**: `GET`
+- **Auth Required**: Yes
+
+### 8.4 Add Ticket Message
+- **URL**: `/support/tickets/<ticket_id>/messages/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 8.5 Close Ticket
+- **URL**: `/support/tickets/<ticket_id>/close/`
+- **Method**: `POST`
+- **Auth Required**: Yes
+
+### 8.6 Admin List Tickets
+- **URL**: `/support/admin/tickets/`
+- **Method**: `GET`
+- **Auth Required**: Yes (IsAdmin)
+
+### 8.7 Admin Reply Ticket
+- **URL**: `/support/admin/tickets/<ticket_id>/reply/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsAdmin)
+
+### 8.8 Admin Assign Ticket
+- **URL**: `/support/admin/tickets/<ticket_id>/assign/`
+- **Method**: `POST`
+- **Auth Required**: Yes (IsAdmin)
+
+---
+
+## 9. Promotions & Incentives (App: `promotions`, module 12)
+
+### 9.1 Referral: attach a code
+- **URL**: `/promotions/referrals/attach/`
+- **Method**: `POST`
+- **Auth Required**: Yes (rider or driver)
+- **Body**: `{"code": "ABCD2345", "device_id": "<optional stable device id>"}` (only a salted hash of the
+  device id is kept)
+- **201**: `{"status": "attached", "required_trips": 2, "trips_completed": 0, "reward_minor": 5000,
+  "currency": "INR"}`
+- **Errors**: `CODE_REQUIRED` 400, `SELF_REFERRAL` 400, `CODE_NOT_FOUND` 404 (also a code of the other
+  role), `ALREADY_REFERRED` 409, `TOO_LATE` 409 (the person has already completed a trip),
+  `NO_ACTIVE_CAMPAIGN` 409.
+- The reward is earned only after the referee completes the campaign's number of trips, and never across
+  the same device, phone number or payment instrument.
+
+### 9.2 Referral: mine
+- **URL**: `/promotions/referrals/mine/`
+- **Method**: `GET`
+- **Auth Required**: Yes (rider or driver)
+- **Returns**: my shareable `code`, the live `offer` (`required_trips`, `referrer_reward_minor`,
+  `referee_reward_minor`, `currency`), `referrals` (who, status, trips done of required) and
+  `attached_to` (my own progress, if I used a code). A blocked reward shows only `under review`.
+
+### 9.3 Driver incentives
+- **URL**: `/promotions/driver/incentives/`
+- **Method**: `GET`
+- **Auth Required**: Yes (driver)
+- **Returns**: live incentives with my progress: `target_trips`, `progress_trips`, `status`
+  (`in_progress` | `completed` | `unfunded`), `reward_minor`, `budget_used_up`, and the filters
+  (`zone_code`, `hour_from`, `hour_to`, `vehicle_type`). Rewards are paid in the weekly payout with **no
+  commission**; `tax` is `not configured` (go-live blocker 15). The older `/driver/driver/incentives/`
+  keeps working unchanged.
+- `GET /driver/earnings/summary/` adds `incentive_rewards`, `referral_rewards` (their own lines, not in
+  `total_earned`), `incentive_commission` (`none`) and `incentive_tax` (`not configured`).
+

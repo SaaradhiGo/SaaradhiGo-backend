@@ -2,6 +2,8 @@ from decimal import Decimal
 
 from django.db import models
 from django.contrib.auth import get_user_model
+from base.currency_stamp import CurrencyStampedModel
+from base.money import MinorUnitsAmount
 
 User=get_user_model()
 class Rider(models.Model):
@@ -27,6 +29,13 @@ class Rider(models.Model):
     review_flagged_at=models.DateTimeField(null=True,blank=True)
     review_cleared_at=models.DateTimeField(null=True,blank=True)
     review_notes=models.TextField(blank=True,default='')
+    # The rider's home city, an anchor for operator scope
+    # (`rider.scope`). The signup flow records no location and the rider app
+    # contracts do not change, so this is NULL until something that knows
+    # (a future profile field, an operator) sets it; a rider with neither a
+    # home city nor a recent trip is anchored at their phone's country.
+    home_city=models.ForeignKey('admin_access.GeoNode',null=True,blank=True,
+                                on_delete=models.SET_NULL,related_name='+')
 
     def __str__(self):
         return self.user_id.full_name if self.user_id.full_name else self.user_id.phone_number
@@ -35,6 +44,13 @@ class FavoritePlace(models.Model):
     address_text=models.CharField(max_length=512,blank=True,null=True)
     latitude=models.DecimalField(max_digits=20,decimal_places=10)
     longitude=models.DecimalField(max_digits=20,decimal_places=10)
+    # What the rider calls the place (2026-11-06): the home screen prices Home and Work first.
+    # Nullable; places saved before this stay unlabelled.
+    LABEL_CHOICES = [('home', 'Home'), ('work', 'Work'), ('other', 'Other')]
+    label = models.CharField(max_length=8, choices=LABEL_CHOICES, null=True, blank=True)
+    # The rider's own name for an "other" place ("Gym", "Mum's"), 2026-11-09. Blank for
+    # Home and Work, whose label is the name.
+    name = models.CharField(max_length=40, blank=True, default='')
     def __str__(self):
         return f'{self.user_id} - {self.address_text}'
 class Wallet(models.Model):
@@ -58,11 +74,19 @@ class Wallet(models.Model):
     scope=models.CharField(
         max_length=16, choices=SCOPE_CHOICES, default=SCOPE_RIDER, db_index=True,
     )
-    # default uses Decimal explicitly so a freshly-constructed Wallet
-    # instance holds a Decimal in memory (not a Python float). The
-    # mismatch caused `wallet.balance + Decimal(amount)` to TypeError on
-    # the first ever top-up. See QA-7 in the Phase-0 QA report.
-    balance=models.DecimalField(max_digits=12,decimal_places=2,default=Decimal('0.00'))
+    # Minor units of `currency` (base/money.py). `balance` reads as a Decimal,
+    # so `wallet.balance + Decimal(amount)` -- the QA-7 top-up crash, when a
+    # fresh instance held a float -- cannot recur: the column is an integer
+    # and the view is always a Decimal.
+    balance_minor=models.BigIntegerField(default=0)
+    balance=MinorUnitsAmount('balance_minor')
+    # The currency this amount is in, stamped at write time from the trip's
+    # zone. Denormalised on purpose: the currency a row was written in is a
+    # FACT about that row, not a lookup against today's zone configuration --
+    # same reasoning as the already-stored `zone_code` and `rate_card_version`.
+    # Without it, every cross-market Sum() in this codebase is a meaningless
+    # number and nothing says so.
+    currency = models.CharField(max_length=3, default='INR', db_index=True)
 
     class Meta:
         constraints = [
@@ -88,9 +112,60 @@ def get_wallet(user, scope=Wallet.SCOPE_RIDER, lock=False):
         wallet.balance = Decimal('0.00')
     return wallet
 
-class WalletTransaction(models.Model):
+class WalletTransaction(CurrencyStampedModel, models.Model):
+    """A ledger row. Carries its own currency.
+
+    This model has no trip FK -- the only link back to a trip is
+    `reference_id = 'TRIP_<id>'`, which `servers/driver/earnings.py` already
+    documents as a real modelling weakness. So the currency cannot be derived by
+    the generic mixin and `_derive_currency` is overridden below to parse it.
+
+    Parsing a string to find the currency of a money row is not good. It is,
+    however, strictly better than defaulting every settlement row to INR, and it
+    does not require changing the settlement write path in the same change that
+    introduces currency. When `reference_id` becomes a proper FK, delete the
+    override and add 'trip' to `currency_source_fields`.
+    """
+
+    currency_source_fields = ()
+
+    def _derive_currency(self):
+        from base.money import normalize_currency
+
+        ref = (self.reference_id or '') if hasattr(self, 'reference_id') else ''
+        if ref.startswith('TRIP_'):
+            try:
+                trip_pk = int(ref[len('TRIP_'):])
+            except (TypeError, ValueError):
+                trip_pk = None
+            if trip_pk is not None:
+                from servers.ride.models import Trip
+                found = (Trip.objects.filter(pk=trip_pk)
+                         .values_list('currency', flat=True).first())
+                if found:
+                    return normalize_currency(found)
+
+        # No trip to ask (a top-up, a withdrawal, a promo credit). Use the
+        # wallet's currency, which is the user's home market.
+        try:
+            wallet = Wallet.objects.filter(user_id=self.user_id_id).first()
+        except Exception:
+            wallet = None
+        if wallet and wallet.currency:
+            return normalize_currency(wallet.currency)
+        return None
+
     user_id = models.ForeignKey(User, on_delete=models.CASCADE, related_name='wallet_transactions')
-    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    # Minor units of `currency` (base/money.py); `amount` is the Decimal view.
+    amount_minor = models.BigIntegerField()
+    amount = MinorUnitsAmount('amount_minor')
+    # The currency this amount is in, stamped at write time from the trip's
+    # zone. Denormalised on purpose: the currency a row was written in is a
+    # FACT about that row, not a lookup against today's zone configuration --
+    # same reasoning as the already-stored `zone_code` and `rate_card_version`.
+    # Without it, every cross-market Sum() in this codebase is a meaningless
+    # number and nothing says so.
+    currency = models.CharField(max_length=3, db_index=True)
     txn_type = models.CharField(max_length=20, choices=[
         ('credit', 'Credit'),  # Added via payment gateway
         ('debit', 'Debit')     # Used for both gateway and direct payments
@@ -209,3 +284,150 @@ class NotificationPreference(models.Model):
 
     def __str__(self):
         return f'NotifPrefs for {self.user_id_id}'
+
+# ---------------------------------------------------------------------------
+# Riders module (operator console, module 4)
+# ---------------------------------------------------------------------------
+
+class RiderBlock(models.Model):
+    """An operator block on a rider. Active while `lifted_at` is NULL.
+
+    A blocked rider cannot REQUEST a ride (`rider.eligibility.may_request_rides`,
+    checked by the ride-request socket before a trip is created and on
+    retry). Nothing else changes: the account still signs in, sees its
+    history, pays what it owes, raises tickets and SOS (SOS always works).
+    A block also signs the rider out (refresh tokens revoked), except during
+    an active trip: then at trip end (`signout_pending`).
+    """
+
+    REASON_CHOICES = [
+        ('fraud', 'Suspected fraud'),
+        ('abuse', 'Abuse of drivers or staff'),
+        ('safety', 'Safety concern'),
+        ('payment', 'Unpaid dues / payment abuse'),
+        ('chargebacks', 'Repeated chargebacks'),
+        ('other', 'Other (note required)'),
+    ]
+
+    rider = models.ForeignKey(Rider, on_delete=models.CASCADE, related_name='blocks')
+    reason_code = models.CharField(max_length=32, choices=REASON_CHOICES)
+    note = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    lifted_at = models.DateTimeField(null=True, blank=True)
+    lifted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                  related_name='+')
+    lift_note = models.TextField(blank=True, default='')
+    # Set when the block landed during an active trip: the rider is signed
+    # out when that trip ends (`rider.block_signout`), then this clears.
+    signout_pending = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            # Blocking twice is the same block.
+            models.UniqueConstraint(fields=['rider'], condition=models.Q(lifted_at__isnull=True),
+                                    name='rider_one_active_block'),
+        ]
+
+    def __str__(self):
+        return f'RiderBlock rider={self.rider_id} {self.reason_code}'
+
+
+class RiderFlag(models.Model):
+    """An operator's risk flag on a rider (feeds Fraud & Risk). Active while
+    `cleared_at` is NULL. Separate from `Rider.flagged_for_review`, which is
+    the rating rule's flag and is shown to drivers."""
+
+    REASON_CHOICES = [
+        ('fraud_suspicion', 'Fraud suspicion'),
+        ('promo_abuse', 'Promo / referral abuse'),
+        ('payment_risk', 'Payment risk'),
+        ('safety', 'Safety'),
+        ('other', 'Other'),
+    ]
+
+    rider = models.ForeignKey(Rider, on_delete=models.CASCADE, related_name='operator_flags')
+    reason = models.CharField(max_length=32, choices=REASON_CHOICES)
+    note = models.TextField(blank=True, default='')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    cleared_at = models.DateTimeField(null=True, blank=True)
+    cleared_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='+')
+    clear_note = models.TextField(blank=True, default='')
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['rider', 'reason'],
+                                    condition=models.Q(cleared_at__isnull=True),
+                                    name='rider_flag_one_active_per_reason'),
+        ]
+
+    def __str__(self):
+        return f'RiderFlag rider={self.rider_id} {self.reason}'
+
+
+class RiderNote(models.Model):
+    """An internal operator note. Never shown to the rider."""
+
+    rider = models.ForeignKey(Rider, on_delete=models.CASCADE, related_name='operator_notes')
+    body = models.TextField()
+    author = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                               related_name='+')
+    idempotency_key = models.CharField(max_length=200, unique=True, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    def __str__(self):
+        return f'RiderNote rider={self.rider_id}'
+
+
+class RiderRestriction(models.Model):
+    """A narrow operator restriction on a rider that is NOT a block.
+
+    `cash_disabled` (owner ruling 2026-10-31, AUDIT 27.56): the rider may still request rides but
+    may not choose CASH (the booking, or switching to cash at completion, is refused with the
+    stable code `CASH_NOT_AVAILABLE`). Set from a confirmed payment-abuse flag by a fraud
+    reviewer, shown and cleared on the Riders page. Active while `cleared_at` is NULL. Blocking
+    stays the separate `RiderBlock`, for repeat or severe cases.
+    """
+
+    CASH_DISABLED = 'cash_disabled'
+    KIND_CHOICES = [(CASH_DISABLED, 'Online payment only (no cash)')]
+
+    rider = models.ForeignKey(Rider, on_delete=models.CASCADE, related_name='restrictions')
+    kind = models.CharField(max_length=24, choices=KIND_CHOICES, default=CASH_DISABLED)
+    reason = models.TextField(blank=True, default='')
+    set_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                               related_name='+')
+    set_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    #: The fraud flag it was set from (an id, not a FK: the restriction outlives any queue change).
+    flag_id = models.BigIntegerField(null=True, blank=True)
+    cleared_at = models.DateTimeField(null=True, blank=True)
+    cleared_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='+')
+    clear_note = models.TextField(blank=True, default='')
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['rider', 'kind'],
+                                    condition=models.Q(cleared_at__isnull=True),
+                                    name='rider_one_active_restriction_per_kind'),
+        ]
+
+    def __str__(self):
+        return f'RiderRestriction rider={self.rider_id} {self.kind}'
+
+
+def cash_disabled_for(user):
+    """Is cash switched off for this rider (an active `cash_disabled` restriction)?"""
+    if user is None or not getattr(user, 'pk', None):
+        return False
+    return RiderRestriction.objects.filter(
+        rider__user_id_id=user.pk, kind=RiderRestriction.CASH_DISABLED,
+        cleared_at__isnull=True).exists()
+
+
+CASH_NOT_AVAILABLE = 'CASH_NOT_AVAILABLE'
+CASH_NOT_AVAILABLE_MESSAGE = "Cash isn't available for your account. Please pay online."

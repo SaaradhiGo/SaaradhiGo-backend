@@ -1,55 +1,115 @@
 import logging
+
+from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
+from base.money import charged_fare, sum_minor, to_major_string
 from base.utils import success_response, error_response
-from base.permissions import IsAdmin
-from servers.driver.models import Driver,Vehicle
-from servers.driver.serializers import DriverAdminListSerializer, DriverAdminDetailSerializer, KYCApprovalSerializer, VehicleSerializer
+from base.permissions import (
+    CAP_DRIVER_KYC, CAP_FINANCE_PAYOUT, IsAdmin,
+)
+from servers.admin_access.bridge import ScopedPermission
+from servers.admin_access.scoping import (
+    ScopeNotHeld, scoped, scoped_or_none, scoped_to_request,
+)
+from servers.driver.models import Driver, DriverSuspension, Vehicle
+from servers.driver.serializers import (
+    AdminVehicleSerializer, DriverAdminDetailSerializer,
+    KYCApprovalSerializer,
+)
 from rest_framework.pagination import PageNumberPagination
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# "KYC sees only KYC queues" (owner, QA survey 2026-10-28)
+# ---------------------------------------------------------------------------
+#
+# A driver is IN KYC until a document review has approved them: `approved`
+# is False, or their documents are pending or rejected. An approved driver
+# with approved documents is an operations matter, not a KYC one.
+from django.db.models import Q
+
+# A SUSPENDED driver is not in KYC: suspension is an operations decision
+# (driver.write), and a KYC-only operator approving them would be a
+# reinstatement by the back door. The subquery is lazy, evaluated per use.
+IN_KYC = (Q(approved=False) | ~Q(doc_status='approved')) & ~Q(
+    id__in=DriverSuspension.objects.filter(lifted_at__isnull=True).values('driver_id'))
+
+
+def kyc_only(user):
+    """Is this operator's driver authority KYC and nothing else?
+
+    True when the caller holds `driver.kyc` but neither `driver.write` nor
+    `trip.read` -- the KYC Verifier template, and nobody else's. Such an
+    operator's driver list is the KYC queue, and an already-approved
+    driver answers NOT FOUND to them, the same as a driver outside their
+    city. Decided through `granted`, so an unmigrated legacy `driver_ops`
+    account (which still holds `trip.read` through the bridge) is
+    unaffected until it is migrated.
+    """
+    from servers.admin_access.bridge import granted
+
+    if not granted(user, 'driver.kyc')[0]:
+        return False
+    return not (granted(user, 'driver.write')[0] or granted(user, 'trip.read')[0])
+
+
+def for_kyc_view(user, drivers):
+    """`drivers`, narrowed to the KYC queue when the caller is KYC-only."""
+    return drivers.filter(IN_KYC) if kyc_only(user) else drivers
+
+
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def list_drivers_admin(request):
     """
-    List all drivers. Can be filtered by 'approved' and 'status'.
-    """
-    drivers = Driver.objects.all().select_related('user_id').order_by('-id')
-    
-    # Filter configuration
-    approved = request.query_params.get('approved')
-    driver_status = request.query_params.get('status')
-    
-    if approved is not None:
-        approved_bool = approved.lower() in ['true', '1', 't', 'y', 'yes']
-        drivers = drivers.filter(approved=approved_bool)
-        
-    if driver_status:
-        drivers = drivers.filter(status=driver_status)
+    List drivers IN THE CALLER'S SCOPE. Can be filtered by 'approved' and 'status'.
 
-    paginator = PageNumberPagination()
-    paginator.page_size = 10
-    paginator.page_size_query_param = 'page_size'
-    paginator.max_page_size = 50
-    page = paginator.paginate_queryset(drivers, request)
+    `scoped()` is what restricts this to the caller's cities; without it the
+    permission check above would pass and the endpoint would still return
+    every driver in both countries.
+    """
+    try:
+        drivers = for_kyc_view(request.user, scoped_to_request(
+            request, Driver.objects.select_related('user_id', 'home_city')
+        )).order_by('-id')
+    except ScopeNotHeld as exc:
+        return error_response(
+            code='SCOPE_NOT_HELD', message=str(exc), field='scope',
+            issue='Requested scope is outside your assignments',
+            status=status.HTTP_403_FORBIDDEN,
+        )
     
-    serializer = DriverAdminListSerializer(page, many=True)
-    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
+    # Filters, sort and pages: the Drivers module (admin_drivers). The rows
+    # are masked on the way OUT, by the renderer (admin_access.rendering),
+    # not in the console: no operator is SENT the number. The reveal
+    # endpoint is the way to it, and is logged.
+    from servers.driver.admin_drivers import list_response
+    return list_response(request, drivers)
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def retrieve_driver_admin(request, driver_id):
     """
-    Retrieve details of a single driver by its ID (along with user profile and vehicles).
+    Retrieve one driver by ID, IF they are in the caller's scope.
+
+    Fetched through `scoped_or_404` rather than by bare id: this used to be
+    `Driver.objects.get(id=driver_id)`, so any operator could read any
+    driver in any country by incrementing the id.
     """
-    try:
-        driver = Driver.objects.prefetch_related('user_id', 'vehicle_set').get(id=driver_id)
-        serializer = DriverAdminDetailSerializer(driver)
-        return success_response(serializer.data, status.HTTP_200_OK)
-    except Driver.DoesNotExist:
+    driver = scoped_or_none(
+        request.user,
+        for_kyc_view(request.user, Driver.objects.prefetch_related('user_id', 'vehicle_set')),
+        id=driver_id,
+    )
+    if driver is None:
+        # Same answer whether the driver does not exist or is another
+        # city's: a distinguishable 403 would let an out-of-scope operator
+        # enumerate ids. See `scoped_or_none`.
         return error_response(
             code="NOT_FOUND",
             message="Driver not found",
@@ -57,10 +117,66 @@ def retrieve_driver_admin(request, driver_id):
             issue=f"No driver matches id {driver_id}",
             status=status.HTTP_404_NOT_FOUND
         )
+    # Documents as on-file flags, never links (AUDIT 27.78).
+    serializer = DriverAdminDetailSerializer(driver)
+    return success_response(serializer.data, status.HTTP_200_OK)
+
+
+def _compliance_payload(driver):
+    """The review checklist: what this driver's country requires, and what
+    is on file.
+
+    Built by `servers/driver/compliance.py` -- the same functions that build
+    the driver's own onboarding checklist -- so an operator and the driver
+    they are reviewing cannot be looking at different lists, and a country
+    whose rules change changes both screens at once.
+    """
+    from servers.driver import compliance
+
+    vehicle = driver.active_vehicle or driver.vehicle_set.order_by('id').first()
+
+    def rows(checks):
+        return [
+            {
+                'key': key,
+                'label': check['label'],
+                'description': compliance.document_description(key),
+                'present': check['present'],
+                # False where the requirement has no column to store it in.
+                # Reported rather than hidden: treating an unrecordable
+                # document as satisfied is how an unverified driver gets
+                # approved.
+                'recordable': check['applicable'],
+            }
+            for key, check in checks.items()
+        ]
+
+    driver_rows = rows(compliance.evaluate_driver(driver))
+    vehicle_rows = rows(compliance.evaluate_vehicle(vehicle, driver)) if vehicle else []
+
+    return {
+        'country': compliance.driver_country_code(driver),
+        'driver_documents': driver_rows,
+        'vehicle_documents': vehicle_rows,
+        'missing': [r['key'] for r in driver_rows + vehicle_rows
+                    if not (r['present'] and r['recordable'])],
+    }
+
+
+def _document_url(field):
+    """A presigned link to a private document, at most 300 s, or None.
+
+    Kept for the reveal path; responses no longer embed links (AUDIT 27.78).
+    See `document_access.signed_url`.
+    """
+    from servers.driver.document_access import signed_url
+
+    return signed_url(field)
+
 
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def driver_full_detail_admin(request, driver_id):
     """Driver aggregate for the ops console driver-detail page.
 
@@ -91,11 +207,17 @@ def driver_full_detail_admin(request, driver_id):
     from django.db.models import Sum
     from django.utils import timezone
 
-    try:
-        driver = Driver.objects.select_related(
+    # Scoped: this endpoint returns the driver's licence images, every
+    # vehicle credential and their earnings. Out of scope answers NOT_FOUND,
+    # the same as a driver who does not exist.
+    driver = scoped_or_none(
+        request.user,
+        for_kyc_view(request.user, Driver.objects.select_related(
             'user_id', 'active_vehicle', 'active_vehicle__vehicle_type_id',
-        ).get(id=driver_id)
-    except Driver.DoesNotExist:
+        )),
+        id=driver_id,
+    )
+    if driver is None:
         return error_response(
             code='NOT_FOUND', message='Driver not found.',
             field='driver_id', issue=f'No driver {driver_id}',
@@ -104,8 +226,19 @@ def driver_full_detail_admin(request, driver_id):
 
     user = driver.user_id
     now = timezone.now()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    month_start = today_start.replace(day=1)
+    # Day and month boundaries in the DRIVER's market, not the deployment's.
+    # `now.replace(hour=0, ...)` measured both against Asia/Kolkata for every
+    # driver on the platform.
+    from base.market_time import (
+        driver_timezone, local_day_start, local_month_start,
+    )
+
+    from base.money import single_currency_or_none
+    from servers.driver.services import driver_currency
+
+    _dtz = driver_timezone(driver)
+    today_start = local_day_start(_dtz, now=now)
+    month_start = local_month_start(_dtz, now=now)
     last_24h = now - timedelta(hours=24)
     last_7d = now - timedelta(days=7)
     last_30d = now - timedelta(days=30)
@@ -127,6 +260,10 @@ def driver_full_detail_admin(request, driver_id):
             'fitness_expiry': v.fitness_expiry.isoformat() if v.fitness_expiry else None,
             'puc_expiry': v.puc_expiry.isoformat() if v.puc_expiry else None,
             'is_active_vehicle': bool(driver.active_vehicle_id and driver.active_vehicle_id == v.id),
+            # The documents are opened from the `documents` section, one at a
+            # time, through `admin_document_view` (AUDIT 27.78). This used to
+            # carry a 15-minute link to every file, minted whether or not
+            # anybody looked and recorded nowhere.
         })
 
     # ---- fatigue status (computes live + persists lockout if breached) ----
@@ -231,12 +368,26 @@ def driver_full_detail_admin(request, driver_id):
         completed_qs = Trip.objects.filter(
             driver_id=driver, status_id__status_code='completed',
         )
-        lifetime = completed_qs.aggregate(s=Sum('final_fare'))['s'] or Decimal('0.00')
-        today_amt = completed_qs.filter(completed_at__gte=today_start).aggregate(s=Sum('final_fare'))['s'] or Decimal('0.00')
-        month_amt = completed_qs.filter(completed_at__gte=month_start).aggregate(s=Sum('final_fare'))['s'] or Decimal('0.00')
-        earnings_payload['lifetime'] = str(lifetime)
-        earnings_payload['today'] = str(today_amt)
-        earnings_payload['this_month'] = str(month_amt)
+        # `charged_fare()`, not 'final_fare'. That column is written only when
+        # a promo is applied, so these three totals read 0.00 for a driver
+        # whose every trip was an ordinary one -- which is most drivers.
+        #
+        # NOTE this is GROSS FARE COLLECTED on the driver's trips, not the
+        # driver's take-home: commission is deducted elsewhere, and these two
+        # are deliberately different numbers.
+        fare = charged_fare()
+        # The currency these three are in. A driver operates in one market, so
+        # one code is the honest answer here -- but without it the console is
+        # rendering three bare numbers and choosing a symbol for them itself.
+        # Taken from the driver's trips rather than the deployment default.
+        payload_currency = single_currency_or_none(completed_qs) or driver_currency(driver)
+        lifetime = sum_minor(completed_qs, fare)
+        today_amt = sum_minor(completed_qs.filter(completed_at__gte=today_start), fare)
+        month_amt = sum_minor(completed_qs.filter(completed_at__gte=month_start), fare)
+        earnings_payload['lifetime'] = to_major_string(lifetime, payload_currency)
+        earnings_payload['today'] = to_major_string(today_amt, payload_currency)
+        earnings_payload['this_month'] = to_major_string(month_amt, payload_currency)
+        earnings_payload['currency'] = payload_currency
     except Exception:
         pass
 
@@ -247,7 +398,6 @@ def driver_full_detail_admin(request, driver_id):
         'ratings': str(driver.ratings),
         'total_trips': driver.total_trips,
         'license_expiry': driver.license_expiry.isoformat() if driver.license_expiry else None,
-        'license_doc_url': driver.license_doc.url if driver.license_doc else None,
         'upi_id': driver.upi_id,
         'fatigue_lockout_until': driver.fatigue_lockout_until.isoformat() if driver.fatigue_lockout_until else None,
         'user': {
@@ -265,11 +415,26 @@ def driver_full_detail_admin(request, driver_id):
         'withdrawals': withdrawals_payload,
         'recent_trips': recent_trips,
         'earnings': earnings_payload,
+        # WHAT THIS DRIVER'S COUNTRY REQUIRES, and which of it is on file.
+        # Computed by servers/driver/compliance.py -- the same functions
+        # that build the driver's own checklist -- so the operator and the
+        # driver cannot be looking at different lists.
+        'compliance': _compliance_payload(driver),
+        'doc_status': driver.doc_status,
+        'doc_rejection_reason': driver.doc_rejection_reason or '',
     }
+    # The Drivers module's sections: per-document review, approval blockers,
+    # ratings, SOS / ticket counts, suspension, history, notes, audit trail
+    # and the caller's actions. Added keys only; nothing above changes.
+    from servers.driver.admin_drivers import detail_extras
+    payload.update(detail_extras(request, driver))
+    # This payload carries the person at several depths -- the driver, the
+    # user, the documents, the recent trips' addresses -- which is why the
+    # renderer's masker recurses rather than masking only the top level.
     return success_response(payload, status.HTTP_200_OK)
 
 @api_view(['PATCH'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.kyc')])
 def update_kyc_status_admin(request, driver_id):
     """
     Approve or reject KYC for a driver (updates 'approved' and/or 'status').
@@ -277,7 +442,9 @@ def update_kyc_status_admin(request, driver_id):
     from servers.admin_audit.services import record_admin_action
 
     try:
-        driver = Driver.objects.get(id=driver_id)
+        driver = scoped_or_none(request.user, Driver.objects.all(), id=driver_id)
+        if driver is None:
+            raise Driver.DoesNotExist
         before = {
             'approved': driver.approved,
             'status': driver.status,
@@ -285,7 +452,44 @@ def update_kyc_status_admin(request, driver_id):
 
         serializer = KYCApprovalSerializer(driver, data=request.data, partial=True)
         if serializer.is_valid():
+            if serializer.validated_data.get('approved') is True and (
+                    DriverSuspension.objects.filter(driver=driver, lifted_at__isnull=True)
+                    .exists()):
+                # Approval would lift a suspension that only driver.write may lift.
+                return error_response(
+                    code='DRIVER_SUSPENDED', message='Suspended: reinstate before approving.',
+                    field='approved', issue='driver is suspended',
+                    status=status.HTTP_409_CONFLICT)
+            if serializer.validated_data.get('approved') is True and not driver.approved:
+                # The market's blocking items (10 Nov), as on the console's Approve.
+                from . import requirements
+                unmet = requirements.blocking_unmet(driver)
+                if unmet:
+                    return error_response(
+                        code='REQUIREMENTS_MISSING', message='Not done: ' + ', '.join(unmet),
+                        field='approved', issue='requirements', status=status.HTTP_400_BAD_REQUEST)
             serializer.save()
+
+            # THE REVIEW OUTCOME, WHERE THE DRIVER CAN READ IT.
+            #
+            # The reason an operator typed went to the audit log and nowhere
+            # else: `KYCApprovalSerializer` only writes `approved` and
+            # `status`, so `doc_status` stayed 'pending' forever and
+            # `doc_rejection_reason` was never written at all. The driver's
+            # screen showed "not approved" with no reason, which is
+            # identical to what a driver who has uploaded nothing sees --
+            # and the operator believed they had explained themselves.
+            approved = serializer.validated_data.get('approved')
+            if approved is not None:
+                driver.doc_status = 'approved' if approved else 'rejected'
+                driver.doc_rejection_reason = (
+                    '' if approved else (request.data.get('reason') or '').strip()
+                )
+                driver.doc_status_updated_at = timezone.now()
+                driver.save(update_fields=[
+                    'doc_status', 'doc_rejection_reason', 'doc_status_updated_at',
+                ])
+
             driver.refresh_from_db()
             after = {
                 'approved': driver.approved,
@@ -319,33 +523,21 @@ def update_kyc_status_admin(request, driver_id):
         )
 
 @api_view(['DELETE'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.deactivate')])
 def delete_driver_admin(request, driver_id):
     """
-    Delete a driver profile and their associated objects.
-    """
-    from servers.admin_audit.services import record_admin_action
+    Permanently DEACTIVATE a driver (the route keeps its old name).
 
-    try:
-        driver = Driver.objects.get(id=driver_id)
-        snapshot = {
-            'approved': driver.approved,
-            'status': driver.status,
-            'phone': getattr(driver.user_id, 'phone_number', None),
-            'full_name': getattr(driver.user_id, 'full_name', None),
-        }
-        driver.delete()
-        record_admin_action(
-            request,
-            action='driver_deleted',
-            target_type='driver',
-            target_id=driver_id,
-            before=snapshot,
-            after={'deleted': True},
-            reason=request.data.get('reason', '') if hasattr(request, 'data') else '',
-        )
-        return success_response({"message": "Driver deleted successfully"}, status.HTTP_200_OK)
-    except Driver.DoesNotExist:
+    This used to be `driver.delete()`: a hard delete that cascaded through
+    the driver's vehicles, sessions and withdrawals and orphaned their trips
+    and audit history, by one operator with no second pair of eyes. It now
+    raises a `driver.deactivate` request (always a checker, AUDIT section 10);
+    on approval the account is locked and the driver suspended for good,
+    and every row is kept. Scoped: `scoped_or_none` inside the helper.
+    """
+    from servers.driver.admin_drivers import deactivate_response
+
+    if scoped_or_none(request.user, Driver.objects.all(), id=driver_id) is None:
         return error_response(
             code="NOT_FOUND",
             message="Driver not found",
@@ -353,15 +545,24 @@ def delete_driver_admin(request, driver_id):
             issue=f"No driver matches id {driver_id}",
             status=status.HTTP_404_NOT_FOUND
         )
+    return deactivate_response(request, driver_id)
+
+
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
 def get_vehicle_details(request, driver_id):
     """
     Get details of a vehicle by its ID.
     """
     try:
+        # Scoped through the driver: a vehicle's documents are the
+        # driver's documents.
+        if scoped_or_none(request.user, for_kyc_view(request.user, Driver.objects.all()),
+                          id=driver_id) is None:
+            raise Vehicle.DoesNotExist
         vehicle_objects = Vehicle.objects.filter(driver_id=driver_id)
-        serializer = VehicleSerializer(vehicle_objects, many=True)
+        # A list: documents as on-file flags, never links (AUDIT 27.78).
+        serializer = AdminVehicleSerializer(vehicle_objects, many=True)
         return success_response(serializer.data, status.HTTP_200_OK)
     except Vehicle.DoesNotExist:
         return error_response(
@@ -376,7 +577,7 @@ def get_vehicle_details(request, driver_id):
 # ── Admin Withdrawal Management ──────────────────────────
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.read')])
 def list_withdrawals_admin(request):
     """
     GET /api/admin/withdrawals/
@@ -384,12 +585,29 @@ def list_withdrawals_admin(request):
     """
     from .models import WithdrawalRequest
     from .serializers import WithdrawalRequestSerializer
-    from rest_framework.pagination import PageNumberPagination
     from django.db.models import Q
     from django.utils import timezone
     from datetime import timedelta
 
-    withdrawals = WithdrawalRequest.objects.all().select_related('driver', 'driver__user_id').order_by('-requested_at')
+    try:
+        # The one money-scope rule (servers/payments/scope.py): the driver's
+        # home city, narrowed by ?scope= and to where finance.read is held.
+        from servers.admin_access.scoping import requested_node
+        from servers.payments.scope import money_visible_to
+
+        withdrawals = money_visible_to(
+            request.user, WithdrawalRequest, node=requested_node(request),
+            permission='finance.read',
+            queryset=WithdrawalRequest.objects.select_related(
+                'driver', 'driver__user_id', 'driver__home_city',
+            ),
+        ).order_by('-requested_at')
+    except ScopeNotHeld as exc:
+        return error_response(
+            code='SCOPE_NOT_HELD', message=str(exc), field='scope',
+            issue='Requested scope is outside your assignments',
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     # Filter by status
     status_filter = request.query_params.get('status')
@@ -423,283 +641,46 @@ def list_withdrawals_admin(request):
     paginator.max_page_size = 50
     page = paginator.paginate_queryset(withdrawals, request)
     serializer = WithdrawalRequestSerializer(page, many=True)
-    return success_response(paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK)
+    # A payout queue names the person being paid. The renderer masks the
+    # phone and the UPI handle for everybody; Finance reveals one payee at
+    # a time through /admin-access/reveal/ when a payout needs checking.
+    return success_response(
+        paginator.get_paginated_response(serializer.data).data, status.HTTP_200_OK,
+    )
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.payout')])
 def approve_withdrawal_admin(request, withdrawal_id):
+    """POST /api/admin/withdrawals/{id}/approve/  (kept; same code as
+    /payments/admin/payouts/<id>/approve/).
+
+    The MAKER half of maker-checker: scope is the driver's home city, and the
+    policy for the driver's country decides what happens next (a checker, or
+    THRESHOLD_NOT_CONFIGURED when the country has none). See
+    servers.payments.payout_actions.
     """
-    POST /api/admin/withdrawals/{id}/approve/
-    Approve request (status: PENDING → APPROVED).
-    """
-    from .models import WithdrawalRequest
-    from django.db import transaction
-    from django.utils import timezone
-    from servers.admin_audit.services import record_admin_action
+    from servers.payments.admin_actions import approve_core
 
-    # The whole state-flip-and-payout-dispatch runs inside one atomic
-    # block with select_for_update on the WithdrawalRequest row so two
-    # admins clicking Approve at the same time cannot both pass the
-    # status=='pending' check and both fire trigger_payout_creation
-    # (which would double-deduct the driver's wallet).
-    try:
-        with transaction.atomic():
-            try:
-                withdrawal = (
-                    WithdrawalRequest.objects.select_for_update()
-                    .select_related('driver', 'driver__user_id')
-                    .get(id=withdrawal_id)
-                )
-            except WithdrawalRequest.DoesNotExist:
-                return error_response(
-                    code="NOT_FOUND",
-                    message="Withdrawal request not found",
-                    field="withdrawal_id",
-                    issue=f"No withdrawal matches id {withdrawal_id}",
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-
-            if withdrawal.status != 'pending':
-                return error_response(
-                    code="INVALID_STATUS",
-                    message="Only pending withdrawals can be approved",
-                    field="status",
-                    issue=f"Current status is {withdrawal.status}",
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            before = {'status': withdrawal.status, 'amount': str(withdrawal.amount)}
-            withdrawal.status = 'approved'
-            withdrawal.processed_at = timezone.now()
-            withdrawal.save(update_fields=['status', 'processed_at'])
-
-            record_admin_action(
-                request,
-                action='withdrawal_approved',
-                target_type='withdrawal_request',
-                target_id=withdrawal.id,
-                before=before,
-                after={'status': 'approved', 'amount': str(withdrawal.amount)},
-                reason=request.data.get('reason', '') if hasattr(request, 'data') else '',
-            )
-    except Exception as e:
-        logger.error(f"approve_withdrawal_admin atomic block failed: {e}")
-        return error_response(
-            code="INTERNAL_ERROR",
-            message="Failed to approve withdrawal",
-            field="general",
-            issue=str(e),
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
-
-    # Gateway dispatch happens OUTSIDE the atomic block so we don't hold
-    # the row lock for the duration of the Cashfree round-trip. The
-    # approve-side state flip is already durable; if the payout fails,
-    # the gateway hook flips the row to 'failed' and ops can retry.
-    try:
-        from .services import trigger_payout_creation
-        trigger_payout_creation(withdrawal)
-    except Exception as e:
-        logger.error(
-            f"approve_withdrawal_admin: trigger_payout_creation failed for "
-            f"withdrawal {withdrawal.id}: {e}"
-        )
-
-    from .serializers import WithdrawalRequestSerializer
-    serializer = WithdrawalRequestSerializer(withdrawal)
-    return success_response(serializer.data, status.HTTP_200_OK)
+    return approve_core(request, withdrawal_id)
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.payout')])
 def reject_withdrawal_admin(request, withdrawal_id):
-    """
-    POST /api/admin/withdrawals/{id}/reject/
-    Reject request with admin notes (status: PENDING → REJECTED).
-    """
-    from .models import WithdrawalRequest
-    from django.db import transaction
-    from django.utils import timezone
-    from servers.admin_audit.services import record_admin_action
+    """POST /api/admin/withdrawals/{id}/reject/  (kept; same code as
+    /payments/admin/payouts/<id>/reject/). A reason is required; the funds go
+    back to the driver exactly once."""
+    from servers.payments.admin_actions import reject_core
 
-    admin_notes = request.data.get('admin_notes', '')
-
-    try:
-        with transaction.atomic():
-            try:
-                withdrawal = (
-                    WithdrawalRequest.objects.select_for_update()
-                    .get(id=withdrawal_id)
-                )
-            except WithdrawalRequest.DoesNotExist:
-                return error_response(
-                    code="NOT_FOUND",
-                    message="Withdrawal request not found",
-                    field="withdrawal_id",
-                    issue=f"No withdrawal matches id {withdrawal_id}",
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-
-            if withdrawal.status != 'pending':
-                return error_response(
-                    code="INVALID_STATUS",
-                    message="Only pending withdrawals can be rejected",
-                    field="status",
-                    issue=f"Current status is {withdrawal.status}",
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            before = {'status': withdrawal.status, 'amount': str(withdrawal.amount)}
-            withdrawal.status = 'rejected'
-            withdrawal.admin_notes = admin_notes
-            withdrawal.processed_at = timezone.now()
-            withdrawal.save(update_fields=['status', 'admin_notes', 'processed_at'])
-
-            record_admin_action(
-                request,
-                action='withdrawal_rejected',
-                target_type='withdrawal_request',
-                target_id=withdrawal.id,
-                before=before,
-                after={'status': 'rejected', 'admin_notes': admin_notes},
-                reason=admin_notes,
-            )
-    except Exception as e:
-        logger.error(f"reject_withdrawal_admin atomic block failed: {e}")
-        return error_response(
-            code="INTERNAL_ERROR",
-            message="Failed to reject withdrawal",
-            field="general",
-            issue=str(e),
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
-
-    from .serializers import WithdrawalRequestSerializer
-    serializer = WithdrawalRequestSerializer(withdrawal)
-    return success_response(serializer.data, status.HTTP_200_OK)
+    return reject_core(request, withdrawal_id)
 
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.payout')])
 def bulk_action_withdrawal_admin(request):
-    """
-    POST /api/admin/withdrawals/bulk-action/
-    Bulk approve/reject multiple requests.
-    """
-    from .models import WithdrawalRequest
-    from django.db import transaction
-    from django.utils import timezone
-    from servers.admin_audit.services import record_admin_action
+    """POST /api/admin/withdrawals/bulk-action/  (kept; same code as
+    /payments/admin/payouts/bulk-action/)."""
+    from servers.payments.admin_actions import bulk_core
 
-    # Cap to prevent an admin (or a compromised admin session) from
-    # locking the entire withdrawals table or processing the platform's
-    # full backlog in a single accidental request.
-    BULK_MAX = 50
-
-    action = request.data.get('action')  # 'approve' or 'reject'
-    withdrawal_ids = request.data.get('withdrawal_ids', [])
-    admin_notes = request.data.get('admin_notes', '')
-
-    if action not in ['approve', 'reject']:
-        return error_response(
-            code="INVALID_ACTION",
-            message="Action must be 'approve' or 'reject'",
-            field="action",
-            issue=f"Invalid action: {action}",
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if not withdrawal_ids:
-        return error_response(
-            code="EMPTY_LIST",
-            message="No withdrawal IDs provided",
-            field="withdrawal_ids",
-            issue="Provide at least one withdrawal ID",
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if len(withdrawal_ids) > BULK_MAX:
-        return error_response(
-            code="TOO_MANY",
-            message=f"At most {BULK_MAX} withdrawals can be processed at once",
-            field="withdrawal_ids",
-            issue=f"Received {len(withdrawal_ids)} ids; limit is {BULK_MAX}",
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    # Process each row inside its own atomic + select_for_update so:
-    #  - two concurrent bulk calls can't both flip the same row
-    #  - a transient failure on one row doesn't roll back the rest
-    #  - each audit row is written within the same transaction as its
-    #    state flip
-    approved_for_payout = []
-    updated_ids = []
-    skipped_ids = []
-
-    for wid in withdrawal_ids:
-        try:
-            with transaction.atomic():
-                try:
-                    w = WithdrawalRequest.objects.select_for_update().get(id=wid)
-                except WithdrawalRequest.DoesNotExist:
-                    skipped_ids.append(wid)
-                    continue
-
-                if w.status != 'pending':
-                    skipped_ids.append(wid)
-                    continue
-
-                before = {'status': w.status, 'amount': str(w.amount)}
-                if action == 'approve':
-                    w.status = 'approved'
-                    w.processed_at = timezone.now()
-                    w.save(update_fields=['status', 'processed_at'])
-                    record_admin_action(
-                        request,
-                        action='withdrawal_approved',
-                        target_type='withdrawal_request',
-                        target_id=w.id,
-                        before=before,
-                        after={'status': 'approved', 'amount': str(w.amount)},
-                        reason='bulk action',
-                    )
-                    approved_for_payout.append(w)
-                else:
-                    w.status = 'rejected'
-                    w.admin_notes = admin_notes
-                    w.processed_at = timezone.now()
-                    w.save(update_fields=['status', 'admin_notes', 'processed_at'])
-                    record_admin_action(
-                        request,
-                        action='withdrawal_rejected',
-                        target_type='withdrawal_request',
-                        target_id=w.id,
-                        before=before,
-                        after={'status': 'rejected', 'admin_notes': admin_notes},
-                        reason=admin_notes or 'bulk action',
-                    )
-                updated_ids.append(w.id)
-        except Exception as e:
-            logger.error(f"bulk_action_withdrawal_admin: row {wid} failed: {e}")
-            skipped_ids.append(wid)
-
-    # Payouts dispatch outside the per-row transactions to avoid holding
-    # locks through the gateway round-trip.
-    if approved_for_payout:
-        from .services import trigger_payout_creation
-        for w in approved_for_payout:
-            try:
-                trigger_payout_creation(w)
-            except Exception as e:
-                logger.error(
-                    f"bulk_action_withdrawal_admin: payout dispatch failed "
-                    f"for withdrawal {w.id}: {e}"
-                )
-
-    return success_response({
-        'message': f'Bulk {action} processed',
-        'updated_ids': updated_ids,
-        'skipped_ids': skipped_ids,
-        'updated_count': len(updated_ids),
-    }, status.HTTP_200_OK)
+    return bulk_core(request)

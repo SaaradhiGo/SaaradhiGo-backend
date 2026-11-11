@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal
 from celery import shared_task
 
 logger = logging.getLogger(__name__)
@@ -40,62 +41,473 @@ def issue_receipt_for_trip(self, trip_id):
     return f'receipt {getattr(receipt, "receipt_number", None)} for trip {trip_id}'
 
 
-@shared_task(bind=True, max_retries=0)
-def auto_cancel_trip(self, trip_id):
+@shared_task(
+    name='ride.compute_trip_actuals',
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    acks_late=True,
+)
+def compute_trip_actuals(self, trip_id, force=False):
+    """Derive actual distance/duration for a completed trip. OBSERVE ONLY.
+
+    Thin adapter: all logic lives in servers.ride.actual_metrics. Writes at most
+    actual_distance_km and actual_duration_min and never final_fare, so it
+    cannot change what a rider is charged.
+
+    Runs out-of-band, on a delay, for two reasons. The trail is drained by a
+    periodic task, so the last minute of points is not yet persisted when a trip
+    completes -- computing immediately would under-read distance. And keeping it
+    outside the completion transaction means it cannot slow or fail trip
+    completion.
+
+    Safe under at-least-once delivery: the computation is deterministic for a
+    given trail, and record_actuals skips an already-populated trip unless
+    forced.
     """
-    Auto-cancel a trip if no driver has accepted within the timeout period.
-    Scheduled via: auto_cancel_trip.apply_async(args=[trip_id], countdown=settings.TRIP_ACCEPT_TIMEOUT_SECONDS)
-    """
-    from servers.ride.models import Trip, TripStatus
-    from servers.rider.models import Notification
-    from django.utils import timezone
+    from servers.ride.actual_metrics import record_actuals
+    from servers.ride.models import Trip
 
     try:
-        trip = Trip.objects.select_related('status_id', 'user_id').get(id=trip_id)
-
-        # Only cancel if still has no driver (not accepted yet)
-        if trip.driver_id is not None:
-            logger.info(f"Trip {trip_id} already accepted by driver, skipping auto-cancel")
-            return f"Trip {trip_id} already accepted"
-
-        # Only cancel if status is not already completed/cancelled
-        if trip.status_id and trip.status_id.status_code in ('completed', 'cancelled'):
-            logger.info(f"Trip {trip_id} already {trip.status_id.status_code}, skipping")
-            return f"Trip {trip_id} already {trip.status_id.status_code}"
-
-        # Cancel the trip
-        cancelled_status, _ = TripStatus.objects.get_or_create(
-            status_code='cancelled',
-            defaults={'description': 'Trip cancelled'}
-        )
-        trip.status_id = cancelled_status
-        trip.cancelled_at = timezone.now()
-        trip.cancelled_by = 'system'
-        trip.cancellation_reason = 'no_driver_accepted'
-        trip.save()
-
-        # Drop the offer set so the losing drivers' cards are dismissed and
-        # the key does not linger in Redis.
-        try:
-            from servers.redis_client import clear_offered_drivers, invalidate_trip
-            clear_offered_drivers(trip.id)
-            invalidate_trip(trip.id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning('auto-cancel redis cleanup failed for %s: %s', trip_id, exc)
-
-        # Notify rider
-        Notification.objects.create(
-            user_id=trip.user_id,
-            title='Ride Cancelled',
-            message='Your ride request was automatically cancelled because no driver accepted in time. Please try again.',
-        )
-
-        logger.info(f"Trip {trip_id} auto-cancelled due to timeout")
-        return f"Trip {trip_id} auto-cancelled"
-
+        trip = Trip.objects.select_related('status_id').get(id=trip_id)
     except Trip.DoesNotExist:
-        logger.warning(f"Trip {trip_id} not found for auto-cancel")
-        return f"Trip {trip_id} not found"
+        logger.warning('compute_trip_actuals: trip %s not found', trip_id)
+        return {'ok': False, 'reason': 'trip_missing'}
+
+    try:
+        result = record_actuals(trip, force=force)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception('compute_trip_actuals failed for trip %s: %s', trip_id, exc)
+        raise self.retry(exc=exc)
+
+    # Keep the return value small and PII-free; it lands in Celery's logs.
+    return {k: (str(v) if isinstance(v, Decimal) else v)
+            for k, v in result.items() if k != 'fields'}
+
+
+@shared_task(
+    name='ride.persist_location_trail',
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+    acks_late=True,
+)
+def persist_location_trail(self):
+    """Drain driver_location_stream into TripLocationPoint (ADR-0010).
+
+    A thin async adapter: all policy lives in servers.ride.location_trail, so
+    it can be tested without a broker. A no-op while GPS_TRAIL_ENABLED is
+    False, which is the default.
+
+    `acks_late=True` is safe because persistence is idempotent on
+    (trip, source_event_id): a redelivery after a worker death re-processes the
+    same stream entries and the unique constraint turns the inserts into
+    no-ops. Entries are only acknowledged to Redis after their rows commit, so
+    a crash mid-batch loses nothing -- it repeats harmlessly.
+
+    Failure here must never affect live location: the Redis GEO write, the
+    driver websocket and dispatch are all upstream of this task and do not wait
+    on it.
+    """
+    from servers.ride.location_trail import drain_location_stream
+
+    try:
+        return drain_location_stream(consumer=f'worker-{self.request.hostname or "1"}')
+    except Exception as exc:  # noqa: BLE001
+        logger.exception('persist_location_trail failed: %s', exc)
+        raise self.retry(exc=exc)
+
+
+@shared_task(
+    name='ride.dispatch_wave',
+    bind=True,
+    max_retries=3,
+    default_retry_delay=5,
+    acks_late=True,
+)
+def dispatch_wave(self, trip_id, wave_index, dispatch_epoch, radii):
+    """Execute one durable dispatch wave.
+
+    Celery is the only owner of wave execution after the durable-dispatch
+    change; the rider WebSocket may start a search but never runs the loop,
+    so a rider disconnect, a Daphne restart or a deploy no longer aborts the
+    driver search.
+
+    `acks_late=True` is set explicitly because the project default is
+    `task_acks_late = False`: we would rather re-run a wave after a worker
+    crash than lose it. Re-running is safe — `execute_wave` re-reads the
+    authoritative `Trip` row first and performs no PostgreSQL writes, so a
+    duplicate or stale delivery either no-ops or re-sends an offer that
+    acceptance is independently protected against.
+
+    Retries cover transient infrastructure faults only. A trip that is no
+    longer dispatchable is a successful no-op, not an error.
+    """
+    from servers.ride.dispatch import execute_wave
+
+    try:
+        return execute_wave(trip_id, wave_index, dispatch_epoch, radii)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            'dispatch_wave failed trip=%s wave=%s epoch=%s: %s',
+            trip_id, wave_index, dispatch_epoch, exc,
+        )
+        logger.info(
+            'dispatch_wave_retry',
+            extra={
+                'event': 'dispatch_wave_retry',
+                'trip_id': trip_id,
+                'epoch': dispatch_epoch,
+                'wave_index': wave_index,
+                'attempt': self.request.retries,
+                'error': type(exc).__name__,
+            },
+        )
+        raise self.retry(exc=exc)
+
+
+#: Sent with the rider's "nobody accepted" frame. The apps show it as is.
+NO_DRIVER_MESSAGE = 'No driver accepted your request. Please try again.'
+#: The same frame when no driver was offered the trip at all: every dispatch
+#: wave found nobody online in range (QA trip 191, 2026-11-08). Same reason
+#: code, so a client that keys on `no_driver_accepted` behaves as before.
+NO_DRIVERS_NEARBY_MESSAGE = 'No drivers nearby right now. Please try again.'
+
+
+def no_driver_message(nobody_nearby):
+    return NO_DRIVERS_NEARBY_MESSAGE if nobody_nearby else NO_DRIVER_MESSAGE
+
+
+def _tell_rider_nobody_accepted(rider_id, trip_id, nobody_nearby=False):
+    """Push the terminal "no driver" frame to the rider's sockets.
+
+    `no_drivers_nearby` (additive) is True only when we know no driver was
+    offered the trip; unknown (Redis down) reads as False.
+    """
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        layer = get_channel_layer()
+        if layer is None:
+            return
+        event = {
+            'type': 'trip_update', 'trip_id': trip_id, 'status': 'cancel',
+            'reason': 'no_driver_accepted', 'message': no_driver_message(nobody_nearby),
+            'no_drivers_nearby': bool(nobody_nearby),
+            'driver_id': None, 'driver_name': '',
+            'cancelled_by': 'system',
+        }
+        async_to_sync(layer.group_send)(f'rider_{rider_id}', event)
+        # The website watches the trip's own socket from the moment the trip
+        # is created, not the rider's booking socket.
+        async_to_sync(layer.group_send)(f'trip_{trip_id}', {
+            **event, 'type': 'trip_status_update',
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('auto-cancel rider frame failed for %s: %s', trip_id, exc)
+
+
+@shared_task(bind=True, max_retries=0)
+def auto_cancel_trip(self, trip_id):
+    """Cancel a trip that no driver accepted inside the accept timeout.
+
+    Scheduled once, when the trip is created:
+      auto_cancel_trip.apply_async((trip_id,), countdown=TRIP_ACCEPT_TIMEOUT_SECONDS)
+
+    Deliberately never rescheduled — not by a dispatch wave and not by a
+    rider retry. That single deadline is what durably bounds the whole
+    search, which is why an abandoned dispatch generation cannot extend a
+    trip's lifetime.
+
+    The timeout and a driver's acceptance can land in the same instant at
+    ~90s. This used to read the trip without a lock and then call a bare
+    `trip.save()`, which writes every column from the in-memory instance: an
+    acceptance committing between the read and the save was silently
+    reverted, cancelling a trip a driver was already driving to and clearing
+    `driver_id` back to NULL. The row is now locked and re-checked inside
+    the transaction, and only the cancellation columns are written.
+    """
+    from django.db import transaction
+    from django.utils import timezone
+
+    from servers.ride.models import Trip, TripStatus
+    from servers.rider.models import Notification
+
+    try:
+        with transaction.atomic():
+            try:
+                trip = (
+                    Trip.objects
+                    .select_for_update(of=('self',))
+                    .select_related('status_id', 'user_id')
+                    .get(id=trip_id)
+                )
+            except Trip.DoesNotExist:
+                logger.warning('Trip %s not found for auto-cancel', trip_id)
+                return f'Trip {trip_id} not found'
+
+            # Re-checked INSIDE the lock. An acceptance that commits first
+            # is now visible here, so the timeout stands down.
+            if trip.driver_id_id is not None:
+                logger.info(
+                    'auto_cancel_trip: trip %s already accepted, standing down', trip_id,
+                )
+                return f'Trip {trip_id} already accepted'
+
+            current = trip.status_id.status_code if trip.status_id else None
+            if current in ('completed', 'cancelled', 'accepted', 'reached', 'in_progress'):
+                logger.info(
+                    'auto_cancel_trip: trip %s already %s, standing down', trip_id, current,
+                )
+                return f'Trip {trip_id} already {current}'
+
+            cancelled_status, _ = TripStatus.objects.get_or_create(
+                status_code='cancelled',
+                defaults={'description': 'Trip cancelled'},
+            )
+            trip.status_id = cancelled_status
+            trip.cancelled_at = timezone.now()
+            trip.cancelled_by = 'system'
+            trip.cancellation_reason = 'no_driver_accepted'
+            # Narrow write: never restate driver_id or any other column from
+            # a possibly-stale in-memory instance.
+            trip.save(update_fields=[
+                'status_id', 'cancelled_at', 'cancelled_by', 'cancellation_reason',
+            ])
+
+            rider = trip.user_id
+            trip_pk = trip.id
+
+        # Was anyone offered this trip at all? Read before the dismissal
+        # below deletes the offer set. None (Redis down) means "unknown".
+        try:
+            from servers.redis_client import peek_offered_drivers
+            nobody_nearby = peek_offered_drivers(trip_pk) == []
+        except Exception:  # noqa: BLE001
+            nobody_nearby = False
+
+        # After commit: dismiss candidate cards and drop the cached trip.
+        # Outside the transaction so no external call is made under a lock.
+        try:
+            from servers.redis_client import invalidate_trip
+            from servers.ride.dispatch import dismiss_outstanding_offers
+            dismiss_outstanding_offers(trip_pk, reason='timeout')
+            invalidate_trip(trip_pk)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('auto-cancel cleanup failed for %s: %s', trip_id, exc)
+
+        try:
+            Notification.objects.create(
+                user_id=rider,
+                title='Ride Cancelled',
+                message=(
+                    'Your ride request was cancelled: no drivers were nearby. '
+                    'Please try again.'
+                    if nobody_nearby else
+                    'Your ride request was automatically cancelled because no '
+                    'driver accepted in time. Please try again.'
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('auto-cancel notification failed for %s: %s', trip_id, exc)
+
+        # The live frame. Without it the rider's open socket never heard that
+        # the search was over: both apps sat on "Finding your ride" after the
+        # server had already cancelled (PRODUCT_AUDIT §2, finding driver).
+        # Best effort and after commit, like the notification above.
+        _tell_rider_nobody_accepted(rider.id, trip_pk, nobody_nearby)
+
+        logger.info(
+            'dispatch_terminal',
+            extra={
+                'event': 'dispatch_terminal',
+                'trip_id': trip_pk,
+                'outcome': 'timeout_no_driver_accepted',
+                'no_drivers_nearby': nobody_nearby,
+            },
+        )
+        return f'Trip {trip_id} auto-cancelled'
+
     except Exception as e:
-        logger.error(f"Error auto-cancelling trip {trip_id}: {str(e)}")
+        logger.error('Error auto-cancelling trip %s: %s', trip_id, e)
         raise
+
+
+@shared_task(
+    name='ride.flag_stale_active_trips',
+    bind=True,
+    acks_late=True,
+    max_retries=3,
+    default_retry_delay=30,
+)
+def flag_stale_active_trips(self):
+    """Flag active trips that have gone quiet. Changes no trip status.
+
+    This is the DETECTION half of the answer to an abandoned in-progress ride. It
+    exists because QA trip 42 stranded its driver's supply with no way for anyone
+    without a shell to see it, let alone fix it.
+
+    It deliberately does NOT cancel anything. Absence of connectivity is not
+    evidence of abandonment -- a legitimate ride can cross a tunnel, run for hours,
+    or be backgrounded by an OEM battery manager -- so an automatic cancel would
+    abandon real rides mid-journey. The task raises a flag; an operator decides.
+
+    `acks_late` is safe because the work is idempotent: a trip already flagged is
+    skipped rather than re-flagged, and the flag is set under `select_for_update`
+    with the status re-checked inside the lock, so a redelivery after a worker
+    death converges on the same state and does not re-alert.
+    """
+    from servers.ride.liveness import flag_stale_trips
+
+    try:
+        summary = flag_stale_trips()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception('flag_stale_active_trips failed: %s', exc)
+        raise self.retry(exc=exc)
+
+    if summary['flagged'] or summary['already_flagged']:
+        logger.info(
+            'stale_ride_sweep flagged=%s already_flagged=%s reasons=%s',
+            summary['flagged'], summary['already_flagged'], summary['reasons'],
+        )
+    return summary
+
+
+@shared_task(
+    name='ride.sweep_unaccepted_trips',
+    bind=True,
+    acks_late=True,
+    max_retries=3,
+    default_retry_delay=30,
+)
+def sweep_unaccepted_trips(self, limit=200):
+    """Cancel trips nobody accepted, on a schedule rather than only on a countdown.
+
+    WHY THIS EXISTS: BROKER REDELIVERY IS TOO SLOW FOR THIS ONE DEADLINE
+    -------------------------------------------------------------------
+    `auto_cancel_trip` is scheduled once, with `countdown=TRIP_ACCEPT_TIMEOUT_SECONDS`
+    (90 s), when a trip is created. That single deadline is what bounds the whole
+    driver search, and it is what tells a rider their booking found nobody.
+
+    Measured in `qa/celery_worker_loss_drill.py`: a task whose worker is killed is
+    not lost, but it is invisible to every other worker until `visibility_timeout`
+    elapses, plus up to ~100 s of restore-poll granularity. With the timeout at
+    900 s that is roughly fifteen to seventeen minutes.
+
+    Fifteen minutes is fine for a receipt. It is not fine for the frame that tells a
+    rider "no driver accepted, try again" -- they sit watching a search that has
+    already been given up on, and they cannot rebook because the trip is still
+    `requested`.
+
+    Lowering `visibility_timeout` to fix that would be the wrong move, and
+    deliberately is not what happened here: the floor is set by the longest a message
+    can legitimately sit unacked (a 180 s countdown plus a 360 s execution), and
+    going under it turns recovery into a duplicate-execution generator for every
+    other task. One broker setting cannot serve a 90-second deadline and a 6-minute
+    task at once.
+
+    So this deadline gets its own recovery path, in the database, where a lost worker
+    cannot take it with them. Recovery becomes the beat interval (2 minutes) instead
+    of the visibility timeout, and it is independent of whether the original message
+    survived.
+
+    WHY THIS IS NOT "TIMEOUT -> CANCEL" ON A LIVE RIDE
+    --------------------------------------------------
+    It only ever looks at trips still in `requested` -- nobody has accepted, no
+    driver is en route, nothing is in progress. That is exactly the population
+    `auto_cancel_trip` already owns, and this reaches the same decision by the same
+    code: it calls `auto_cancel_trip` directly, so the row lock, the re-check inside
+    the lock, the narrow write, the rider notification and the dispatch cleanup are
+    all the ones that were already reviewed.
+
+    The in-progress case is a different question with a different answer, and it is
+    `flag_stale_active_trips` above: detect, escalate, let an operator decide, never
+    cancel.
+
+    IDEMPOTENT BY CONSTRUCTION
+    --------------------------
+    If the original `auto_cancel_trip` message arrives late, it finds the trip
+    already `cancelled` and stands down -- that path is covered by
+    `tests/test_celery_duplicate_execution.py`. So the two mechanisms cannot
+    double-cancel, double-notify, or disagree.
+    """
+    from django.conf import settings
+    from django.utils import timezone
+
+    from servers.ride.models import Trip
+
+    timeout = int(getattr(settings, 'TRIP_ACCEPT_TIMEOUT_SECONDS', 90))
+    # A grace period on top of the deadline, so this never races the countdown it
+    # backs up. The normal path should win; this is the backstop.
+    grace = int(getattr(settings, 'TRIP_UNACCEPTED_SWEEP_GRACE_SECONDS', 60))
+    cutoff = timezone.now() - timezone.timedelta(seconds=timeout + grace)
+
+    overdue = list(
+        Trip.objects
+        .filter(status_id__status_code='requested',
+                driver_id__isnull=True,
+                requested_at__lt=cutoff)
+        .order_by('requested_at')
+        .values_list('id', flat=True)[:limit]
+    )
+
+    summary = {'examined': len(overdue), 'cancelled': 0, 'stood_down': 0}
+    for trip_id in overdue:
+        try:
+            # The same task, called directly. Not `.delay()`: the entire point is
+            # to not depend on the broker for this deadline.
+            outcome = auto_cancel_trip.run(trip_id)
+        except Exception as exc:  # noqa: BLE001
+            # One bad trip must not stop the sweep for the rest.
+            logger.error('unaccepted_sweep: trip %s failed: %s', trip_id, exc)
+            continue
+        if isinstance(outcome, str) and 'auto-cancelled' in outcome:
+            summary['cancelled'] += 1
+        else:
+            summary['stood_down'] += 1
+
+    if summary['examined']:
+        logger.info(
+            'unaccepted_sweep examined=%s cancelled=%s stood_down=%s '
+            'cutoff_seconds=%s',
+            summary['examined'], summary['cancelled'], summary['stood_down'],
+            timeout + grace,
+        )
+    return summary
+
+
+@shared_task(
+    name='ride.store_planned_route',
+    max_retries=0,
+    acks_late=True,
+    rate_limit='60/m',
+)
+def store_planned_route(trip_id):
+    """Store the pickup-to-drop route of a just-accepted trip. OBSERVE ONLY.
+
+    Enqueued from the accept path after its transaction commits. Idempotent
+    and failure-tolerant by construction (see `servers.ride.planned_route`):
+    a maps failure leaves the trip's route null and is logged, nothing retries
+    into the maps quota, and no fare, status or dispatch state is touched.
+    """
+    from servers.ride.planned_route import store_planned_route_for
+
+    return store_planned_route_for(trip_id)
+
+
+@shared_task(name='ride.reroute_trip', max_retries=0, acks_late=True, rate_limit='120/m')
+def reroute_trip(trip_id, leg, lat, lng, t_lat, t_lng, country=''):
+    """One new route for a trip's live ETA (the driver left the route, or the ETA drifted).
+    At most once every 3 minutes per trip, decided by the caller (`route_eta.request_reroute`)."""
+    from servers.ride.route_eta import reroute_now
+
+    return reroute_now(trip_id, leg, lat, lng, t_lat, t_lng, country)
+
+
+@shared_task(name='ride.check_maps_budgets', max_retries=0)
+def check_maps_budgets():
+    """Hourly: the month's Maps spend per country against its budget (alerts, degrade level)."""
+    from servers.ride.maps_budget import check_budgets
+
+    return check_budgets()

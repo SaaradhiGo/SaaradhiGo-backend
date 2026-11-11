@@ -1,0 +1,450 @@
+"""Every registered task must survive losing its worker.
+
+Celery's `task_acks_late` and `task_reject_on_worker_lost` both default to False.
+With those defaults the broker forgets a task the moment a worker picks it up, so
+a worker killed mid-task loses it silently -- no exception, no retry, nothing in
+the logs to say a scheduled action will never happen.
+
+Five of the twelve registered tasks set no options of their own:
+
+    auto_cancel_trip                 a trip nobody accepted is never cancelled,
+                                     and the rider waits forever
+    reconcile_stuck_withdrawals      stuck payouts stop being surfaced
+    reconcile_stuck_payments         a missed webhook strands money undetected
+    sweep_stale_driver_presence      ghost drivers stay matchable
+    block_expired_driver_licenses    an expired licence keeps driving
+
+This file asserts the configuration rather than mocking a worker crash, because
+the configuration IS the behaviour: there is no way to observe acks_late from
+inside a task, and a test that kills a real worker proves the setting only on the
+machine that ran it. The inventory check is what stops a thirteenth task from
+being added without durability.
+"""
+
+import pytest
+from django.conf import settings
+
+
+def _celery_app():
+    from base.celery import app
+    return app
+
+
+# ---------------------------------------------------------------------------
+# The two settings that decide whether a lost worker loses work
+# ---------------------------------------------------------------------------
+
+def test_tasks_are_acknowledged_after_execution_not_before():
+    """Early ack means a killed worker silently discards the task."""
+    assert getattr(settings, 'CELERY_TASK_ACKS_LATE', False) is True, (
+        'CELERY_TASK_ACKS_LATE defaults to False; without it a worker killed '
+        'mid-task loses the task with no error and no retry'
+    )
+
+
+def test_a_lost_worker_returns_its_task_to_the_queue():
+    """acks_late alone is not enough.
+
+    A SIGKILLed worker never gets to reject the message either, so without this
+    the task is still lost despite acks_late.
+    """
+    assert getattr(settings, 'CELERY_TASK_REJECT_ON_WORKER_LOST', False) is True, (
+        'CELERY_TASK_REJECT_ON_WORKER_LOST defaults to False, which undoes most '
+        'of what acks_late is for'
+    )
+
+
+def test_the_effective_celery_config_carries_both():
+    """Assert on the app's resolved config, not just the Django setting.
+
+    `config_from_object(settings, namespace='CELERY')` is what maps one to the
+    other, and a typo in the setting name would leave the Django value set and
+    the Celery value at its default.
+    """
+    conf = _celery_app().conf
+    assert conf.task_acks_late is True
+    assert conf.task_reject_on_worker_lost is True
+
+
+def test_a_wedged_task_cannot_hold_a_worker_slot_forever():
+    conf = _celery_app().conf
+    assert conf.task_soft_time_limit, 'no soft time limit is configured'
+    assert conf.task_time_limit, 'no hard time limit is configured'
+    assert conf.task_soft_time_limit < conf.task_time_limit, (
+        'the soft limit must fire first so a task can log before it is killed'
+    )
+
+
+def test_workers_do_not_prefetch_work_they_may_lose():
+    """ETA tasks are held in worker memory until their countdown elapses.
+
+    auto_cancel_trip and compute_trip_actuals are both scheduled with a
+    countdown. A worker that prefetches them and then crashes discards a
+    scheduled cancellation, which is exactly the case acks_late is meant to
+    cover.
+    """
+    conf = _celery_app().conf
+    assert conf.worker_prefetch_multiplier == 1, (
+        f'prefetch multiplier is {conf.worker_prefetch_multiplier}; a crashing '
+        'worker discards everything it has prefetched'
+    )
+
+
+# ---------------------------------------------------------------------------
+# The inventory guard
+# ---------------------------------------------------------------------------
+
+def _registered_project_tasks():
+    """Task names belonging to this project, not Celery's built-ins."""
+    app = _celery_app()
+    app.loader.import_default_modules()
+    return {
+        name: task for name, task in app.tasks.items()
+        if not name.startswith('celery.')
+    }
+
+
+def test_every_registered_task_is_durable_against_worker_loss():
+    """The guard that matters for a task added tomorrow.
+
+    A task may satisfy this globally or by setting acks_late itself. What it may
+    not do is be acked early, which is what happens by accident.
+    """
+    tasks = _registered_project_tasks()
+    assert tasks, 'no project tasks were discovered; the check would be vacuous'
+
+    weak = []
+    for name, task in sorted(tasks.items()):
+        acks_late = getattr(task, 'acks_late', None)
+        if acks_late is None:
+            acks_late = _celery_app().conf.task_acks_late
+        if not acks_late:
+            weak.append(name)
+
+    assert not weak, (
+        'these tasks are acknowledged before they run, so a killed worker loses '
+        'them silently:\n  ' + '\n  '.join(weak)
+    )
+
+
+def test_the_task_inventory_is_what_the_runbook_says_it_is():
+    """Twelve tasks were inventoried. A thirteenth should be a deliberate act.
+
+    Not a lock on the number -- it is a prompt to think about durability,
+    retries and idempotency for anything new, and to update the Celery section
+    of the launch runbook.
+    """
+    tasks = _registered_project_tasks()
+    expected = {
+        # The OTP SMS path. Registered under its module path rather than a short
+        # name like its siblings -- found by this very check, which is the point.
+        'base.utils.send_otp_via_sns',
+        'auth_user.send_push_notification_task',
+        # Command Centre threshold sweep (module 1). acks_late is safe:
+        # raise_alert is keyed on (city, metric) while open, escalation is an
+        # update of that row and a clear is a conditional UPDATE, so a
+        # redelivered run converges on the same alerts. Writes alerts and
+        # audit rows only; no trip, money or driver status.
+        'command_centre.evaluate_alert_thresholds',
+        # Support waiting-on-user sweep (hourly): one reminder, then auto-close,
+        # per SupportCountryConfig. acks_late is safe: a reminder is guarded by
+        # reminder_sent_at and a system-message key, an auto-close by a row lock
+        # that re-checks WAITING_USER, so a redelivered run converges. Skips
+        # safety tickets and countries with no config row. Writes tickets,
+        # system messages and audit rows only; no money.
+        'support.sweep_waiting_tickets',
+        'driver.block_expired_driver_licenses',
+        'driver.sweep_stale_driver_presence',
+        'payments.reconcile_stuck_payments',
+        'payments.reconcile_stuck_withdrawals',
+        # Daily LOCAL reconciliation (Finance read side). Trigger: beat, 03:30.
+        # acks_late is safe: a finished (day, country, gateway) run is skipped,
+        # a finding is keyed on (kind, subject) so a redelivered or doubled run
+        # raises nothing twice, and a resolved finding is never reopened. It
+        # compares our own tables, calls no gateway, and writes only
+        # ReconciliationRun / ReconciliationItem rows; no money, trip or status.
+        'payments.run_daily_reconciliation',
+        # Weekly payout run (Finance part B). Trigger: beat, hourly. acks_late is
+        # safe: PayoutRun is unique per (country, week), the whole run is one
+        # transaction, and it opens a request a checker must approve; it
+        # dispatches nothing itself.
+        'payments.weekly_payout_run',
+        # Releases approved payouts held for want of a payout rail (module 8). Trigger:
+        # beat, hourly; a no-op while no currency that has held payouts has a rail.
+        # acks_late is safe: it selects approved rows marked awaiting_rail and hands each
+        # to trigger_payout_creation, which owns idempotency (a row with a gateway
+        # reference is never sent twice); the marker is not cleared first, so a worker
+        # lost mid-run leaves the row selectable and nothing is orphaned.
+        'payments.release_awaiting_rail',
+        # Retries trips left unsettled because no commission rule governed them (module 9).
+        # Trigger: beat, hourly. acks_late is safe: settlement is keyed by TRIP_<id>_EARNING
+        # (a second run is refused at the unique key and writes nothing), the alert is one per
+        # trip and clears itself, and it changes no rule, fare or approval.
+        'payments.retry_unsettled_trips',
+        # Live Ops map supply sampler (module 10). Trigger: beat, every minute. acks_late is
+        # safe: a sample is keyed by (minute, city, cell) and written with ignore_conflicts, so
+        # a redelivered run writes the same rows once. Reads Redis, writes counts per cell
+        # only (no driver id); no trip, money or driver status.
+        'live_ops.sample_supply',
+        # Notifications outbox (module 11). send_message: acks_late is safe because the row is
+        # claimed with a conditional UPDATE (queued -> sending), so a redelivered or doubled run
+        # sends nothing twice; retries are the task's own bounded rescheduling and the limit
+        # dead-letters as `failed`. It sends a message and writes the delivery log only; no
+        # money, trip or driver status. With NOTIFY_LIVE_SEND off (the default) it only records.
+        'notifications.send_message',
+        # Beat, every minute: the backstop that sends due rows, requeues rows stuck `sending`,
+        # drains the DriverNotice / DriverPayoutNotice outboxes (idempotent keys per driver) and
+        # starts due campaigns. Every step converges on a re-run.
+        'notifications.dispatch_queued',
+        # Expands a scheduled, checker-approved campaign into outbox rows, idempotent per
+        # (campaign, user), so a resumed or doubled run writes the same rows once.
+        'notifications.run_campaign',
+        # Beat, every 5 minutes: raises / clears the Super Admin-only notify.provider_failing
+        # alert, one per (provider, channel) while open. Reads message counts, writes alerts.
+        'notifications.check_provider_health',
+        # Promotions & Incentives (module 12). on_trip_completed: trigger is on_commit of a trip
+        # completing. acks_late is safe: (campaign, trip) and (referral, trip) are unique rows, the
+        # counts are recomputed from them, and every reward carries a unique idempotency key and a
+        # unique ledger row, so a redelivered or doubled run pays nothing twice. Retries 3 times at
+        # 60 s. Moves campaign counters and writes the campaign ledger and wallet credits for the
+        # reward only; no fare, commission, trip status or approval.
+        'promotions.on_trip_completed',
+        # Beat, every 5 minutes: starts scheduled campaigns, ends campaigns past their window,
+        # releases discount reservations held by cancelled trips and retries qualified referrals
+        # left unpaid for want of budget. Every step is a conditional update or keyed by a unique
+        # ledger key, so a redelivered run converges. No retry needed: the next run is the retry.
+        'promotions.sweep',
+        # Fraud & Risk (module 13). Beat, every 15 minutes: evaluates the enabled detection rules
+        # over their bounded recent windows and raises or extends flags. acks_late is safe: a hit
+        # that adds no new trip, campaign or account id changes nothing (the flag already carries
+        # it), a database constraint allows one active flag per (rule, subject), and the high-flag
+        # alert is rate-limited per city, so a redelivered or doubled run converges. Writes flags,
+        # their timeline lines and Command Centre alerts only; no trip, fare, money, account
+        # status or notification. No retry needed: the next run is the retry.
+        'fraud.run_rules',
+        # Fraud money actions (AUDIT 27.56). Beat, hourly: releases reward holds whose time is up
+        # and lapses payout holds past their maximum duration (with a Command Centre alert). Each
+        # step is a conditional status change under a row lock, so a redelivered or doubled run
+        # converges. It only RELEASES money (never takes or pays any); no retry needed, the next
+        # run is the retry.
+        'fraud.release_holds',
+        # Reports & Analytics (module 14). reports.rebuild_recent: beat, every 30 minutes (today and
+        # yesterday of every city, city-local days); reports.rebuild_week: beat, nightly (the last 7
+        # days plus the weekly rider cohorts). acks_late is safe: rebuild_day deletes and re-inserts
+        # one (city, date) of DERIVED rollup rows in a single transaction from the source data, so a
+        # redelivered or doubled run ends in the same rows. One city failing is logged and does not
+        # stop the others. They read trips, ledgers and queues and write only the rollup tables;
+        # no trip, money, account or setting. No retry needed: the next run is the retry.
+        'reports.rebuild_recent',
+        'reports.rebuild_week',
+        'pricing.fare_shadow_sweep',
+        # No explicit name= on the decorator, unlike its siblings in the same
+        # module, so Celery registers the full dotted path. Nothing references
+        # it by string, so this is a naming inconsistency rather than a bug.
+        'servers.ride.tasks.auto_cancel_trip',
+        # Stale-ride DETECTOR. acks_late is safe because flagging is idempotent:
+        # an already-flagged trip is skipped, and the flag is written under
+        # select_for_update with the status re-checked inside the lock, so a
+        # redelivery converges on the same state and does not re-alert. It
+        # changes no trip status, no fare and no settlement.
+        'ride.flag_stale_active_trips',
+        # The DURABLE backstop for the accept deadline, added because broker
+        # redelivery is ~15-17 min (visibility_timeout 900 s + restore-poll
+        # granularity, both measured) and the frame that tells a rider nobody
+        # accepted cannot wait that long. Recovery becomes the 2-minute beat
+        # interval instead, in the database, where a dead worker cannot take it.
+        #
+        # acks_late is safe: it only looks at trips still in `requested` with no
+        # driver, and it reaches its decision by calling auto_cancel_trip, which
+        # re-checks status inside a row lock and stands down if anything changed. A
+        # redelivery therefore finds the trips already cancelled and cancels nothing
+        # twice -- covered by test_celery_duplicate_execution.py.
+        #
+        # It is NOT a timeout-cancels-live-rides mechanism. The in-progress case is
+        # flag_stale_active_trips, which changes no status at all.
+        'ride.sweep_unaccepted_trips',
+        'ride.compute_trip_actuals',
+        'ride.dispatch_wave',
+        'ride.issue_receipt_for_trip',
+        'ride.persist_location_trail',
+        'sos.dispatch_sos',
+        # Safety module sweeps (every minute). acks_late is safe: escalation
+        # fires through a conditional UPDATE on a per-event marker that only
+        # one run can win, signals are one row per (trip, kind) behind a unique
+        # constraint and promotion re-checks under a row lock, so a redelivered
+        # or doubled run converges. They write signals, incidents, alerts and
+        # audit rows, and push to operators; no trip, money or driver status.
+        'safety.escalation_sweep',
+        'safety.evaluate_signals',
+        # Safety coverage sweep (every 5 minutes). Trigger: beat. acks_late is
+        # safe: a gap alert is keyed on (safety_coverage, city) while open, so
+        # a redelivered or doubled run returns the open alert, and a clear is
+        # a conditional UPDATE on acknowledged_at IS NULL. Writes alerts and
+        # audit rows only. No retry needed: the next run is the retry.
+        'safety.coverage_sweep',
+        # Planned route of an accepted trip. Trigger: on_commit of the accept
+        # (never inside it). acks_late is safe: it skips a trip that already
+        # has a route and stores with a conditional UPDATE (planned_route_
+        # polyline IS NULL), so a redelivery stores nothing twice. max_retries
+        # 0: a maps failure leaves the field null and is logged; it never
+        # retries into the maps quota. Rate limited 60/m per worker. Writes
+        # three observation columns on the trip; no fare, status or dispatch.
+        'ride.store_planned_route',
+        # Maps cost (9 Nov). acks_late is safe for both: a reroute writes one Redis entry per
+        # trip and leg (the 3-minute lock is taken before it is enqueued), and the budget check
+        # sets a cached level and raises alerts keyed on (country, month, level).
+        'ride.reroute_trip',
+        'ride.check_maps_budgets',
+        # Daily data integrity scan (10 Nov): reads only and raises one alert keyed on the day, so a
+        # redelivered run returns the open alert. It never writes money rows or fixes anything.
+        'platform_ops.integrity_scan',
+        # Driver fee plans (9 Nov). acks_late is safe: one DriverDailyFee per (driver, day) and a
+        # ledger idempotency key, so a redelivered run writes nothing twice.
+        'pricing.charge_driver_fees',
+        # QA only (PAYOUT_FAKE_ALLOWED): the fake provider's 'processed' event goes through the
+        # real, idempotent payout webhook handler.
+        'payments.fake_payout_settle',
+        # Unattached-upload sweep (hourly, beat). acks_late is safe: it lists
+        # objects and deletes only those older than 24 h that no file field
+        # references, re-checked per object on every run, so a redelivered or
+        # doubled run deletes nothing twice (a delete of a missing object is a
+        # no-op). No retry: the next hour is the retry. Touches object storage
+        # only; no record, money or status.
+        'driver.sweep_unattached_uploads',
+        # Expiry reminders (daily, beat, 11 Nov). Safe to redeliver: one notify() per driver, paper,
+        # date and window (30/7/1), keyed by idempotency key, so a doubled run sends nothing twice.
+        # No retry: tomorrow's run is the retry. Writes notification outbox rows only.
+        'driver.remind_expiring_documents',
+        # City rollups (every minute and nightly, beat). acks_late is safe: each run
+        # replaces the rows of the buckets it recounts, in one transaction, from the
+        # source tables, so a redelivered or doubled run writes the same rows; a cache
+        # lock stops two minute-runs overlapping. No retry: the next run is the retry.
+        # Writes CityRollup rows only; no trip, money or status.
+        'command_centre.refresh_city_rollups',
+        'command_centre.backfill_city_rollups',
+    }
+    actual = set(tasks)
+    added = actual - expected
+    removed = expected - actual
+    assert not added and not removed, (
+        f'task inventory changed.\n  added: {sorted(added)}\n'
+        f'  removed: {sorted(removed)}\n'
+        'Update the Celery section of the launch runbook, and state the new '
+        "task's trigger, idempotency and retry behaviour."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Beat topology
+# ---------------------------------------------------------------------------
+
+def test_every_scheduled_task_actually_exists():
+    """A beat entry naming a task that is not registered fails silently forever."""
+    tasks = _registered_project_tasks()
+    missing = [
+        (key, entry['task'])
+        for key, entry in settings.CELERY_BEAT_SCHEDULE.items()
+        if entry['task'] not in tasks
+    ]
+    assert not missing, (
+        'beat schedules these names and no such task is registered: '
+        f'{missing}'
+    )
+
+
+@pytest.mark.parametrize('financial_task', [
+    'payments.reconcile_stuck_payments',
+    'payments.reconcile_stuck_withdrawals',
+])
+def test_the_money_sweeps_are_scheduled(financial_task):
+    """These are the backstops for a missed webhook or a stuck payout.
+
+    If either stops being scheduled, money can strand with nothing looking for
+    it, and the failure is invisible because nothing runs to report it.
+    """
+    scheduled = {e['task'] for e in settings.CELERY_BEAT_SCHEDULE.values()}
+    assert financial_task in scheduled, (
+        f'{financial_task} is not in the beat schedule; a missed webhook or a '
+        'stuck payout would never be swept up'
+    )
+
+
+# ---------------------------------------------------------------------------
+# How long a lost task stays lost
+#
+# The two settings above say a killed worker's task is not lost. They say nothing
+# about when it comes back, and with the Redis transport that is a different
+# number entirely: a reserved message is moved into an `unacked` hash and is
+# invisible to every other worker until `visibility_timeout` elapses.
+#
+# Measured in qa/celery_worker_loss_drill.py, on Linux, with a real SIGKILL:
+#
+#   visibility_timeout = 30 s  ->  redelivered 105 s after the kill
+#
+# The extra 75 s is restore-poll granularity. kombu's restore_visible() returns
+# early unless `(count - 1) % 10 == 0` (kombu/transport/redis.py:410) and the
+# event loop calls it every 10 s (redis.py:1383), so a real attempt happens about
+# every 100 s. Recovery is therefore visibility_timeout + up to ~100 s.
+#
+# Unset, visibility_timeout defaults to 3600. These tests exist because that
+# default was in force and nothing pointed at it.
+# ---------------------------------------------------------------------------
+
+# From base/settings.py: the longest a message can legitimately sit unacked is
+# the longest countdown plus the longest execution.
+LONGEST_COUNTDOWN_SECONDS = 180          # TRIP_ACTUALS_DELAY_SECONDS
+UNACKED_FLOOR_SECONDS = LONGEST_COUNTDOWN_SECONDS + 360   # + CELERY_TASK_TIME_LIMIT
+
+
+def _visibility_timeout():
+    opts = getattr(settings, 'CELERY_BROKER_TRANSPORT_OPTIONS', None) or {}
+    return opts.get('visibility_timeout')
+
+
+def test_the_visibility_timeout_is_configured_rather_than_defaulted():
+    """Unset means an hour, and an hour is the recovery time for every lost task.
+
+    auto_cancel_trip is scheduled to fire 90 seconds after a trip is created. On
+    the default it could be an hour late, with the rider still watching a search
+    that had already been abandoned.
+    """
+    assert _visibility_timeout() is not None, (
+        'CELERY_BROKER_TRANSPORT_OPTIONS["visibility_timeout"] is unset, so '
+        "kombu's 3600 s default applies and a task whose worker died is not "
+        'redelivered for an hour'
+    )
+
+
+def test_the_visibility_timeout_clears_the_longest_legitimate_unacked_wait():
+    """Too low turns recovery into duplicate execution.
+
+    An ETA message is held in worker memory, unacked, for the whole countdown,
+    and then executes for up to the hard time limit. If the timeout is shorter
+    than that sum, a second worker picks the message up while the first is still
+    legitimately working on it.
+    """
+    vt = _visibility_timeout()
+    assert vt is not None
+    assert vt > UNACKED_FLOOR_SECONDS, (
+        f'visibility_timeout={vt} s does not clear the {UNACKED_FLOOR_SECONDS} s '
+        f'floor ({LONGEST_COUNTDOWN_SECONDS} s countdown + '
+        f'{settings.CELERY_TASK_TIME_LIMIT} s hard time limit). A message still '
+        'being worked on would be redelivered to a second worker.'
+    )
+
+
+def test_the_hard_time_limit_and_longest_countdown_still_match_the_floor():
+    """The floor is derived from two other settings. Moving either moves the floor.
+
+    Without this, raising CELERY_TASK_TIME_LIMIT or TRIP_ACTUALS_DELAY_SECONDS
+    would quietly invalidate the visibility timeout above and nothing would say so.
+    """
+    assert settings.CELERY_TASK_TIME_LIMIT == 360, (
+        'CELERY_TASK_TIME_LIMIT changed; recompute UNACKED_FLOOR_SECONDS here and '
+        'the visibility_timeout in base/settings.py'
+    )
+    assert getattr(settings, 'TRIP_ACTUALS_DELAY_SECONDS', 180) <= \
+        LONGEST_COUNTDOWN_SECONDS, (
+        'TRIP_ACTUALS_DELAY_SECONDS is now the longest countdown and exceeds the '
+        'value the visibility_timeout floor was derived from'
+    )

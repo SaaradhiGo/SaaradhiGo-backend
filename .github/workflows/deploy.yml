@@ -10,9 +10,20 @@ on:
   push:
     branches:
       - dev
+      # Feature branches got NO CI at all, so the only way to learn that a
+      # change broke lint, the suite or the Postgres concurrency check was to
+      # push it to dev -- which is also the branch that deploys. The gates are
+      # worth more before that point than after it.
+      #
+      # The deploy job is gated on `github.ref == 'refs/heads/dev'` AND
+      # `github.event_name == 'push'`, so running on a feature branch builds
+      # and tests but cannot deploy anything.
+      - 'feat/**'
+      - 'fix/**'
   pull_request:
     branches:
       - dev
+  workflow_dispatch:
 
 # Don't run more than one deploy at a time on the same branch; queue them
 # so the second push waits for the first to settle on EC2.
@@ -22,6 +33,7 @@ concurrency:
 
 jobs:
   lint:
+    name: validate / lint, SAST, dependency audit
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -40,7 +52,7 @@ jobs:
       - name: Bandit (SAST)
         # Reports medium severity and above. Migrations and tests are
         # excluded: generated code and asserts are not findings.
-        run: bandit -r base servers -ll --exclude "*/migrations/*"
+        run: bandit -r base servers integrations -ll --exclude "*/migrations/*"
 
       - name: pip-audit (known CVEs in dependencies)
         # Non-blocking for now: cashfree-pg pins pydantic <2, which drags in
@@ -51,8 +63,14 @@ jobs:
         run: pip-audit -r requirements.txt
 
   test:
+    name: validate / test suite
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The suite takes 6-7 min and runs slower on a PR's merge commit while the
+    # push run of the same SHA is going; at 10 min the PR run hit the timeout
+    # (GitHub reports that as "cancelled") on #79 and #81. 25 leaves headroom.
+    # The suite takes about 24 minutes now; at 25 a slow runner cancels it
+    # (run 41563435325 was cancelled at 25m03s on a green commit).
+    timeout-minutes: 40
 
     services:
       redis:
@@ -79,56 +97,293 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-django pytest-asyncio
+          pip install pytest==8.1.1 pytest-django==4.8.0 pytest-asyncio==0.21.1
 
       - name: Check for missing migrations
         # A model change merged without its migration breaks the next
         # deploy, at which point the fix gets written under pressure.
         env:
           DJANGO_SECRET_KEY: ci-test-secret-not-for-prod
-          ALLOWED_HOSTS: localhost,127.0.0.1
+          ALLOWED_HOSTS: localhost,127.0.0.1,testserver
           DEBUG_ENV: 'True'
           REDIS_URL: redis://localhost:6379
           DJANGO_SETTINGS_MODULE: base.settings
         run: python manage.py makemigrations --check --dry-run
 
       - name: Run pytest
-        env:
-          # Test-only values — never reach production. SECRET_KEY just has
-          # to satisfy Django's startup checks; DEBUG_ENV=True keeps the
-          # boot-time guards (ALLOWED_HOSTS, DB_HOST) permissive for the
-          # suite and enables the fallback fare the pricing tests assert.
-          DJANGO_SECRET_KEY: ci-test-secret-not-for-prod
-          ALLOWED_HOSTS: localhost,127.0.0.1
-          DEBUG_ENV: 'True'
-          CASHFREE_WEBHOOK_SECRET: ci-test-secret
-          REDIS_URL: redis://localhost:6379
-          DJANGO_SETTINGS_MODULE: base.settings
-        run: pytest tests/ -q
+        # The canonical backend test command. Deliberately bare: `pytest`
+        # reads pytest.ini, which sets DJANGO_SETTINGS_MODULE=base.settings_ci
+        # and points `testpaths` at BOTH `tests/` and `servers/`. This step
+        # previously ran `pytest tests/ -q`, which silently excluded every
+        # test under `servers/**/tests/`.
+        #
+        # No `env:` block on purpose. The test-only values that used to live
+        # here now live in base/settings_ci.py, so a developer running
+        # `pytest` locally gets the identical configuration instead of having
+        # to export six variables. Setting DJANGO_SETTINGS_MODULE here would
+        # override pytest.ini and split the two paths apart again.
+        run: pytest
 
-  deploy:
-    needs: [test, lint]
+  postgres-concurrency:
+    name: validate / postgres concurrency
+    # Row-lock contention tests only. The `test` job above stays on SQLite and
+    # is unchanged; SELECT FOR UPDATE is a no-op there, so the one-driver-one-
+    # trip invariant cannot be proven by it. These tests are opted into by
+    # marker, so this job and the default `pytest` never overlap.
+    #
+    # PostgreSQL 15 on purpose, not the 18 that Railway QA happens to run:
+    # docker-compose.override.yml pins postgres:15-alpine for local dev,
+    # production is RDS at an unconfirmed version, and Django 5.0 supports
+    # 12+. Testing on the lowest version anyone runs is the conservative
+    # choice, and nothing here depends on post-15 behaviour — row locking and
+    # READ COMMITTED have been stable for many major versions.
     runs-on: ubuntu-latest
-    # Only deploy from a real push to dev. Prevents accidental deploys from
-    # forks, pull_request runs, or workflow_dispatch trial-runs.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: sgtest
+          POSTGRES_USER: sgtest
+          POSTGRES_PASSWORD: sgtest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup SSH
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install backend dependencies
         run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest==8.1.1 pytest-django==4.8.0 pytest-asyncio==0.21.1
+
+      - name: Run PostgreSQL concurrency tests
+        # Reuses the existing DB_* configuration in base/settings.py rather
+        # than introducing a second settings architecture: setting DB_HOST is
+        # all it takes to switch off the SQLite fallback. DB_SSLMODE=disable
+        # because the service container speaks plaintext, and the app default
+        # is `require`.
+        #
+        # ONE PROCESS for everything except one file. This used to be one
+        # process per file, across ten files, because the cross-file
+        # interference was unexplained. It has now been root-caused.
+        #
+        # The cause was NOT what the old comment here guessed. It was the
+        # Channels channel layer: `channels.layers.channel_layers` caches one
+        # RedisChannelLayer per alias for the life of the process, and a
+        # RedisChannelLayer binds its connections and pending futures to
+        # whichever event loop first touched it. Every async test gets a fresh
+        # loop, so the second async test in a process inherited a layer wired to
+        # the first test's dead loop and channels_redis raised "Two event loops
+        # are trying to receive() on one channel layer at once!". Consumer tasks
+        # outliving their test (LocationBroadcastMixin._location_pump sitting in
+        # `await queue.get()`) made it worse by keeping a receive() outstanding
+        # against the shared layer.
+        #
+        # The root conftest.py now clears that cache around every test. In a
+        # single process this took the suite from 22 failures to 1.
+        #
+        # The remaining 1 is test_lifecycle_under_gps_load.py's
+        # test_the_driver_does_not_receive_its_own_location_echo, which still
+        # fails when that file runs after test_driver_active_trip_contention.py
+        # -- reproducible in ~100s with just those two files, which is a lot
+        # better than "only in the full suite". Its active-trip key is deleted
+        # between a confirmed SET and an immediate GET in the same thread, so
+        # something outside the test is clearing it; the file passes on its own
+        # (27 passed). Until that is closed, this one file gets its own process
+        # rather than the whole suite paying for it.
+        #
+        # `-p no:cacheprovider` keeps the two processes from fighting over
+        # .pytest_cache.
+        env:
+          DB_HOST: localhost
+          DB_PORT: '5432'
+          DB_NAME: sgtest
+          DB_USER: sgtest
+          DB_PASSWORD: sgtest
+          DB_SSLMODE: disable
+        run: |
+          set -uo pipefail
+          status=0
+
+          # The one file with an open cross-file interaction, on its own.
+          QUARANTINED=tests/test_lifecycle_under_gps_load.py
+
+          echo "::group::$QUARANTINED (separate process)"
+          pytest "$QUARANTINED" -m postgres -q -p no:cacheprovider || status=1
+          echo "::endgroup::"
+
+          echo "::group::all other postgres-marked tests (one process)"
+          pytest -m postgres -q -p no:cacheprovider --reuse-db             --ignore="$QUARANTINED" || status=1
+          echo "::endgroup::"
+
+          exit $status
+
+  # OPTIONAL. Separate from the three `validate` jobs above on purpose.
+  #
+  # THE PRESENTATION PROBLEM THIS FIXES
+  # -----------------------------------
+  # `dev` was red for four consecutive runs. In every one, lint, test and
+  # postgres-concurrency PASSED and only this job failed, at "Setup SSH",
+  # because EC2_SSH_KEY / EC2_HOST are not configured. The workflow's
+  # conclusion is the worst of its jobs, so the branch showed a red X that
+  # said "the code is broken" when it meant "the deploy target is not set
+  # up". A permanently red default branch teaches people to stop reading CI,
+  # which is how a real failure gets ignored.
+  #
+  # The distinction now drawn:
+  #
+  #   * secrets ABSENT   -> this job SKIPS, with a notice and a line in the
+  #     run summary. Nothing is deployed and the run is green, because
+  #     nothing about the application is wrong.
+  #   * secrets PRESENT  -> every step runs and a failure is RED, exactly as
+  #     before. A deploy that is configured and broken is a real failure.
+  #
+  # Nothing about the validation gates changes. `needs:` still requires all
+  # three to pass before this job runs at all, so an unvalidated commit can
+  # never reach EC2 -- that gate is not weakened, moved or made conditional.
+  secret-scan:
+    name: secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks over the commits this run introduces
+        # Only NEW commits are scanned. The full history was scanned once by
+        # hand and recorded (internal docs, AUDIT.md section 24.3); scanning it
+        # on every run would fail forever on a key removed in 2026-09. The
+        # allowlist in .gitleaks.toml names machine-generated files only.
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE:-}" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            RANGE="$HEAD~1..$HEAD"
+          else
+            RANGE="$BASE..$HEAD"
+          fi
+          echo "scanning $RANGE"
+          docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.21.2             git /repo --config /repo/.gitleaks.toml --log-opts="$RANGE"             --redact --no-banner --exit-code 1
+
+  deploy:
+    name: deploy to EC2 (optional)
+    needs: [test, lint, postgres-concurrency]
+    runs-on: ubuntu-latest
+    # Only deploy from a real push to dev. Prevents accidental deploys from
+    # forks, pull_request runs, or workflow_dispatch trial-runs.
+    # DISABLED (owner ruling, 2026-10-27): QA runs on Railway and no EC2 target is
+    # in use. Until the owner says an EC2 host exists, this job runs only when a
+    # person triggers it from the Actions tab -- never on a push -- because a job
+    # that deploys the moment somebody sets a secret is a trap. Not deleted, so it
+    # can come back. Record: internal docs repository, AUDIT.md section 14.
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Is a deploy target configured?
+        id: preflight
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          missing=""
+          [ -n "$EC2_SSH_KEY" ] || missing="$missing EC2_SSH_KEY"
+          [ -n "$EC2_HOST" ]    || missing="$missing EC2_HOST"
+          [ -n "$EC2_USER" ]    || missing="$missing EC2_USER"
+
+          if [ -n "$missing" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Deploy skipped::No EC2 deploy target is configured (missing:$missing). The application was validated; nothing was deployed."
+            {
+              echo "### Deploy skipped"
+              echo
+              echo "No EC2 deploy target is configured. Missing secrets:\`$missing\`."
+              echo
+              echo "The three \`validate\` jobs passed, so **the application is fine** --"
+              echo "this run deployed nothing because there is nowhere configured to"
+              echo "deploy to. Set the secrets to enable it, or remove this job if EC2"
+              echo "is no longer the deployment target."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Deploying::EC2 target configured; deploying $GITHUB_SHA."
+          fi
+
+      - name: Checkout code
+        if: steps.preflight.outputs.configured == 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        if: steps.preflight.outputs.configured == 'true'
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST_KEY: ${{ secrets.EC2_HOST_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/key.pem
+          chmod 700 ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/key.pem
           chmod 600 ~/.ssh/key.pem
-          # Pin the host key rather than trusting whatever answers first.
-          # Populate EC2_HOST_KEY from `ssh-keyscan <host>`.
-          echo "${{ secrets.EC2_HOST_KEY }}" > ~/.ssh/known_hosts
+
+          # Prefer the pinned host key (EC2_HOST_KEY from `ssh-keyscan <host>`).
+          # If that secret is missing/empty, derive it at runtime from EC2_HOST
+          # so a deploy never dies on "Host key verification failed".
+          if [ -n "${EC2_HOST_KEY// /}" ]; then
+            printf '%s\n' "$EC2_HOST_KEY" > ~/.ssh/known_hosts
+          elif [ -n "$EC2_HOST" ]; then
+            echo "EC2_HOST_KEY secret not set — running ssh-keyscan against $EC2_HOST"
+            ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          else
+            echo "::error::Neither EC2_HOST_KEY nor EC2_HOST is set; cannot verify host identity."
+            exit 1
+          fi
+
+          # Fail loudly if known_hosts is still empty — an empty file is
+          # exactly what produces "Host key verification failed".
+          if [ ! -s ~/.ssh/known_hosts ]; then
+            echo "::error::known_hosts is empty. Populate the EC2_HOST_KEY secret or ensure EC2_HOST is reachable."
+            exit 1
+          fi
+          chmod 644 ~/.ssh/known_hosts
 
       - name: Deploy to EC2
+        if: steps.preflight.outputs.configured == 'true'
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
-          ssh -i ~/.ssh/key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+          ssh -v -i ~/.ssh/key.pem \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            "$EC2_USER@$EC2_HOST" << 'EOF'
             set -euo pipefail
             cd /home/ubuntu/SaaradhiGo-backend
 

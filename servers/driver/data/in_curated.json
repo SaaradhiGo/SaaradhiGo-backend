@@ -1,0 +1,37 @@
+{
+ "source": "Curated list of common models (owner brief 2026-11-10); admin to extend",
+ "types": {
+  "auto": {
+   "Bajaj": ["RE", "Maxima Z", "RE E-TEC 9.0"],
+   "Piaggio": ["Ape City", "Ape E-City"],
+   "Mahindra": ["Treo", "Alfa"],
+   "TVS": ["King Deluxe", "King Duramax"],
+   "Atul": ["Gem"]
+  },
+  "hatchback": {
+   "Maruti Suzuki": ["Alto 800", "Alto K10", "Baleno", "Celerio", "Ignis", "S-Presso", "Swift", "Wagon R"],
+   "Hyundai": ["Grand i10 Nios", "i20", "Santro"],
+   "Tata": ["Altroz", "Tiago", "Tiago EV"],
+   "Toyota": ["Glanza"],
+   "Renault": ["Kwid"]
+  },
+  "sedan": {
+   "Maruti Suzuki": ["Ciaz", "Dzire"],
+   "Hyundai": ["Aura", "Verna", "Xcent"],
+   "Honda": ["Amaze", "City"],
+   "Tata": ["Tigor", "Tigor EV"],
+   "Toyota": ["Etios", "Corolla Altis"],
+   "Volkswagen": ["Vento", "Virtus"],
+   "Skoda": ["Slavia"]
+  },
+  "suv": {
+   "Maruti Suzuki": ["Brezza", "Ertiga", "XL6"],
+   "Toyota": ["Innova", "Innova Crysta", "Innova Hycross", "Rumion"],
+   "Mahindra": ["Bolero", "Marazzo", "Scorpio", "Scorpio-N", "XUV300", "XUV700"],
+   "Kia": ["Carens", "Seltos"],
+   "Hyundai": ["Creta", "Venue"],
+   "Tata": ["Nexon", "Punch"],
+   "Renault": ["Triber"]
+  }
+ }
+}

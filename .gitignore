@@ -1,4 +1,5 @@
 env
+venv/
 .env
 __pycache__
 firebase-credentials.json
@@ -9,16 +10,27 @@ staticfiles
 .agents
 openapi.yaml
 postman_collection.json
-pytest.ini
+# pytest.ini is the CANONICAL backend test config and MUST be committed:
+# it sets DJANGO_SETTINGS_MODULE and the `testpaths` that make `pytest`
+# discover both tests/ and servers/**/tests/. It was previously ignored,
+# which is why CI had to hardcode `pytest tests/` and inline its env vars.
+# Note pytest.ini outranks pyproject.toml/setup.cfg, so an ignored local
+# copy would silently override CI.
 SaaradhiGo_PRD.md
 VahanGo_API_Collection.json
 global-bundle.pem
 .env.local
 .env.prod
 .pytest_cache
-.tests/
 .planning/
 .venv-qa/
 .venv/
+# Any local virtualenv, not only the two canonical names -- the backend
+# suite runs with a bare `pytest` and no Docker, so developers make these.
+.venv*/
+venv*/
 db.sqlite3
-
+celerybeat-schedule
+opencode.json
+# Celery beat runtime state (recreated on start)
+celerybeat-schedule*

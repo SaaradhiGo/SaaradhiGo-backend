@@ -11,7 +11,7 @@ Covers:
   - 3 new ServiceZones (VJA / WGL / VTZ) resolve via
     find_zone_for_point() and have rate cards
 """
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -71,7 +71,10 @@ def test_receipt_pdf_bytes_are_built(auth_client_rider, auth_client_driver):
     pdf_bytes = _build_receipt_pdf(receipt)
     assert pdf_bytes is not None
     assert pdf_bytes.startswith(b'%PDF')
-    assert b'VahanGo' in pdf_bytes or b'SaaradhiGo' in pdf_bytes
+    # Was 'either brand', which is exactly how the inconsistency survived.
+    from django.conf import settings
+    assert settings.PLATFORM_BRAND_NAME.encode() in pdf_bytes
+    assert b'VahanGo' not in pdf_bytes, 'the retired brand is still on the PDF'
 
 
 @pytest.mark.django_db
@@ -392,6 +395,7 @@ def test_quote_fare_in_vja_uses_local_rate(auth_client_rider):
         distance_km=Decimal('5'), duration_min=Decimal('10'),
         vehicle_type='auto',
         pickup_lat=16.51, pickup_lon=80.63,
+        at=timezone.now().replace(hour=12, minute=0, second=0, microsecond=0),
     )
     assert fare['source'] == 'db'
     assert fare['zone_code'] == 'IN-AP-VJA'

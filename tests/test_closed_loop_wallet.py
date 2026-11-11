@@ -35,7 +35,10 @@ def test_public_config_reports_closed_loop_posture(api_client):
     wallet = data['wallet']
     assert wallet['topups_enabled'] is False
     assert wallet['credits_only'] is True
-    assert wallet['display_name'] == 'VahanGo Credits'
+    # The rider's wallet label is served by the backend, so this is where a
+    # wrong brand reached the app. Asserted against the setting.
+    from django.conf import settings
+    assert wallet['display_name'] == f'{settings.PLATFORM_BRAND_NAME} Credits'
     assert 'credit' in wallet['refund_modes']
     assert 'original' in wallet['refund_modes']
 
@@ -190,7 +193,7 @@ def test_refund_mode_credit_issues_credit_not_cashfree_refund(
     wallet = Wallet.objects.get(user_id=rider_user)
     assert wallet.balance == Decimal('150.00')
     assert WalletTransaction.objects.filter(
-        user_id=rider_user, purpose='refund', amount=Decimal('150.00')
+        user_id=rider_user, purpose='refund', amount_minor=15000
     ).exists()
 
 

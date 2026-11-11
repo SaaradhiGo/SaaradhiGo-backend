@@ -21,11 +21,16 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Optional, Tuple
 
+from django.conf import settings
+from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
+
 from shapely.geometry import Point, Polygon, shape as shapely_shape
 
-from servers.pricing.models import RateCard, ServiceZone
+from base.market_time import zone_timezone
+from base.money import quantize, round_fare
+from servers.pricing.models import PlatformSettings, RateCard, ServiceZone
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +51,10 @@ class PricingUnavailable(Exception):
 # in-process; invalidate when a zone is updated. The cache key is
 # (zone_id, updated_at) so a CRUD edit transparently refreshes.
 
-_POLYGON_CACHE: dict[int, Tuple[float, Polygon]] = {}
+_POLYGON_CACHE: dict = {}
 
 
-def _polygon_for_zone(zone: ServiceZone) -> Optional[Polygon]:
+def _polygon_for_zone(zone: ServiceZone):
     """Return a cached Shapely Polygon for the zone, or None if invalid."""
     cached = _POLYGON_CACHE.get(zone.id)
     updated_ts = zone.updated_at.timestamp() if zone.updated_at else 0.0
@@ -60,7 +65,7 @@ def _polygon_for_zone(zone: ServiceZone) -> Optional[Polygon]:
         geo = zone.polygon_geojson
         if not geo or not isinstance(geo, dict):
             return None
-        if geo.get('type') == 'Polygon' and 'coordinates' in geo:
+        if geo.get('type') in ('Polygon', 'MultiPolygon') and 'coordinates' in geo:
             poly = shapely_shape(geo)
         else:
             # Tolerate a raw list of [lon, lat] pairs.
@@ -90,6 +95,71 @@ def invalidate_polygon_cache(zone_id: Optional[int] = None) -> None:
 # Zone lookup
 # ---------------------------------------------------------------------------
 
+class DraftZone:
+    """A zone as it WOULD be, for the draft preview and the point tester.
+
+    `zone_id` is the existing zone this replaces, or None for a zone that does not
+    exist yet. `polygon` is a Shapely geometry (None means the zone is drawn out of
+    the map, i.e. deactivated). `zone` is an unsaved or saved ServiceZone carrying the
+    draft's priority and parent; it is what a lookup returns for a point inside it.
+    """
+
+    def __init__(self, zone, polygon, *, zone_id=None, active=True):
+        self.zone = zone
+        self.polygon = polygon
+        self.zone_id = zone_id
+        self.active = active
+
+
+class ZoneIndex:
+    """The active zones, in resolution order, ready for point lookups.
+
+    THE ONE RESOLUTION FUNCTION. Quoting, SOS anchoring, the service-area check, the
+    point tester and the impact preview all resolve a point through here, so what the
+    console shows is what a rider's quote does. `overlay` (a `DraftZone`) swaps in or
+    adds a draft; with none, this is exactly the live lookup.
+
+    Order: highest `priority` first, ties broken by `code`, so the answer for a point
+    in two equal-priority zones is deterministic.
+    """
+
+    def __init__(self, entries):
+        # entries: list of (zone, polygon)
+        self._entries = entries
+
+    @classmethod
+    def load(cls, overlay: Optional[DraftZone] = None):
+        entries = []
+        for zone in ServiceZone.objects.filter(is_active=True).order_by('-priority', 'code'):
+            if overlay is not None and overlay.zone_id == zone.id:
+                continue
+            poly = _polygon_for_zone(zone)
+            if poly is not None:
+                entries.append((zone, poly))
+        if overlay is not None and overlay.active and overlay.polygon is not None:
+            entries.append((overlay.zone, overlay.polygon))
+        entries.sort(key=lambda e: (-(e[0].priority or 0), e[0].code or ''))
+        return cls(entries)
+
+    def containing(self, lat, lon):
+        """Every zone containing the point, most specific first."""
+        try:
+            lat_f, lon_f = float(lat), float(lon)
+        except (TypeError, ValueError):
+            return
+        if not (-90 <= lat_f <= 90 and -180 <= lon_f <= 180):
+            return
+        point = Point(lon_f, lat_f)  # NB: Shapely is (lon, lat)
+        for zone, poly in self._entries:
+            if poly.contains(point):
+                yield zone
+
+    def resolve(self, lat, lon):
+        for zone in self.containing(lat, lon):
+            return zone
+        return None
+
+
 def find_zone_for_point(lat, lon) -> Optional[ServiceZone]:
     """Return the most specific active ServiceZone containing (lat, lon).
 
@@ -102,24 +172,19 @@ def find_zone_for_point(lat, lon) -> Optional[ServiceZone]:
     Inputs may be Decimal, str, or float; unparsable inputs return None
     so callers treat 'could not validate' the same as 'out of service'.
     """
-    try:
-        lat_f = float(lat)
-        lon_f = float(lon)
-    except (TypeError, ValueError):
-        return None
-    if not (-90 <= lat_f <= 90 and -180 <= lon_f <= 180):
-        return None
+    return ZoneIndex.load().resolve(lat, lon)
 
-    point = Point(lon_f, lat_f)  # NB: Shapely is (lon, lat)
-    candidates = ServiceZone.objects.filter(is_active=True).order_by('-priority')
 
-    for zone in candidates:
-        poly = _polygon_for_zone(zone)
-        if poly is None:
-            continue
-        if poly.contains(point):
-            return zone
-    return None
+def zones_containing_point(lat, lon):
+    """Every ACTIVE zone containing (lat, lon), most specific first.
+
+    The generator behind `find_zone_for_point`, exposed because the SOS
+    anchor (`servers.sos.anchoring`) wants "the most specific zone that is
+    LINKED TO A GEO NODE", which may not be the first match: an airport
+    sub-zone drawn before its node existed must not hide the city around
+    it. Same ordering as `find_zone_for_point`: highest priority first.
+    """
+    yield from ZoneIndex.load().containing(lat, lon)
 
 
 def is_inside_service_area(lat, lon) -> bool:
@@ -200,28 +265,42 @@ def rate_card_for_trip(at=None, trip=None):
     return get_active_rate_card(zone, vt, at=at or trip.requested_at)
 
 
+def get_platform_setting(key: str, default, *, cast=None, cache_ttl=300):
+    """Read a runtime setting from the database, with a Redis cache bustable on save."""
+    cache_key = f'platform_setting:{key}'
+    if cast is None:
+        cast = lambda value: value
+
+    cached = cache.get(cache_key)
+    if cached is not None:
+        try:
+            return cast(cached)
+        except (TypeError, ValueError, ArithmeticError):
+            pass
+
+    try:
+        setting = PlatformSettings.objects.filter(key=key).first()
+        if setting is None:
+            return default
+        value = setting.get_value()
+        cache.set(cache_key, value, timeout=cache_ttl)
+        return cast(value)
+    except Exception:  # noqa: BLE001
+        return default
+
+
 def commission_percent_for_trip(trip) -> Decimal:
-    """Platform commission % for a trip.
+    """Platform commission % for a trip: the trip's own snapshot, else the layered
+    rule effective when it was requested (module 8, AUDIT 27.36).
 
-    Order of authority:
-      1. RateCard.commission_percent for the trip's zone + vehicle type,
-         effective at the time the trip was requested
-      2. settings.PLATFORM_COMMISSION_PERCENT (last-resort fallback)
+    There is NO fallback chain any more (rate card, PlatformSettings key, env
+    setting, hard-coded 18). With no rule in force this raises
+    `commission.CommissionNotConfigured` rather than inventing a rate. See
+    `servers/pricing/commission.py`.
     """
-    from django.conf import settings
+    from servers.pricing.commission import commission_for_trip
 
-    try:
-        card = rate_card_for_trip(trip=trip)
-        if card is not None and card.commission_percent is not None:
-            return Decimal(str(card.commission_percent))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning('commission lookup failed for trip %s: %s', getattr(trip, 'id', '?'), exc)
-
-    fallback = getattr(settings, 'PLATFORM_COMMISSION_PERCENT', Decimal('18'))
-    try:
-        return Decimal(str(fallback))
-    except (ValueError, ArithmeticError):
-        return Decimal('18')
+    return commission_for_trip(trip).percent
 
 
 def gst_percent_for_trip(trip) -> Decimal:
@@ -246,8 +325,10 @@ def compute_surge_multiplier(
     rider_id: Optional[int] = None,
     radius_m: int = 3000,
     record_demand: bool = False,
+    floor: Optional[Decimal] = None,
 ) -> Decimal:
-    """Tiered demand/supply surge multiplier, capped by the rate card.
+    """Tiered demand/supply surge multiplier, held inside the zone's band: at most `cap`
+    (the lowest of rate card, state and country, MVAG 2025) and at least `floor`.
 
     Reads from Redis (driver geo + active-rider pings). Returns 1.00 if
     Redis is unavailable or the inputs are missing, so a Redis outage
@@ -295,30 +376,50 @@ def compute_surge_multiplier(
         else:
             surge = Decimal('1.00')
 
-        # Honour the per-zone MVA-2020 cap.
+        # Honour the zone's band (MVAG 2025: `regulation.fare_limits`).
         if surge > cap:
             surge = cap
+        if floor is not None and surge < floor:
+            surge = floor
         return surge
     except Exception as exc:  # noqa: BLE001
         logger.warning('compute_surge_multiplier failed: %s', exc)
         return Decimal('1.00')
 
 
-def _is_night_now(card: RateCard) -> bool:
-    """Is the current local hour inside the card's night window?"""
+def _is_night_now(card: RateCard, at=None) -> bool:
+    """Is it night in the ZONE this card prices, inside its night window?
+
+    The hour is resolved in the zone's own timezone, not the deployment's.
+
+    This was `timezone.localtime(...)`, which reads `settings.TIME_ZONE` --
+    Asia/Kolkata. Correct for India and wrong by 12.5 hours in California: a
+    San Francisco rider booking at 11am local was inside the 23:00-05:00 "night"
+    window because it was 23:30 in Kolkata, and so paid the night multiplier in
+    broad daylight, while a genuine 1am ride did not. A fare charged at the
+    wrong time of day, with nothing erroring.
+
+    India is unaffected by construction: an Indian zone's timezone IS
+    Asia/Kolkata, so the resolved hour is the same hour as before.
+    """
     try:
-        hour = timezone.localtime(timezone.now()).hour
+        check_time = at or timezone.now()
+        hour = check_time.astimezone(
+            zone_timezone(getattr(card, 'zone', None))).hour
     except Exception:  # noqa: BLE001
         return False
+
     start = int(card.night_surge_start_hour)
     end = int(card.night_surge_end_hour)
+
     if start == end:
         return False
+
     if start < end:
         return start <= hour < end
+
     # wraps midnight, e.g. 23 -> 5
     return hour >= start or hour < end
-
 
 # ---------------------------------------------------------------------------
 # Quote
@@ -370,6 +471,27 @@ _DEFAULTS = {
 }
 
 
+def _rider_platform_fee(zone, vehicle_type, currency):
+    """The plan's rider platform fee for this class when the flag is on there, else 0."""
+    try:
+        from base.money import from_minor
+        from servers.platform_ops.flags import flag_enabled
+        from servers.pricing.commission import city_node_of, country_code_of_zone
+        from servers.pricing.fee_plans import plan_for_zone
+
+        if zone is None:
+            return Decimal('0.00')
+        if not flag_enabled('rider_platform_fee', city=city_node_of(getattr(zone, 'geo_node', None)),
+                            country=country_code_of_zone(zone)):
+            return Decimal('0.00')
+        plan = plan_for_zone(zone)
+        minor = int((plan.amounts_for(vehicle_type).get('rider_platform_fee_minor') or 0)) if plan else 0
+        return from_minor(minor, currency) if minor else Decimal('0.00')
+    except Exception:  # noqa: BLE001 - a quote never fails over this line
+        logger.exception('rider platform fee lookup failed')
+        return Decimal('0.00')
+
+
 def quote_fare(
     distance_km,
     duration_min,
@@ -409,7 +531,11 @@ def quote_fare(
 
     card = None
     if zone is not None and vt is not None:
-        card = get_active_rate_card(zone, vt, at=at)
+        # A fare quote is for the current ride. `at` is retained for
+        # deterministic time-of-day surcharge checks, but must not make a
+        # card created moments ago look like a future card when callers pass
+        # an earlier clock time for testing or display purposes.
+        card = get_active_rate_card(zone, vt)
 
     if card is None:
         # No rate card anywhere in the zone's parent chain. In production
@@ -454,14 +580,20 @@ def quote_fare(
     surge_multiplier = Decimal('1.00')
 
     night_applied = False
-    if card is not None and night_surge > Decimal('1.00') and _is_night_now(card):
+    if card is not None and night_surge > Decimal('1.00') and _is_night_now(card, at=at):
         subtotal = subtotal * night_surge
         surge_multiplier = surge_multiplier * night_surge
         night_applied = True
 
+    # MVAG 2025: the band is the lowest cap and the highest floor of the rate card, the state
+    # and the country (config per market, `regulation.fare_limits`). Hyderabad keeps its 1.5x.
+    from servers.pricing import regulation
+    limits = regulation.limits_for_zone(zone, surge_cap)
+    surge_cap = limits.cap
+
     dyn = compute_surge_multiplier(
         pickup_lat, pickup_lon, cap=surge_cap, rider_id=rider_id,
-        record_demand=record_demand,
+        record_demand=record_demand, floor=limits.floor,
     )
     if dyn != Decimal('1.00'):
         subtotal = subtotal * dyn
@@ -474,20 +606,178 @@ def quote_fare(
         pre_surge = base_fare + distance_fare + time_fare
         subtotal = pre_surge * surge_cap
         surge_multiplier = surge_cap
+    if limits.floor is not None and surge_multiplier < limits.floor:
+        subtotal = (base_fare + distance_fare + time_fare) * limits.floor
+        surge_multiplier = limits.floor
 
     min_fare_applied = False
     if subtotal < min_fare:
         subtotal = min_fare
         min_fare_applied = True
 
-    total_fare = round(subtotal, 2)
+    # The market, decided before anything is rounded: every amount below is
+    # rounded by the money helper, to THIS currency's minor unit.
+    from base.countries import get_country
+    _country = get_country(getattr(zone, 'country', None))
+    tax_label = _country.tax_label
+    currency = (getattr(zone, 'currency', None) or _country.currency)
+    distance_unit = (getattr(zone, 'distance_unit', None)
+                     or _country.distance_unit)
+
+    # The amount charged: the unrounded subtotal, rounded once, half-up.
+    #
+    # This was `round(subtotal, 2)`, which on a Decimal is banker's rounding
+    # (ROUND_HALF_EVEN) -- while the commission, the promo discount and the
+    # inclusive-tax extraction all rounded half-up. One rule now, in one place.
+    # It moves a fare only when the subtotal lands exactly on a half paisa with
+    # an even paisa before it (60.125 was 60.12, is 60.13); see
+    # tests/test_money_minor_units_parity.py.
+    # INR fares are whole rupees (owner, 2026-11-05); the residual below names
+    # the difference as "Rounding", at most half a rupee.
+    total_fare = round_fare(subtotal, currency)
+
+    # --- Make the displayed decomposition add up exactly ---------------------
+    #
+    # `total_fare` is authoritative and unchanged: it is what the rider is charged.
+    # What was wrong was the DECOMPOSITION shown beside it.
+    #
+    # Each component was rounded on its own while the total was rounded from the
+    # unrounded subtotal, so round(a) + round(b) + round(c) != round(a + b + c).
+    # QA trip 45 charged 135.22 while its three lines read 60.00 + 55.59 + 19.62 =
+    # 135.21. A rider who adds up an itemised fare and gets a different number from
+    # the one they paid has been given a reason to distrust the whole receipt.
+    #
+    # Surge and the minimum fare break the sum too, and by design: surge multiplies
+    # the subtotal and the minimum fare replaces it. Pretending three line items
+    # explain such a total would be a different lie. So the uplifts are stated as
+    # their own lines, and only what remains after them is called rounding -- which
+    # is then at most one paisa.
+    #
+    # Every value is Decimal throughout. No float touches money. Each line is
+    # its own stored amount (FarePricing), so each is rounded once, by the
+    # helper.
+    _base_r = quantize(base_fare, currency)
+    _dist_r = quantize(distance_fare, currency)
+    _time_r = quantize(time_fare, currency)
+    _pre_surge = base_fare + distance_fare + time_fare
+
+    adjustments = []
+    if surge_multiplier != Decimal('1.00'):
+        adjustments.append({
+            'code': 'surge',
+            # MVAG 2025 disclosure: the rider reads "Higher demand" / "Lower demand", never "surge".
+            'label': regulation.demand_label(surge_multiplier),
+            'amount': quantize(_pre_surge * surge_multiplier - _pre_surge, currency),
+        })
+    if min_fare_applied:
+        # The uplift from whatever the metered lines came to, up to the minimum.
+        _after_surge = _pre_surge * surge_multiplier
+        adjustments.append({
+            'code': 'minimum_fare',
+            'label': 'Minimum fare adjustment',
+            'amount': quantize(min_fare - _after_surge, currency),
+        })
+
+    _explained = _base_r + _dist_r + _time_r + sum(
+        (a['amount'] for a in adjustments), Decimal('0.00'))
+    # Already exact: both sides are sums of rounded amounts.
+    _residual = total_fare - _explained
+    if _residual != Decimal('0.00'):
+        adjustments.append({
+            'code': 'rounding',
+            'label': 'Rounding',
+            'amount': _residual,
+        })
+
+    # --- Market semantics: tax mode, flat fees, currency, units --------------
+    #
+    # Up to this point `total_fare` is the metered fare after surge and the
+    # minimum, and that is ALL India needs: GST is inclusive there, so the tax
+    # already sits inside this number and the receipt extracts it.
+    #
+    # In an `additive` market (the US) the tax and any flat regulatory fee are
+    # charged ON TOP, so they are real additions to what the rider pays and must
+    # appear both in the total and as their own lines.
+    #
+    # The India path below is a no-op by construction. The additive branch is the
+    # only thing that moves `total_fare`, and it cannot run for an inclusive zone
+    # -- which matters, because a pricing change disguised as a refactor would
+    # move every Indian fare.
+    tax_mode = getattr(zone, 'tax_mode', '') or 'inclusive'
+    tax_percent = (card.gst_percent if card is not None
+                   else _DEFAULTS.get('gst_percent', Decimal('5.00')))
+    tax_percent = Decimal(str(tax_percent or '0'))
+    per_trip_fee = quantize(
+        Decimal(str(getattr(zone, 'per_trip_fee', None) or '0')), currency)
+    fee_label = getattr(zone, 'per_trip_fee_label', '') or 'Regulatory fee'
+
+    tax_amount = Decimal('0.00')
+    if tax_mode == 'additive':
+        # Tax applies to the fare, not to the flat regulatory fee: a
+        # government charge is not itself a taxable service. Jurisdictions
+        # differ on this and it is the conservative reading.
+        tax_amount = quantize(total_fare * tax_percent / Decimal('100'), currency)
+        if tax_amount != Decimal('0.00'):
+            adjustments.append({
+                'code': 'tax',
+                'label': tax_label,
+                'amount': tax_amount,
+            })
+        if per_trip_fee != Decimal('0.00'):
+            adjustments.append({
+                'code': 'per_trip_fee',
+                'label': fee_label,
+                'amount': per_trip_fee,
+            })
+        # A sum of rounded amounts: exact, nothing to round.
+        total_fare = total_fare + tax_amount + per_trip_fee
+    else:
+        # Inclusive: the tax is already inside `total_fare`, so reporting it
+        # does not move the total -- but reporting 0.00 would be a lie. A rider
+        # shown "GST 0.00" beside a 5% inclusive rate has been told the fare
+        # carries no tax. Extracted exactly the way the receipt extracts it, so
+        # the quote and the document the rider keeps state the same number.
+        if tax_percent:
+            tax_amount = quantize(
+                total_fare * tax_percent / (Decimal('100.00') + tax_percent),
+                currency)
+
+    # The rider platform fee (9 Nov, driver fee plans): OFF behind the `rider_platform_fee` flag
+    # until the CA confirms its tax treatment. When on it is its own line, inside the locked fare,
+    # and never part of the driver's earning (settlement takes it out again).
+    rider_fee = _rider_platform_fee(zone, vehicle_type, currency)
+    if rider_fee:
+        adjustments.append({'code': 'rider_platform_fee', 'label': 'Platform fee', 'amount': rider_fee})
+        total_fare = total_fare + rider_fee
 
     return {
+        'rider_platform_fee': rider_fee,
         'total_fare': total_fare,
-        'base_fare': round(base_fare, 2),
-        'distance_fare': round(distance_fare, 2),
-        'time_fare': round(time_fare, 2),
+        # The market this quote was priced in. Without it a client cannot know
+        # whether 450 means rupees or dollars, and every downstream money row
+        # would have to re-derive it from the zone.
+        'currency': currency,
+        'tax_mode': tax_mode,
+        # Three places: see the comment on RateCard.gst_percent. Rounding a
+        # 8.625% rate to 8.62% misstates it on a legal document.
+        'tax_percent': round(tax_percent, 3),
+        'tax_label': tax_label,
+        'tax_amount': tax_amount,
+        'per_trip_fee': per_trip_fee,
+        'distance_unit': distance_unit,
+        'base_fare': _base_r,
+        'distance_fare': _dist_r,
+        'time_fare': _time_r,
+        # Named lines that close the gap between the metered components and the
+        # amount charged. Additive to the payload: existing clients that do not
+        # read it are unaffected, and one that does can show a decomposition that
+        # sums exactly.
+        'fare_adjustments': adjustments,
         'surge_multiplier': round(surge_multiplier, 2),
+        # Additive (MVAG 2025): the fare calculation the rider is shown. `demand_label` is None
+        # at 1.00x; `fare_limits` is the band this quote was held inside.
+        'demand_label': regulation.demand_label(surge_multiplier),
+        'fare_limits': limits.as_dict(),
         'night_surge_applied': night_applied,
         'min_fare_applied': min_fare_applied,
         'vehicle_type': vehicle_type,

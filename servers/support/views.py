@@ -7,24 +7,30 @@ Surface:
   POST   /api/v1/support/tickets/<id>/messages/    add a reply (user side)
   POST   /api/v1/support/tickets/<id>/close/       close ticket (user side)
 
-Admin / support-staff surface (IsAdmin):
-  GET    /api/v1/support/admin/tickets/            list all
-  POST   /api/v1/support/admin/tickets/<id>/reply/ staff reply
-  POST   /api/v1/support/admin/tickets/<id>/assign/ assign to a staff user
-  POST   /api/v1/support/admin/tickets/<id>/status/ set status
+Admin / support-staff surface, each gated on a capability IN SCOPE:
+  GET    /api/v1/support/admin/tickets/             list, `support.read`
+  GET    /api/v1/support/admin/tickets/<id>/        detail, `support.read`
+  POST   /api/v1/support/admin/tickets/<id>/reply/  staff reply, `support.reply`
+  POST   /api/v1/support/admin/tickets/<id>/assign/ assign, `support.reply`
+
+The operator surface is in `admin_support.py`; its scope rule (trip city,
+else a driver's home city, else wherever the rider is visible) is
+`scope.tickets_visible_to`. A ticket outside it answers NOT FOUND, never
+FORBIDDEN, so an out-of-scope operator cannot walk ids. Internal notes are
+never returned here: the message model's default manager leaves them out.
 """
 import logging
-from datetime import datetime
-
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.pagination import PageNumberPagination
 
-from base.permissions import IsAdmin
+from base.permissions import is_operator
 from base.utils import error_response, success_response
 from servers.support.models import SupportMessage, SupportTicket
+from servers.support.scope import ticket_may, tickets_visible_to
 from servers.support.serializers import SupportMessageSerializer, SupportTicketSerializer
 
 logger = logging.getLogger(__name__)
@@ -33,6 +39,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # User-side
 # ---------------------------------------------------------------------------
+
+def _not_found(ticket_id):
+    """The one answer for "does not exist" AND "not in your scope"."""
+    return error_response(
+        code='NOT_FOUND', message='Ticket not found.', field='ticket_id',
+        issue=f'Ticket {ticket_id}', status=status.HTTP_404_NOT_FOUND,
+    )
+
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -52,7 +66,9 @@ def create_ticket(request):
     if trip_id:
         from servers.ride.models import Trip
         try:
-            trip = Trip.objects.get(id=trip_id, user_id=request.user)
+            # The rider's own trip, or (11 Nov) a trip the user drove: "Report a problem" on the
+            # driver's trip detail links the ticket to it.
+            trip = Trip.objects.get(Q(user_id=request.user) | Q(driver_id__user_id=request.user), id=trip_id)
         except Trip.DoesNotExist:
             return error_response(
                 code='NOT_FOUND', message='Trip not found or not yours.',
@@ -85,7 +101,7 @@ def list_my_tickets(request):
     paginator.page_size = 20
     page = paginator.paginate_queryset(qs, request)
     data = SupportTicketSerializer(page, many=True).data
-    return paginator.get_paginated_response(data)
+    return success_response(paginator.get_paginated_response(data).data, status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -98,11 +114,26 @@ def ticket_detail(request, ticket_id):
             code='NOT_FOUND', message='Ticket not found.', field='ticket_id',
             issue=f'Ticket {ticket_id}', status=status.HTTP_404_NOT_FOUND,
         )
-    if ticket.user_id_id != request.user.id and not request.user.is_staff:
-        return error_response(
-            code='FORBIDDEN', message='Not your ticket.', field='ticket_id',
-            issue='User mismatch', status=status.HTTP_403_FORBIDDEN,
-        )
+    if ticket.user_id_id != request.user.id:
+        # Not the requester. An operator may read it IF they hold
+        # `support.read` where the ticket sits; this used to be a bare
+        # `is_staff` bypass that let any staff account read any ticket in
+        # any country. A non-operator keeps today's answer.
+        if not is_operator(request.user):
+            return error_response(
+                code='FORBIDDEN', message='Not your ticket.', field='ticket_id',
+                issue='User mismatch', status=status.HTTP_403_FORBIDDEN,
+            )
+        visible = tickets_visible_to(request.user, None, SupportTicket.objects.filter(
+            id=ticket_id)).exists()
+        if not visible:
+            return _not_found(ticket_id)
+        if not ticket_may(request.user, 'support.read', ticket):
+            return error_response(
+                code='FORBIDDEN', message='You do not have permission to do that here.',
+                field='ticket_id', issue='support.read not held',
+                status=status.HTTP_403_FORBIDDEN,
+            )
     return success_response(SupportTicketSerializer(ticket).data, status.HTTP_200_OK)
 
 
@@ -133,9 +164,16 @@ def add_user_message(request, ticket_id):
         ticket=ticket, author=request.user, author_role='user', body=body,
     )
     # If support was waiting on the user, move it back to in-progress.
+    # The user answering ends the pause on the resolution clock.
     if ticket.status == 'WAITING_USER':
-        ticket.status = 'IN_PROGRESS'
-        ticket.save(update_fields=['status', 'updated_at'])
+        from django.db import transaction
+        from servers.support.sla import enter_status
+
+        with transaction.atomic():
+            locked = SupportTicket.objects.select_for_update().get(pk=ticket.pk)
+            if locked.status == 'WAITING_USER':
+                fields = enter_status(locked, 'IN_PROGRESS', timezone.now())
+                locked.save(update_fields=['status', 'updated_at', *fields])
     return success_response(SupportMessageSerializer(msg).data, status.HTTP_201_CREATED)
 
 
@@ -151,94 +189,21 @@ def close_my_ticket(request, ticket_id):
         )
     if ticket.status == 'CLOSED':
         return success_response(SupportTicketSerializer(ticket).data, status.HTTP_200_OK)
-    ticket.status = 'CLOSED'
-    ticket.resolved_at = timezone.now()
-    ticket.save(update_fields=['status', 'resolved_at', 'updated_at'])
+    from servers.support.sla import enter_status
+
+    now = timezone.now()
+    fields = enter_status(ticket, 'CLOSED', now)
+    ticket.resolved_at = now
+    ticket.save(update_fields=['status', 'resolved_at', 'updated_at', *fields])
     return success_response(SupportTicketSerializer(ticket).data, status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------
 # Admin / support-staff side
 # ---------------------------------------------------------------------------
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated, IsAdmin])
-def admin_list_tickets(request):
-    qs = SupportTicket.objects.prefetch_related('messages').all().order_by('-created_at')
-    status_filter = request.query_params.get('status')
-    if status_filter:
-        qs = qs.filter(status=status_filter)
-    issue_filter = request.query_params.get('issue_type')
-    if issue_filter:
-        qs = qs.filter(issue_type=issue_filter)
-    paginator = PageNumberPagination()
-    paginator.page_size = 25
-    page = paginator.paginate_queryset(qs, request)
-    return paginator.get_paginated_response(SupportTicketSerializer(page, many=True).data)
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
-def admin_reply(request, ticket_id):
-    body = (request.data.get('body') or '').strip()
-    next_status = (request.data.get('status') or '').strip()  # optional state change
-    if not body:
-        return error_response(
-            code='MISSING_FIELDS', message='body is required',
-            field='body', issue='Reply cannot be empty',
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    try:
-        ticket = SupportTicket.objects.get(id=ticket_id)
-    except SupportTicket.DoesNotExist:
-        return error_response(
-            code='NOT_FOUND', message='Ticket not found.', field='ticket_id',
-            issue=f'Ticket {ticket_id}', status=status.HTTP_404_NOT_FOUND,
-        )
-    msg = SupportMessage.objects.create(
-        ticket=ticket, author=request.user, author_role='support', body=body,
-    )
-    fields = ['updated_at']
-    if next_status in dict(SupportTicket.STATUS_CHOICES):
-        ticket.status = next_status
-        fields.append('status')
-        if next_status == 'CLOSED':
-            ticket.resolved_at = timezone.now()
-            fields.append('resolved_at')
-    elif ticket.status == 'OPEN':
-        ticket.status = 'IN_PROGRESS'
-        fields.append('status')
-    ticket.save(update_fields=fields)
-    return success_response(SupportMessageSerializer(msg).data, status.HTTP_201_CREATED)
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated, IsAdmin])
-def admin_assign(request, ticket_id):
-    staff_user_id = request.data.get('assigned_to')
-    if not staff_user_id:
-        return error_response(
-            code='MISSING_FIELDS', message='assigned_to is required',
-            field='assigned_to', issue='Staff user id',
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    from django.contrib.auth import get_user_model
-    User = get_user_model()
-    try:
-        staff = User.objects.get(id=staff_user_id, is_staff=True)
-    except User.DoesNotExist:
-        return error_response(
-            code='NOT_FOUND', message='Staff user not found.',
-            field='assigned_to', issue=f'User {staff_user_id}',
-            status=status.HTTP_404_NOT_FOUND,
-        )
-    try:
-        ticket = SupportTicket.objects.get(id=ticket_id)
-    except SupportTicket.DoesNotExist:
-        return error_response(
-            code='NOT_FOUND', message='Ticket not found.', field='ticket_id',
-            issue=f'Ticket {ticket_id}', status=status.HTTP_404_NOT_FOUND,
-        )
-    ticket.assigned_to = staff
-    ticket.save(update_fields=['assigned_to', 'updated_at'])
-    return success_response(SupportTicketSerializer(ticket).data, status.HTTP_200_OK)
+# The operator console's queue, ticket page and writes live in
+# `admin_support`; these names stay importable (and routed) so the URLs the
+# console used before keep working, now through the audited code.
+from servers.support.admin_support import (  # noqa: E402,F401
+    admin_assign, admin_list_tickets, admin_reply, admin_ticket_detail,
+)

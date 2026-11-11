@@ -1,9 +1,65 @@
-from django.db.models import Avg, Count, Q, Sum
+from decimal import Decimal
+
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 from datetime import timedelta, datetime
 import re
+
+from base.market_time import (
+    driver_timezone, local_day_start, local_month_start,
+)
+from base.money import DEFAULT_CURRENCY, format_money, from_minor, normalize_currency, to_minor
+
 from .models import Driver, WithdrawalRequest
 from servers.rider.models import Wallet
+
+def driver_currency(driver):
+    """The currency a driver is paid in: their wallet's, else their market's (home city, then
+    phone number), else the default. A new US driver with no wallet sees $0.00, not ₹0.00."""
+    try:
+        wallet = Wallet.objects.filter(
+            user_id=getattr(driver, 'user_id_id', None)).first()
+    except Exception:  # noqa: BLE001
+        wallet = None
+    if wallet and getattr(wallet, 'currency', None):
+        return normalize_currency(wallet.currency)
+    from base.countries import currency_for
+    from servers.payments.payout_config import driver_payout_country
+
+    country = driver_payout_country(driver)
+    return currency_for(country) if country else DEFAULT_CURRENCY
+
+
+def minimum_withdrawal_for(driver):
+    """The smallest payout this driver's country allows, or None.
+
+    None means the country has no payout configuration (`PayoutCountryConfig`):
+    there is no minimum to quote because withdrawals are not available there yet.
+    """
+    from servers.payments.payout_config import config_for_driver, minimum_withdrawal
+
+    _country, config = config_for_driver(driver)
+    if config is None:
+        return None
+    return minimum_withdrawal(config)
+
+
+def _contact_domain():
+    """Domain for the operational contacts shown to drivers.
+
+    Configurable because these were hardcoded to a domain this platform
+    does not use, which meant a driver's grievance email went nowhere.
+
+    The fallback must match settings.PLATFORM_CONTACT_DOMAIN. It did not:
+    settings moved to saaradhigo.com and this still said saaradhigo.in, so
+    any deployment that did not set the variable built grievance addresses
+    at a domain with no MX record -- the exact failure the setting exists to
+    prevent, hiding one function away.
+    """
+    from django.conf import settings
+
+    return getattr(settings, 'PLATFORM_CONTACT_DOMAIN', 'saaradhigo.com')
+
 
 
 def calculate_available_balance(driver):
@@ -14,31 +70,66 @@ def calculate_available_balance(driver):
     try:
         wallet = Wallet.objects.get(user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER)
         from decimal import Decimal
-        return wallet.balance if wallet.balance else Decimal('0.00')
+
+        from base.money import from_minor
+        from servers.fraud.money import held_minor
+
+        # A reward pending review is not available to withdraw (AUDIT 27.56).
+        free = max(0, wallet.balance_minor - held_minor(driver.user_id, wallet.currency))
+        return from_minor(free, wallet.currency) if free else Decimal('0.00')
     except Wallet.DoesNotExist:
         from decimal import Decimal
         return Decimal('0.00')
 
 
-def validate_withdrawal_amount(driver, amount):
+def validate_withdrawal_amount(driver, amount, available=None):
     """
     Validate withdrawal amount against available balance and minimum/maximum limits.
     Returns (is_valid, error_message)
+
+    `available` lets a caller that already holds `SELECT FOR UPDATE` on the
+    wallet row pass the balance it locked. Without it this function would read
+    the same row again un-locked, and the request endpoint duplicated the whole
+    check inline rather than do that -- which is how the endpoint ended up with
+    its own hardcoded `amount < 500` and a rupee sign for every market while
+    this market-aware version sat unused beside it.
     """
-    available = calculate_available_balance(driver)
-    if amount < 500:
-        return False, "Minimum withdrawal amount is ₹500"
+    if available is None:
+        available = calculate_available_balance(driver)
+
+    # Both the threshold and the symbol come from the driver's market.
+    #
+    # This was `amount < 500` with the message "Minimum withdrawal amount is
+    # ₹500". A US driver would have been told their minimum payout was 500
+    # rupees, shown a rupee sign beside a dollar balance, and blocked from
+    # withdrawing anything under $500.
+    minimum = minimum_withdrawal_for(driver)
+    currency = driver_currency(driver)
+
+    if minimum is None:
+        # No payout rules for this country (owner decides them): refused, not
+        # defaulted to another market's numbers.
+        from servers.payments.payout_config import NOT_AVAILABLE_MESSAGE
+        return False, NOT_AVAILABLE_MESSAGE
+
+    if amount < minimum:
+        return False, (
+            f'Minimum withdrawal amount is {format_money(minimum, currency)}'
+        )
     if amount > available:
-        return False, f"Insufficient balance. Available: ₹{available:.2f}"
+        return False, (
+            f'Insufficient balance. Available: {format_money(available, currency)}'
+        )
     return True, ""
 
 
-def calculate_platform_fee(amount):
+def calculate_platform_fee(amount, fee_percent):
+    """Platform fee on a withdrawal: `fee_percent` of `amount`.
+
+    The percentage comes from the country's `PayoutCountryConfig`; there is no
+    default here (it used to be a hard-coded 2 percent for every market).
     """
-    Calculate platform fee (2% of withdrawal amount).
-    Returns fee amount.
-    """
-    return amount * 0.02
+    return Decimal(str(amount)) * Decimal(str(fee_percent)) / Decimal('100')
 
 
 def is_withdrawal_blocked(driver):
@@ -108,22 +199,42 @@ def format_block_remaining(block_remaining):
         return f"{seconds}s"
 
 
+def _rupees(agg):
+    """Convert a UPI report aggregate's `total_amount` (minor units, INR --
+    UPI is an Indian rail) to rupees in place, and derive `avg_amount` from it
+    exactly rather than averaging integers in the database."""
+    total = agg.get('total_amount')
+    count = agg.get('count') or agg.get('total_count') or 0
+    agg['total_amount'] = None if total is None else from_minor(int(total), 'INR')
+    agg['avg_amount'] = (agg['total_amount'] / count) if total is not None and count else None
+    return agg
+
+
 def check_daily_upi_limit(driver, amount):
     """
     Check if driver has exceeded daily UPI limit.
     Returns (within_limit, used_today, limit)
     """
-    today = timezone.now().date()
+    # "Today" in the driver's own market, and only INR rows.
+    #
+    # `timezone.now().date()` is the deployment's today, and the NPCI ceiling
+    # below is a rupee figure -- so an unqualified Sum over a table that can
+    # hold rows in another currency would compare a mixed number against a
+    # rupee limit. The currency filter is belt-and-braces: UPI is an Indian
+    # rail and `initiate_upi_payout` already refuses a non-INR withdrawal, so
+    # this states the scope the number assumes rather than relying on it.
+    day_start = local_day_start(driver_timezone(driver))
     daily_total = WithdrawalRequest.objects.filter(
         driver=driver,
         payout_method='upi',
-        requested_at__date=today,
+        currency='INR',
+        requested_at__gte=day_start,
         status__in=['pending', 'approved', 'processed', 'completed']
-    ).aggregate(total=Sum('amount'))['total'] or 0
+    ).aggregate(total=Sum('amount_minor'))['total'] or 0
     
     # NPCI daily limit: ₹1,00,000 (100,000)
     daily_limit = 100000
-    used_today = float(daily_total)
+    used_today = float(from_minor(int(daily_total), 'INR'))
     within_limit = (used_today + amount) <= daily_limit
     
     return within_limit, used_today, daily_limit
@@ -134,19 +245,24 @@ def check_monthly_upi_limit(driver, amount):
     Check if driver has exceeded monthly UPI limit.
     Returns (within_limit, used_this_month, limit)
     """
-    now = timezone.now()
-    first_day_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    # The month that starts at local midnight on the 1st, in the driver's
+    # market. This was `timezone.now().replace(day=1, hour=0, ...)`, which is
+    # UTC midnight -- 05:30 IST -- so a withdrawal taken in the first five and
+    # a half hours of the month counted against the PREVIOUS month's NPCI
+    # ceiling. See the currency note in check_daily_upi_limit.
+    first_day_of_month = local_month_start(driver_timezone(driver))
     
     monthly_total = WithdrawalRequest.objects.filter(
         driver=driver,
         payout_method='upi',
+        currency='INR',
         requested_at__gte=first_day_of_month,
         status__in=['pending', 'approved', 'processed', 'completed']
-    ).aggregate(total=Sum('amount'))['total'] or 0
+    ).aggregate(total=Sum('amount_minor'))['total'] or 0
     
     # Default monthly limit: ₹2,00,000 (200,000)
     monthly_limit = 200000
-    used_this_month = float(monthly_total)
+    used_this_month = float(from_minor(int(monthly_total), 'INR'))
     within_limit = (used_this_month + amount) <= monthly_limit
     
     return within_limit, used_this_month, monthly_limit
@@ -311,10 +427,17 @@ def detect_upi_fraud(driver, amount, upi_id=None):
     # Rule 2: Unusual withdrawal amounts
     try:
         # Calculate average withdrawal amount for this driver
-        avg_withdrawal = WithdrawalRequest.objects.filter(
+        # Scoped to the currency this driver is paid in, because the
+        # average is compared against `amount`. Mixing magnitudes across
+        # currencies would make a normal payout look like a 90x anomaly.
+        _currency = driver_currency(driver)
+        _agg = WithdrawalRequest.objects.filter(
             driver=driver,
-            status='completed'
-        ).aggregate(avg_amount=Sum('amount') / Count('id'))['avg_amount'] or 0
+            status='completed',
+            currency=_currency,
+        ).aggregate(total=Sum('amount_minor'), n=Count('id'))
+        avg_withdrawal = (from_minor(int(_agg['total']), _currency) / _agg['n']
+                          if _agg['n'] else 0)
         
         if avg_withdrawal > 0 and amount > avg_withdrawal * 2:
             risk_score += 30
@@ -553,7 +676,7 @@ def get_upi_payout_monitoring_metrics(start_date=None, end_date=None):
     - Fraud detection alerts and resolution time
     - UPI ID verification status distribution
     """
-    from django.db.models import Count, Avg, Sum, F, Q
+    from django.db.models import Count, Sum, F, Q
     from django.db.models.functions import TruncDate
     
     if not start_date:
@@ -563,15 +686,21 @@ def get_upi_payout_monitoring_metrics(start_date=None, end_date=None):
     
     # 1. Daily limit utilization
     today = timezone.now().date()
+    # INR-scoped. Every threshold in this report is a rupee figure from NPCI
+    # (100,000 daily, 200,000 monthly, 50,000 reporting), so a Sum over rows
+    # that could be dollars would be compared against a rupee ceiling. UPI is
+    # an Indian rail, so this filter narrows nothing today -- it states the
+    # scope the numbers already assume.
     daily_upi_withdrawals = WithdrawalRequest.objects.filter(
         payout_method='upi',
+        currency='INR',
         requested_at__date=today,
         status__in=['completed', 'processing']
     ).aggregate(
-        total_amount=Sum('amount'),
+        total_amount=Sum('amount_minor'),
         count=Count('id'),
-        avg_amount=Avg('amount')
     )
+    _rupees(daily_upi_withdrawals)
     
     # Calculate limit utilization percentage
     daily_limit = 100000  # ₹100,000 daily limit
@@ -737,26 +866,38 @@ def generate_npci_compliance_report(report_date=None):
     end_of_day = timezone.make_aware(datetime.combine(report_date, datetime.max.time()))
     
     # 1. Daily UPI transaction summary
+    # INR-scoped. Every threshold in this report is a rupee figure from NPCI
+    # (100,000 daily, 200,000 monthly, 50,000 reporting), so a Sum over rows
+    # that could be dollars would be compared against a rupee ceiling. UPI is
+    # an Indian rail, so this filter narrows nothing today -- it states the
+    # scope the numbers already assume.
     daily_transactions = WithdrawalRequest.objects.filter(
         payout_method='upi',
+        currency='INR',
         requested_at__range=[start_of_day, end_of_day]
     ).aggregate(
         total_count=Count('id'),
-        total_amount=Sum('amount'),
-        avg_amount=Avg('amount'),
+        total_amount=Sum('amount_minor'),
         completed_count=Count('id', filter=Q(status='completed')),
         failed_count=Count('id', filter=Q(status='failed')),
         pending_count=Count('id', filter=Q(status__in=['pending', 'processing']))
     )
+    _rupees(daily_transactions)
     
     # 2. Large transactions (> ₹50,000)
     large_transactions = WithdrawalRequest.objects.filter(
         payout_method='upi',
-        amount__gt=50000,
+        currency='INR',
+        amount_minor__gt=to_minor(50000, 'INR'),
         requested_at__range=[start_of_day, end_of_day]
     ).values(
-        'id', 'driver__user__username', 'amount', 'status', 'requested_at'
-    ).order_by('-amount')
+        'id', 'driver__user__username', 'amount_minor', 'status', 'requested_at'
+    ).order_by('-amount_minor')
+    large_transactions = [
+        {**{k: v for k, v in row.items() if k != 'amount_minor'},
+         'amount': from_minor(row['amount_minor'], 'INR')}
+        for row in large_transactions
+    ]
     
     # 3. Monthly limit utilization (for the month containing report_date)
     month_start = report_date.replace(day=1)
@@ -767,12 +908,14 @@ def generate_npci_compliance_report(report_date=None):
     
     monthly_transactions = WithdrawalRequest.objects.filter(
         payout_method='upi',
+        currency='INR',
         requested_at__range=[month_start_dt, month_end_dt],
         status='completed'
     ).aggregate(
-        total_amount=Sum('amount'),
+        total_amount=Sum('amount_minor'),
         count=Count('id')
     )
+    _rupees(monthly_transactions)
     
     monthly_limit = 200000  # ₹200,000 monthly limit
     monthly_utilization = (monthly_transactions['total_amount'] or 0) / monthly_limit * 100
@@ -1121,261 +1264,723 @@ def generate_upi_compliance_handbook():
             {'function': 'generate_npci_compliance_report', 'purpose': 'NPCI compliance reporting'}
         ],
         'contact_points': [
-            {'role': 'Technical Support', 'contact': 'tech-support@vahango.com'},
-            {'role': 'Fraud Investigation', 'contact': 'fraud-team@vahango.com'},
-            {'role': 'Compliance Officer', 'contact': 'compliance@vahango.com'},
-            {'role': 'Operations Manager', 'contact': 'operations@vahango.com'}
+            # Built from PLATFORM_CONTACT_DOMAIN rather than hardcoded. These
+            # were pointing at vahango.com, which this platform does not use, so
+            # a driver's grievance or fraud report went to a domain nobody reads.
+            # A human still has to confirm these mailboxes exist and are
+            # monitored -- the MVA-2020 grievance obligation is not satisfied by
+            # an address that merely resolves.
+            {'role': 'Technical Support',
+             'contact': f'tech-support@{_contact_domain()}'},
+            {'role': 'Fraud Investigation',
+             'contact': f'fraud-team@{_contact_domain()}'},
+            {'role': 'Compliance Officer',
+             'contact': f'compliance@{_contact_domain()}'},
+            {'role': 'Operations Manager',
+             'contact': f'operations@{_contact_domain()}'}
         ]
     }
     
     return handbook
 
-
 def trigger_payout_creation(withdrawal):
     """
     Trigger payout creation for an approved withdrawal request.
-    
-    This function handles the business logic for creating payouts when
-    a withdrawal is approved by admin. It should:
-    1. Create a payout record in the database
-    2. Initiate the actual payout via payment gateway (Cashfree)
-    3. Update driver's last withdrawal timestamp
-    4. Handle any errors and log appropriately
-    
-    Args:
-        withdrawal: WithdrawalRequest instance that has been approved
-        
+
+    Wallet balance is already deducted when the withdrawal request is created.
+
+    A failed payout is refunded exactly once using a deterministic
+    reference/idempotency key.
+
     Returns:
-        bool: True if payout was successfully triggered, False otherwise
+        bool: True when the payout was successfully initiated.
+        False when the payout could not be initiated.
     """
     import logging
-    import uuid
-    from django.utils import timezone
-    from django.db import transaction
-    from servers.rider.models import Wallet, WalletTransaction
-    from decimal import Decimal
-    
-    logger = logging.getLogger(__name__)
-    
-    try:
-        driver = withdrawal.driver
-        # NOTE: driver.last_withdrawal_at is intentionally NOT set here.
-        # It is stamped only when the Cashfree payout webhook delivers
-        # TRANSFER_SUCCESS, so a failed payout doesn't unfairly block
-        # the driver from new withdrawals for 7 days. See audit M8 and
-        # _handle_cashfree_payout_webhook.
 
-        # Wallet deduction has already happened during WithdrawalRequest creation.
-        # We just initiate payout via payment gateway API.
-        payout_success = False
-        if withdrawal.payout_method == 'upi':
-            print('UPI')
-            # UPI payout
-            payout_success = initiate_upi_payout(withdrawal, driver)
-        else:
-            # Bank payout (default)
-            payout_success = initiate_bank_payout(withdrawal, driver)
-        print(payout_success)
-        
-        if payout_success:
-            # Update withdrawal status to processed
-            withdrawal.status = 'processed'
-            withdrawal.save()
-            logger.info(f"Payout successfully initiated for withdrawal {withdrawal.id}, amount: {withdrawal.amount}, method: {withdrawal.payout_method}")
-            return True
-        else:
-            # Payout failed, update status to failed
-            withdrawal.status = 'failed'
-            withdrawal.save()
-            logger.error(f"Failed to initiate payout for withdrawal {withdrawal.id}, amount: {withdrawal.amount}, method: {withdrawal.payout_method}")
-            
-            # Refund wallet
-            with transaction.atomic():
-                wallet = Wallet.objects.select_for_update().get(
-                    user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER,
-                )
-                wallet.balance += withdrawal.amount
-                wallet.save(update_fields=['balance'])
-                idempotency_key = f"refund_withdrawal_{withdrawal.id}_{uuid.uuid4().hex[:16]}"
-                WalletTransaction.objects.create(
-                    user_id=driver.user_id,
-                    amount=withdrawal.amount,
-                    txn_type='credit',
-                    status='completed',
-                    purpose='refund_failed_withdrawal',
-                    reference_id=f"refund_withdrawal_{withdrawal.id}",
-                    idempotency_key=idempotency_key
-                )
-            return False
-            
-    except Exception as e:
-        logger.error(f"Failed to trigger payout for withdrawal {withdrawal.id}: {e}")
-        # Update withdrawal status to failed on exception
-        withdrawal.status = 'failed'
-        withdrawal.save()
-        
-        # Refund wallet
-        from django.db import transaction
-        from servers.rider.models import Wallet, WalletTransaction
-        import uuid
+    from django.db import transaction
+    from django.utils import timezone
+
+    from servers.payments.payment_gateways.base_gateway import (
+        PayoutDispatchUnknown,
+    )
+    from servers.rider.models import Wallet, WalletTransaction
+
+    logger = logging.getLogger(__name__)
+
+    def refund_failed_withdrawal(driver, withdrawal_obj):
+        """
+        Refund the wallet exactly once for a failed payout attempt.
+        """
+        # A payout Finance retried (payout_actions.retry_failed) debits the wallet
+        # again, so its next failure must be refunded again: one refund per
+        # attempt, the first keeping the reference it always had.
+        from servers.payments.payout_actions import failed_refund_reference
+
+        refund_reference = failed_refund_reference(withdrawal_obj.id)
+        refund_idempotency_key = refund_reference
+
         with transaction.atomic():
             wallet = Wallet.objects.select_for_update().get(
-                user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER,
+                user_id=driver.user_id,
+                scope=Wallet.SCOPE_DRIVER,
             )
-            wallet.balance += withdrawal.amount
-            wallet.save(update_fields=['balance'])
-            idempotency_key = f"refund_withdrawal_{withdrawal.id}_{uuid.uuid4().hex[:16]}"
+
+            existing_refund = WalletTransaction.objects.filter(
+                reference_id=refund_reference,
+                purpose="refund_failed_withdrawal",
+                txn_type="credit",
+                status="completed",
+            ).exists()
+
+            if existing_refund:
+                logger.info(
+                    "Refund already exists for failed withdrawal %s. "
+                    "Skipping duplicate refund.",
+                    withdrawal_obj.id,
+                )
+                return False
+
+            wallet.balance_minor += withdrawal_obj.amount_minor
+            wallet.save(update_fields=["balance_minor"])
+
             WalletTransaction.objects.create(
                 user_id=driver.user_id,
-                amount=withdrawal.amount,
-                txn_type='credit',
-                status='completed',
-                purpose='refund_failed_withdrawal',
-                reference_id=f"refund_withdrawal_{withdrawal.id}",
-                idempotency_key=idempotency_key
+                amount=withdrawal_obj.amount,
+                txn_type="credit",
+                status="completed",
+                purpose="refund_failed_withdrawal",
+                reference_id=refund_reference,
+                idempotency_key=refund_idempotency_key,
             )
+
+            logger.info(
+                "Refunded %s for failed withdrawal %s",
+                withdrawal_obj.amount,
+                withdrawal_obj.id,
+            )
+
+            return True
+
+    try:
+        driver = withdrawal.driver
+
+        # A payout should only be initiated after admin approval.
+        if withdrawal.status not in ("approved", "processed"):
+            logger.warning(
+                "Cannot trigger payout for withdrawal %s with status '%s'",
+                withdrawal.id,
+                withdrawal.status,
+            )
+            return False
+
+        # ---------------------------------------------------------
+        # NO RAIL FOR THIS CURRENCY: HOLD, DO NOT FAIL
+        # ---------------------------------------------------------
+        # A currency with no payout rail (there is no US rail yet) is not a failed
+        # payout and must not be refunded or sent: it waits as `awaiting_rail`
+        # and `payout_rails.release_awaiting_rail` sends it once a rail exists.
+        from servers.payments import payout_rails
+
+        if not payout_rails.has_rail(withdrawal.currency):
+            payout_rails.hold(withdrawal)
+            return False
+
+        # ---------------------------------------------------------
+        # BANK PAYOUT SAFETY
+        # ---------------------------------------------------------
+        # Bank payout integration is not currently wired to Cashfree.
+        # Never mark it as successfully processed using the old
+        # simulated initiate_bank_payout() implementation.
+        if withdrawal.payout_method == "bank":
+            withdrawal.status = "failed"
+            withdrawal.failure_reason = (
+                "Bank payout is not currently configured with the payment gateway."
+            )
+            withdrawal.processed_at = timezone.now()
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "failure_reason",
+                    "processed_at",
+                ]
+            )
+
+            refund_failed_withdrawal(driver, withdrawal)
+
+            logger.error(
+                "Bank payout blocked for withdrawal %s because bank "
+                "payout gateway integration is not configured.",
+                withdrawal.id,
+            )
+            return False
+
+        # ---------------------------------------------------------
+        # UPI PAYOUT
+        # ---------------------------------------------------------
+        if withdrawal.payout_method == "upi":
+            try:
+                payout_success = initiate_upi_payout(withdrawal, driver)
+            except PayoutDispatchUnknown as exc:
+                # The request reached the network and the answer did not come
+                # back. Cashfree may have paid this driver.
+                #
+                # The money stays where it is. Refunding the wallet here -- which
+                # is what the old code did, via the shared failure path below --
+                # credits a driver who may already have received the transfer.
+                # Marking it 'processed' would be the opposite lie.
+                #
+                # So: hold, record, and surface for a human. There is no automated
+                # resolution because no Cashfree status call has been verified
+                # against the sandbox, and retrying depends on transferId
+                # idempotency that is likewise unverified.
+                withdrawal.status = "unresolved"
+                withdrawal.failure_reason = (
+                    "Provider outcome unknown - payout request was issued but no "
+                    "response was received. Wallet NOT refunded. A human must "
+                    "check Cashfree for this transferId before this row moves to "
+                    "processed or failed."
+                )
+                withdrawal.processed_at = timezone.now()
+                withdrawal.save(
+                    update_fields=["status", "failure_reason", "processed_at"],
+                )
+                logger.error(
+                    "payout_unresolved withdrawal=%s driver=%s amount=%s "
+                    "reason=provider_outcome_unknown wallet_refunded=false "
+                    "detail=%s",
+                    withdrawal.id, driver.id, withdrawal.amount, exc,
+                )
+                return False
+        else:
+            withdrawal.status = "failed"
+            withdrawal.failure_reason = (
+                f"Unsupported payout method: {withdrawal.payout_method}"
+            )
+            withdrawal.processed_at = timezone.now()
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "failure_reason",
+                    "processed_at",
+                ]
+            )
+
+            refund_failed_withdrawal(driver, withdrawal)
+
+            logger.error(
+                "Unsupported payout method '%s' for withdrawal %s",
+                withdrawal.payout_method,
+                withdrawal.id,
+            )
+            return False
+
+        # ---------------------------------------------------------
+        # PAYOUT INITIATED
+        # ---------------------------------------------------------
+        if payout_success:
+            withdrawal.status = "processed"
+            withdrawal.processed_at = timezone.now()
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "processed_at",
+                ]
+            )
+
+            logger.info(
+                "Payout successfully initiated for withdrawal %s, "
+                "amount=%s, method=%s",
+                withdrawal.id,
+                withdrawal.amount,
+                withdrawal.payout_method,
+            )
+            return True
+
+        # ---------------------------------------------------------
+        # PAYOUT FAILED
+        # ---------------------------------------------------------
+        withdrawal.status = "failed"
+
+        if not withdrawal.failure_reason:
+            withdrawal.failure_reason = "Payout initiation failed"
+
+        withdrawal.processed_at = timezone.now()
+
+        withdrawal.save(
+            update_fields=[
+                "status",
+                "failure_reason",
+                "processed_at",
+            ]
+        )
+
+        refund_failed_withdrawal(driver, withdrawal)
+
+        logger.error(
+            "Failed to initiate payout for withdrawal %s, "
+            "amount=%s, method=%s",
+            withdrawal.id,
+            withdrawal.amount,
+            withdrawal.payout_method,
+        )
+
         return False
+
+    except Exception as e:
+        logger.exception(
+            "Unexpected error while triggering payout for withdrawal %s: %s",
+            withdrawal.id,
+            e,
+        )
+
+        try:
+            driver = withdrawal.driver
+
+            withdrawal.status = "failed"
+
+            if not withdrawal.failure_reason:
+                withdrawal.failure_reason = (
+                    "Unexpected error while initiating payout"
+                )
+
+            withdrawal.processed_at = timezone.now()
+
+            withdrawal.save(
+                update_fields=[
+                    "status",
+                    "failure_reason",
+                    "processed_at",
+                ]
+            )
+
+            refund_failed_withdrawal(driver, withdrawal)
+
+        except Exception as refund_error:
+            logger.exception(
+                "CRITICAL: payout failed and refund also failed "
+                "for withdrawal %s: %s",
+                withdrawal.id,
+                refund_error,
+            )
+
+        return False
+from servers.payments.payment_gateways.base_gateway import (  # noqa: E402
+    PayoutDispatchUnknown,
+)
 
 
 def initiate_upi_payout(withdrawal, driver):
     """
-    Initiate UPI payout via Cashfree API with production-grade error handling and retry logic.
-    
-    Args:
-        withdrawal: WithdrawalRequest instance
-        driver: Driver instance
-        
+    Initiate UPI payout through the configured payment gateway.
+
+    The withdrawal wallet amount has already been deducted when the
+    withdrawal request was created.
+
     Returns:
-        bool: True if payout was successfully initiated, False otherwise
+        bool: True when the gateway accepts the payout.
+        False when payout initiation fails.
     """
     import logging
     import time
+
     from django.utils import timezone
+
     from .models import DriverUPIContact
-    from servers.payments.payment_gateways.factory import get_payment_gateway_for_payouts
-    
+    from servers.payments.payment_gateways.factory import (
+        country_for_driver,
+        country_of_currency,
+        get_payment_gateway_for_payouts,
+    )
+
     logger = logging.getLogger(__name__)
-    
-    # Check if driver has UPI ID
-    if not driver.upi_id:
-        logger.error(f"Driver {driver.id} does not have UPI ID set for UPI payout")
-        withdrawal.status = 'failed'
-        withdrawal.failure_reason = 'UPI ID not set'
-        withdrawal.save()
-        return False
-    
-    # Validate UPI ID format
-    upi_validation = validate_upi_id_advanced(driver.upi_id)
-    print(upi_validation)
-    if not upi_validation[0]:
-        logger.error(f"Invalid UPI ID format for driver {driver.id}: {driver.upi_id}")
-        withdrawal.status = 'failed'
-        withdrawal.failure_reason = f"Invalid UPI ID: {upi_validation[1]}"
-        withdrawal.save()
-        return False
-    
-    # Check if this is a retry attempt
-    is_retry = withdrawal.failure_count > 0
-    max_retries = 3
-    retry_delay = get_upi_payout_retry_delay(withdrawal.failure_count)
-    
-    # Check if we should retry based on previous failures
-    if is_retry and withdrawal.failure_count >= max_retries:
-        logger.error(f"Max retries ({max_retries}) exceeded for withdrawal {withdrawal.id}")
-        withdrawal.status = 'failed'
-        withdrawal.failure_reason = 'Max retries exceeded'
-        withdrawal.save()
-        return False
-    
-    # Check if we should wait before retrying
-    if is_retry and withdrawal.last_failure_at:
-        time_since_failure = (timezone.now() - withdrawal.last_failure_at).total_seconds()
-        if time_since_failure < retry_delay:
-            logger.info(f"Waiting {retry_delay - time_since_failure:.0f}s before retry for withdrawal {withdrawal.id}")
-            return False
-    
-    try:
-        # Step 1: Get payment gateway for payouts
-        logger.info(f"Getting payment gateway for UPI payout to driver {driver.id}, UPI ID: {driver.upi_id}")
-        gateway = get_payment_gateway_for_payouts()
-        
-        # Step 2: Create UPI payout
-        logger.info(f"Creating UPI payout for withdrawal {withdrawal.id}, amount: {withdrawal.amount}")
-        
-        # Generate reference ID for tracking
-        reference_id = f"withdrawal_{withdrawal.id}_driver_{driver.id}_{int(time.time())}"
-        
-        payout_result = gateway.create_upi_payout(
-            upi_id=driver.upi_id,
-            amount=withdrawal.amount,
-            purpose="payout",
-            currency="INR",
-            reference_id=reference_id,
-            name=driver.user_id.full_name or driver.user_id.phone_number
+
+    # ---------------------------------------------------------
+    # BASIC VALIDATION
+    # ---------------------------------------------------------
+    #
+    # UPI is an Indian rail and this call hardcodes currency="INR", which was
+    # correct while every driver was Indian. A withdrawal denominated in
+    # dollars routed down this path would send the NUMBER as rupees -- a $500
+    # payout dispatched as Rs.500 -- so the currency is checked before the
+    # gateway is touched rather than trusted.
+    #
+    # Returning False here is the right failure: nothing has been dispatched,
+    # so the caller's refund returns the amount to the driver's wallet. It is
+    # a mis-routing, not an unresolved payout.
+    withdrawal_currency = normalize_currency(
+        getattr(withdrawal, 'currency', None) or driver_currency(driver))
+    if withdrawal_currency != 'INR':
+        withdrawal.failure_reason = (
+            f'UPI payouts settle in INR; this withdrawal is in '
+            f'{withdrawal_currency}'
         )
-        
-        if not payout_result:
-            logger.error(f"Failed to create UPI payout for withdrawal {withdrawal.id}")
+        withdrawal.failure_count += 1
+        withdrawal.last_failure_at = timezone.now()
+        withdrawal.save(
+            update_fields=[
+                "failure_reason",
+                "failure_count",
+                "last_failure_at",
+            ]
+        )
+        logger.error(
+            'withdrawal %s is in %s and cannot be paid over UPI. No payout '
+            'rail is configured for this market.',
+            withdrawal.id, withdrawal_currency,
+        )
+        return False
+
+    if not driver.upi_id:
+        withdrawal.failure_reason = "UPI ID not set"
+        withdrawal.failure_count += 1
+        withdrawal.last_failure_at = timezone.now()
+        withdrawal.save(
+            update_fields=[
+                "failure_reason",
+                "failure_count",
+                "last_failure_at",
+            ]
+        )
+
+        logger.error(
+            "Driver %s does not have a UPI ID for withdrawal %s",
+            driver.id,
+            withdrawal.id,
+        )
+        return False
+
+    from integrations.payouts import fake as _fake_payouts
+    # QA only (`PAYOUT_FAKE_ALLOWED`): RazorpayX's test-mode addresses are refused by the real
+    # validator on purpose, and go to the fake provider instead (9 Nov).
+    upi_validation = ((True, None, None) if _fake_payouts.allowed_for(driver.upi_id)
+                      else validate_upi_id_advanced(driver.upi_id))
+
+    if not upi_validation[0]:
+        withdrawal.failure_reason = (
+            f"Invalid UPI ID: {upi_validation[1]}"
+        )
+        withdrawal.failure_count += 1
+        withdrawal.last_failure_at = timezone.now()
+        withdrawal.save(
+            update_fields=[
+                "failure_reason",
+                "failure_count",
+                "last_failure_at",
+            ]
+        )
+
+        logger.error(
+            "Invalid UPI ID for driver %s, withdrawal %s",
+            driver.id,
+            withdrawal.id,
+        )
+        return False
+
+    # ---------------------------------------------------------
+    # DO NOT CREATE ANOTHER PAYOUT IF ONE ALREADY EXISTS
+    # ---------------------------------------------------------
+    if withdrawal.payout_reference_id:
+        logger.warning(
+            "Withdrawal %s already has payout reference %s. "
+            "Skipping duplicate Cashfree payout creation.",
+            withdrawal.id,
+            withdrawal.payout_reference_id,
+        )
+        return True
+
+    # ---------------------------------------------------------
+    # RETRY PROTECTION -- CONTAINMENT, NOT AN IDEMPOTENCY FIX
+    # ---------------------------------------------------------
+    #
+    # One attempt. This codifies what is already reachable rather than changing
+    # behaviour: `trigger_payout_creation` treats the first failure as terminal
+    # (status='failed' plus an immediate wallet refund) and then refuses to
+    # dispatch anything whose status is not approved/processed -- so a second
+    # attempt through this path was already impossible and this cap never bound.
+    # Tests in tests/test_payout_single_provider_call.py assert the resulting
+    # property directly, by COUNTING provider calls: one execution, one call.
+    #
+    # THIS IS RISK CONTAINMENT, NOT AN IDEMPOTENCY FIX. Cashfree's behaviour for a
+    # repeated transferId is unverified, and the genuine exposure is elsewhere: if
+    # Cashfree executes a transfer while our request appears to fail, we mark the
+    # withdrawal failed AND refund the wallet, so the driver receives both. That
+    # cannot be fixed without the provider contract -- see
+    # runbooks/cashfree-payout-sandbox-checklist.md -- and must not be guessed at.
+    max_retries = 1
+
+    if withdrawal.failure_count >= max_retries:
+        withdrawal.failure_reason = "Max retries exceeded"
+        withdrawal.save(update_fields=["failure_reason"])
+
+        logger.error(
+            "Maximum payout retries exceeded for withdrawal %s",
+            withdrawal.id,
+        )
+        return False
+
+    if withdrawal.failure_count > 0 and withdrawal.last_failure_at:
+        retry_delay = get_upi_payout_retry_delay(
+            withdrawal.failure_count
+        )
+
+        time_since_failure = (
+            timezone.now() - withdrawal.last_failure_at
+        ).total_seconds()
+
+        if time_since_failure < retry_delay:
+            logger.info(
+                "Retry delay has not elapsed for withdrawal %s. "
+                "Remaining seconds: %.0f",
+                withdrawal.id,
+                retry_delay - time_since_failure,
+            )
+            return False
+
+    # ---------------------------------------------------------
+    # CASHFREE PAYOUT CREATION
+    # ---------------------------------------------------------
+    try:
+        logger.info(
+            "Creating UPI payout for withdrawal %s, driver %s",
+            withdrawal.id,
+            driver.id,
+        )
+
+        # The payout provider is chosen by the driver's country (configuration only). A country
+        # with no provider has no payout rail: nothing is dispatched, so the caller refunds.
+        payout_country = country_of_currency(withdrawal_currency) or country_for_driver(driver)
+        gateway = get_payment_gateway_for_payouts(payout_country)
+        from integrations.payouts import fake as _fake_payouts
+        if _fake_payouts.allowed_for(driver.upi_id):
+            # QA only: RazorpayX's test-mode UPI addresses go to the fake provider (9 Nov).
+            gateway = _fake_payouts.FakePayoutGateway()
+        if not gateway:
+            withdrawal.failure_reason = (
+                f'No payout provider is configured for {payout_country or "this market"}'
+            )
             withdrawal.failure_count += 1
             withdrawal.last_failure_at = timezone.now()
-            withdrawal.failure_reason = 'Cashfree payout creation failed'
-            withdrawal.save()
+            withdrawal.save(
+                update_fields=["failure_reason", "failure_count", "last_failure_at"]
+            )
+            logger.error(
+                "withdrawal %s: no payout provider configured for %s",
+                withdrawal.id, payout_country,
+            )
             return False
-        
-        # Step 3: Update withdrawal with payout details
-        # Store Cashfree payout_id in payout_reference_id for webhook matching
-        cashfree_payout_id = payout_result.get('payout_id')
+
+        # Use a stable reference for this withdrawal.
+        #
+        # Do NOT include the current timestamp here. A retry should
+        # not accidentally create a second logical payout.
+        reference_id = (
+            f"withdrawal_{withdrawal.id}_driver_{driver.id}"
+        )
+
+        # Reuse the provider-side contact / fund account recorded for THIS provider only (an id
+        # issued by another provider is never sent to this one). The fund account is reused only
+        # while the UPI id is unchanged.
+        reuse = {'contact_reference': str(driver.id)}
+        known = DriverUPIContact.objects.filter(driver=driver, is_active=True).first()
+        if known and known.gateway_provider == gateway.get_name() and known.gateway_contact_id:
+            reuse['contact_id'] = known.gateway_contact_id
+            if known.upi_id == driver.upi_id and known.gateway_fund_account_id:
+                reuse['fund_account_id'] = known.gateway_fund_account_id
+
+        payout_result = gateway.create_upi_payout(
+            upi_id=driver.upi_id,
+            # What the driver receives: the request less the transfer fee that
+            # was stamped from payout_config.withdrawal_fee (0 today).
+            amount_minor=withdrawal.amount_minor - (withdrawal.fee_minor or 0),
+            purpose="payout",
+            currency=withdrawal.currency,
+            reference_id=reference_id,
+            name=(
+                driver.user_id.full_name
+                or driver.user_id.phone_number
+            ),
+            **reuse,
+        )
+
+        if not payout_result:
+            # Reached only for a DEFINITE rejection now. An unknown outcome --
+            # request issued, answer lost -- raises PayoutDispatchUnknown from the
+            # gateway and is handled by trigger_payout_creation, which must not
+            # refund. Flattening both into False is what caused a driver to be
+            # refunded on top of a transfer that may have succeeded.
+            withdrawal.failure_count += 1
+            withdrawal.last_failure_at = timezone.now()
+            withdrawal.failure_reason = (
+                "Cashfree payout creation failed"
+            )
+
+            withdrawal.save(
+                update_fields=[
+                    "failure_count",
+                    "last_failure_at",
+                    "failure_reason",
+                ]
+            )
+
+            logger.error(
+                "Cashfree returned no payout result for withdrawal %s",
+                withdrawal.id,
+            )
+            return False
+
+        # -----------------------------------------------------
+        # EXTRACT CASHFREE PAYOUT REFERENCE
+        # -----------------------------------------------------
+        cashfree_payout_id = payout_result.get("payout_id")
+
+        if not cashfree_payout_id:
+            withdrawal.failure_count += 1
+            withdrawal.last_failure_at = timezone.now()
+            withdrawal.failure_reason = (
+                "Cashfree payout response did not contain payout_id"
+            )
+
+            withdrawal.save(
+                update_fields=[
+                    "failure_count",
+                    "last_failure_at",
+                    "failure_reason",
+                ]
+            )
+
+            logger.error(
+                "Cashfree payout response missing payout_id "
+                "for withdrawal %s. Response keys: %s",
+                withdrawal.id,
+                list(payout_result.keys()),
+            )
+            return False
+
+        # -----------------------------------------------------
+        # SAVE PAYOUT TRACKING DATA
+        # -----------------------------------------------------
         withdrawal.payout_reference_id = cashfree_payout_id
-        withdrawal.payout_status = payout_result.get('status', 'created')
-        withdrawal.payout_mode = 'UPI'
-        withdrawal.status = 'processing'  # Mark as processing (awaiting webhook confirmation)
+        withdrawal.payout_status = payout_result.get(
+            "status",
+            "created",
+        )
+        withdrawal.payout_mode = "UPI"
+
+        # 'processed' here means payout request was accepted by
+        # the gateway. Final completion should come from webhook.
+        withdrawal.status = "processed"
         withdrawal.processed_at = timezone.now()
-        withdrawal.failure_count = 0  # Reset failure count on success
+
+        withdrawal.failure_count = 0
+        withdrawal.last_failure_at = None
         withdrawal.failure_reason = None
-        withdrawal.save()
-        
-        logger.info(f"Stored Cashfree payout ID {cashfree_payout_id} in withdrawal {withdrawal.id}")
-        
-        # Step 4: Update or create DriverUPIContact record
+
+        withdrawal.save(
+            update_fields=[
+                "payout_reference_id",
+                "payout_status",
+                "payout_mode",
+                "status",
+                "processed_at",
+                "failure_count",
+                "last_failure_at",
+                "failure_reason",
+            ]
+        )
+
+        logger.info(
+            "Cashfree UPI payout accepted for withdrawal %s. "
+            "Payout ID=%s",
+            withdrawal.id,
+            cashfree_payout_id,
+        )
+
+        # -----------------------------------------------------
+        # SAVE DRIVER UPI CONTACT
+        # -----------------------------------------------------
         try:
+            provider_name = payout_result.get("provider") or gateway.get_name()
             upi_contact, created = DriverUPIContact.objects.get_or_create(
                 driver=driver,
                 defaults={
-                    'gateway_contact_id': payout_result.get('contact_id'),
-                    'gateway_fund_account_id': payout_result.get('fund_account_id'),
-                    'upi_id': driver.upi_id,
-                    'is_active': True
-                }
+                    "gateway_contact_id": payout_result.get(
+                        "contact_id"
+                    ),
+                    "gateway_fund_account_id": payout_result.get(
+                        "fund_account_id"
+                    ),
+                    "gateway_provider": provider_name,
+                    "upi_id": driver.upi_id,
+                    "is_active": True,
+                },
             )
-            
+
             if not created:
-                # Update existing record
-                upi_contact.gateway_contact_id = payout_result.get('contact_id')
-                upi_contact.gateway_fund_account_id = payout_result.get('fund_account_id')
+                upi_contact.gateway_contact_id = (
+                    payout_result.get("contact_id")
+                )
+                upi_contact.gateway_fund_account_id = (
+                    payout_result.get("fund_account_id")
+                )
+                upi_contact.gateway_provider = provider_name
                 upi_contact.upi_id = driver.upi_id
-                upi_contact.last_used_at = timezone.now()
                 upi_contact.is_active = True
-                upi_contact.save()
-            
-            logger.info(f"DriverUPIContact {'created' if created else 'updated'} for driver {driver.id}")
-        except Exception as e:
-            logger.warning(f"Failed to update DriverUPIContact for driver {driver.id}: {e}")
-            # Non-critical error, continue
-        
-        logger.info(f"UPI payout successfully initiated for withdrawal {withdrawal.id}: "
-                   f"Cashfree payout ID: {withdrawal.payout_reference_id}, "
-                   f"Amount: {withdrawal.amount}, UPI ID: {driver.upi_id}")
-        
+                upi_contact.last_used_at = timezone.now()
+
+                upi_contact.save(
+                    update_fields=[
+                        "gateway_provider",
+                        "gateway_contact_id",
+                        "gateway_fund_account_id",
+                        "upi_id",
+                        "is_active",
+                        "last_used_at",
+                    ]
+                )
+
+        except Exception as contact_error:
+            # Contact persistence must not turn a successful
+            # Cashfree payout into a failed payout.
+            logger.warning(
+                "Failed to update DriverUPIContact for driver %s: %s",
+                driver.id,
+                contact_error,
+            )
+
         return True
-        
+
+    except PayoutDispatchUnknown:
+        # Deliberately re-raised. This is the one failure that must NOT be
+        # flattened into "the payout failed": the request was issued and the
+        # answer was lost, so Cashfree may have paid this driver.
+        #
+        # The broad handler below records a failure and lets the caller refund the
+        # wallet. Doing that here would credit a driver who may already have the
+        # money. trigger_payout_creation holds the funds and marks the row
+        # 'unresolved' instead.
+        raise
+
     except Exception as e:
-        logger.error(f"Failed to initiate UPI payout for withdrawal {withdrawal.id}: {e}", exc_info=True)
+        logger.exception(
+            "Failed to initiate UPI payout for withdrawal %s: %s",
+            withdrawal.id,
+            e,
+        )
+
         withdrawal.failure_count += 1
         withdrawal.last_failure_at = timezone.now()
-        withdrawal.failure_reason = str(e)[:255]  # Truncate to fit field length
-        withdrawal.save()
-        return False
+        withdrawal.failure_reason = str(e)[:255]
 
+        withdrawal.save(
+            update_fields=[
+                "failure_count",
+                "last_failure_at",
+                "failure_reason",
+            ]
+        )
+
+        return False
 
 def initiate_bank_payout(withdrawal, driver):
     """
@@ -1393,9 +1998,12 @@ def initiate_bank_payout(withdrawal, driver):
     
     try:
         # Import Cashfree gateway
-        from servers.payments.payment_gateways.factory import get_payment_gateway_for_payouts
-        
-        get_payment_gateway_for_payouts()  # stub: bank payouts not wired yet
+        from servers.payments.payment_gateways.factory import (
+            country_for_driver,
+            get_payment_gateway_for_payouts,
+        )
+
+        get_payment_gateway_for_payouts(country_for_driver(driver))  # stub: bank payouts not wired yet
         
         # In a real implementation, you would need:
         # 1. Get driver's bank details (account number, IFSC code, name)

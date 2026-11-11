@@ -1,8 +1,15 @@
+from . import catalogue_views, earnings_history_views, profile_views
 from django.urls import path
 from .views import (
-    driver_earnings, driver_earnings_summary,
+    driver_earnings, driver_earnings_summary, driver_earnings_daily, driver_fee_plan, driver_earnings_period,
     list_vehicles, create_vehicle, update_vehicle, delete_vehicle, update_driver_profile, get_driver_profile,
-    driver_withdrawal_balance, driver_withdrawal_request, driver_withdrawal_history, driver_withdrawal_block_status
+    driver_instant_quote, driver_withdrawal_balance, driver_withdrawal_request, driver_withdrawal_history, driver_withdrawal_block_status,
+    driver_incentives, driver_elite_status, driver_document_view,
+)
+from .onboarding_views import driver_onboarding
+from .admin_drivers import (
+    admin_approve_driver, admin_bulk_drivers, admin_kyc_queue, admin_note_driver,
+    admin_document_view, admin_driver_records, admin_reinstate_driver, admin_review_document, admin_suspend_driver, admin_vehicle_status,
 )
 from .admin_views import (
     list_drivers_admin, retrieve_driver_admin, driver_full_detail_admin,
@@ -17,27 +24,66 @@ urlpatterns = [
     # Driver
     path('driver/update/',update_driver_profile),
     path('driver/profile/',get_driver_profile),
+    # The driver's own document, through a five-minute signed ticket (AUDIT 27.78).
+    path('driver/documents/view/<str:ticket>/', driver_document_view),
+    # What this driver still has to supply before an operator can approve
+    # them, computed from the same compliance rules the console reviews
+    # against. See onboarding_views for why it is not a second list.
+    path('driver/onboarding/', driver_onboarding),
+    path('driver/incentives/', driver_incentives),
+    path('driver/elite-status/', driver_elite_status),
     # Earnings
     path('earnings/', driver_earnings),
     path('earnings/summary/', driver_earnings_summary),
+    path('earnings/daily/', driver_earnings_daily),
+    path('fee-plan/', driver_fee_plan),
+    path('earnings/period/', driver_earnings_period),
+    path('earnings/history/', earnings_history_views.driver_earnings_history),
+    path('earnings/months/', earnings_history_views.driver_earnings_months),
+    path('earnings/statement/', earnings_history_views.driver_earnings_statement),
+    path('trips/<int:trip_id>/', earnings_history_views.driver_trip_detail),
     # Withdrawals
     path('withdrawals/balance/', driver_withdrawal_balance),
     path('withdrawals/request/', driver_withdrawal_request),
+    path('withdrawals/instant/quote/', driver_instant_quote),
     path('withdrawals/history/', driver_withdrawal_history),
     path('withdrawals/block-status/', driver_withdrawal_block_status),
     # Vehicles
+    # What a real driver provides, per market (10 Nov).
+    path('requirements/', profile_views.driver_requirements),
+    path('personal/', profile_views.driver_personal),
+    path('identity/', profile_views.driver_identity),
+    path('payout-method/', profile_views.driver_payout_method),
+    path('payout-method/stripe/', profile_views.driver_stripe_onboarding),
+    path('payout-method/stripe/refresh/', profile_views.driver_stripe_refresh),
+    path('ifsc/<str:code>/', profile_views.driver_ifsc),
+    path('vehicle-catalogue/', profile_views.vehicle_catalogue),
     path('vehicles/', list_vehicles),
     path('vehicles/add/', create_vehicle),
     path('vehicles/<int:vehicle_id>/', update_vehicle),
     path('vehicles/<int:vehicle_id>/delete/', delete_vehicle),
 
     # Admin URLs
+    path('admin/vehicle-catalogue/', catalogue_views.catalogue),
+    path('admin/vehicle-catalogue/<int:entry_id>/', catalogue_views.catalogue_entry),
     path('admin/', list_drivers_admin),
     path('admin/<int:driver_id>/', retrieve_driver_admin),
     path('admin/<int:driver_id>/full/', driver_full_detail_admin),
     path('admin/<int:driver_id>/update-kyc/', update_kyc_status_admin),
     path('admin/<int:driver_id>/delete/', delete_driver_admin),
     path('admin/<int:driver_id>/vehicles/', get_vehicle_details),
+    # Drivers & KYC module (console module 3)
+    path('admin/kyc-queue/', admin_kyc_queue),
+    path('admin/bulk/', admin_bulk_drivers),
+    path('admin/<int:driver_id>/documents/review/', admin_review_document),
+    # One document, on demand, audited (AUDIT 27.78).
+    path('admin/<int:driver_id>/documents/<str:key>/view/', admin_document_view),
+    path('admin/<int:driver_id>/approve/', admin_approve_driver),
+    path('admin/<int:driver_id>/suspend/', admin_suspend_driver),
+    path('admin/<int:driver_id>/reinstate/', admin_reinstate_driver),
+    path('admin/<int:driver_id>/records/', admin_driver_records),
+    path('admin/<int:driver_id>/note/', admin_note_driver),
+    path('admin/<int:driver_id>/vehicles/<int:vehicle_id>/status/', admin_vehicle_status),
     
     # Admin Withdrawal Management
     path('admin/withdrawals/', list_withdrawals_admin),

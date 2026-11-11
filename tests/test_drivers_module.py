@@ -336,8 +336,10 @@ class TestDetail:
 # ---------------------------------------------------------------------------
 
 class TestDocumentReview:
-    def review(self, client, driver, key, decision, reason='', vehicle=None):
+    def review(self, client, driver, key, decision, reason='', vehicle=None, expiry=None):
         body = {'document_key': key, 'decision': decision, 'reason': reason}
+        if expiry is not None:
+            body['expiry'] = expiry
         if vehicle is not None:
             body['vehicle_id'] = vehicle.id
         return client.post(url(driver, 'documents/review/'), body, format='json')
@@ -368,7 +370,8 @@ class TestDocumentReview:
         client, _ = operator('kyc_verifier', geo)
         driver = world['review']
         self.review(client, driver, 'insurance', 'reject', 'Wrong vehicle')
-        self.review(client, driver, 'insurance', 'approve')
+        # A dated paper is approved with its expiry date (11 Nov).
+        self.review(client, driver, 'insurance', 'approve', expiry=str(date.today() + timedelta(days=200)))
         driver.refresh_from_db()
         assert driver.doc_status == 'pending' and driver.doc_rejection_reason == ''
 

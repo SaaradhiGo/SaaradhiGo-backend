@@ -212,6 +212,11 @@ def cost_per_trip_report(country, month):
                                                      created_at__date__gte=month, created_at__date__lt=end,
                                                      currency=get_country(country).currency)
                     .aggregate(s=Sum('amount_minor'))['s'] or 0)
+    # Commission taken and then returned because the driver's plan did not ask for it (11 Nov).
+    commission -= (WalletTransaction.objects.filter(purpose='platform_fee_refund', status='completed',
+                                                    created_at__date__gte=month, created_at__date__lt=end,
+                                                    currency=get_country(country).currency)
+                   .aggregate(s=Sum('amount_minor'))['s'] or 0)
     rider_fee = 0
     try:
         from servers.ride.models import FarePricing

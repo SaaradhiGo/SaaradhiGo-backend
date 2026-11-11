@@ -257,6 +257,9 @@ def item_status(driver, key, config, *, vehicle=None, reviews=None, today=None):
                 out['status'], out['reason'] = 'rejected', 'This document has expired. Upload the renewed one.'
             elif out['status'] == 'approved' and expiry <= today + timedelta(days=EXPIRING_DAYS):
                 out['status'] = 'expiring'
+        elif key in EXPIRY_FOR and out['status'] == 'approved':
+            # A dated paper without its date is not done (11 Nov): the reviewer enters it on approval.
+            out['status'], out['reason'] = 'missing', 'Add the expiry date shown on the document.'
         return out
     if key == 'payout_method':
         if config['country'] == 'US':
@@ -401,6 +404,23 @@ def item_files(driver, key, vehicle, reviews):
     return out
 
 
+def missing_expiry(driver):
+    """Labels of the dated papers on file whose expiry date is not recorded (11 Nov)."""
+    vehicle = _vehicle(driver)
+    if vehicle is None:
+        return []
+    from .compliance import VEHICLE_DOCUMENT_COLUMNS
+
+    config = for_driver(driver)
+    out = []
+    for key, column in EXPIRY_FOR.items():
+        if config['items'].get(key, {}).get('need') == OFF:
+            continue
+        if getattr(getattr(vehicle, VEHICLE_DOCUMENT_COLUMNS[key], None), 'name', '') and not getattr(vehicle, column, None):
+            out.append(ITEMS[key][1])
+    return out
+
+
 def blocking_unmet(driver):
     """Labels of the items that keep this driver from being approved (missing, rejected, expired)."""
     data = checklist(driver)
@@ -422,6 +442,8 @@ def approve_reviewed_files(driver, reviewer):
     reviews = _latest_reviews(driver, vehicle)
     for key, owner, column, veh in files:
         state, _ = _file_state(reviews, key, owner, column, veh.id if veh else None)
+        if veh is not None and key in EXPIRY_FOR and not getattr(veh, EXPIRY_FOR[key], None):
+            continue            # approved only with its expiry date (11 Nov)
         if state == 'in_review':
             DriverDocumentReview.objects.create(
                 driver=driver, vehicle=veh, document_key=key, state='approved', reviewed_by=reviewer,

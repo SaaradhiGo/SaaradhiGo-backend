@@ -78,6 +78,8 @@ class Driver(models.Model):
     ],default='pending')
     ratings=models.DecimalField(max_digits=3,decimal_places=2,default=0.00)
     approved=models.BooleanField(default=False)
+    #: QA test account (11 Nov): its sample files and details are seed data, never a real driver's.
+    is_seed=models.BooleanField(default=False)
     active_vehicle=models.ForeignKey('Vehicle',on_delete=models.SET_NULL,null=True,blank=True)
     last_withdrawal_at=models.DateTimeField(null=True,blank=True)
     upi_id=models.CharField(max_length=256,blank=True,null=True,help_text='UPI ID for UPI payouts')
@@ -311,6 +313,8 @@ class Vehicle(models.Model):
     capacity = models.IntegerField(
         default=1
     )
+    #: QA test data (11 Nov), written by a seed; never a driver's own vehicle.
+    is_seed = models.BooleanField(default=False)
 
     vehicle_pic = models.FileField(
         blank=True,
@@ -540,6 +544,8 @@ class WithdrawalRequest(CurrencyStampedModel, models.Model):
     investigation_note = models.TextField(blank=True, default='')
     investigation_since = models.DateTimeField(null=True, blank=True)
     investigation_by_label = models.CharField(max_length=255, blank=True, default='')
+    #: QA test data (11 Nov), written by a seed or a gate run.
+    is_seed = models.BooleanField(default=False)
 
     def __str__(self):
         return f'Withdrawal {self.id} - Driver {self.driver} - {self.amount}'

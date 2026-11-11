@@ -44,6 +44,9 @@ class Trip(CurrencyStampedModel, models.Model):
     fee_plan_id=models.BigIntegerField(null=True,blank=True)
     fee_plan_version=models.PositiveIntegerField(null=True,blank=True)
     fee_plan_type=models.CharField(max_length=24,blank=True,default='',db_index=True)
+    # QA test data (11 Nov): written by a seed or a gate, never by a rider. Integrity checks and
+    # reports read this flag, never a trip id or a marker in the text.
+    is_seed=models.BooleanField(default=False,db_index=True)
     accepted_at=models.DateTimeField(blank=True,null=True)
     # The route the driver was expected to drive (pickup to drop), fetched
     # AFTER the accept commits (`ride.store_planned_route`). An encoded

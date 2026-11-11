@@ -368,3 +368,12 @@ def no_market_requirements(db):
     from servers.pricing.regulation_models import MarketRegulation
 
     MarketRegulation.objects.update(driver_requirements=None)
+
+
+@pytest.fixture(autouse=True)
+def _no_requirements_gate(request, monkeypatch):
+    """Going online checks the market's requirements (11 Nov). The socket and dispatch tests build
+    approved drivers with no documents; only tests marked `requirements_gate` keep the check."""
+    if request.node.get_closest_marker('requirements_gate'):
+        return
+    monkeypatch.setattr('servers.driver.qa_eligibility.requirements_unmet', lambda driver: [])

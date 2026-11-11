@@ -76,8 +76,9 @@ DRIVER_LEDGER_PURPOSES = (
     # MVAG 2025 cancellation penalty (2026-11-09): the rider's fee paid to the driver who was let
     # down; the driver's own penalty; on a cash trip, the fee the collecting driver holds.
     'cancellation_compensation', 'cancellation_penalty', 'cancellation_fee_collected',
-    # The driver fee plan's one row per local day (9 Nov, `pricing.fee_plans`).
-    'platform_fee',
+    # The driver fee plan's one row per local day (9 Nov, `pricing.fee_plans`), and a credit
+    # returning a fee the plan did not ask for (11 Nov, `fee_plans.refund_overcharged`).
+    'platform_fee', 'platform_fee_refund',
 )
 
 #: `model label -> ORM lookup(s) reaching GeoNode.path`. One table, so a view

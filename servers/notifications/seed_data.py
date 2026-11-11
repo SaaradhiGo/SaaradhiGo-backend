@@ -10,6 +10,8 @@
     promotions.referral_reward      a referral reward was earned (rider or driver)
     trips.pickup_code_reminder      support re-sent the pickup code: open the app (no code in it)
     payout.details_changed          bank or UPI changed: payouts wait 24 hours (driver, 10 Nov)
+    driver.document_expiring        a licence or vehicle paper expires in 30, 7 or 1 days (driver,
+                                    in_app + push, 11 Nov; `driver.remind_expiring_documents`)
     payout.reversed                 a payout was reversed by the bank and is back in the balance
                                     (driver, in_app + push, AUDIT 27.71)
     promotions.promo_available      a new offer (PROMOTIONAL: only to people who opted in, held by
@@ -40,6 +42,7 @@ PROMO_AVAILABLE = 'promotions.promo_available'
 PAYOUT_REVERSED = 'payout.reversed'
 PICKUP_CODE_REMINDER = 'trips.pickup_code_reminder'
 PAYOUT_DETAILS_CHANGED = 'payout.details_changed'
+DOCUMENT_EXPIRING = 'driver.document_expiring'
 
 _COMMISSION_VARS = ['effective_date', 'scope', 'old_rate', 'new_rate']
 _COMMISSION_SAMPLE = {'effective_date': '12 November 2026', 'scope': 'Sedan in Hyderabad',
@@ -189,6 +192,18 @@ COPY.update({
              'you, contact driver support in the app.', **_CHANGED),
 })
 
+_EXPIRING = dict(variables=['document', 'date', 'days'],
+                 sample={'document': 'Vehicle insurance', 'date': '18 Dec 2026', 'days': '7'})
+COPY.update({
+    (DOCUMENT_EXPIRING, 'in_app'): dict(
+        title='{document} expires on {date}',
+        body='Your {document} expires in {days} days, on {date}. Upload the renewed one in Documents so '
+             'you can keep driving after that day.', **_EXPIRING),
+    (DOCUMENT_EXPIRING, 'push'): dict(
+        title='{document} expires on {date}',
+        body='{days} days left: upload the renewed {document} in Documents to keep driving.', **_EXPIRING),
+})
+
 #: Channels each key is seeded on. Anything not listed uses all of CHANNELS.
 KEY_CHANNELS = {OPERATOR_CANCELLED: ('in_app', 'push'),
                 OPERATOR_ENDED_RIDER: ('in_app', 'push'),
@@ -199,7 +214,8 @@ KEY_CHANNELS = {OPERATOR_CANCELLED: ('in_app', 'push'),
                 PROMO_AVAILABLE: ('in_app', 'push'),
                 PAYOUT_REVERSED: ('in_app', 'push'),
                 PICKUP_CODE_REMINDER: ('in_app', 'push'),
-                PAYOUT_DETAILS_CHANGED: ('in_app', 'push', 'sms')}
+                PAYOUT_DETAILS_CHANGED: ('in_app', 'push', 'sms'),
+                DOCUMENT_EXPIRING: ('in_app', 'push')}
 
 COUNTRIES = ('IN', 'US')
 CHANNELS = ('in_app', 'push', 'sms', 'email')
@@ -215,7 +231,8 @@ def seed_rows():
     rows = []
     for key in (COMMISSION, PAYOUT, OPERATOR_CANCELLED, OPERATOR_ENDED_RIDER,
                 OPERATOR_ENDED_DRIVER, INCENTIVE_PROGRESS, INCENTIVE_COMPLETED, REFERRAL_REWARD,
-                PROMO_AVAILABLE, PAYOUT_REVERSED, PICKUP_CODE_REMINDER, PAYOUT_DETAILS_CHANGED):
+                PROMO_AVAILABLE, PAYOUT_REVERSED, PICKUP_CODE_REMINDER, PAYOUT_DETAILS_CHANGED,
+                DOCUMENT_EXPIRING):
         for country in COUNTRIES:
             for channel in KEY_CHANNELS.get(key, CHANNELS):
                 copy = dict(COPY[(key, channel)])

@@ -130,3 +130,47 @@ def test_trips_and_payouts_for_a_range_with_search(driver):  # noqa: F811
     assert [r['id'] for r in pay('q=250')['results']] == [w.id]
     assert [r['id'] for r in pay(f'q=%23{w.id}')['results']] == [w.id]
     assert pay('q=999999')['count'] == 0
+
+
+def test_the_statement_says_who_and_from_whom(driver, settings):  # noqa: F811
+    """11 Nov: name, masked phone and PAN, city, period, company, statement number and date."""
+    settings.PLATFORM_LEGAL_ADDRESS = '1-2-3 HITEC City, Hyderabad 500081'
+    settings.PLATFORM_GSTIN = ''
+    Wallet.objects.get_or_create(user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER, defaults={'currency': 'INR'})
+    _settle(driver, '240', 'online')
+    client = _api(driver)
+    key = _get(client, 'months/')['months'][0]['month']
+    st = _get(client, f'statement/?month={key}')
+    assert st['number'] == f"SG-{key.replace('-', '')}-{driver.id:06d}" and st['produced_on']
+    assert st['phone_masked'].endswith(driver.user_id.phone_number[-4:]) and '•' in st['phone_masked']
+    assert st['company']['address'].startswith('1-2-3')
+    r = client.get(f'/api/v1/driver/earnings/statement/?month={key}&as=csv')
+    rows = {row[0]: row[1:] for row in csv.reader(io.StringIO(r.content.decode())) if row}
+    assert rows['Statement number'][0] == st['number'] and rows['Phone'][0] == st['phone_masked']
+    assert rows['Registered address'][0].startswith('1-2-3') and 'GSTIN' not in rows     # not configured: left out
+    assert rows['Period'][0].endswith(f"{st['start']} to {st['end']}")
+
+
+def test_the_trip_detail_and_report_a_problem(driver):  # noqa: F811
+    from servers.ride.models import Trip
+
+    Wallet.objects.get_or_create(user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER, defaults={'currency': 'INR'})
+    _settle(driver, '200', 'online')
+    trip = Trip.objects.filter(driver_id=driver).latest('id')
+    Trip.objects.filter(pk=trip.pk).update(pickup_address='Cyber Towers, HITEC City', destination_address='Charminar')
+    trip.user_id.full_name = 'Lakshmi Devi'
+    trip.user_id.save(update_fields=['full_name'])
+    client = _api(driver)
+    r = client.get(f'/api/v1/driver/trips/{trip.id}/')
+    assert r.status_code == 200, r.content[:300]
+    d = r.json()['data']
+    assert (d['pickup_address'], d['destination_address']) == ('Cyber Towers, HITEC City', 'Charminar')
+    assert d['rider']['first_name'] == 'Lakshmi' and d['payment_method'] == 'online'
+    assert Decimal(d['fare']) - Decimal(d['platform_fee']) == Decimal(d['earned'])
+    assert client.get(f'/api/v1/driver/trips/{trip.id + 999}/').status_code == 404
+    t = client.post('/api/v1/support/tickets/create/', {'issue_type': 'other', 'trip_id': trip.id,
+                                                        'description': 'The rider left a bag in the car.'},
+                    format='json')
+    assert t.status_code == 201, t.content[:300]
+    from servers.support.models import SupportTicket
+    assert SupportTicket.objects.get(pk=t.json()['data']['id']).trip_id_id == trip.id

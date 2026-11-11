@@ -352,7 +352,7 @@ class Command(BaseCommand):
                 'vehicle_id': vehicles[spec['driver']],
                 'requested_vehicle_type': vehicle_type, 'status_id': status,
                 'zone': zone, 'currency': zone.currency,
-                'client_request_id': spec['key'],
+                'client_request_id': spec['key'], 'is_seed': True,
                 'pickup_address': pickup_address,
                 'pickup_lat': pickup_lat, 'pickup_long': pickup_lng,
                 'destination_address': drop_address,

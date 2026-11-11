@@ -172,6 +172,63 @@ class TestSwitching:
         assert fee_plans.charge_day(india.driver, 'IN', DAY) is None      # commission trips: no fee row
 
 
+class TestNewDriverAndOvercharge:
+    """Owner brief, 11 Nov: a new driver inside the 60 days pays nothing, a day never passes the cap,
+    commission taken before the plan existed is returned once, and the words come from the plan."""
+
+    def test_new_driver_pays_nothing_for_60_days_and_never_more_than_the_cap(self, india):
+        india.plan.waiver_first_days = 60
+        india.plan.save()
+        trips_on(india, DAY, 1)
+        trips_on(india, DAY + timedelta(days=30), 40)
+        assert fee_plans.charge_day(india.driver, 'IN', DAY + timedelta(days=30)).fee_minor == 0
+        trips_on(india, DAY + timedelta(days=61), 40)
+        late = fee_plans.charge_day(india.driver, 'IN', DAY + timedelta(days=61))
+        assert (late.fee_minor, late.reason) == (14900, 'charged')
+        assert max(DriverDailyFee.objects.values_list('fee_minor', flat=True)) <= 14900
+
+    def test_commission_before_the_plan_existed_is_refunded_once(self, india):
+        from servers.driver import earnings_history as eh
+
+        DriverFeePlan.objects.all().delete()
+        early = trips_on(india, DAY, 3)                          # no plan yet: 15% of Rs 150 each
+        assert all(t.fee_plan_type == '' for t in early)
+        later = plan(waiver_first_days=60)
+        later.effective_from = DAY
+        later.save()
+        wallet = Wallet.objects.get(user_id=india.driver.user_id, scope='driver')
+        report = fee_plans.refund_overcharged(india.driver, 'IN')
+        assert [(r[2], r[3], r[4]) for r in report] == [(2250, 2250, False)] * 3
+        assert not WalletTransaction.objects.filter(purpose='platform_fee_refund').exists()
+        fee_plans.refund_overcharged(india.driver, 'IN', apply=True)
+        fee_plans.refund_overcharged(india.driver, 'IN', apply=True)
+        rows = WalletTransaction.objects.filter(purpose='platform_fee_refund')
+        assert rows.count() == 3 and {r.txn_type for r in rows} == {'credit'}
+        assert sum(r.amount_minor for r in rows) == 6750
+        assert Wallet.objects.get(pk=wallet.pk).balance_minor == wallet.balance_minor + 6750
+        month = eh.statement(india.driver, DAY.year, DAY.month)['summary']
+        assert Decimal(month['platform_fee']) == 0
+
+    def test_after_the_waiver_the_refund_keeps_the_plan_fee(self, india):
+        DriverFeePlan.objects.all().delete()
+        trips_on(india, DAY, 12)                                 # Rs 1,800: over the floor
+        later = plan()
+        later.effective_from = DAY
+        later.save()
+        report = fee_plans.refund_overcharged(india.driver, 'IN')
+        assert sum(r[2] for r in report) == 12 * 2250
+        assert sum(r[3] for r in report) == 12 * 2250 - 12000      # the plan's Rs 120 that day stays
+
+    def test_the_words_come_from_the_plan(self, india):
+        india.plan.waiver_first_days = 60
+        india.plan.save()
+        trips_on(india, DAY, 1)
+        assert fee_plans.fee_words(india.driver, today=DAY) ==             'No fee until 19 Jan, then ₹10.00 a trip, at most ₹149.00 a day'
+        assert fee_plans.fee_words(india.driver, today=DAY + timedelta(days=60)) == '₹10.00 a trip, at most ₹149.00 a day'
+        DriverFeePlan.objects.all().delete()
+        assert fee_plans.fee_words(india.driver, today=DAY) == 'A commission on each trip, shown on every trip'
+
+
 class TestSimulator:
     @pytest.mark.parametrize('n', [5, 12, 20])
     def test_simulator_equals_the_end_of_day_job(self, india, n):

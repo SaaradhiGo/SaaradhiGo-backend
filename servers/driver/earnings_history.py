@@ -13,11 +13,14 @@ they are reported as zero with `tips_enabled: false`. Read only.
 """
 import csv
 import io
+import logging
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from django.db.models import BigIntegerField, Sum, Value
 from django.db.models.functions import Coalesce
+
+logger = logging.getLogger(__name__)
 
 PERIODS = ('day', 'week', 'month', 'year', 'taxyear', 'custom')
 MAX_CUSTOM_DAYS = 3 * 366
@@ -113,10 +116,11 @@ def _bucket_keys(unit, first, last):
 
 def _fee_rows(driver, since=None, until=None):
     from servers.payments.ledger import counted
-    from servers.pricing.fee_plans import PURPOSE
+    from servers.pricing.fee_plans import PURPOSE, REFUND_PURPOSE
     from servers.rider.models import WalletTransaction
 
-    qs = counted(WalletTransaction.objects.filter(user_id=driver.user_id_id, purpose=PURPOSE))
+    # A refund is a credit, so it lowers the period's fee (`_fee_amount`).
+    qs = counted(WalletTransaction.objects.filter(user_id=driver.user_id_id, purpose__in=(PURPOSE, REFUND_PURPOSE)))
     if since is not None:
         qs = qs.filter(created_at__gte=since)
     if until is not None:
@@ -191,23 +195,15 @@ def _strings(summary):
 
 
 def fee_note(driver):
-    """How the platform fee is worked out, in a few words: "Capped at ₹149.00 a day"."""
-    from base.money import format_money, from_minor
-    from servers.payments.payout_config import driver_payout_country
-    from servers.payments.payout_scope import scope_codes_of_node
-    from servers.pricing.fee_plans import local_day, resolve
+    """How the platform fee is worked out, from the driver's own plan (11 Nov): "No fee until
+    1 Jan, then ₹10.00 a trip, at most ₹149.00 a day"; never fixed text."""
+    from servers.pricing.fee_plans import fee_words
 
     try:
-        country = driver_payout_country(driver) or 'IN'
-        home = getattr(driver, 'home_city', None)
-        plan = resolve(country, scope_codes_of_node(home) if home else [], local_day(country))
+        return fee_words(driver)
     except Exception:  # noqa: BLE001 - the card shows without its note
+        logger.exception('fee note failed driver=%s', driver.id)
         return ''
-    if plan is None:
-        return ''
-    if plan.daily_cap_minor:
-        return f'Capped at {format_money(from_minor(plan.daily_cap_minor, plan.currency), plan.currency)} a day'
-    return ''
 
 
 def joined_on(driver, tz):
@@ -311,13 +307,24 @@ def statement(driver, year, month):
     from base.encrypted import mask
 
     pan = mask(driver.pan_number) if country == 'IN' and driver.pan_number else None
+    from django.conf import settings
+    from servers.admin_access.masking import mask_phone
     from servers.pricing.fee_plan_models import DriverDailyFee
 
     notes = {f'DAY_{r.day:%Y%m%d}': r.explanation for r in DriverDailyFee.objects.filter(
         driver=driver, day__gte=first - timedelta(days=1), day__lte=last)}
     today = datetime.now(tz).date()
+    produced = datetime.now(tz)
+    home = getattr(driver, 'home_city', None)
     return {
         'driver': driver.user_id.full_name or '', 'pan_masked': pan, 'country': country,
+        # Who and from whom (11 Nov): a statement a bank or the tax office can read on its own.
+        'phone_masked': mask_phone(driver.user_id.phone_number) or '',
+        'city': getattr(home, 'name', '') or '',
+        'company': {'name': settings.PLATFORM_LEGAL_ENTITY, 'address': settings.PLATFORM_LEGAL_ADDRESS,
+                    'gstin': settings.PLATFORM_GSTIN},
+        'number': f'SG-{first:%Y%m}-{driver.id:06d}', 'produced_on': produced.date().isoformat(),
+        'fee_note': fee_note(driver),
         'month': first.strftime('%Y-%m'), 'start': first.isoformat(), 'end': last.isoformat(),
         'so_far': first <= today <= last, 'currency': driver_currency(driver),
         'summary': _strings(summary),
@@ -346,12 +353,12 @@ def _minor(v, currency):
 def ledger_movement(driver, since, until):
     """The wallet movement from trips and platform fees in `[since, until)` (for the tests)."""
     from servers.payments.ledger import counted, SIGNED
-    from servers.pricing.fee_plans import PURPOSE
+    from servers.pricing.fee_plans import PURPOSE, REFUND_PURPOSE
     from servers.rider.models import WalletTransaction
     from .earnings import SETTLEMENT_PURPOSES
 
     rows = counted(WalletTransaction.objects.filter(
-        user_id=driver.user_id_id, purpose__in=(*SETTLEMENT_PURPOSES, PURPOSE),
+        user_id=driver.user_id_id, purpose__in=(*SETTLEMENT_PURPOSES, PURPOSE, REFUND_PURPOSE),
         created_at__gte=since, created_at__lt=until))
     return rows.aggregate(t=Coalesce(Sum(SIGNED), Value(0), output_field=BigIntegerField()))['t']
 
@@ -370,14 +377,33 @@ def _month_label(st):
     return d.strftime('%B %Y') + (' (so far)' if st['so_far'] else '')
 
 
+def _identity_rows(st):
+    """The statement's header lines (11 Nov): the company, the statement, the driver, the period.
+    A company line that is not configured is left out, never invented (docs/config-required.md)."""
+    c = st['company']
+    rows = [['Issued by', c['name']]]
+    if c['address']:
+        rows.append(['Registered address', c['address']])
+    if c['gstin']:
+        rows.append(['GSTIN', c['gstin']])
+    rows += [['Statement number', st['number']], ['Produced on', st['produced_on']], ['Driver', st['driver'] or '-'],
+             ['Phone', st['phone_masked'] or '-']]
+    if st['pan_masked']:
+        rows.append(['PAN', st['pan_masked']])
+    if st['city']:
+        rows.append(['City', st['city']])
+    rows.append(['Period', f"{_month_label(st)}: {st['start']} to {st['end']}"])
+    if st.get('fee_note'):
+        rows.append(['Platform fee', st['fee_note']])
+    return rows
+
+
 def statement_csv(st):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(['SaaradhiGo earnings statement'])
-    w.writerow(['Driver', st['driver']])
-    if st['pan_masked']:
-        w.writerow(['PAN', st['pan_masked']])
-    w.writerow(['Period', f"{st['start']} to {st['end']}", _month_label(st)])
+    for row in _identity_rows(st):
+        w.writerow(row)
     w.writerow(['Currency', st['currency']])
     w.writerow([])
     for label, key in SUMMARY_ROWS:
@@ -436,10 +462,10 @@ def statement_pdf(st):
                        style=[('VALIGN', (0, 0), (-1, -1), 'MIDDLE')])]
     except Exception:  # noqa: BLE001 - the letterhead without the logo
         story = head
-    who = [['Driver', st['driver'] or '-'], ['Period', f"{_month_label(st)}: {st['start']} to {st['end']}"]]
-    if st['pan_masked']:
-        who.insert(1, ['PAN', st['pan_masked']])
-    story += [Spacer(1, 6), Table(who, colWidths=[40 * mm, 130 * mm], style=[('FONTSIZE', (0, 0), (-1, -1), 9.5)])]
+    cell = ParagraphStyle('cell', parent=styles['Normal'], fontSize=9.5, leading=11.5)
+    who = [[k, Paragraph(str(v).replace('₹', 'Rs '), cell)] for k, v in _identity_rows(st)]
+    story += [Spacer(1, 6), Table(who, colWidths=[40 * mm, 130 * mm], style=[('FONTSIZE', (0, 0), (-1, -1), 9.5),
+                                                                             ('VALIGN', (0, 0), (-1, -1), 'TOP')])]
     s = st['summary']
     rows = [[label, str(s[key]) if key == 'trips' else m(s[key])] for label, key in SUMMARY_ROWS]
     rows += [['Opening balance', m(st['opening'])], ['Closing balance', m(st['closing'])]]

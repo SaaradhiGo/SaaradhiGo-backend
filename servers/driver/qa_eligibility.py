@@ -78,6 +78,17 @@ def may_operate(driver) -> bool:
     return is_qa_test_driver(driver) and qa_simulation_allowed()
 
 
+def requirements_unmet(driver) -> list:
+    """The market's blocking items this approved driver is missing (11 Nov): going online needs the
+    same checklist the approval does, so a driver approved before 10 Nov, or whose paper expired,
+    stays offline until it is fixed. A QA-simulated driver (not approved) is not checked here."""
+    if driver is None or not getattr(driver, 'approved', False):
+        return []
+    from . import requirements
+
+    return requirements.blocking_unmet(driver)
+
+
 def eligibility_label(driver) -> str:
     """How this driver's eligibility should be described to an operator."""
     if getattr(driver, 'approved', False):

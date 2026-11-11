@@ -116,11 +116,11 @@ def _bucket_keys(unit, first, last):
 
 def _fee_rows(driver, since=None, until=None):
     from servers.payments.ledger import counted
-    from servers.pricing.fee_plans import PURPOSE, REFUND_PURPOSE
+    from servers.pricing.fee_plans import PURPOSE
     from servers.rider.models import WalletTransaction
 
-    # A refund is a credit, so it lowers the period's fee (`_fee_amount`).
-    qs = counted(WalletTransaction.objects.filter(user_id=driver.user_id_id, purpose__in=(PURPOSE, REFUND_PURPOSE)))
+    # A refund for a trip is on that trip's row (`settlement_rows`), on the trip's day; not here.
+    qs = counted(WalletTransaction.objects.filter(user_id=driver.user_id_id, purpose=PURPOSE))
     if since is not None:
         qs = qs.filter(created_at__gte=since)
     if until is not None:
@@ -238,7 +238,9 @@ def history(driver, period, anchor=None, start=None, end=None):
     summary = summarise_period(data.trips, data.fees, data.payouts, tz)
 
     unit = chart_unit(period, first, last)
-    bars = {k: {'key': k, 'earned': ZERO, 'trips': 0} for k in _bucket_keys(unit, first, last)}
+    # Each bar carries its breakdown (11 Nov), for the chart's tap or hover: fares, platform fee, earned.
+    bars = {k: {'key': k, 'earned': ZERO, 'trips': 0, 'fares': ZERO, 'platform_fee': ZERO}
+            for k in _bucket_keys(unit, first, last)}
     for r in data.trips:
         if r.created_at is None:
             continue
@@ -246,10 +248,13 @@ def history(driver, period, anchor=None, start=None, end=None):
         if b is not None:
             b['trips'] += 1
             b['earned'] += r.net or ZERO
+            b['fares'] += r.gross or ZERO
+            b['platform_fee'] += r.commission or ZERO
     for f in data.fees:
         b = bars.get(_bucket(unit, f.created_at.astimezone(tz)))
         if b is not None:
             b['earned'] -= _fee_amount(f)
+            b['platform_fee'] += _fee_amount(f)
 
     joined = joined_on(driver, tz)
     return {
@@ -260,7 +265,8 @@ def history(driver, period, anchor=None, start=None, end=None):
         'has_next': last < today,
         'prev': shift(period, first, last, -1).isoformat(), 'next': shift(period, first, last, 1).isoformat(),
         'summary': {**_strings(summary), 'fee_note': fee_note(driver), 'tips_enabled': False},
-        'chart': {'unit': unit, 'bars': [{**b, 'earned': str(b['earned'])} for b in bars.values()]},
+        'chart': {'unit': unit, 'bars': [{**b, 'earned': str(b['earned']), 'fares': str(b['fares']),
+                                          'platform_fee': str(b['platform_fee'])} for b in bars.values()]},
     }
 
 

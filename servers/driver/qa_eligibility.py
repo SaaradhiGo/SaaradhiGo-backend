@@ -79,14 +79,24 @@ def may_operate(driver) -> bool:
 
 
 def requirements_unmet(driver) -> list:
-    """The market's blocking items this approved driver is missing (11 Nov): going online needs the
-    same checklist the approval does, so a driver approved before 10 Nov, or whose paper expired,
-    stays offline until it is fixed. A QA-simulated driver (not approved) is not checked here."""
-    if driver is None or not getattr(driver, 'approved', False):
+    """The market's blocking items this driver is missing (11 Nov): going online needs the same
+    checklist the approval does, so a driver approved before 10 Nov, or whose paper expired, stays
+    offline until it is fixed. A QA-simulated driver skips it only where the QA setting allows."""
+    if driver is None:
+        return []
+    if not getattr(driver, 'approved', False) and requirements_bypass_allowed():
         return []
     from . import requirements
 
     return requirements.blocking_unmet(driver)
+
+
+def requirements_bypass_allowed() -> bool:
+    """May a QA-simulated driver skip the requirements (11 Nov)? Only with
+    QA_SIM_DRIVERS_SKIP_REQUIREMENTS on, and never in production, whatever is set."""
+    from django.conf import settings
+
+    return bool(getattr(settings, 'QA_SIM_DRIVERS_SKIP_REQUIREMENTS', False)) and not getattr(settings, 'IS_PRODUCTION', True)
 
 
 def eligibility_label(driver) -> str:

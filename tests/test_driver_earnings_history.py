@@ -191,3 +191,45 @@ def test_the_vehicle_list_puts_the_active_vehicle_first(driver):  # noqa: F811
     Vehicle.objects.create(driver_id=driver, vehicle_type_id=sedan, vehicle_number='TS09AA0002', brand='Old', model='Car', year=2015)
     got = _api(driver).get('/api/v1/driver/vehicles/').json()['data']
     assert got[0]['id'] == first.id and len(got) >= 2
+
+
+def test_a_refund_shows_on_its_trip_in_every_view(driver):  # noqa: F811
+    """11 Nov: Trips row, Dashboard days, Earnings history, period totals, statement and CSV agree."""
+    from servers.ride.models import Trip
+
+    Wallet.objects.get_or_create(user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER, defaults={'currency': 'INR'})
+    _settle(driver, '200', 'cash')
+    trip = Trip.objects.filter(driver_id=driver).latest('id')
+    WalletTransaction.objects.create(user_id=driver.user_id, amount_minor=3000, currency='INR', txn_type='credit',
+                                     status='completed', purpose='platform_fee_refund', reference_id=f'TRIP_{trip.id}',
+                                     idempotency_key=f'PLATFORM_FEE_REFUND_TRIP_{trip.id}')
+    client = _api(driver)
+    today = timezone.localdate(timezone=driver_timezone(driver)).isoformat()
+    row = _get(client, f'?date={today}&page_size=50')['results'][0]
+    assert (row['commission'], row['net_amount'], row['platform_fee_refunded']) == ('0.00', '200.00', '30.00')
+    day = _get(client, 'history/?period=day')['summary']
+    month = _get(client, 'history/?period=month')['summary']
+    assert Decimal(day['platform_fee']) == 0 and Decimal(day['earned']) == 200
+    assert month['earned'] == day['earned']
+    daily = client.get('/api/v1/driver/earnings/daily/?days=1').json()['data']['days'][-1]
+    period = client.get('/api/v1/driver/earnings/period/?period=today').json()['data']
+    assert Decimal(daily['net']) == 200 and Decimal(period['net']) == 200 and Decimal(period['commission']) == 0
+    key = today[:7]
+    st = _get(client, f'statement/?month={key}')
+    assert st['summary']['earned'] == month['earned'] and st['trips'][0]['earned'] == '200.00'
+    r = client.get(f'/api/v1/driver/earnings/statement/?month={key}&as=csv')
+    rows = {x[0]: x[1:] for x in csv.reader(io.StringIO(r.content.decode())) if x}
+    assert Decimal(rows['You earned'][0]) == 200
+    detail = client.get(f'/api/v1/driver/trips/{trip.id}/').json()['data']
+    assert (detail['platform_fee'], detail['earned'], detail['platform_fee_refunded']) == ('0.00', '200.00', '30.00')
+
+
+def test_every_trip_count_is_the_earnings_count(driver):  # noqa: F811
+    Wallet.objects.get_or_create(user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER, defaults={'currency': 'INR'})
+    _settle(driver, '150', 'online')
+    _settle(driver, '160', 'cash')
+    type(driver).objects.filter(pk=driver.pk).update(total_trips=30)             # a drifted counter
+    client = _api(driver)
+    profile = client.get('/api/v1/driver/driver/profile/').json()['data']
+    month = _get(client, 'history/?period=month')['summary']
+    assert profile['total_trips'] == month['trips'] == 2

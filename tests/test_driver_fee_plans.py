@@ -209,6 +209,17 @@ class TestNewDriverAndOvercharge:
         month = eh.statement(india.driver, DAY.year, DAY.month)['summary']
         assert Decimal(month['platform_fee']) == 0
 
+    def test_a_trip_without_a_settlement_record_is_refunded_from_the_ledger(self, india):
+        from servers.payments.models import TripSettlement
+
+        DriverFeePlan.objects.all().delete()
+        early = trips_on(india, DAY, 2)
+        TripSettlement.objects.filter(trip=early[0]).delete()            # QA trip 198: ledger row only
+        later = plan(waiver_first_days=60)
+        later.effective_from = DAY
+        later.save()
+        assert [r[3] for r in fee_plans.refund_overcharged(india.driver, 'IN')] == [2250, 2250]
+
     def test_after_the_waiver_the_refund_keeps_the_plan_fee(self, india):
         DriverFeePlan.objects.all().delete()
         trips_on(india, DAY, 12)                                 # Rs 1,800: over the floor

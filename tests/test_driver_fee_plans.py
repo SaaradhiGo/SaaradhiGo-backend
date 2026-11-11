@@ -252,6 +252,10 @@ class TestLateConfigurationAndClass:
         later.effective_from = date(2026, 10, 5)                     # in force now, written late
         later.save()
         assert [r[3] for r in fee_plans.refund_overcharged(india.driver, 'IN')] == [2250, 2250]
+        # It must never happen quietly (11 Nov): one console alert for the driver and day.
+        from servers.command_centre.models import OperatorAlert
+        got = OperatorAlert.objects.filter(source_type='fee_plan_missing_for_day')
+        assert got.count() == 1 and got[0].source_id == f'{india.driver.id}:2026-10-01'
 
     def test_a_trip_with_no_class_takes_the_vehicle_class(self, india):
         DriverFeePlan.objects.all().delete()

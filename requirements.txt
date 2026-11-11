@@ -35,6 +35,9 @@ requests==2.33.0
 channels==4.2.0
 channels-redis==4.2.1
 daphne==4.2.3
+# The web server (11 Nov): several worker processes, so requests are not queued behind one
+# another (Django runs sync views on one thread per process under ASGI). WebSockets included.
+uvicorn[standard]==0.32.1
 # Transitive via daphne[tls], pinned to floors that carry security fixes:
 #   Twisted  PYSEC-2026-160   (fixed 26.4.0)
 #   pyOpenSSL PYSEC-2026-2268/2269 (fixed 26.0.0)

@@ -361,7 +361,11 @@ def overcharged(driver, country):
         day = local_day(country, t.completed_at)
         # A driver never pays for configuration written late (owner ruling, 11 Nov): a day before any
         # plan existed is judged by the plan in force now, waiver included.
-        plan = resolve(country, scope_codes_of_zone(t.zone), day) or resolve(country, scope_codes_of_zone(t.zone))
+        plan = resolve(country, scope_codes_of_zone(t.zone), day)
+        if plan is None:
+            plan = resolve(country, scope_codes_of_zone(t.zone))
+            if plan is not None:
+                _late_plan_alert(driver, country, day, plan)
         vt = trip_class(t)
         if plan is None or plan.plan_type not in NON_COMMISSION or not plan.amounts_for(vt):
             continue
@@ -384,6 +388,24 @@ def overcharged(driver, country):
             rows.append((t, c, c - keep))
         out.append((day, plan, rows))
     return out
+
+
+def _late_plan_alert(driver, country, day, plan):
+    """Every time a day with no plan is judged by today's (11 Nov): logged and one console alert per
+    driver and day. In production every driver has a plan from day one, so this should never fire."""
+    logger.warning('fee_plan_missing_for_day', extra={
+        'event': 'fee_plan_missing_for_day', 'driver_id': driver.id, 'country': country, 'day': str(day),
+        'judged_by_plan': plan.id})
+    try:
+        from servers.command_centre.models import DATA_INTEGRITY
+        from servers.command_centre.services import raise_alert
+
+        raise_alert(DATA_INTEGRITY, title=f'No fee plan on {day} for driver {driver.id}: judged by plan {plan.id} '
+                                          f'({plan.plan_type} v{plan.version})',
+                    payload={'driver_id': driver.id, 'country': country, 'day': str(day), 'plan_id': plan.id},
+                    source_type='fee_plan_missing_for_day', source_id=f'{driver.id}:{day}')
+    except Exception:  # noqa: BLE001 - the alert never stops a refund
+        logger.exception('fee plan late alert failed')
 
 
 def refund_overcharged(driver, country, *, apply=False):

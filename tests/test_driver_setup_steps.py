@@ -65,3 +65,38 @@ def test_step_status_is_the_worst_of_its_items():
     steps = [{'key': 'a', 'status': 'done'}, {'key': 'b', 'status': 'in_review'}, {'key': 'c', 'status': 'todo'}]
     assert req.next_step(steps) == 'c'
     assert req.next_step(steps[:2]) == 'b'
+
+
+def test_an_upload_alone_saves_only_its_own_column(world, monkeypatch, tmp_path):  # noqa: F811
+    """Two uploads at once used to save the whole vehicle each; the later one put the earlier file back."""
+    import io
+    from unittest import mock
+
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from django.test.client import BOUNDARY, MULTIPART_CONTENT, encode_multipart
+    from PIL import Image
+
+    from servers.driver.models import Vehicle, VehicleType
+
+    from django.core.files.storage import FileSystemStorage
+
+    monkeypatch.setattr(Vehicle._meta.get_field('rc_doc'), 'storage', FileSystemStorage(location=str(tmp_path)))
+    d = new_driver(world)
+    vt, _ = VehicleType.objects.get_or_create(type='sedan')
+    car = Vehicle.objects.create(driver_id=d, vehicle_type_id=vt, vehicle_number='TS09RC0001', brand='Maruti', model='Dzire')
+    buf = io.BytesIO()
+    Image.new('RGB', (32, 32), (10, 20, 30)).save(buf, 'PNG')
+    body = encode_multipart(BOUNDARY, {'rc_doc': SimpleUploadedFile('rc.png', buf.getvalue(), content_type='image/png')})
+    saves = []
+    real = Vehicle.save
+
+    def spy(self, *a, **kw):
+        saves.append(kw.get('update_fields'))
+        return real(self, *a, **kw)
+
+    with mock.patch.object(Vehicle, 'save', spy):
+        r = client_for(d.user_id).patch(f'/api/v1/driver/vehicles/{car.id}/', data=body, content_type=MULTIPART_CONTENT)
+    assert r.status_code == 200, r.content[:300]
+    assert saves and set(saves[0]) == {'rc_doc', 'file_times'}
+    car.refresh_from_db()
+    assert car.rc_doc.name and car.file_times.get('rc_doc')

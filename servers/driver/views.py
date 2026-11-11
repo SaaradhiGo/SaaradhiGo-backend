@@ -917,6 +917,7 @@ def update_vehicle(request, vehicle_id):
             status=status.HTTP_404_NOT_FOUND
         )
 
+    files_set = []
     for field_name in ('rc_doc', 'permit_doc', 'insurance_doc', 'fitness_doc',
                        'puc_doc', 'inspection_doc', 'vehicle_pic',
                        'photo_back', 'photo_left', 'photo_right', 'photo_interior'):
@@ -933,8 +934,13 @@ def update_vehicle(request, vehicle_id):
             )
         if field_provided:
             setattr(vehicle, field_name, field_value)
+            files_set.append(field_name)
 
     allowed_fields = ['brand', 'model', 'color', 'year', 'capacity', 'vehicle_number', 'insurance_expiry', 'permit_expiry','fitness_expiry','puc_expiry',]
+    # An upload alone writes only its own column (10 Nov v2): two uploads at once used to save the
+    # whole row each, and the later one put the earlier file back to what it was before.
+    only_files = bool(files_set) and not any(
+        k in request.data for k in (*allowed_fields, 'vehicle_type', 'catalogue_entry', 'custom'))
     before = {f: str(getattr(vehicle, f) or '') for f in VEHICLE_IDENTITY if f != 'vehicle_type'}
     before['vehicle_type'] = vehicle.vehicle_type_id_id
     for field in allowed_fields:
@@ -965,7 +971,8 @@ def update_vehicle(request, vehicle_id):
         # A refused write to the object store is not a bad request. See
         # base/storage_health.py.
         _, storage_error = save_with_storage_errors(
-            vehicle.save, what='vehicle documents')
+            (lambda: vehicle.save(update_fields=[*files_set, 'file_times'])) if only_files else vehicle.save,
+            what='vehicle documents')
         if storage_error is not None:
             return storage_error
         if identity_changed:

@@ -140,3 +140,25 @@ def test_records_whose_file_is_gone_are_found_and_cleared():
     upload_sweep.clear_missing(missing)
     d.refresh_from_db()
     assert not d.license_doc
+
+
+def test_threads_share_one_boto3_session(settings):
+    """11 Nov: a new thread per request must not build a new session and load the S3 model again."""
+    import threading
+
+    from base.storage_backends import PublicMediaStorage
+
+    store = PublicMediaStorage(access_key='k', secret_key='s', endpoint_url='https://r2.example.invalid',
+                               bucket_name='b', region_name='auto')
+    got = {}
+
+    def grab(name):
+        got[name] = (store._create_session(), store.connection)
+
+    threads = [threading.Thread(target=grab, args=(n,)) for n in ('a', 'b')]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert got['a'][0] is got['b'][0]
+    assert got['a'][1] is not got['b'][1]

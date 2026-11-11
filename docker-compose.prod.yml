@@ -14,7 +14,8 @@ services:
     #   docker compose run --rm django python manage.py migrate --noinput
     command: >
       sh -c "python manage.py collectstatic --noinput &&
-             daphne -b 0.0.0.0 -p 8000 base.asgi:application"
+             uvicorn base.asgi:application --host 0.0.0.0 --port 8000 --workers $${WEB_CONCURRENCY:-4}
+             --proxy-headers --forwarded-allow-ips='*' --ws-ping-interval 20"
     depends_on:
       redis:
         condition: service_healthy

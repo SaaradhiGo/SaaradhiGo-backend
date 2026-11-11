@@ -1529,6 +1529,10 @@ if os.environ.get('DB_HOST'):
         'HOST': os.environ.get('DB_HOST'),
         'PORT': os.environ.get('DB_PORT', '5432'),
         'OPTIONS': db_options,
+        # Keep a connection for a minute (11 Nov): a new SSL connection per request cost more than
+        # most queries. Health-checked before reuse, so a dropped connection is replaced.
+        'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '60')),
+        'CONN_HEALTH_CHECKS': True,
     }
 
 # Password validation

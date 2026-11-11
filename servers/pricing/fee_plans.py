@@ -36,6 +36,8 @@ from .fee_plan_models import (
 logger = logging.getLogger(__name__)
 
 PURPOSE = 'platform_fee'
+#: A fee taken that the plan did not ask for, returned as its own credit (11 Nov).
+REFUND_PURPOSE = 'platform_fee_refund'
 NON_COMMISSION = (PER_TRIP_FEE, DAILY_PASS, FAIR_SHARE)
 
 
@@ -307,6 +309,123 @@ def today_so_far(driver, country, now=None):
                      state_code=_state_code(trips[0].zone))
     return {'fee_minor': result.fee_minor, 'cap_minor': plan.daily_cap_minor, 'currency': plan.currency,
             'explanation': result.explanation, 'plan_type': plan.plan_type}
+
+
+# ---------------------------------------------------------------------------
+# Commission the plan did not ask for (11 Nov)
+# ---------------------------------------------------------------------------
+
+def _commission_minor(trip_ids):
+    """`{trip_id: commission_minor}` from each trip's current settlement version."""
+    from servers.payments.models import TripSettlement
+
+    out = {}
+    for st in TripSettlement.objects.filter(trip_id__in=trip_ids).order_by('trip_id', 'version'):
+        out[st.trip_id] = int(st.commission_amount_minor or 0)
+    return out
+
+
+def overcharged(driver, country):
+    """Days on which a non-commission plan was in force for the trip's city and class but the trip
+    settled with a percentage commission (booked before the plan existed: QA, 10 Nov). Each day:
+    `(day, plan, [(trip, commission_minor, refund_minor)])`. The refund is the commission less any
+    plan fee the day would have owed with those trips counted, so the driver ends where the plan
+    puts them."""
+    from servers.ride.models import Trip
+
+    trips = list(Trip.objects.filter(driver_id=driver, status_id__status_code='completed', fee_plan_type='',
+                                     completed_at__isnull=False)
+                 .select_related('zone', 'requested_vehicle_type').order_by('completed_at', 'id'))
+    commission = _commission_minor([t.id for t in trips])
+    by_day = {}
+    for t in trips:
+        if commission.get(t.id, 0) <= 0 or t.zone is None:
+            continue
+        day = local_day(country, t.completed_at)
+        plan = resolve(country, scope_codes_of_zone(t.zone), day)
+        vt = getattr(t.requested_vehicle_type, 'type', '') if t.requested_vehicle_type_id else ''
+        if plan is None or plan.plan_type not in NON_COMMISSION or not plan.amounts_for(vt):
+            continue
+        by_day.setdefault(day, (plan, vt, []))[2].append(t)
+    first = first_trip_day(driver, country)
+    out = []
+    for day, (plan, vt, extra) in sorted(by_day.items()):
+        counted_trips = day_trips(driver, country, day) + extra
+        fares = [t.final_fare_minor if t.final_fare_minor is not None else (t.estimated_fare_minor or 0)
+                 for t in counted_trips]
+        owed = day_fee(plan, vt, fares, day=day, first_trip_day=first,
+                       state_code=_state_code(extra[0].zone)).fee_minor
+        charged = DriverDailyFee.objects.filter(driver=driver, day=day).values_list('fee_minor', flat=True).first() or 0
+        still_owed = max(owed - charged, 0)
+        rows = []
+        for t in extra:
+            c = commission[t.id]
+            keep = min(c, still_owed)
+            still_owed -= keep
+            rows.append((t, c, c - keep))
+        out.append((day, plan, rows))
+    return out
+
+
+def refund_overcharged(driver, country, *, apply=False):
+    """One `platform_fee_refund` credit per overcharged trip (append-only, idempotent per trip).
+    Returns `[(trip_id, day, commission_minor, refund_minor, written)]`."""
+    from servers.rider.models import Wallet, WalletTransaction, get_wallet
+
+    report = []
+    for day, plan, rows in overcharged(driver, country):
+        for trip, commission, refund in rows:
+            key = f'PLATFORM_FEE_REFUND_TRIP_{trip.id}'
+            done = WalletTransaction.objects.filter(idempotency_key=key).exists()
+            written = False
+            if apply and refund > 0 and not done:
+                with transaction.atomic():
+                    wallet = get_wallet(driver.user_id, Wallet.SCOPE_DRIVER, lock=True)
+                    WalletTransaction.objects.create(
+                        user_id=driver.user_id, currency=plan.currency, amount_minor=refund, txn_type='credit',
+                        status='completed', purpose=REFUND_PURPOSE, reference_id=f'TRIP_{trip.id}',
+                        idempotency_key=key)
+                    wallet.balance_minor += refund
+                    wallet.save(update_fields=['balance_minor'])
+                written = True
+            report.append((trip.id, day, commission, refund, written or done))
+    return report
+
+
+# ---------------------------------------------------------------------------
+# The words on the driver's screens (11 Nov): always from the plan in force
+# ---------------------------------------------------------------------------
+
+def fee_words(driver, today=None):
+    """How the driver's platform fee works, in a few words, from the plan in force for their city
+    and class: "No fee until 1 Jan, then ₹10.00 a trip, at most ₹149.00 a day". Never fixed text."""
+    from servers.payments.payout_config import driver_payout_country
+    from servers.payments.payout_scope import scope_codes_of_node
+
+    country = driver_payout_country(driver) or 'IN'
+    today = today or local_day(country)
+    home = getattr(driver, 'home_city', None)
+    plan = resolve(country, scope_codes_of_node(home) if home else [], today)
+    vehicle = getattr(driver, 'active_vehicle', None)
+    vt = getattr(getattr(vehicle, 'vehicle_type_id', None), 'type', '') if vehicle is not None else ''
+    if plan is None or plan.plan_type == PERCENT_COMMISSION or not plan.amounts_for(vt):
+        return 'A commission on each trip, shown on every trip'
+    cur, a = plan.currency, plan.amounts_for(vt)
+    if plan.plan_type == DAILY_PASS:
+        text = f"{_money(a.get('daily_pass_minor') or 0, cur)} a day you drive"
+    else:
+        text = f"{_money(a.get('per_trip_fee_minor') or 0, cur)} a trip"
+    if plan.daily_cap_minor is not None and plan.plan_type != DAILY_PASS:
+        text += f', at most {_money(plan.daily_cap_minor, cur)} a day'
+    until = None
+    if plan.waiver_until and today < plan.waiver_until:
+        until = plan.waiver_until
+    first = first_trip_day(driver, country) or today
+    if plan.waiver_first_days and today < first + timedelta(days=plan.waiver_first_days):
+        until = max(until or today, first + timedelta(days=plan.waiver_first_days))
+    if until:
+        return f'No fee until {until.day} {until:%b}, then {text}'
+    return text[0].upper() + text[1:]
 
 
 # ---------------------------------------------------------------------------

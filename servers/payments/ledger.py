@@ -35,6 +35,8 @@ The driver's settlement balance (`Wallet`, scope driver) moves only through
     returned because the payout was rejected, or failed at the gateway
   * `refund_reversed_withdrawal`  credit   a payout the provider paid and the bank then
     reversed (AUDIT 27.71): the money came back
+  * `platform_fee_refund`  credit   a platform fee the driver's plan did not ask for, returned
+    (one row per trip, `fee_plans.refund_overcharged`, 11 Nov)
   * `adjustment`     credit or debit   a manual correction by Finance through a
     maker-checker request (Part B); the entry carries its reason code and note
 
@@ -103,6 +105,7 @@ ENTRY_KINDS = {
     'cancellation_penalty': 'cancellation_penalty',
     'cancellation_fee_collected': 'cancellation_fee_collected',
     'platform_fee': 'platform_fee',
+    'platform_fee_refund': 'platform_fee',
     'withdrawal': 'withdrawal_requested',
     'refund_rejected_withdrawal': 'withdrawal_rejected',
     'refund_failed_withdrawal': 'withdrawal_returned',
@@ -138,6 +141,7 @@ ENTRY_LABELS = {
     'cancellation_penalty': 'Cancellation fee (you cancelled after accepting)',
     'cancellation_fee_collected': 'Cancellation fee collected for another trip',
     'platform_fee': 'Platform fee (the day)',
+    'platform_fee_refund': 'Platform fee refunded',
     'withdrawal': 'Withdrawal requested',
     'refund_rejected_withdrawal': 'Withdrawal rejected (returned)',
     'refund_failed_withdrawal': 'Payout failed (returned)',

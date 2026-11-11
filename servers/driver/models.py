@@ -311,6 +311,8 @@ class Vehicle(models.Model):
     capacity = models.IntegerField(
         default=1
     )
+    #: QA test data (11 Nov), written by a seed; never a driver's own vehicle.
+    is_seed = models.BooleanField(default=False)
 
     vehicle_pic = models.FileField(
         blank=True,
@@ -540,6 +542,8 @@ class WithdrawalRequest(CurrencyStampedModel, models.Model):
     investigation_note = models.TextField(blank=True, default='')
     investigation_since = models.DateTimeField(null=True, blank=True)
     investigation_by_label = models.CharField(max_length=255, blank=True, default='')
+    #: QA test data (11 Nov), written by a seed or a gate run.
+    is_seed = models.BooleanField(default=False)
 
     def __str__(self):
         return f'Withdrawal {self.id} - Driver {self.driver} - {self.amount}'

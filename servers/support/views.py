@@ -20,6 +20,7 @@ FORBIDDEN, so an out-of-scope operator cannot walk ids. Internal notes are
 never returned here: the message model's default manager leaves them out.
 """
 import logging
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -65,7 +66,9 @@ def create_ticket(request):
     if trip_id:
         from servers.ride.models import Trip
         try:
-            trip = Trip.objects.get(id=trip_id, user_id=request.user)
+            # The rider's own trip, or (11 Nov) a trip the user drove: "Report a problem" on the
+            # driver's trip detail links the ticket to it.
+            trip = Trip.objects.get(Q(user_id=request.user) | Q(driver_id__user_id=request.user), id=trip_id)
         except Trip.DoesNotExist:
             return error_response(
                 code='NOT_FOUND', message='Trip not found or not yours.',

@@ -151,3 +151,47 @@ def sweep_unattached_uploads():
     except Exception:  # noqa: BLE001
         logger.exception('unattached upload sweep failed')
         return None
+
+
+#: Days before an expiry date on which the driver is reminded (11 Nov).
+REMIND_DAYS = (30, 7, 1)
+
+
+@shared_task(name='driver.remind_expiring_documents')
+def remind_expiring_documents(today=None):
+    """Daily: remind each approved driver of a dated document that expires within 30 days, once in
+    each window (30, 7, 1 days left), from the dates the checklist reads: the licence on the driver,
+    insurance, permit, fitness and PUC on the active vehicle. Returns how many were queued."""
+    from datetime import timedelta
+
+    from servers.driver.models import Driver
+    from servers.notifications import dispatcher
+    from servers.notifications.seed_data import DOCUMENT_EXPIRING
+
+    today = today or timezone.localdate()
+    horizon = today + timedelta(days=REMIND_DAYS[0])
+    dated = [('driving_licence', 'Driving licence', 'license_expiry', False),
+             ('insurance', 'Vehicle insurance', 'insurance_expiry', True),
+             ('permit', 'Commercial permit', 'permit_expiry', True),
+             ('fitness', 'Fitness certificate', 'fitness_expiry', True),
+             ('puc', 'Pollution Under Control (PUC) certificate', 'puc_expiry', True)]
+    soon = Q()
+    for _key, _label, column, on_vehicle in dated:
+        path = f'active_vehicle__{column}' if on_vehicle else column
+        soon |= Q(**{f'{path}__gte': today, f'{path}__lte': horizon})
+    queued = 0
+    for driver in Driver.objects.filter(soon, approved=True).select_related('user_id', 'active_vehicle'):
+        for key, label, column, on_vehicle in dated:
+            owner = driver.active_vehicle if on_vehicle else driver
+            expiry = getattr(owner, column, None) if owner is not None else None
+            if not expiry or not today <= expiry <= horizon:
+                continue
+            left = (expiry - today).days
+            window = min(w for w in REMIND_DAYS if w >= left)
+            rows = dispatcher.notify(
+                DOCUMENT_EXPIRING, driver.user_id,
+                {'document': label, 'date': f'{expiry.day} {expiry:%b %Y}', 'days': str(left)},
+                idempotency_key=f'doc_expiring:{driver.id}:{key}:{expiry.isoformat()}:{window}',
+                source=DOCUMENT_EXPIRING)
+            queued += len(rows)
+    return queued

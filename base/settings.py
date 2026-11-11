@@ -324,6 +324,10 @@ PLATFORM_BRAND_NAME = os.environ.get('PLATFORM_BRAND_NAME', 'SaaradhiGo')
 PLATFORM_LEGAL_ENTITY = os.environ.get(
     'PLATFORM_LEGAL_ENTITY', 'SaaradhiGo Mobility',
 )
+# The registered address and GSTIN printed on the driver's statement (11 Nov). No default: a
+# statement leaves a line out rather than print an invented one (docs/config-required.md).
+PLATFORM_LEGAL_ADDRESS = os.environ.get('PLATFORM_LEGAL_ADDRESS', '')
+PLATFORM_GSTIN = os.environ.get('PLATFORM_GSTIN', '')
 
 # Domain used to build the operational contact addresses shown to drivers.
 #
@@ -463,6 +467,11 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'driver.block_expired_driver_licenses',
         # 02:00 in TIME_ZONE (Asia/Kolkata) — quiet hours.
         'schedule': _crontab(hour=2, minute=0),
+    },
+    'driver-remind-expiring-documents-daily': {
+        # 30, 7 and 1 days before a licence or vehicle paper expires (11 Nov).
+        'task': 'driver.remind_expiring_documents',
+        'schedule': _crontab(hour=9, minute=30),
     },
     'payments-reconcile-stuck-every-5-min': {
         # Sweep payments/wallets stuck in pending/processing against the

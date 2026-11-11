@@ -176,6 +176,12 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         if not may_operate(self.driver):
             await self.close(code=DRIVER_NOT_ELIGIBLE_CLOSE_CODE)
             return
+        # Going online (11 Nov): an approved driver with a blocking item missing or expired stays
+        # offline, by the same checklist the approval uses.
+        if await self._requirements_unmet():
+            logger.info("WS reject 4004: driver %s has blocking requirements unmet", self.driver.id)
+            await self.close(code=DRIVER_NOT_ELIGIBLE_CLOSE_CODE)
+            return
         lat = self.scope.get('lat')
         lng = self.scope.get('lng')
         if not(lat and lng):
@@ -479,6 +485,12 @@ class DriverLocationConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         except Exception as e:
             logger.debug("driver lookup failed: %s", e)
             return None
+
+    @database_sync_to_async
+    def _requirements_unmet(self):
+        from servers.driver.qa_eligibility import requirements_unmet
+
+        return requirements_unmet(self.driver)
 
     @database_sync_to_async
     def _get_driver_broadcast_info(self):

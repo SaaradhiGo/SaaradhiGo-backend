@@ -26,7 +26,7 @@ RULES THIS FILE KEEPS
 """
 
 import logging
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
@@ -613,6 +613,9 @@ def approval_blockers(driver):
     unmet = requirements.blocking_unmet(driver)
     if unmet:
         blockers.append({'code': 'REQUIREMENTS_MISSING', 'message': 'Not done: ' + ', '.join(unmet)})
+    undated = requirements.missing_expiry(driver)
+    if undated:
+        blockers.append({'code': 'EXPIRY_REQUIRED', 'message': 'Expiry date needed: ' + ', '.join(undated)})
     serializer = KYCApprovalSerializer(driver, data={'approved': True}, partial=True)
     if not serializer.is_valid():
         for field, errors in serializer.errors.items():
@@ -922,6 +925,29 @@ def admin_review_document(request, driver_id):
     if not _has_file(owner, column):
         return _conflict('DOCUMENT_MISSING', 'There is no file on record to review.',
                          'document_key')
+    # A dated paper (insurance, permit, fitness, PUC) is approved only with its expiry date (11 Nov):
+    # the reviewer may enter it here, read from the document; it must be in the future.
+    from . import requirements
+    expiry_field = requirements.EXPIRY_FOR.get(key) if vehicle is not None else None
+    if decision == 'approve' and expiry_field:
+        typed = (request.data or {}).get('expiry')
+        if typed:
+            try:
+                typed = date.fromisoformat(str(typed)[:10])
+            except ValueError:
+                return error_response(code='INVALID_DATE', message='Use the date as YYYY-MM-DD.', field='expiry',
+                                      issue='expiry', status=status.HTTP_400_BAD_REQUEST)
+            if typed <= timezone.localdate():
+                return error_response(code='EXPIRED', message='That date has passed: ask the driver for the renewed one.',
+                                      field='expiry', issue='expiry', status=status.HTTP_400_BAD_REQUEST)
+        if not typed and not getattr(vehicle, expiry_field, None):
+            return error_response(
+                code='EXPIRY_REQUIRED',
+                message=f'Enter the {compliance.document_label(key).lower()} expiry date before approving it.',
+                field='expiry', issue='expiry', status=status.HTTP_400_BAD_REQUEST)
+        if typed:
+            setattr(vehicle, expiry_field, typed)
+            vehicle.save(update_fields=[expiry_field])
     file_name = getattr(owner, column).name
 
     with transaction.atomic():

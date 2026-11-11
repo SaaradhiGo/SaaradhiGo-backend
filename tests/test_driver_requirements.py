@@ -264,6 +264,79 @@ class TestGate:
         assert driver.user_id.avatar.name == driver.photo_pending.name
 
 
+class TestGoOnlineAndExpiry:
+    """11 Nov: going online uses the approval's checklist; dated papers need their expiry date; the
+    reminder job reads those dates."""
+
+    @pytest.mark.requirements_gate
+    def test_an_approved_driver_with_a_missing_item_cannot_go_online(self, world):  # noqa: F811
+        from servers.driver.qa_eligibility import requirements_unmet
+
+        driver = new_driver(world)
+        TestGate().complete(driver)
+        Driver.objects.filter(pk=driver.pk).update(approved=True, doc_status='approved')
+        driver.refresh_from_db()
+        assert requirements_unmet(driver) == []
+        driver.police_verification_doc = None
+        driver.save(update_fields=['police_verification_doc'])
+        assert requirements_unmet(driver) == ['Police verification']
+        Vehicle.objects.filter(pk=driver.active_vehicle_id).update(insurance_expiry=date.today() - timedelta(days=1))
+        driver.refresh_from_db()
+        assert 'Vehicle insurance' in requirements_unmet(driver)
+        Driver.objects.filter(pk=driver.pk).update(approved=False)     # not approved: the approval gate applies
+        driver.refresh_from_db()
+        assert requirements_unmet(driver) == []
+
+    def test_a_dated_paper_is_approved_only_with_its_expiry(self, world):  # noqa: F811
+        driver = new_driver(world)
+        v = TestGate().complete(driver)
+        Vehicle.objects.filter(pk=v.pk).update(fitness_expiry=None)
+        ops, _ = operator('kyc_verifier', world.geo)
+        url = f'/api/v1/driver/admin/{driver.id}/documents/review/'
+        r = ops.post(url, {'document_key': 'fitness', 'decision': 'approve'}, format='json')
+        assert r.status_code == 400 and r.json()['error']['code'] == 'EXPIRY_REQUIRED'
+        r = ops.post(f'/api/v1/driver/admin/{driver.id}/approve/', {}, format='json')
+        assert r.status_code == 400 and 'Fitness certificate' in str(r.json()['error'])
+        past = ops.post(url, {'document_key': 'fitness', 'decision': 'approve',
+                              'expiry': str(date.today() - timedelta(days=1))}, format='json')
+        assert past.status_code == 400
+        when = date.today() + timedelta(days=200)
+        r = ops.post(url, {'document_key': 'fitness', 'decision': 'approve', 'expiry': str(when)}, format='json')
+        assert r.status_code == 201, r.content[:300]
+        v.refresh_from_db()
+        assert v.fitness_expiry == when
+        row = next(i for i in req.checklist(driver)['items'] if i['key'] == 'fitness')
+        assert row['status'] == 'approved' and row['expires'] == when.isoformat()
+
+    @pytest.mark.parametrize('column,label', [('license_expiry', 'Driving licence'),
+                                              ('insurance_expiry', 'Vehicle insurance'),
+                                              ('permit_expiry', 'Commercial permit'),
+                                              ('fitness_expiry', 'Fitness certificate'),
+                                              ('puc_expiry', 'Pollution Under Control (PUC) certificate')])
+    def test_the_reminder_job_reads_each_date_once_per_window(self, world, column, label, monkeypatch):  # noqa: F811
+        from servers.driver import tasks
+        from servers.notifications import dispatcher
+
+        sent = []
+        monkeypatch.setattr(dispatcher, 'notify', lambda event, user, ctx, **kw: sent.append(
+            (event, user.pk, ctx['document'], ctx['days'], kw['idempotency_key'])) or [1])
+        driver = new_driver(world)
+        v = TestGate().complete(driver)
+        Driver.objects.filter(pk=driver.pk).update(approved=True)
+        today = date(2026, 11, 11)
+        far = today + timedelta(days=400)
+        Vehicle.objects.filter(pk=v.pk).update(insurance_expiry=far, permit_expiry=far, fitness_expiry=far,
+                                               puc_expiry=far)
+        Driver.objects.filter(pk=driver.pk).update(license_expiry=far)
+        owner = Driver if column == 'license_expiry' else Vehicle
+        owner.objects.filter(pk=driver.pk if owner is Driver else v.pk).update(**{column: today + timedelta(days=7)})
+        assert tasks.remind_expiring_documents(today=today) == 1
+        assert sent[0][:4] == ('driver.document_expiring', driver.user_id_id, label, '7')
+        assert sent[0][4].endswith(':7')
+        assert tasks.remind_expiring_documents(today=today + timedelta(days=1)) == 1    # same window, same key
+        assert sent[1][4] == sent[0][4]
+
+
 class TestIntegrity:
     def test_the_scan_finds_and_fixes_profiles_and_wallets_and_alerts(self, world):  # noqa: F811
         from servers.command_centre.models import DATA_INTEGRITY, OperatorAlert
@@ -284,8 +357,8 @@ class TestIntegrity:
         assert again['role_without_profile']['driver'] == [] and again['driver_without_wallet']['found'] == 0
 
 
-    def test_the_us_seed_fixture_trip_is_not_a_missing_ledger_row(self, world):  # noqa: F811
-        """Trip 105 on QA: the seed's completed display trip, never settled by design."""
+    def test_a_seed_trip_is_not_a_missing_ledger_row(self, world):  # noqa: F811
+        """A seed trip (the flag, 11 Nov; e.g. the US display city's) is never settled by design."""
         from servers.platform_ops.integrity import scan
         from servers.ride.models import Trip, TripStatus
 
@@ -295,7 +368,7 @@ class TestIntegrity:
         kw = dict(user_id=User.objects.create_user(phone_number='+919000000902', role='rider'), status_id=done,
                   driver_id=d, pickup_lat=17, pickup_long=78, destination_lat=17, destination_long=78,
                   payment_method='cash', completed_at=old)
-        fixture = Trip.objects.create(client_request_id='qa-us-seed-trip-completed', **kw)
+        fixture = Trip.objects.create(client_request_id='any-key', is_seed=True, **kw)
         real = Trip.objects.create(client_request_id='real-unsettled', **kw)
         missing = scan(fix=False)['trip_without_ledger']['trips']
         assert real.id in missing and fixture.id not in missing

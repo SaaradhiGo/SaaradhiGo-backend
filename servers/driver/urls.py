@@ -41,6 +41,7 @@ urlpatterns = [
     path('earnings/history/', earnings_history_views.driver_earnings_history),
     path('earnings/months/', earnings_history_views.driver_earnings_months),
     path('earnings/statement/', earnings_history_views.driver_earnings_statement),
+    path('trips/<int:trip_id>/', earnings_history_views.driver_trip_detail),
     # Withdrawals
     path('withdrawals/balance/', driver_withdrawal_balance),
     path('withdrawals/request/', driver_withdrawal_request),

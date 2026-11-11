@@ -44,7 +44,37 @@ that, and a test asserts it.
 from urllib.parse import urlparse
 
 from django.conf import settings
+import threading
+
 from storages.backends.s3boto3 import S3Boto3Storage
+
+#: One boto3 session per set of credentials, per process (11 Nov). django-storages keeps its S3
+#: connection per THREAD, and under ASGI every request runs on a new thread, so each request that
+#: signed a file URL built a session and loaded the S3 service model again: about a second of CPU
+#: (Profile, vehicles, requirements), and worse when several ran at once. Sessions are created once
+#: here; each thread's connection is made from the shared session, which reuses the loaded model.
+_SESSIONS = {}
+_SESSION_LOCK = threading.RLock()
+
+
+class SharedSessionMixin:
+    def _create_session(self):
+        key = (type(self).__name__, self.access_key, self.secret_key, self.security_token, self.session_profile)
+        with _SESSION_LOCK:
+            session = _SESSIONS.get(key)
+            if session is None:
+                session = super()._create_session()
+                _SESSIONS[key] = session
+            return session
+
+    @property
+    def connection(self):
+        got = getattr(self._connections, 'connection', None)
+        if got is not None:
+            return got
+        # A boto3 session is not safe for two threads creating resources at once.
+        with _SESSION_LOCK:
+            return S3Boto3Storage.connection.fget(self)
 
 
 #: Private-bucket settings and the django-storages argument each one feeds.
@@ -71,7 +101,7 @@ def _public_host():
     return raw.rstrip('/') or None
 
 
-class PublicMediaStorage(S3Boto3Storage):
+class PublicMediaStorage(SharedSessionMixin, S3Boto3Storage):
     default_acl = None
     # See the module docstring: the name is always a fresh uuid4, and the
     # existence probe this would otherwise do may be denied by the bucket.
@@ -94,7 +124,7 @@ class PublicMediaStorage(S3Boto3Storage):
         super().__init__(*args, **kwargs)
 
 
-class PrivateDocumentStorage(S3Boto3Storage):
+class PrivateDocumentStorage(SharedSessionMixin, S3Boto3Storage):
     default_acl = None
     file_overwrite = True
     querystring_auth = True

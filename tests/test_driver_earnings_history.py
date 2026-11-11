@@ -148,7 +148,11 @@ def test_the_statement_says_who_and_from_whom(driver, settings):  # noqa: F811
     rows = {row[0]: row[1:] for row in csv.reader(io.StringIO(r.content.decode())) if row}
     assert rows['Statement number'][0] == st['number'] and rows['Phone'][0] == st['phone_masked']
     assert rows['Registered address'][0].startswith('1-2-3') and 'GSTIN' not in rows     # not configured: left out
-    assert rows['Period'][0].endswith(f"{st['start']} to {st['end']}")
+    dmy = lambda iso: f'{iso[8:10]}/{iso[5:7]}/{iso[:4]}'  # noqa: E731 - India: dd/mm/yyyy
+    assert rows['Period'][0].endswith(f"{dmy(st['start'])} to {dmy(st['end'])}")
+    assert rows['Produced on'][0] == dmy(st['produced_on'])
+    pdf = client.get(f'/api/v1/driver/earnings/statement/?month={key}&as=pdf').content
+    assert b'%PDF' == pdf[:4]
 
 
 def test_the_trip_detail_and_report_a_problem(driver):  # noqa: F811

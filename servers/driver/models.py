@@ -78,6 +78,8 @@ class Driver(models.Model):
     ],default='pending')
     ratings=models.DecimalField(max_digits=3,decimal_places=2,default=0.00)
     approved=models.BooleanField(default=False)
+    #: QA test account (11 Nov): its sample files and details are seed data, never a real driver's.
+    is_seed=models.BooleanField(default=False)
     active_vehicle=models.ForeignKey('Vehicle',on_delete=models.SET_NULL,null=True,blank=True)
     last_withdrawal_at=models.DateTimeField(null=True,blank=True)
     upi_id=models.CharField(max_length=256,blank=True,null=True,help_text='UPI ID for UPI payouts')

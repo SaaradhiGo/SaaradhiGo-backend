@@ -100,3 +100,33 @@ def test_the_trips_of_one_day(driver):  # noqa: F811
     assert len(got['results']) == 1
     assert _get(client, '?date=2001-01-01&page_size=50')['results'] == []
     assert client.get('/api/v1/driver/earnings/?date=yesterday').status_code == 400
+
+
+def test_trips_and_payouts_for_a_range_with_search(driver):  # noqa: F811
+    """11 Nov: Trips and Payouts take the Earnings periods (?start=&end=) and a search."""
+    from servers.driver.models import WithdrawalRequest
+    from servers.ride.models import Trip
+
+    _settle(driver, '150', 'online')
+    _settle(driver, '160', 'cash')
+    first, second = Trip.objects.filter(driver_id=driver).order_by('id')
+    Trip.objects.filter(pk=first.pk).update(pickup_address='Gachibowli, Hyderabad', destination_address='Madhapur')
+    client = _api(driver)
+    today = timezone.localdate(timezone=driver_timezone(driver))
+    week = f'start={(today - timedelta(days=6)).isoformat()}&end={today.isoformat()}'
+    got = _get(client, f'?{week}&page_size=1')
+    assert got['count'] == 2 and len(got['results']) == 1 and got['next']
+    assert {'pickup_address', 'destination_address', 'ride_class'} <= set(got['results'][0])
+    assert _get(client, '?start=2001-01-01&end=2001-01-31')['count'] == 0
+    hit = _get(client, f'?{week}&q=gachi')['results']
+    assert [r['trip_id_val'] for r in hit] == [first.id] and hit[0]['pickup_address'].startswith('Gachibowli')
+    assert [r['trip_id_val'] for r in _get(client, f'?q=%23{second.id}')['results']] == [second.id]
+    assert client.get('/api/v1/driver/earnings/?start=11/10/2026').status_code == 400
+
+    w = WithdrawalRequest.objects.create(driver=driver, amount_minor=25000, currency='INR', status='completed')
+    pay = lambda q: client.get('/api/v1/driver/withdrawals/history/?' + q).json()['data']  # noqa: E731
+    assert pay(week)['count'] == 1
+    assert pay('start=2001-01-01&end=2001-01-31')['count'] == 0
+    assert [r['id'] for r in pay('q=250')['results']] == [w.id]
+    assert [r['id'] for r in pay(f'q=%23{w.id}')['results']] == [w.id]
+    assert pay('q=999999')['count'] == 0

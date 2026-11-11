@@ -172,26 +172,22 @@ def driver_earnings(request):
     -- cash settlement is recorded as a commission DEBIT -- so a cash-only driver
     saw an empty list. It also reported `commission: 0.0` on every row.
 
-    Query params: ?page=1&page_size=10 (max 50)
+    Query params: ?page=1&page_size=10 (max 50); ?date=YYYY-MM-DD for one local day, or
+    ?start=&end= for local days inclusive (11 Nov: Trips has the Earnings periods); ?q= a place
+    or a trip number. Each row also carries the trip's places and ride class.
     """
     from rest_framework.pagination import PageNumberPagination
 
     from servers.driver.earnings import settlement_rows
 
     driver = request.user.driver
-    day = request.query_params.get('date')
-    if day:
-        # One local day (10 Nov v2): the earnings chart's bar opens that day's trips.
-        from datetime import date, datetime, time, timedelta
-
-        from base.market_time import driver_timezone
-        try:
-            since = datetime.combine(date.fromisoformat(day), time.min, tzinfo=driver_timezone(driver))
-        except ValueError:
-            return error_response('INVALID_DATE', 'date is YYYY-MM-DD', 'date', 'invalid', status.HTTP_400_BAD_REQUEST)
-        rows = settlement_rows(driver, since=since, until=since + timedelta(days=1))
-    else:
-        rows = settlement_rows(driver)
+    since, until, bad = _local_days(request, driver)
+    if bad:
+        return bad
+    rows = settlement_rows(driver, since=since, until=until)
+    q = (request.query_params.get('q') or '').strip()
+    if q:
+        rows = [r for r in rows if r.trip_id in _trips_matching(driver, q)]
 
     paginator = PageNumberPagination()
     paginator.page_size = 10
@@ -200,8 +196,62 @@ def driver_earnings(request):
     page = paginator.paginate_queryset(rows, request)
 
     data = [row.to_api() for row in page]
+    _add_places(data)
     logger.info('Driver settlement rows returned: %s', len(data))
     return success_response(paginator.get_paginated_response(data).data, status.HTTP_200_OK)
+
+
+def _local_days(request, driver):
+    """(since, until, error) for ?date= or ?start=&end= (YYYY-MM-DD, inclusive) in the driver's
+    market's calendar, the days the earnings history uses; (None, None, None) when absent."""
+    from datetime import date, datetime, time, timedelta
+
+    from base.market_time import driver_timezone
+
+    one = request.query_params.get('date')
+    first = one or request.query_params.get('start')
+    last = one or request.query_params.get('end')
+    if not first and not last:
+        return None, None, None
+    tz = driver_timezone(driver)
+    try:
+        since = datetime.combine(date.fromisoformat(first), time.min, tzinfo=tz) if first else None
+        until = datetime.combine(date.fromisoformat(last) + timedelta(days=1), time.min, tzinfo=tz) if last else None
+    except ValueError:
+        return None, None, error_response('INVALID_DATE', 'dates are YYYY-MM-DD', 'start', 'invalid',
+                                          status.HTTP_400_BAD_REQUEST)
+    return since, until, None
+
+
+def _trips_matching(driver, q):
+    """Ids of the driver's trips whose number is `q` (a leading # is fine) or whose pickup or
+    drop contains it."""
+    from django.db.models import Q
+
+    from servers.ride.models import Trip
+
+    match = Q(pickup_address__icontains=q) | Q(destination_address__icontains=q)
+    number = q.lstrip('#').strip()
+    if number.isdigit():
+        match |= Q(id=int(number))
+    return set(Trip.objects.filter(driver_id=driver).filter(match).values_list('id', flat=True))
+
+
+def _add_places(data):
+    """The trip's pickup, drop and ride class on each ledger row, in one query."""
+    from servers.ride.models import Trip
+
+    ids = {d['trip_id_val'] for d in data if d.get('trip_id_val')}
+    trips = {t.id: t for t in Trip.objects.filter(id__in=ids).select_related(
+        'requested_vehicle_type', 'vehicle_id__vehicle_type_id')}
+    for d in data:
+        t = trips.get(d.get('trip_id_val'))
+        vt = None
+        if t is not None:
+            vt = (t.vehicle_id.vehicle_type_id if t.vehicle_id else None) or t.requested_vehicle_type
+        d['pickup_address'] = t.pickup_address if t else None
+        d['destination_address'] = t.destination_address if t else None
+        d['ride_class'] = str(vt) if vt else None
 
 
 @api_view(['GET'])
@@ -733,6 +783,29 @@ def driver_withdrawal_history(request):
 
     driver = request.user.driver
     withdrawals = WithdrawalRequest.objects.filter(driver=driver).order_by('-requested_at')
+    # 11 Nov: Payouts has the Earnings periods (?start=&end=, local days) and a search (?q=)
+    # by payout number, reference or amount.
+    since, until, bad = _local_days(request, driver)
+    if bad:
+        return bad
+    if since is not None:
+        withdrawals = withdrawals.filter(requested_at__gte=since)
+    if until is not None:
+        withdrawals = withdrawals.filter(requested_at__lt=until)
+    q = (request.query_params.get('q') or '').strip().lstrip('#').strip()
+    if q:
+        from decimal import Decimal, InvalidOperation
+
+        from django.db.models import Q
+
+        match = Q(payout_reference_id__icontains=q)
+        if q.isdigit():
+            match |= Q(id=int(q))
+        try:
+            match |= Q(amount_minor=int(Decimal(q.replace(',', '')) * 100))
+        except (InvalidOperation, ValueError):
+            pass
+        withdrawals = withdrawals.filter(match)
 
     paginator = PageNumberPagination()
     paginator.page_size = 10

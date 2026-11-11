@@ -178,3 +178,16 @@ def test_the_trip_detail_and_report_a_problem(driver):  # noqa: F811
     assert t.status_code == 201, t.content[:300]
     from servers.support.models import SupportTicket
     assert SupportTicket.objects.get(pk=t.json()['data']['id']).trip_id_id == trip.id
+
+
+def test_the_vehicle_list_puts_the_active_vehicle_first(driver):  # noqa: F811
+    from servers.driver.models import Vehicle, VehicleType
+
+    sedan, _ = VehicleType.objects.get_or_create(type='sedan')
+    first = driver.active_vehicle or Vehicle.objects.create(driver_id=driver, vehicle_type_id=sedan, vehicle_number='TS09AA0001',
+                                                             brand='Maruti Suzuki', model='Dzire', year=2024)
+    driver.active_vehicle = first
+    driver.save(update_fields=['active_vehicle'])
+    Vehicle.objects.create(driver_id=driver, vehicle_type_id=sedan, vehicle_number='TS09AA0002', brand='Old', model='Car', year=2015)
+    got = _api(driver).get('/api/v1/driver/vehicles/').json()['data']
+    assert got[0]['id'] == first.id and len(got) >= 2

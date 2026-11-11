@@ -850,12 +850,14 @@ def driver_withdrawal_block_status(request):
 @api_view(['GET'])
 @permission_classes([IsDriver])
 def list_vehicles(request):
-    """List all vehicles belonging to the authenticated driver."""
+    """List all vehicles belonging to the authenticated driver, the active one first (11 Nov): the
+    web's Profile, setup and Documents show the first, so they show the vehicle the checklist reads."""
     from .models import Vehicle
     from .serializers import VehicleSerializer
 
     driver = request.user.driver
-    vehicles = Vehicle.objects.filter(driver_id=driver).select_related('vehicle_type_id')
+    vehicles = sorted(Vehicle.objects.filter(driver_id=driver).select_related('vehicle_type_id'),
+                      key=lambda v: (v.id != driver.active_vehicle_id, -v.id))
     serializer = VehicleSerializer(vehicles, many=True, context=_own_documents(request))
     return success_response(serializer.data, status.HTTP_200_OK)
 

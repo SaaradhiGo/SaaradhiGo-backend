@@ -315,13 +315,18 @@ def today_so_far(driver, country, now=None):
 # Commission the plan did not ask for (11 Nov)
 # ---------------------------------------------------------------------------
 
-def _commission_minor(trip_ids):
-    """`{trip_id: commission_minor}` from each trip's current settlement version."""
-    from servers.payments.models import TripSettlement
+def _commission_minor(driver):
+    """`{trip_id: commission_minor}` as the driver's ledger settled it (the same rows Trips and
+    Earnings show), so a trip without a settlement record is not missed."""
+    from base.money import to_minor
+    from servers.driver.earnings import settlement_rows
+    from servers.driver.services import driver_currency
 
+    cur = driver_currency(driver)
     out = {}
-    for st in TripSettlement.objects.filter(trip_id__in=trip_ids).order_by('trip_id', 'version'):
-        out[st.trip_id] = int(st.commission_amount_minor or 0)
+    for row in settlement_rows(driver):
+        if row.trip_id is not None and row.commission is not None:
+            out[row.trip_id] = out.get(row.trip_id, 0) + to_minor(row.commission, cur)
     return out
 
 
@@ -336,7 +341,7 @@ def overcharged(driver, country):
     trips = list(Trip.objects.filter(driver_id=driver, status_id__status_code='completed', fee_plan_type='',
                                      completed_at__isnull=False)
                  .select_related('zone', 'requested_vehicle_type').order_by('completed_at', 'id'))
-    commission = _commission_minor([t.id for t in trips])
+    commission = _commission_minor(driver)
     by_day = {}
     for t in trips:
         if commission.get(t.id, 0) <= 0 or t.zone is None:

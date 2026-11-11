@@ -377,6 +377,17 @@ def _month_label(st):
     return d.strftime('%B %Y') + (' (so far)' if st['so_far'] else '')
 
 
+def _day(st, iso):
+    """A date in the market's order (11 Nov): dd/mm/yyyy in India, mm/dd/yyyy in the USA."""
+    d = date.fromisoformat(iso[:10])
+    return d.strftime('%m/%d/%Y' if st['country'] == 'US' else '%d/%m/%Y')
+
+
+def _when(st, iso):
+    """A local date and time as the files print it: "02/11/2026 09:10"."""
+    return f'{_day(st, iso)} {iso[11:16]}' if iso else ''
+
+
 def _identity_rows(st):
     """The statement's header lines (11 Nov): the company, the statement, the driver, the period.
     A company line that is not configured is left out, never invented (docs/config-required.md)."""
@@ -386,13 +397,13 @@ def _identity_rows(st):
         rows.append(['Registered address', c['address']])
     if c['gstin']:
         rows.append(['GSTIN', c['gstin']])
-    rows += [['Statement number', st['number']], ['Produced on', st['produced_on']], ['Driver', st['driver'] or '-'],
+    rows += [['Statement number', st['number']], ['Produced on', _day(st, st['produced_on'])], ['Driver', st['driver'] or '-'],
              ['Phone', st['phone_masked'] or '-']]
     if st['pan_masked']:
         rows.append(['PAN', st['pan_masked']])
     if st['city']:
         rows.append(['City', st['city']])
-    rows.append(['Period', f"{_month_label(st)}: {st['start']} to {st['end']}"])
+    rows.append(['Period', f"{_month_label(st)}: {_day(st, st['start'])} to {_day(st, st['end'])}"])
     if st.get('fee_note'):
         rows.append(['Platform fee', st['fee_note']])
     return rows
@@ -414,17 +425,17 @@ def statement_csv(st):
     w.writerow(['Trips'])
     w.writerow(['Date and time', 'Trip', 'Paid by', 'Fare', 'Fee', 'You earned'])
     for t in st['trips']:
-        w.writerow([t['at'], t['trip_id'] or '', t['method'], t['fare'] or '', t['fee'] or '', t['earned'] or ''])
+        w.writerow([_when(st, t['at']), t['trip_id'] or '', t['method'], t['fare'] or '', t['fee'] or '', t['earned'] or ''])
     w.writerow([])
     w.writerow(['Daily platform fees'])
     w.writerow(['Date and time', 'Amount', 'Note'])
     for f in st['fees']:
-        w.writerow([f['at'], f['amount'], f['note']])
+        w.writerow([_when(st, f['at']), f['amount'], f['note']])
     w.writerow([])
     w.writerow(['Payouts'])
     w.writerow(['Date and time', 'Amount', 'Method'])
     for p in st['payouts']:
-        w.writerow([p['at'], p['amount'], p['method']])
+        w.writerow([_when(st, p['at']), p['amount'], p['method']])
     return buf.getvalue()
 
 
@@ -463,7 +474,8 @@ def statement_pdf(st):
     except Exception:  # noqa: BLE001 - the letterhead without the logo
         story = head
     cell = ParagraphStyle('cell', parent=styles['Normal'], fontSize=9.5, leading=11.5)
-    who = [[k, Paragraph(str(v).replace('₹', 'Rs '), cell)] for k, v in _identity_rows(st)]
+    # The built-in font has neither the rupee sign nor the mask bullet, so "Rs" and "x" stand in.
+    who = [[k, Paragraph(str(v).replace('₹', 'Rs ').replace('•', 'x'), cell)] for k, v in _identity_rows(st)]
     story += [Spacer(1, 6), Table(who, colWidths=[40 * mm, 130 * mm], style=[('FONTSIZE', (0, 0), (-1, -1), 9.5),
                                                                              ('VALIGN', (0, 0), (-1, -1), 'TOP')])]
     s = st['summary']
@@ -473,18 +485,18 @@ def statement_pdf(st):
               Table(rows, colWidths=[60 * mm, 50 * mm], style=[('FONTSIZE', (0, 0), (-1, -1), 9.5),
                                                                ('ALIGN', (1, 0), (1, -1), 'RIGHT')])]
     trips = [['Date and time', 'Trip', 'Paid by', 'Fare', 'Fee', 'You earned']]
-    trips += [[(t['at'] or '')[:16].replace('T', ' '), f"#{t['trip_id']}" if t['trip_id'] else '', t['method'],
+    trips += [[_when(st, t['at']), f"#{t['trip_id']}" if t['trip_id'] else '', t['method'],
                m(t['fare']), m(t['fee']), m(t['earned'])] for t in st['trips']]
     story += [Paragraph(f"Trips ({len(st['trips'])})", h2),
               Table(trips, colWidths=[32 * mm, 18 * mm, 22 * mm, 34 * mm, 30 * mm, 36 * mm], style=grid, repeatRows=1)]
     if st['fees']:
-        fees = [['Date and time', 'Amount', 'Note']] + [[f['at'][:16].replace('T', ' '), m(f['amount']), f['note'][:70]]
+        fees = [['Date and time', 'Amount', 'Note']] + [[_when(st, f['at']), m(f['amount']), f['note'][:70]]
                                                         for f in st['fees']]
         story += [Paragraph('Daily platform fees', h2),
                   Table(fees, colWidths=[32 * mm, 30 * mm, 110 * mm], repeatRows=1,
                         style=TableStyle([('FONTSIZE', (0, 0), (-1, -1), 8.5),
                                           ('LINEBELOW', (0, 0), (-1, 0), 0.6, colors.grey)]))]
-    payouts = [['Date and time', 'Amount', 'Method']] + [[p['at'][:16].replace('T', ' '), m(p['amount']), p['method']]
+    payouts = [['Date and time', 'Amount', 'Method']] + [[_when(st, p['at']), m(p['amount']), p['method']]
                                                          for p in st['payouts']]
     story += [Paragraph(f"Payouts ({len(st['payouts'])})", h2),
               Table(payouts, colWidths=[32 * mm, 34 * mm, 40 * mm], repeatRows=1,

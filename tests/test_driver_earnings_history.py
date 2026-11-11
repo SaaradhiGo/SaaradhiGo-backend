@@ -148,7 +148,11 @@ def test_the_statement_says_who_and_from_whom(driver, settings):  # noqa: F811
     rows = {row[0]: row[1:] for row in csv.reader(io.StringIO(r.content.decode())) if row}
     assert rows['Statement number'][0] == st['number'] and rows['Phone'][0] == st['phone_masked']
     assert rows['Registered address'][0].startswith('1-2-3') and 'GSTIN' not in rows     # not configured: left out
-    assert rows['Period'][0].endswith(f"{st['start']} to {st['end']}")
+    dmy = lambda iso: f'{iso[8:10]}/{iso[5:7]}/{iso[:4]}'  # noqa: E731 - India: dd/mm/yyyy
+    assert rows['Period'][0].endswith(f"{dmy(st['start'])} to {dmy(st['end'])}")
+    assert rows['Produced on'][0] == dmy(st['produced_on'])
+    pdf = client.get(f'/api/v1/driver/earnings/statement/?month={key}&as=pdf').content
+    assert b'%PDF' == pdf[:4]
 
 
 def test_the_trip_detail_and_report_a_problem(driver):  # noqa: F811
@@ -174,3 +178,16 @@ def test_the_trip_detail_and_report_a_problem(driver):  # noqa: F811
     assert t.status_code == 201, t.content[:300]
     from servers.support.models import SupportTicket
     assert SupportTicket.objects.get(pk=t.json()['data']['id']).trip_id_id == trip.id
+
+
+def test_the_vehicle_list_puts_the_active_vehicle_first(driver):  # noqa: F811
+    from servers.driver.models import Vehicle, VehicleType
+
+    sedan, _ = VehicleType.objects.get_or_create(type='sedan')
+    first = driver.active_vehicle or Vehicle.objects.create(driver_id=driver, vehicle_type_id=sedan, vehicle_number='TS09AA0001',
+                                                             brand='Maruti Suzuki', model='Dzire', year=2024)
+    driver.active_vehicle = first
+    driver.save(update_fields=['active_vehicle'])
+    Vehicle.objects.create(driver_id=driver, vehicle_type_id=sedan, vehicle_number='TS09AA0002', brand='Old', model='Car', year=2015)
+    got = _api(driver).get('/api/v1/driver/vehicles/').json()['data']
+    assert got[0]['id'] == first.id and len(got) >= 2

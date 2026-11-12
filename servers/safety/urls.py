@@ -26,4 +26,6 @@ urlpatterns = [
     path('admin/signals/<int:signal_id>/dismiss/', v.safety_dismiss_signal),
     path('admin/config/', v.safety_config),
     path('admin/config/<str:country>/', v.safety_config_update),
+    path('admin/oncall/', v.safety_oncall),
+    path('admin/oncall/<str:city_code>/', v.safety_oncall_update),
 ]

@@ -127,6 +127,9 @@ NOTIFY_PROVIDER_FAILING = 'notify.provider_failing'
 #: `fraud.review`. They carry a count and a city, never a person.
 FRAUD_FLAG_HIGH = 'fraud.flag_high'
 FRAUD_QUEUE_AGING = 'fraud.queue_aging'
+#: 12 Nov: drivers in a city waiting for document review past its target (driver/review_target.py).
+#: A count and a city, never a person; clears itself, and `driver.kyc` may take it.
+KYC_REVIEW_PAST_TARGET = 'kyc.review_past_target'
 #: Fraud money actions (AUDIT 27.56): a payout hold reached its maximum duration and lapsed
 #: (warning). Seen by Finance (`finance.read`) AND the flag's reviewers (`fraud.read`), to renew it
 #: or leave the payout released. A city, never a person.
@@ -150,6 +153,7 @@ ACK_PERMISSION = {
     PROMOTION_BUDGET_OVERSHOOT: 'finance.read',
     FRAUD_FLAG_HIGH: 'fraud.review',
     FRAUD_QUEUE_AGING: 'fraud.review',
+    KYC_REVIEW_PAST_TARGET: 'driver.kyc',
     FRAUD_PAYOUT_HOLD_EXPIRED: 'fraud.review',
     # A budget alert is taken by whoever OWNS the campaign (Marketing: promo.write; City Ops:
     # incentive.write, see ACK_ALSO). promo.read would let a read-only Analyst take it.

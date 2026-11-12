@@ -546,6 +546,8 @@ INVENTORY = {
     'api/v1/safety/admin/incidents/<int:incident_id>/assignees/': False,
     'api/v1/safety/admin/signals/': False,
     'api/v1/safety/admin/config/': False,
+    'api/v1/safety/admin/oncall/': False,
+    'api/v1/approvals/admin/self-approval/': False,
     'api/v1/sos/admin/<int:sos_id>/': False,
     'api/v1/command-centre/admin/alerts/': False,
     # Command Centre (#80): per-city counts, rates and thresholds; no person.

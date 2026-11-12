@@ -74,7 +74,8 @@ IN_PROGRESS_STATUSES = ('requested', 'accepted', 'reached', 'in_progress')
 #: Fields a maker may set on create or change. Code and geo node are fixed after create.
 EDITABLE = ('name', 'country', 'state_code', 'city', 'zone_type', 'parent', 'priority',
             'polygon_geojson', 'currency', 'timezone_name', 'distance_unit', 'tax_mode',
-            'per_trip_fee', 'per_trip_fee_label', 'metadata', 'dispatch_timeout_seconds')
+            'per_trip_fee', 'per_trip_fee_label', 'metadata', 'dispatch_timeout_seconds',
+            'kyc_review_target_days')
 ZONE_TYPES = {k for k, _ in ServiceZone.ZONE_TYPE_CHOICES}
 AUDIT_ACTIONS = {KIND_CREATE: 'service_zone_created', KIND_UPDATE: 'service_zone_updated',
                  KIND_DEACTIVATE: 'service_zone_deactivated',
@@ -246,6 +247,19 @@ def clean_values(raw, base=None):
             raise InvalidRequest('The driver search time must be between 30 and 900 seconds.',
                                  code='INVALID_NUMBER', field='dispatch_timeout_seconds')
         values['dispatch_timeout_seconds'] = timeout
+    target = values.get('kyc_review_target_days')
+    if target in (None, ''):
+        values['kyc_review_target_days'] = None
+    else:
+        try:
+            target = int(target)
+        except (TypeError, ValueError):
+            raise InvalidRequest('The review target must be a whole number of working days.',
+                                 code='INVALID_NUMBER', field='kyc_review_target_days')
+        if not 1 <= target <= 10:
+            raise InvalidRequest('The review target must be between 1 and 10 working days.',
+                                 code='INVALID_NUMBER', field='kyc_review_target_days')
+        values['kyc_review_target_days'] = target
     if not isinstance(values.get('metadata') or {}, dict):
         raise InvalidRequest('metadata must be an object.', code='INVALID_METADATA',
                              field='metadata')
@@ -538,7 +552,7 @@ def _apply(zone, values):
     for f in SNAPSHOT_FIELDS:
         if f == 'per_trip_fee':
             setattr(zone, f, Decimal(str(values[f])))
-        elif f == 'dispatch_timeout_seconds':
+        elif f in ('dispatch_timeout_seconds', 'kyc_review_target_days'):
             setattr(zone, f, values.get(f))
         else:
             setattr(zone, f, values[f])

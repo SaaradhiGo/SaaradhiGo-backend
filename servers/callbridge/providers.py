@@ -44,6 +44,13 @@ class FakeProvider:
     def end(self, session):
         logger.info('call_bridge_fake_end session=%s', session.pk)
 
+    def page(self, phone, message, purpose):
+        """Ring one staff phone and read `message` (12 Nov, SOS escalation). Returns a reference.
+        The fake rings nothing and logs no number."""
+        ref = f'fake-{uuid.uuid4().hex[:12]}'
+        logger.info('call_bridge_fake_page purpose=%s ref=%s', purpose, ref)
+        return ref
+
 
 #: name -> "module:Class" of real adapters. Empty until a provider is chosen.
 _REAL = {}

@@ -154,7 +154,7 @@ def driver_onboarding(request):
         # A driver with one vehicle and no active one chosen is the common
         # case right after adding it, and reviewing against "no vehicle"
         # would tell them to add the one they just added.
-        vehicle = Vehicle.objects.filter(driver_id=driver).order_by('id').first()
+        vehicle = Vehicle.objects.filter(driver_id=driver).exclude(status='archived').order_by('id').first()
 
     driver_checks = compliance.evaluate_driver(driver)
     driver_docs = _entries(driver_checks, 'driver',

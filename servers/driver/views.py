@@ -856,7 +856,8 @@ def list_vehicles(request):
     from .serializers import VehicleSerializer
 
     driver = request.user.driver
-    vehicles = sorted(Vehicle.objects.filter(driver_id=driver).select_related('vehicle_type_id'),
+    vehicles = sorted(Vehicle.objects.filter(driver_id=driver).exclude(status='archived')
+                      .select_related('vehicle_type_id'),
                       key=lambda v: (v.id != driver.active_vehicle_id, -v.id))
     serializer = VehicleSerializer(vehicles, many=True, context=_own_documents(request))
     return success_response(serializer.data, status.HTTP_200_OK)
@@ -939,12 +940,21 @@ def create_vehicle(request):
         except VehicleProblem as exc:
             return error_response(code=exc.code, message=exc.message, field=exc.field, issue=exc.message,
                                   status=status.HTTP_400_BAD_REQUEST)
-        vehicle.full_clean()
+        # Constraints are checked by the database on save, after the old vehicle is archived.
+        vehicle.full_clean(validate_constraints=False)
+        from django.db import transaction as _tx
+
+        def _replace_and_save():
+            # 12 Nov: one active vehicle per driver. A new vehicle replaces the earlier ones,
+            # which are archived (kept for history), and goes to review like any change.
+            with _tx.atomic():
+                Vehicle.objects.filter(driver_id=driver, status='active').update(status='archived')
+                vehicle.save()
         _, storage_error = save_with_storage_errors(
-            vehicle.save, what='vehicle creation')
+            _replace_and_save, what='vehicle creation')
         if storage_error is not None:
             return storage_error
-        if driver.active_vehicle_id is None:
+        if driver.active_vehicle_id != vehicle.id:
             driver.active_vehicle = vehicle
             driver.save(update_fields=['active_vehicle'])
         _send_to_review(driver)
@@ -1281,7 +1291,8 @@ def driver_elite_status(request):
     - Diamond: 1000+
     """
     driver = request.user.driver
-    total_trips = driver.total_trips
+    from .earnings import trip_count
+    total_trips = trip_count(driver)
     
     tier = 'Silver'
     if total_trips >= 1000:

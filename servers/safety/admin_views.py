@@ -1469,3 +1469,83 @@ def safety_board(request):
         },
     }, status.HTTP_200_OK)
 
+
+
+# ---------------------------------------------------------------------------
+# On-call rota (12 Nov): who the SOS escalation chain phones, per city (oncall.py)
+# ---------------------------------------------------------------------------
+
+def _rota_row(node, rota, user):
+    from servers.admin_access.models import CITY  # noqa: F401 - kind constant lives there
+
+    reveal = granted(user, 'pii.view', node)[0]
+    people = []
+    for role in ('primary', 'backup', 'head'):
+        name, phone = rota.contact(role) if rota else ('', '')
+        people.append({'role': role, 'name': name, 'phone': (phone if reveal else mask_phone(phone)) if phone else ''})
+    return {'city': {'code': node.code, 'name': node.name},
+            'people': people,
+            'complete': bool(rota) and all(p['phone'] for p in people),
+            'updated_at': _iso(rota.updated_at) if rota else None,
+            'updated_by': (rota.updated_by.full_name or rota.updated_by.email) if rota and rota.updated_by_id else None,
+            'can_edit': granted(user, 'safety.config', node)[0]}
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, READ_GATE])
+def safety_oncall(request):
+    """GET oncall/  Every city in the caller's scope with its on-call rota (or none yet)."""
+    from servers.admin_access.models import CITY, GeoNode
+
+    from .models import OnCallRota
+
+    rotas = {r.city_id: r for r in OnCallRota.objects.select_related('updated_by')}
+    rows = []
+    for node in GeoNode.objects.filter(kind=CITY).order_by('code'):
+        if not (granted(request.user, READ_CAPABILITY, node)[0] or granted(request.user, CAPABILITY, node)[0]):
+            continue
+        rows.append(_rota_row(node, rotas.get(node.id), request.user))
+    return success_response({'results': rows}, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('safety.config')])
+def safety_oncall_update(request, city_code):
+    """POST oncall/<city>/  {primary_name, primary_phone, backup_..., head_..., reason}
+
+    Sets the city's rota. A phone left out keeps its value; an empty string clears it. Audited."""
+    from base.countries import normalize_phone
+    from servers.admin_access.models import CITY, GeoNode
+
+    from .models import OnCallRota
+
+    node = GeoNode.objects.filter(kind=CITY, code=(city_code or '').upper()).first()
+    if node is None or not granted(request.user, 'safety.config', node)[0]:
+        return error_response(code='NOT_FOUND', message='Unknown city.', field='city', issue=city_code,
+                              status=status.HTTP_404_NOT_FOUND)
+    reason = str(request.data.get('reason') or '').strip()
+    if not reason:
+        return error_response(code='REASON_REQUIRED', message='Say why the rota changes.', field='reason',
+                              issue='reason missing', status=status.HTTP_400_BAD_REQUEST)
+    with transaction.atomic():
+        rota, _ = OnCallRota.objects.select_for_update().get_or_create(city=node)
+        before = {f'{r}_set': bool(rota.contact(r)[1]) for r in OnCallRota.ROLES}
+        for role in OnCallRota.ROLES:
+            if f'{role}_name' in request.data:
+                setattr(rota, f'{role}_name', ' '.join(str(request.data.get(f'{role}_name') or '').split())[:120])
+            if f'{role}_phone' in request.data:
+                raw = str(request.data.get(f'{role}_phone') or '').strip()
+                if raw:
+                    raw = normalize_phone(raw, node.code.split('-')[0]) or ''
+                    if not raw:
+                        return error_response(code='INVALID_PHONE', message='Enter a valid phone number.',
+                                              field=f'{role}_phone', issue='invalid phone',
+                                              status=status.HTTP_400_BAD_REQUEST)
+                setattr(rota, f'{role}_phone', raw[:20])
+        rota.updated_by = request.user
+        rota.save()
+        record_admin_action(request, action='safety_oncall_set', target_type='oncall_rota', target_id=rota.id,
+                            before=before,
+                            after={f'{r}_set': bool(rota.contact(r)[1]) for r in OnCallRota.ROLES} | {'city': node.code},
+                            reason=reason[:500])
+    return success_response(_rota_row(node, rota, request.user), status.HTTP_200_OK)

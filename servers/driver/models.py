@@ -346,7 +346,9 @@ class Vehicle(models.Model):
         choices=[
             ('active', 'Active'),
             ('inactive', 'Inactive'),
-            ('under_maintenance', 'Under Maintenance')
+            ('under_maintenance', 'Under Maintenance'),
+            # 12 Nov: replaced by a newer vehicle; kept for history, never on the road again.
+            ('archived', 'Archived'),
         ],
         default='active'
     )
@@ -386,6 +388,14 @@ class Vehicle(models.Model):
             # PostgreSQL it carries `text_pattern_ops` so the prefix match
             # uses it too; see `base.db_indexes`.
             PatternPrefixIndex(normalised_plate_expression(), name='vehicle_plate_norm_idx'),
+        ]
+        constraints = [
+            # 12 Nov (console QA, D-18 had two active TS09QT0059): one active vehicle per driver,
+            # and a plate belongs to one active vehicle anywhere, however it was typed.
+            models.UniqueConstraint(fields=['driver_id'], condition=models.Q(status='active'),
+                                    name='vehicle_one_active_per_driver'),
+            models.UniqueConstraint(normalised_plate_expression(), condition=models.Q(status='active'),
+                                    name='vehicle_active_plate_unique'),
         ]
 
     def __str__(self) -> str:
@@ -799,3 +809,24 @@ class VehicleCatalogueEntry(models.Model):
 
     def __str__(self):
         return f'{self.country} {self.vehicle_type} {self.make} {self.model}'
+
+
+
+class DocumentVerification(models.Model):
+    """One automated check of a driver's papers (12 Nov): licence (Sarathi/Parivahan), RC (VAHAN),
+    Aadhaar (DigiLocker), name on document, face match, police verification. Insert-only; the
+    console shows the latest per check. detail holds outcomes, never the document or personal data."""
+    CHECKS = ('name_match', 'licence', 'rc', 'aadhaar', 'face_match', 'police')
+
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='verifications')
+    vehicle = models.ForeignKey(Vehicle, null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    kind = models.CharField(max_length=16)
+    status = models.CharField(max_length=16)
+    provider = models.CharField(max_length=32)
+    detail = models.JSONField(default=dict, blank=True)
+    checked_by = models.ForeignKey(User, null=True, blank=True,
+                                   on_delete=models.SET_NULL, related_name='+')
+    checked_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['driver', 'kind', '-checked_at'], name='docverif_latest_idx')]

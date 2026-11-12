@@ -84,9 +84,16 @@ def _candidates(config, floor=None):
     from servers.driver.models import Driver, WithdrawalRequest
     from servers.rider.models import Wallet
 
+    from django.db.models import Q
+
+    from servers.auth_user.models import AccountClosure
+
     floor = max(1, config.minimum_withdrawal_minor if floor is None else floor)
+    # 13 Nov: a driver closing their account is paid whatever they have, with no minimum.
+    closing = AccountClosure.objects.filter(status='waiting_payouts').values('user_id')
     wallet_users = Wallet.objects.filter(
-        scope=Wallet.SCOPE_DRIVER, currency=config.currency, balance_minor__gte=floor,
+        Q(balance_minor__gte=floor) | Q(balance_minor__gte=1, user_id__in=closing),
+        scope=Wallet.SCOPE_DRIVER, currency=config.currency,
     ).values('user_id')
     open_withdrawal = WithdrawalRequest.objects.filter(
         driver=OuterRef('pk'), status__in=OPEN_STATUSES)
@@ -177,7 +184,9 @@ def _create_one(driver, config):
 
     from servers.fraud import money as fraud_money
 
-    floor = max(1, config.minimum_withdrawal_minor)
+    from servers.auth_user.closure import is_closing
+
+    floor = 1 if is_closing(driver.user_id_id) else max(1, config.minimum_withdrawal_minor)
     with transaction.atomic():
         wallet = (Wallet.objects.select_for_update()
                   .filter(user_id=driver.user_id_id, scope=Wallet.SCOPE_DRIVER,

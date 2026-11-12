@@ -225,6 +225,7 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # 12 Nov: every 15 min (beat). Idempotent: one alert per city while drivers wait past the
         # KYC review target, cleared when none do; no retry needed, the next run converges.
         'driver.kyc_review_target_sweep',
+        'auth_user.account_closure_sweep',
         # Fraud money actions (AUDIT 27.56). Beat, hourly: releases reward holds whose time is up
         # and lapses payout holds past their maximum duration (with a Command Centre alert). Each
         # step is a conditional status change under a row lock, so a redelivered or doubled run

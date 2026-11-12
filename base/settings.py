@@ -524,6 +524,11 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'driver.kyc_review_target_sweep',
         'schedule': _crontab(minute='*/15'),
     },
+    'account-closure-sweep-hourly': {
+        # 13 Nov: accounts closing after their last payout are anonymised once nothing is owed.
+        'task': 'auth_user.account_closure_sweep',
+        'schedule': _crontab(minute=43),
+    },
     'fraud-run-rules-every-15-min': {
         # Fraud & Risk (module 13): evaluates the enabled detection rules over their bounded recent
         # windows and raises or extends flags; then the queue-aging alert. Idempotent; it only

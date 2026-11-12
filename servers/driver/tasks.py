@@ -203,3 +203,11 @@ def kyc_review_target_sweep():
     from .review_target import sweep
 
     return sweep()
+
+
+@shared_task(name='auth_user.account_closure_sweep')
+def account_closure_sweep():
+    """13 Nov: close the accounts that were waiting for their last payout (auth_user/closure.py)."""
+    from servers.auth_user.closure import sweep
+
+    return sweep()

@@ -155,11 +155,12 @@ class TripDetailSerializer(TripListSerializer):
         if receipt is None:
             return None
         from base.countries import get_country
-        return {
+        out = {
             'number': receipt.receipt_number,
             'issued_at': receipt.issued_at.isoformat() if receipt.issued_at else None,
             'rider_name': _rider_name(obj.user_id),
-            'company': company_lines(),
+            'company': company_lines(obj),
+            'title': None,
             'tax_label': get_country(getattr(obj.zone, 'country', None)).tax_label,
             'tax_amount': str(receipt.gst_amount),
             'total': str(receipt.total_fare),
@@ -169,6 +170,8 @@ class TripDetailSerializer(TripListSerializer):
             'breakdown': receipt_invoice(obj, total=receipt.total_fare, gst_amount=receipt.gst_amount,
                                          currency=receipt.currency),
         }
+        out['title'] = out['breakdown']['title']        # 'Receipt' while GST is off (13 Nov)
+        return out
 
     def get_search_expires_at(self, obj):
         if obj.driver_id_id or not obj.requested_at:

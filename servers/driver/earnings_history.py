@@ -327,8 +327,8 @@ def statement(driver, year, month):
         # Who and from whom (11 Nov): a statement a bank or the tax office can read on its own.
         'phone_masked': mask_phone(driver.user_id.phone_number) or '',
         'city': getattr(home, 'name', '') or '',
-        'company': {'name': settings.PLATFORM_LEGAL_ENTITY, 'address': settings.PLATFORM_LEGAL_ADDRESS,
-                    'gstin': settings.PLATFORM_GSTIN},
+        # The entity operating the driver's market (13 Nov, base/legal_entity.py).
+        'company': _company(country),
         'number': f'SG-{first:%Y%m}-{driver.id:06d}', 'produced_on': produced.date().isoformat(),
         'fee_note': fee_note(driver),
         'month': first.strftime('%Y-%m'), 'start': first.isoformat(), 'end': last.isoformat(),
@@ -394,6 +394,14 @@ def _when(st, iso):
     return f'{_day(st, iso)} {iso[11:16]}' if iso else ''
 
 
+def _company(country):
+    from base import legal_entity
+
+    e = legal_entity.entity(country)
+    return {'name': e.get('legal_name', ''), 'address': e.get('registered_address', ''),
+            'cin': e.get('cin', ''), 'gstin': e.get('gstin', '') if e.get('gst_registered') else ''}
+
+
 def _identity_rows(st):
     """The statement's header lines (11 Nov): the company, the statement, the driver, the period.
     A company line that is not configured is left out, never invented (docs/config-required.md)."""
@@ -401,6 +409,8 @@ def _identity_rows(st):
     rows = [['Issued by', c['name']]] if c['name'] else []
     if c['address']:
         rows.append(['Registered address', c['address']])
+    if c.get('cin'):
+        rows.append(['CIN', c['cin']])
     if c['gstin']:
         rows.append(['GSTIN', c['gstin']])
     rows += [['Statement number', st['number']], ['Produced on', _day(st, st['produced_on'])], ['Driver', st['driver'] or '-'],

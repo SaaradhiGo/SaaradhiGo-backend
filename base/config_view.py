@@ -29,6 +29,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 
+from base import legal_entity
 from base.utils import success_response
 
 
@@ -62,6 +63,9 @@ def public_config(request):
             'service_area': {
                 'public_zones_url': '/api/v1/pricing/zones/',
             },
+            # The operating entity per market (13 Nov): footer, About and Contact, both apps' About.
+            # Only configured values appear; unset ones are absent, never blank.
+            'legal': legal_entity.all_markets(),
         },
         status.HTTP_200_OK,
     )

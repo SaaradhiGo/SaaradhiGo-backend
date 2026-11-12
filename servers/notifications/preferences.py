@@ -28,6 +28,14 @@ from .models import CATEGORIES, CHANNELS, IN_APP, SMS, TRANSACTIONAL, WHATSAPP, 
 
 logger = logging.getLogger(__name__)
 
+#: Consent wording shown beside an opt-in checkbox, by version (13 Nov). A promotional SMS opt-in
+#: must name one; the version is stored on the preference and the text in the audit entry.
+#: Change the wording by adding a new version, never by editing one.
+CONSENT_WORDING = {
+    'sms-marketing-v1': ('Send me offers and news from SaaradhiGo by text message. Message frequency '
+                         'varies. Msg & data rates may apply. Reply STOP to opt out, HELP for help.'),
+}
+
 DEFAULT_ON = {
     (TRANSACTIONAL, 'push'), (TRANSACTIONAL, IN_APP), (TRANSACTIONAL, SMS), (TRANSACTIONAL, EMAIL),
 }
@@ -76,24 +84,44 @@ def effective(user_id):
     return out
 
 
-def set_preference(user, channel, category, opted_in, source):
+def set_preference(user, channel, category, opted_in, source, wording_version=''):
     """Write one preference. Returns `(row, changed)`."""
     if channel not in CHANNELS or category not in CATEGORIES:
         raise ValueError('unknown channel or category')
     if locked_on(channel, category) and not opted_in:
         raise ValueError('In-app transactional notifications cannot be switched off.')
+    wording_version = wording_version if opted_in else ''
     row, created = NotificationPreference.objects.get_or_create(
         user=user, channel=channel, category=category,
-        defaults={'opted_in': opted_in, 'source': source, 'updated_at': timezone.now()})
+        defaults={'opted_in': opted_in, 'source': source, 'updated_at': timezone.now(),
+                  'wording_version': wording_version})
     if created:
         return row, True
-    if row.opted_in == opted_in:
+    if row.opted_in == opted_in and row.wording_version == wording_version:
         return row, False
     row.opted_in = opted_in
     row.source = source
+    row.wording_version = wording_version
     row.updated_at = timezone.now()
-    row.save(update_fields=['opted_in', 'source', 'updated_at'])
+    row.save(update_fields=['opted_in', 'source', 'updated_at', 'wording_version'])
     return row, True
+
+
+def record_consent(user, channel, category, opted_in, wording_version, source='app'):
+    """A person's own marketing opt-in or opt-out, with the wording they saw (13 Nov). Audited."""
+    from servers.admin_audit.services import record_admin_action
+
+    row, changed = set_preference(user, channel, category, opted_in, source, wording_version)
+    if changed:
+        with audit_context(actor=None, actor_label=f'user:{user.pk}', reason='own consent'):
+            record_admin_action(
+                None, action='notification_consent_' + ('given' if opted_in else 'withdrawn'),
+                target_type='user_notification_preferences', target_id=user.pk, before={},
+                after={'channel': channel, 'category': category, 'opted_in': opted_in,
+                       'wording_version': wording_version,
+                       'wording': CONSENT_WORDING.get(wording_version, '')},
+                reason='own consent')
+    return row, changed
 
 
 def _system_audit(action, user, source, detail):

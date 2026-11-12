@@ -61,8 +61,11 @@ _NON_DELIVERING_BACKENDS = (
 )
 
 
-def _from_address():
+def _from_address(country=None):
     """The From: address, or '' when nothing is explicitly configured.
+
+    Per market (13 Nov): `EMAIL_FROM_BY_COUNTRY` ({"IN": "...", "US": "..."}, JSON) wins for the
+    recipient's market, else `DEFAULT_FROM_EMAIL`.
 
     Deliberately does NOT fall back to `SERVER_EMAIL`. Django defaults that
     to 'root@localhost', which is non-empty, so falling back made
@@ -70,7 +73,36 @@ def _from_address():
     configuration at all -- the precise false reassurance this module exists
     to prevent.
     """
+    by_country = getattr(settings, 'EMAIL_FROM_BY_COUNTRY', None) or {}
+    if country and by_country.get(str(country).upper()):
+        return by_country[str(country).upper()]
     return getattr(settings, 'DEFAULT_FROM_EMAIL', '') or ''
+
+
+def _market_of(to, country=None):
+    """The recipient's market: the caller's, else the account's country, else India."""
+    if country:
+        return str(country).upper()[:2]
+    try:
+        from django.contrib.auth import get_user_model
+
+        found = (get_user_model().objects.filter(email__iexact=str(to or '').strip())
+                 .values_list('country', flat=True).first())
+    except Exception:  # noqa: BLE001 - a footer never blocks a message
+        found = ''
+    return (found or 'IN').upper()
+
+
+def entity_footer(country):
+    """'SaaradhiGo. Operated by DeepTrics Software Solutions Pvt Ltd.' plus the address when set."""
+    from base import legal_entity
+
+    e = legal_entity.entity(country)
+    brand = getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo')
+    lines = [f'{brand}. Operated by {e["legal_name"]}.']
+    if e.get('registered_address'):
+        lines.append(e['registered_address'])
+    return lines
 
 
 def delivery_is_configured():
@@ -217,7 +249,7 @@ def _frontend_link(path, uid, token):
     return f'{base}{path}?uid={uid}&token={token}'
 
 
-def send_message(*, to, subject, body, html=None, attachments=None):
+def send_message(*, to, subject, body, html=None, attachments=None, country=None):
     """Hand one message to the configured backend. Returns (sent, reason).
 
     THE ONE WAY OUT
@@ -257,11 +289,21 @@ def send_message(*, to, subject, body, html=None, attachments=None):
         )
         return False, f'undeliverable: {reason}'
 
+    # Every message names the entity operating the recipient's market (13 Nov).
+    market = _market_of(to, country)
+    footer = entity_footer(market)
+    body = f"{body.rstrip()}\n\n--\n" + '\n'.join(footer)
+    if html:
+        from django.utils.html import escape as _esc
+        foot = '<br>'.join(_esc(x) for x in footer)
+        tail = (f'<p style="margin-top:24px;color:#6b7280;font-size:12px;">{foot}</p>')
+        html = html.replace('</body>', tail + '</body>', 1) if '</body>' in html else html + tail
+
     try:
         message = EmailMultiAlternatives(
             subject=subject,
             body=body,
-            from_email=_from_address(),
+            from_email=_from_address(market),
             to=[to],
             connection=get_connection(fail_silently=False),
         )

@@ -233,6 +233,9 @@ class NotificationPreference(models.Model):
     #: `app`, `admin`, `default`, `webhook:twilio` (STOP), `webhook:ses` (bounce / complaint).
     source = models.CharField(max_length=40, default='app')
     updated_at = models.DateTimeField(default=timezone.now)
+    #: The consent wording the person saw when they opted in (13 Nov), e.g. `sms-marketing-v1`
+    #: (`preferences.CONSENT_WORDING`). `updated_at` is when.
+    wording_version = models.CharField(max_length=40, blank=True, default='')
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=['user', 'channel', 'category'],

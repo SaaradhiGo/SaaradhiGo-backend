@@ -19,7 +19,8 @@ This view is deliberately NOT under `admin/`: it has no operator, only a signatu
 
 import logging
 
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
+from django.utils.html import escape
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
@@ -49,12 +50,29 @@ def handle(provider, request, path_token=''):
         return 403, {'error': 'signature verification failed'}
 
     applied = ignored = 0
+    reply = ''
     for event in adapter.parse_webhook(request):
+        if event.kind == 'help':
+            reply = help_text()
         if _apply(provider, event):
             applied += 1
         else:
             ignored += 1
-    return 200, {'applied': applied, 'ignored': ignored}
+    body = {'applied': applied, 'ignored': ignored}
+    if reply:
+        body['reply'] = reply
+    return 200, body
+
+
+def help_text():
+    """The answer to an SMS HELP (13 Nov), from the US entity's configured contacts."""
+    from base import legal_entity
+
+    e = legal_entity.entity('US')
+    contact = ' or '.join(x for x in (e.get('support_email'), e.get('support_phone')) if x)
+    contact = contact or 'www.saaradhigo.com/contact'
+    return (f'SaaradhiGo: trip and sign-in messages from {e["legal_name"]}. Help: {contact}. '
+            'Msg & data rates may apply. Reply STOP to opt out.')
 
 
 def _apply(provider, event):
@@ -76,6 +94,26 @@ def _apply(provider, event):
                 'The number replied STOP; opted out of all SMS.')
         return changed
 
+    if event.kind == 'help':
+        # Recorded (13 Nov) against every account on the number; answered by the view.
+        users = preferences.users_for_phone(event.phone)
+        for user in users:
+            preferences._system_audit('notification_sms_help_received', user, f'webhook:{provider}',
+                                      'The number replied HELP; help text sent.')
+        return bool(users)
+
+    if event.kind == 'start':
+        changed = False
+        for user in preferences.users_for_phone(event.phone):
+            _, did = preferences.set_preference(user, 'sms', 'transactional', True,
+                                                f'webhook:{provider}')
+            if did:
+                preferences._system_audit('notification_sms_start_received', user,
+                                          f'webhook:{provider}',
+                                          'The number replied START; trip and sign-in SMS back on.')
+            changed |= did
+        return changed
+
     if event.kind in ('bounce', 'complaint'):
         message = NotificationMessage.objects.filter(
             provider=provider, provider_message_id=event.provider_message_id).first()
@@ -94,4 +132,9 @@ def _apply(provider, event):
 @require_POST
 def webhook(request, provider, token=''):
     status, body = handle(provider, request, token)
+    if provider == 'twilio' and status == 200 and request.POST.get('Body') is not None:
+        # An inbound message gets TwiML: HELP its answer, anything else an empty response.
+        message = f'<Message>{escape(body["reply"])}</Message>' if body.get('reply') else ''
+        return HttpResponse(f'<?xml version="1.0" encoding="UTF-8"?><Response>{message}</Response>',
+                            content_type='text/xml')
     return JsonResponse(body, status=status)

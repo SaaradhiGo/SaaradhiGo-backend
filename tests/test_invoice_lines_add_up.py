@@ -119,7 +119,8 @@ def test_every_issued_receipt_adds_up_on_the_pdf_and_the_screen(market, settings
     from servers.ride.receipts import _build_receipt_pdf, receipt_invoice
     from servers.ride.serializers import TripDetailSerializer
 
-    settings.PLATFORM_LEGAL_ENTITY = ''
+    # GST on (13 Nov: off by default): this checks the tax lines add up.
+    settings.LEGAL_ENTITIES_JSON = '{"IN": {"gst_registered": true}}'
     rider, driver = _people()
     specs = [('in-day', 'IN', '3.2', '11', '1.00', False, 'cash', None),
              ('in-demand', 'IN', '18.7', '44', '1.40', False, 'cash', None),
@@ -155,14 +156,13 @@ def test_every_issued_receipt_adds_up_on_the_pdf_and_the_screen(market, settings
 
 @pytest.mark.django_db
 def test_the_company_name_comes_from_config(settings):
+    """13 Nov: the entity per market (base/legal_entity.py); Srini's rulings name both."""
     from servers.ride.receipts import aggregator_line, company_lines
 
-    settings.PLATFORM_LEGAL_ENTITY = ''
-    assert company_lines()['name'] == ''
-    assert 'aggregator' in aggregator_line() and 'Mobility' not in aggregator_line()
-    settings.PLATFORM_LEGAL_ENTITY = 'Registered Name Pvt Ltd'
-    assert company_lines()['name'] == 'Registered Name Pvt Ltd'
-    assert aggregator_line().startswith('Registered Name Pvt Ltd is an aggregator')
+    settings.LEGAL_ENTITIES_JSON = ''
+    assert company_lines()['name'] == 'DeepTrics Software Solutions Pvt Ltd'
+    assert aggregator_line().startswith('DeepTrics Software Solutions Pvt Ltd is an aggregator')
+    assert 'Mobility' not in aggregator_line()
 
 
 # --- Confirm your email (12 Nov) ---------------------------------------------------------------

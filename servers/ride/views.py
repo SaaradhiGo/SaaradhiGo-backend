@@ -1712,11 +1712,11 @@ def proxy_reverse_geocode(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def booking_options(request):
-    """GET /ride/booking-options/?lat=&lng=&types=auto,sedan (11 Nov, rider QA fixes).
+    """GET /ride/booking-options/?lat=&lng= (11 Nov, rider QA fixes).
 
     For the choose screen: how the rider can pay at this pickup (and the default, the last method
-    used), minutes to the nearest driver of each class (None: nobody nearby), the city's driver
-    search time, and whether the mobile still has to be verified before booking.
+    used), the city's driver search time, and whether the mobile still has to be verified before
+    booking. Minutes to a driver per class come with each fare quote (`pickup_eta_min`).
     """
     from servers.ride import rider_booking as rb
     try:
@@ -1726,17 +1726,10 @@ def booking_options(request):
         return error_response(code='MISSING_FIELDS', message='lat and lng are required numbers',
                               field='lat,lng', issue='Invalid coordinates',
                               status=status.HTTP_400_BAD_REQUEST)
-    types = [t.strip().lower() for t in (request.query_params.get('types') or '').split(',') if t.strip()]
     from servers.pricing.services import find_zone_for_point
     zone = find_zone_for_point(lat, lng)
-    try:
-        times = rb.pickup_times(lat, lng, types)
-    except Exception as exc:  # noqa: BLE001 -- no estimate is better than no screen
-        logger.warning('pickup_times_failed: %s', type(exc).__name__)
-        times = {t: None for t in types}
     return success_response({
         'payment': rb.payment_options(request.user, lat, lng),
-        'pickup_min': times,
         'search_timeout_seconds': rb.search_timeout_seconds(zone),
         'phone_required': rb.phone_required(request.user),
     }, status.HTTP_200_OK)

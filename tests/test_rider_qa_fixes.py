@@ -133,11 +133,10 @@ class TestBookingOptions:
         ensure_zone_covering(*HYD)
         client = APIClient()
         client.force_authenticate(rider)
-        with mock.patch('servers.redis_client.nearby_drivers', return_value=[('driver:7', 800.0)]):
-            r = client.get('/api/v1/ride/booking-options/?lat=17.445&lng=78.38&types=auto,sedan')
+        r = client.get('/api/v1/ride/booking-options/?lat=17.445&lng=78.38')
         assert r.status_code == 200, r.content.decode()
         data = r.json()['data']
-        assert data['pickup_min'] == {'auto': 4, 'sedan': 4}
+        assert data['payment']['methods'] == ['cash']
         assert data['search_timeout_seconds'] == 180
         assert data['phone_required'] is False
 

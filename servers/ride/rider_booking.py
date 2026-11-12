@@ -6,12 +6,10 @@
     street address once, through the same cache the reverse-geocode proxy uses.
   * `payment_options`: cash everywhere; UPI and card where the pickup's city allows online payment
     (ONLINE_PAYMENT_ZONES) and the country has a configured payment gateway.
-  * `pickup_times`: minutes from the nearest live driver of each class, never driver positions.
   * `search_timeout_seconds`: how long dispatch looks for a driver, set per city zone.
 """
 
 import logging
-import math
 
 from django.conf import settings
 
@@ -23,8 +21,6 @@ GENERIC_PICKUP_LABELS = {'', 'current location', 'my location', 'your location',
 CASH, UPI, CARD = 'cash', 'upi', 'card'
 ONLINE_METHODS = (UPI, CARD)
 DEFAULT_SEARCH_TIMEOUT_SECONDS = 180
-#: The pickup-time estimate's city speed; it only orders "4 min away" lines, never a fare.
-PICKUP_SPEED_KMH = 20.0
 
 
 def phone_required(user):
@@ -92,23 +88,6 @@ def payment_options(user, lat, lng):
                 .order_by('-requested_at').values_list('payment_method', flat=True).first())
         default = last or (CASH if CASH in methods else methods[0])
     return {'methods': methods, 'default': default, 'online_unavailable_reason': reason}
-
-
-def pickup_times(lat, lng, types):
-    """{type: minutes or None} from the nearest live driver of each class within dispatch range."""
-    from servers.redis_client import nearby_drivers
-    radius = max(getattr(settings, 'DISPATCH_RADIUS_WAVES_M', (1500, 3000, 5000)))
-    out = {}
-    for t in types[:8]:
-        found = nearby_drivers(lng=float(lng), lat=float(lat), radius=radius, count=1, vehicle_type=t)
-        if not found:
-            out[t] = None
-            continue
-        entry = found[0]
-        metres = float(entry[1]) if isinstance(entry, (list, tuple)) else 0.0
-        # The road is longer than the straight line: 1.4x, then the city speed.
-        out[t] = max(1, math.ceil(metres * 1.4 / 1000 / PICKUP_SPEED_KMH * 60))
-    return out
 
 
 def search_timeout_seconds(zone):

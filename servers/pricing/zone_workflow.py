@@ -74,7 +74,7 @@ IN_PROGRESS_STATUSES = ('requested', 'accepted', 'reached', 'in_progress')
 #: Fields a maker may set on create or change. Code and geo node are fixed after create.
 EDITABLE = ('name', 'country', 'state_code', 'city', 'zone_type', 'parent', 'priority',
             'polygon_geojson', 'currency', 'timezone_name', 'distance_unit', 'tax_mode',
-            'per_trip_fee', 'per_trip_fee_label', 'metadata')
+            'per_trip_fee', 'per_trip_fee_label', 'metadata', 'dispatch_timeout_seconds')
 ZONE_TYPES = {k for k, _ in ServiceZone.ZONE_TYPE_CHOICES}
 AUDIT_ACTIONS = {KIND_CREATE: 'service_zone_created', KIND_UPDATE: 'service_zone_updated',
                  KIND_DEACTIVATE: 'service_zone_deactivated',
@@ -233,6 +233,19 @@ def clean_values(raw, base=None):
         raise InvalidRequest('per_trip_fee_label is required when a per-trip fee is set.',
                              code='FIELD_REQUIRED', field='per_trip_fee_label')
     values['per_trip_fee_label'] = label
+    timeout = values.get('dispatch_timeout_seconds')
+    if timeout in (None, ''):
+        values['dispatch_timeout_seconds'] = None
+    else:
+        try:
+            timeout = int(timeout)
+        except (TypeError, ValueError):
+            raise InvalidRequest('The driver search time must be a whole number of seconds.',
+                                 code='INVALID_NUMBER', field='dispatch_timeout_seconds')
+        if not 30 <= timeout <= 900:
+            raise InvalidRequest('The driver search time must be between 30 and 900 seconds.',
+                                 code='INVALID_NUMBER', field='dispatch_timeout_seconds')
+        values['dispatch_timeout_seconds'] = timeout
     if not isinstance(values.get('metadata') or {}, dict):
         raise InvalidRequest('metadata must be an object.', code='INVALID_METADATA',
                              field='metadata')
@@ -525,6 +538,8 @@ def _apply(zone, values):
     for f in SNAPSHOT_FIELDS:
         if f == 'per_trip_fee':
             setattr(zone, f, Decimal(str(values[f])))
+        elif f == 'dispatch_timeout_seconds':
+            setattr(zone, f, values.get(f))
         else:
             setattr(zone, f, values[f])
     zone.parent = parent

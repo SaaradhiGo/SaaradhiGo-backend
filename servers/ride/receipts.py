@@ -127,7 +127,58 @@ def _legal_entity():
     and whether a GSTIN and registered address must also appear, is a question for the
     business and its accountants.
     """
-    return getattr(settings, 'PLATFORM_LEGAL_ENTITY', 'SaaradhiGo Mobility')
+    return (getattr(settings, 'PLATFORM_LEGAL_ENTITY', '') or '').strip()
+
+
+def aggregator_line():
+    """The MVAG 2025 statement, naming the registered entity only when it is configured."""
+    who = _legal_entity()
+    return (f'{who} is an aggregator' if who else 'This trip was arranged by an aggregator') + (
+        ' under the Motor Vehicles Aggregator Guidelines 2025 issued by the Ministry of Road '
+        'Transport & Highways, Government of India.')
+
+
+def receipt_invoice(trip, *, total, gst_amount, currency, fare_pricing=None, tax_percent=None):
+    """The invoice lines (servers/ride/invoice_lines.py) for this trip's receipt amounts."""
+    from types import SimpleNamespace
+    from servers.ride import invoice_lines
+    if fare_pricing is None:
+        from servers.ride.models import FarePricing
+        fare_pricing = FarePricing.objects.filter(trip_id=trip).order_by('-id').first()
+    if tax_percent is None:
+        tax_percent = _resolve_tax_rate(trip)
+    label = get_country(getattr(getattr(trip, 'zone', None), 'country', None)).tax_label
+    return invoice_lines.from_receipt(
+        trip, SimpleNamespace(total_fare=total, gst_amount=gst_amount, currency=currency),
+        fare_pricing, tax_percent, label)
+
+
+def invoice_tax_label(invoice):
+    """'GST 5% (included)' or 'Sales tax 8.875%'."""
+    tax = invoice['tax']
+    return f"{tax['label']} {tax['percent']}%" + (' (included)' if tax['included'] else '')
+
+
+def vehicle_line(v):
+    """'White Maruti Suzuki Dzire · TS 09 QT 0059' (11 Nov), the same on the screen and the PDF."""
+    if v is None:
+        return ''
+    car = ' '.join(str(x) for x in (getattr(v, 'color', ''), getattr(v, 'brand', ''),
+                                    getattr(v, 'model', '')) if x)
+    from servers.driver.plates import display_plate
+    return ' · '.join(x for x in (car, display_plate(getattr(v, 'vehicle_number', ''))) if x)
+
+
+def company_lines():
+    """The issuer on the tax invoice: name always; address and GSTIN when configured."""
+    return {'name': _legal_entity(), 'address': getattr(settings, 'PLATFORM_LEGAL_ADDRESS', ''),
+            'gstin': getattr(settings, 'PLATFORM_GSTIN', '')}
+
+
+def _rider_name(rider):
+    from servers.auth_user.phone_identity import is_placeholder_phone
+    phone = getattr(rider, 'phone_number', '')
+    return (getattr(rider, 'full_name', '') or ('' if is_placeholder_phone(phone) else phone)) or 'Rider'
 
 
 def _total_fare(trip):
@@ -191,11 +242,7 @@ _RECEIPT_TEMPLATE = """\
 
   <h3 style="margin-top: 24px;">Fare breakdown</h3>
   <table cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; border: 1px solid #e5e7eb;">
-    <tr><td>Base fare</td><td style="text-align:right;">{base_fare}</td></tr>
-    <tr><td>Distance fare</td><td style="text-align:right;">{distance_fare}</td></tr>
-    <tr><td>Time fare</td><td style="text-align:right;">{time_fare}</td></tr>
-    <tr><td>{demand_label}</td><td style="text-align:right;">x {surge}</td></tr>
-    <tr><td>{tax_label} ({gst_rate}%)</td><td style="text-align:right;">{gst_amount}</td></tr>
+    {fare_rows}
     {note_row}
     <tr style="background: #f9fafb;"><td><b>Total fare</b></td><td style="text-align:right;"><b>{total_fare}</b></td></tr>
     {promo_rows}
@@ -204,9 +251,7 @@ _RECEIPT_TEMPLATE = """\
   <p style="margin-top: 16px;"><b>Payment method:</b> {payment_method} &nbsp; <b>Status:</b> {payment_status}</p>
 
   <p style="margin-top: 24px; color: #6b7280; font-size: 12px;">
-    {legal_entity} is an aggregator under the
-    Motor Vehicles Aggregator Guidelines 2025 issued by the Ministry of
-    Road Transport &amp; Highways, Government of India. For any dispute
+    {aggregator_line} For any dispute
     about this fare, please contact support within 30 days quoting the
     Receipt number above.
   </p>
@@ -312,7 +357,7 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
     from base.money import DEFAULT_CURRENCY, format_money
     currency = currency or DEFAULT_CURRENCY
     tax_label = tax_label or 'Tax'
-    rider_name = (getattr(rider, 'full_name', '') or rider.phone_number) or 'Rider'
+    rider_name = _rider_name(rider)
     driver_name = ''
     vehicle = ''
     if trip.driver_id and trip.driver_id.user_id:
@@ -320,30 +365,27 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
             trip.driver_id.user_id.full_name or ''
         )
     if trip.vehicle_id:
-        v = trip.vehicle_id
-        vehicle = ' '.join(filter(None, [str(v.brand or ''), str(v.model or ''), f'({v.vehicle_number})' if v.vehicle_number else '']))
-
-    surge = getattr(trip, 'surge_multiplier', None) or Decimal('1.00')
-    base_fare = Decimal('0.00')
-    distance_fare = Decimal('0.00')
-    time_fare = Decimal('0.00')
-    if fare_pricing is not None:
-        base_fare = fare_pricing.base_fare or Decimal('0.00')
-        distance_fare = fare_pricing.distance_fare or Decimal('0.00')
-        time_fare = fare_pricing.time_fare or Decimal('0.00')
-        surge = fare_pricing.surge_multiplier or surge
-    if getattr(trip, 'end_rule', '') == 'platform_funded':
-        base_fare = distance_fare = time_fare = Decimal('0.00')
+        vehicle = vehicle_line(trip.vehicle_id)
 
     total = _total_fare(trip)
     date_str = (trip.completed_at or timezone.now()).strftime('%d %b %Y, %H:%M')
+    invoice = receipt_invoice(trip, total=total, gst_amount=gst_amount, currency=currency,
+                              fare_pricing=fare_pricing, tax_percent=gst_rate)
+    _row = '<tr><td>{}</td><td style="text-align:right;">{}</td></tr>'
+    fare_rows = ''.join(_row.format(escape(x['label']), format_money(Decimal(x['amount']), currency))
+                        for x in invoice['lines'])
+    fare_rows += ('<tr><td><b>Taxable value</b></td><td style="text-align:right;"><b>'
+                  f"{format_money(Decimal(invoice['taxable']), currency)}</b></td></tr>")
+    fare_rows += _row.format(escape(invoice_tax_label(invoice)),
+                             format_money(Decimal(invoice['tax']['amount']), currency))
+    fare_rows += ''.join(_row.format(escape(x['label']), format_money(Decimal(x['amount']), currency))
+                         for x in invoice['extras'])
 
     return _RECEIPT_TEMPLATE.format(
         # Read from settings, never hardcoded: this document used to name two
         # different brands in the same page.
         brand=escape(str(getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo'))),
-        legal_entity=escape(str(
-            getattr(settings, 'PLATFORM_LEGAL_ENTITY', 'SaaradhiGo Mobility'))),
+        aggregator_line=escape(aggregator_line()),
         rider_name=escape(str(rider_name)),
         receipt_number=escape(receipt_number),
         trip_id=trip.id,
@@ -353,13 +395,7 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
         distance_km=escape(_format_distance(trip)),
         driver_name=escape(str(driver_name)),
         vehicle=escape(str(vehicle or '—')),
-        base_fare=format_money(base_fare, currency),
-        distance_fare=format_money(distance_fare, currency),
-        time_fare=format_money(time_fare, currency),
-        surge=str(round(surge, 2)),
-        demand_label=escape(_demand_line(surge)),
-        gst_rate=str(gst_rate),
-        gst_amount=format_money(gst_amount, currency),
+        fare_rows=fare_rows,
         total_fare=format_money(total, currency),
         note_row=(f'<tr><td colspan="2"><b>{escape(operator_end_note(trip))}</b></td></tr>'
                   if operator_end_note(trip) else ''),
@@ -369,7 +405,6 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
             f'<tr style="background: #f9fafb;"><td><b>Amount charged</b></td>'
             f'<td style="text-align:right;"><b>{format_money(charged, currency)}</b></td></tr>'
             for label, discount, charged in promo_lines(trip)),
-        tax_label=escape(str(tax_label)),
         payment_method=escape(str(trip.payment_method or '—')),
         payment_status=escape(str(trip.payment_status or '—')),
     )
@@ -401,7 +436,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         leftMargin=18 * mm, rightMargin=18 * mm,
         topMargin=18 * mm, bottomMargin=18 * mm,
         title=f'{_brand()} receipt {receipt.receipt_number}',
-        author='SaaradhiGo Mobility',
+        author=_legal_entity() or _brand(),
     )
     styles = getSampleStyleSheet()
     h1 = ParagraphStyle('h1', parent=styles['Heading1'], textColor=colors.HexColor('#C59A1D'))
@@ -411,27 +446,30 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
 
     trip = receipt.trip_id
     rider = receipt.user_id
-    rider_name = (getattr(rider, 'full_name', '') or rider.phone_number or 'Rider')
+    rider_name = _rider_name(rider)
     driver_name = ''
     vehicle = ''
     if trip.driver_id and trip.driver_id.user_id:
         driver_name = trip.driver_id.user_id.full_name or ''
     if trip.vehicle_id:
-        v = trip.vehicle_id
-        vehicle = f"{v.brand or ''} {v.model or ''} ({v.vehicle_number or ''})".strip()
+        vehicle = vehicle_line(trip.vehicle_id)
+    company = company_lines()
 
     story = []
-    story.append(Paragraph(f'{_brand()} / {_legal_entity()}', h1))
+    story.append(Paragraph(escape(' / '.join(x for x in (_brand(), company['name']) if x)), h1))
     story.append(Paragraph('Tax invoice / Trip receipt', h2))
+    for line in (company['address'], f"GSTIN {company['gstin']}" if company['gstin'] else ''):
+        if line:
+            story.append(Paragraph(escape(line), body))
     story.append(Spacer(1, 6))
 
     meta_rows = [
-        ['Receipt number', receipt.receipt_number],
+        ['Invoice number', receipt.receipt_number],
         ['Issued to', rider_name],
         ['Trip ID', f'#{trip.id}'],
         ['Date', (trip.completed_at or receipt.issued_at).strftime('%d %b %Y, %H:%M')],
-        ['Pickup', trip.pickup_address or '—'],
-        ['Drop', trip.destination_address or '—'],
+        ['Pickup', Paragraph(escape(trip.pickup_address or '—'), body)],
+        ['Drop', Paragraph(escape(trip.destination_address or '—'), body)],
         ['Distance', f"{trip.actual_distance_km or trip.estimated_distance_km or '—'} km"],
         ['Driver', driver_name or '—'],
         ['Vehicle', vehicle or '—'],
@@ -455,26 +493,20 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     # present, falling back to the trip's totals.
     from servers.ride.models import FarePricing
     fp = FarePricing.objects.filter(trip_id=trip).order_by('-id').first()
-    base_fare = (fp.base_fare if fp else None) or 0
-    distance_fare = (fp.distance_fare if fp else None) or 0
-    time_fare = (fp.time_fare if fp else None) or 0
-    surge = (fp.surge_multiplier if fp else None) or 1
-    if getattr(trip, 'end_rule', '') == 'platform_funded':
-        base_fare = distance_fare = time_fare = 0
 
     # Currency and tax label come from the receipt row and its trip's zone, not
     # from a constant. This table said "Amount (Rs.)" and "GST" for every market.
     _currency = getattr(receipt, 'currency', None) or DEFAULT_CURRENCY
-    _zone = getattr(getattr(receipt, 'trip_id', None), 'zone', None)
-    _tax_label = get_country(getattr(_zone, 'country', None)).tax_label
 
+    invoice = receipt_invoice(trip, total=receipt.total_fare, gst_amount=receipt.gst_amount,
+                              currency=_currency, fare_pricing=fp)
+    _m = lambda v: format_money(Decimal(v), _currency, with_symbol=False)  # noqa: E731
     fare_rows = [
         ['Description', f'Amount ({_currency})'],
-        ['Base fare', format_money(base_fare, _currency, with_symbol=False)],
-        ['Distance fare', format_money(distance_fare, _currency, with_symbol=False)],
-        ['Time fare', format_money(time_fare, _currency, with_symbol=False)],
-        [_demand_line(surge), f'x {surge}'],
-        [_tax_label, format_money(receipt.gst_amount, _currency, with_symbol=False)],
+        *[[x['label'], _m(x['amount'])] for x in invoice['lines']],
+        ['Taxable value', _m(invoice['taxable'])],
+        [invoice_tax_label(invoice), _m(invoice['tax']['amount'])],
+        *[[x['label'], _m(x['amount'])] for x in invoice['extras']],
         *([[operator_end_note(trip), '']] if operator_end_note(trip) else []),
         ['Total fare', format_money(receipt.total_fare, _currency, with_symbol=False)],
         *_due_rows_pdf(trip, _currency),
@@ -506,9 +538,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     ))
     story.append(Spacer(1, 16))
     story.append(Paragraph(
-        f'{_legal_entity()} is an aggregator under the '
-        'Motor Vehicles Aggregator Guidelines 2025 issued by the Ministry of '
-        'Road Transport &amp; Highways, Government of India. For any dispute '
+        escape(aggregator_line()) + ' For any dispute '
         'about this fare, please contact support within 30 days quoting the '
         'Receipt number above.',
         small,

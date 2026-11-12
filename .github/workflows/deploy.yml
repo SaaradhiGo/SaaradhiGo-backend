@@ -1,7 +1,9 @@
 name: Test and deploy
 
-# Push to dev runs lint + SAST + dependency audit + the test suite; only
-# if all of them pass does the deploy step touch EC2. The QA pass that
+# Push to dev runs lint + SAST + dependency audit + the test suite (QA on Railway deploys
+# a dev commit only after these pass). Production deploys run ONLY on a push to main, and
+# only after the same three gates pass (owner rule, 12 Nov: production from main, through
+# CI, never by hand). The QA pass that
 # preceded this gate caught two regressions that had already shipped to
 # production (PR #27, PR #28). The whole point of `needs:` is to make sure
 # that can't happen again.
@@ -10,6 +12,9 @@ on:
   push:
     branches:
       - dev
+      # main takes merge PRs from dev only (main-source.yml); the push that merge makes is
+      # the only event that may deploy production (job `deploy` below).
+      - main
       # Feature branches got NO CI at all, so the only way to learn that a
       # change broke lint, the suite or the Postgres concurrency check was to
       # push it to dev -- which is also the branch that deploys. The gates are
@@ -295,14 +300,18 @@ jobs:
     name: deploy to EC2 (optional)
     needs: [test, lint, postgres-concurrency]
     runs-on: ubuntu-latest
-    # Only deploy from a real push to dev. Prevents accidental deploys from
-    # forks, pull_request runs, or workflow_dispatch trial-runs.
-    # DISABLED (owner ruling, 2026-10-27): QA runs on Railway and no EC2 target is
-    # in use. Until the owner says an EC2 host exists, this job runs only when a
-    # person triggers it from the Actions tab -- never on a push -- because a job
-    # that deploys the moment somebody sets a secret is a trap. Not deleted, so it
-    # can come back. Record: internal docs repository, AUDIT.md section 14.
-    if: github.event_name == 'workflow_dispatch'
+    # Production deploys only from main, through CI, never by hand (owner rule, 12 Nov):
+    #   - only a push to main (the merge of a dev -> main PR), never workflow_dispatch,
+    #     a pull_request run or another branch;
+    #   - only after lint, the suite and the Postgres check pass (`needs` above);
+    #   - only once production is switched on on purpose: the repository variable
+    #     PRODUCTION_DEPLOY_ENABLED is 'true' AND the EC2 secrets exist in the
+    #     `production` environment. Setting a secret alone deploys nothing (the
+    #     2026-10-27 concern, AUDIT.md section 14).
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      vars.PRODUCTION_DEPLOY_ENABLED == 'true'
+    environment: production
 
     steps:
       - name: Is a deploy target configured?
@@ -391,8 +400,8 @@ jobs:
             PREV_SHA=$(git rev-parse HEAD)
             echo "$PREV_SHA" > .last_good_sha
 
-            git fetch origin dev
-            git reset --hard origin/dev
+            git fetch origin main
+            git reset --hard origin/main
 
             COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
 

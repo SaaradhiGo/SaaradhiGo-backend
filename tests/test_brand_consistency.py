@@ -92,9 +92,13 @@ def test_the_brand_setting_exists_and_is_not_the_retired_one():
 
 
 def test_the_legal_entity_is_configured_separately_from_the_brand():
-    """They are different facts. The receipt needs both."""
-    assert getattr(settings, 'PLATFORM_LEGAL_ENTITY', None)
-    assert RETIRED_BRAND not in settings.PLATFORM_LEGAL_ENTITY.lower()
+    """They are different facts. The legal name comes from config only (12 Nov): no default is
+    written into the code, so an unset one is empty rather than invented."""
+    import re
+    from pathlib import Path
+    src = Path(settings.BASE_DIR, 'base', 'settings.py').read_text(encoding='utf-8')
+    assert re.search(r"PLATFORM_LEGAL_ENTITY = os\.environ\.get\('PLATFORM_LEGAL_ENTITY', ''\)", src)
+    assert RETIRED_BRAND not in (settings.PLATFORM_LEGAL_ENTITY or '').lower()
 
 
 def test_the_contact_domain_is_not_the_retired_one():
@@ -183,7 +187,8 @@ def test_the_receipt_html_names_one_brand_and_the_legal_entity():
     )
 
     assert settings.PLATFORM_BRAND_NAME in html
-    assert settings.PLATFORM_LEGAL_ENTITY in html
+    if settings.PLATFORM_LEGAL_ENTITY:
+        assert settings.PLATFORM_LEGAL_ENTITY in html
     assert 'VahanGo' not in html, 'the retired brand is still on the receipt'
     # The aggregator statement is a legal claim and must survive the rename.
     assert 'Motor Vehicles Aggregator Guidelines 2025' in html

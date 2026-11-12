@@ -50,6 +50,31 @@ class UserModelSerializer(ModelSerializer):
         except Exception:  # noqa: BLE001
             return DEFAULT_LANGUAGES.get(country, ['en'])
 
+    #: 11 Nov: riders sign up by email; the number is proved at the first booking.
+    phone_verified = SerializerMethodField()
+    email_verified = SerializerMethodField()
+
+    def get_phone_verified(self, obj):
+        from .phone_identity import has_verified_phone
+        return has_verified_phone(obj)
+
+    def get_email_verified(self, obj):
+        return bool(getattr(obj, 'email_verified_at', None))
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # 12 Nov: whether a confirmation link can be emailed here at all, so the reminder never
+        # says "we sent a link" where nothing can be sent (QA has no mail settings).
+        if data.get('email_verified') is False and data.get('email'):
+            from base.auth_email import delivery_is_configured
+            data['email_mail_configured'] = delivery_is_configured()[0]
+        from .phone_identity import is_placeholder_phone
+        if is_placeholder_phone(data.get('phone_number')):
+            data['phone_number'] = None
+        if is_placeholder_phone(data.get('username')):
+            data['username'] = None
+        return data
+
     def get_preferred_theme(self, obj):
         pref = getattr(obj, 'preference', None)
         return getattr(pref, 'preferred_theme', None)
@@ -61,6 +86,7 @@ class UserModelSerializer(ModelSerializer):
             'gender', 'dob', 'house_no', 'street', 'city', 'zip_code',
             'emergency_contact', 'role', 'avatar', 'fcm_token', 'updated_at', 'created_at','is_updated',
             'preferred_language', 'preferred_theme', 'roles', 'market_languages', 'market_country',
+            'phone_verified', 'email_verified',
         ]
         # phone_number is the user's identity for OTP-based auth; allowing
         # /auth/update/ to overwrite it lets a stolen access token hijack

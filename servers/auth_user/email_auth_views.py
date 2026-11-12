@@ -174,6 +174,8 @@ def email_login(request):
     # Accounts created by `bootstrap_qa_accounts` or by an operator invite
     # are verified at the point their password is set, so this does not lock
     # out the operator console.
+    # A rider's unconfirmed address no longer blocks sign-in (11 Nov ruling); the app shows a
+    # "Confirm your email" reminder instead. Drivers and operators keep the gate.
     if not email_is_verified(user):
         # AN ACCOUNT STRANDED BY A DEPLOYMENT THAT CANNOT MAIL.
         #
@@ -190,7 +192,9 @@ def email_login(request):
         # misconfiguration, not a condition to accommodate, and production
         # refuses to boot without a mail backend anyway, so this branch is
         # unreachable there by construction and gated regardless.
-        if not verification_is_deliverable():
+        if user.role == 'rider':
+            pass  # never confirmed for them (12 Nov): the app shows "Confirm your email" instead
+        elif not verification_is_deliverable():
             user.email_verified_at = timezone.now()
             user.save(update_fields=['email_verified_at'])
             logger.info(

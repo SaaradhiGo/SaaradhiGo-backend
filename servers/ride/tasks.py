@@ -437,20 +437,27 @@ def sweep_unaccepted_trips(self, limit=200):
 
     from servers.ride.models import Trip
 
-    timeout = int(getattr(settings, 'TRIP_ACCEPT_TIMEOUT_SECONDS', 90))
+    from servers.ride.rider_booking import search_timeout_for_trip
+
+    # Each city sets its own search time (11 Nov), so the shortest allowed one picks the
+    # candidates and each trip is then judged by its own zone's time.
+    timeout = 30
     # A grace period on top of the deadline, so this never races the countdown it
     # backs up. The normal path should win; this is the backstop.
     grace = int(getattr(settings, 'TRIP_UNACCEPTED_SWEEP_GRACE_SECONDS', 60))
-    cutoff = timezone.now() - timezone.timedelta(seconds=timeout + grace)
+    now = timezone.now()
+    cutoff = now - timezone.timedelta(seconds=timeout + grace)
 
-    overdue = list(
+    overdue = [
+        t.id for t in
         Trip.objects
         .filter(status_id__status_code='requested',
                 driver_id__isnull=True,
                 requested_at__lt=cutoff)
-        .order_by('requested_at')
-        .values_list('id', flat=True)[:limit]
-    )
+        .select_related('zone__parent__parent')
+        .order_by('requested_at')[:limit]
+        if t.requested_at + timezone.timedelta(seconds=search_timeout_for_trip(t) + grace) < now
+    ]
 
     summary = {'examined': len(overdue), 'cancelled': 0, 'stood_down': 0}
     for trip_id in overdue:

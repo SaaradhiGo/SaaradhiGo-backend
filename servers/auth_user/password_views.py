@@ -242,9 +242,11 @@ def forgot_password(request):
         logger.warning('password_forgot_ignored reason=inactive user_id=%s',
                        user.pk)
         return _answer()
-    if not email_is_verified(user):
+    if not email_is_verified(user) and user.role != 'rider':
         # The address exists on the account but was never proven. Sending a
-        # reset here would let whoever set it take the account over.
+        # reset here would let whoever set it take the account over. A rider who signed up by
+        # email (11 Nov) can only have reached the account through this address, so the reset
+        # goes to it; using the link confirms the address.
         logger.warning(
             'password_forgot_ignored reason=email_unverified user_id=%s',
             user.pk,
@@ -391,9 +393,18 @@ def request_email_verification(request):
     token = verify_tokens.make_token(user)
     sent = send_email_verification(user=user, uid=_uid(user), token=token)
     logger.info('email_verify_sent user_id=%s delivered=%s', user.pk, sent)
+    if not sent:
+        # 12 Nov: this said "We have sent" whether or not anything was sent.
+        return error_response(
+            code='EMAIL_NOT_SENT',
+            message='We could not send the email right now. Try again later.',
+            field='email',
+            issue='Mail could not be sent',
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
     return success_response(
-        data={'message': 'We have sent a verification link to your email.'},
+        data={'message': 'We have sent a verification link to your email.', 'sent': True},
         status_code=status.HTTP_200_OK,
     )
 

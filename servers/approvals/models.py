@@ -375,3 +375,29 @@ class ApprovalRequest(models.Model):
             'error': self.error,
             'idempotency_key': self.idempotency_key,
         }
+
+
+class SelfApprovalGrant(models.Model):
+    """The sole Super Admin may check their own requests for a while (12 Nov, console QA).
+
+    In production this row is the ONLY way to turn self-approval on (the environment setting is
+    refused at start): a Super Admin sets it in the console with a reason and an expiry at most 7
+    days away, and the banner names who and when. It ends by itself at `expires_at`."""
+    MAX_DAYS = 7
+
+    granted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    granted_by_label = models.CharField(max_length=255, blank=True, default='')
+    reason = models.TextField()
+    granted_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                   on_delete=models.SET_NULL, related_name='+')
+
+    class Meta:
+        ordering = ['-granted_at']
+
+    @classmethod
+    def active(cls, now=None):
+        now = now or timezone.now()
+        return cls.objects.filter(revoked_at__isnull=True, expires_at__gt=now).order_by('-granted_at').first()

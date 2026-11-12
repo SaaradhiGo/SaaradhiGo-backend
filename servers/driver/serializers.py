@@ -71,6 +71,13 @@ class DriverProfileSerializer(serializers.ModelSerializer):
 
         return trip_count(obj)
 
+    # 12 Nov: how many ratings make up `ratings`, counted as the console counts them (ratings.py).
+    rating_count = serializers.SerializerMethodField()
+
+    def get_rating_count(self, obj) -> int:
+        from .ratings import summary
+        return summary(obj)['count']
+
     qa_simulated_eligibility = serializers.BooleanField(read_only=True)
 
     def get_dispatch_eligible(self, obj) -> bool:
@@ -93,7 +100,7 @@ class DriverProfileSerializer(serializers.ModelSerializer):
                   'approved', 'doc_status', 'doc_rejection_reason',
                   'doc_status_updated_at', 'uploaded_timestamp',
                   'dispatch_eligible', 'qa_simulated_eligibility',
-                  'total_trips', 'ratings']
+                  'total_trips', 'ratings', 'rating_count']
         # Defence in depth. This serializer is only ever bound to a DRIVER'S OWN
         # token, and `update_driver_profile` already builds its payload from a
         # four-field allow-list -- so `approved` was never reachable in practice.
@@ -189,6 +196,12 @@ class AdminVehicleSerializer(VehicleSerializer):
 class DriverAdminListSerializer(serializers.ModelSerializer):
     user_details = UserModelSerializer(source='user_id', read_only=True)
     license_doc = DocumentOnFileField()
+    # 12 Nov: the one trip count (earnings.trip_count), never the drifting stored counter.
+    total_trips = serializers.SerializerMethodField()
+
+    def get_total_trips(self, obj) -> int:
+        from .earnings import trip_count
+        return getattr(obj, 'trip_count', None) if hasattr(obj, 'trip_count') else trip_count(obj)
 
     class Meta:
         model = Driver
@@ -302,6 +315,11 @@ class DriverAdminDetailSerializer(serializers.ModelSerializer):
     # On-file flags, never links (AUDIT 27.78).
     license_doc = DocumentOnFileField()
     license_doc_back = DocumentOnFileField()
+    total_trips = serializers.SerializerMethodField()
+
+    def get_total_trips(self, obj) -> int:
+        from .earnings import trip_count
+        return trip_count(obj)
 
     class Meta:
         model = Driver

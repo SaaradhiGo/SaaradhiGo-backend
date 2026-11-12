@@ -58,6 +58,9 @@ from .models import (
     Driver, DriverDocumentReview, DriverNote, DriverSuspension, Vehicle,
 )
 
+from .earnings import trip_count_annotation
+from .ratings import rating_annotations
+
 logger = logging.getLogger(__name__)
 
 TARGET = 'driver'
@@ -65,6 +68,11 @@ TARGET = 'driver'
 KYC_STATES = ('pending', 'in_review', 'approved', 'rejected', 'expired')
 ONLINE_STATUSES = ('online', 'on ride')
 VEHICLE_EXPIRIES = ('insurance_expiry', 'permit_expiry', 'fitness_expiry', 'puc_expiry')
+#: Document key -> its expiry column on the owner (driver or vehicle).
+DOCUMENT_EXPIRY = {'license_front': 'license_expiry', 'license_back': 'license_expiry',
+                   'health_insurance': 'health_insurance_expiry', 'term_insurance': 'term_insurance_expiry',
+                   'insurance': 'insurance_expiry', 'permit': 'permit_expiry', 'fitness': 'fitness_expiry',
+                   'puc': 'puc_expiry'}
 SUSPEND_REASONS = {k: v for k, v in DriverSuspension.REASON_CHOICES if k != 'deactivated'}
 BULK_ACTIONS = ('suspend', 'reinstate')
 BULK_MAX_IDS = 500
@@ -74,7 +82,7 @@ SORTS = {
     'id': 'id',
     'joined': 'user_id__created_at',
     'rating': 'ratings',
-    'trips': 'total_trips',
+    'trips': 'trip_count',
     'waiting': 'waiting_since',
     'license_expiry': 'license_expiry',
 }
@@ -126,11 +134,16 @@ def city_tz(node):
         return _zoneinfo(None)
 
 
-def _city(driver):
+def _city(driver, tzs=None):
     node = getattr(driver, 'home_city', None)
     if node is None:
         return None
-    return {'code': node.code, 'name': node.name, 'timezone': str(city_tz(node))}
+    # 12 Nov: one zone lookup per city per page, not one per row (`tzs` is the page's memo).
+    if tzs is None:
+        tz = city_tz(node)
+    else:
+        tz = tzs[node.id] if node.id in tzs else tzs.setdefault(node.id, city_tz(node))
+    return {'code': node.code, 'name': node.name, 'timezone': str(tz)}
 
 
 def active_suspension_q():
@@ -204,6 +217,9 @@ def annotate(queryset):
         is_flagged=Exists(TripFlag.objects.filter(
             trip__driver_id=OuterRef('pk'), cleared_at__isnull=True)),
         waiting_since=Coalesce('uploaded_timestamp', 'user_id__created_at'),
+        # 12 Nov: the one trip count and the rating summary, in the list's own query.
+        trip_count=trip_count_annotation(),
+        **rating_annotations(),
     )
 
 
@@ -295,6 +311,10 @@ def filter_drivers(params, queryset, today=None):
         queryset = queryset.filter(ratings__gte=low)
     if high is not None:
         queryset = queryset.filter(ratings__lte=high)
+    # 12 Nov: "Low rating" -- an average below the setting from enough ratings; never "no rating".
+    if _bool(params, 'low_rating'):
+        from .ratings import low_rating_q
+        queryset = queryset.filter(low_rating_q())
 
     joined_from, joined_to = _date(params, 'joined_from'), _date(params, 'joined_to')
     if joined_from and joined_to and joined_from > joined_to:
@@ -342,14 +362,15 @@ def _base_row(driver):
         'docs_uploaded': _has_file(driver, 'license_doc'),
         'license_expiry': _iso(driver.license_expiry),
         'status': driver.status,
-        'total_trips': driver.total_trips,
+        'total_trips': getattr(driver, 'trip_count', None),
         'ratings': str(driver.ratings),
+        'rating_count': getattr(driver, 'rating_count', None),
         'approved': driver.approved,
         'active_vehicle': driver.active_vehicle_id,
     }
 
 
-def _row(driver, today):
+def _row(driver, today, tzs=None):
     vehicle = driver.active_vehicle
     row = _base_row(driver)
     row.update({
@@ -359,7 +380,7 @@ def _row(driver, today):
         'flagged': bool(getattr(driver, 'is_flagged', False)),
         'documents_expired': documents_expired(driver, today),
         'online': driver.status in ONLINE_STATUSES,
-        'home_city': _city(driver),
+        'home_city': _city(driver, tzs),
         'vehicle_type': (vehicle.vehicle_type_id.type
                          if vehicle and vehicle.vehicle_type_id else None),
         'vehicle_number': vehicle.vehicle_number if vehicle else None,
@@ -395,7 +416,8 @@ def list_response(request, queryset):
     today = _today()
 
     def build(page):
-        return [_row(d, today) for d in page]
+        tzs = {}
+        return [_row(d, today, tzs) for d in page]
 
     return _page(request, queryset, build)
 
@@ -426,6 +448,8 @@ def _document_rows(driver, vehicle, documents_visible):
         rows.append({
             'key': key,
             'label': check['label'],
+            # 12 Nov: the expiry on record, shown beside the document in the console.
+            'expires': _iso(getattr(owner, DOCUMENT_EXPIRY.get(key, ''), None) if DOCUMENT_EXPIRY.get(key) else None),
             'description': compliance.document_description(key),
             'owner': 'vehicle' if vehicle is not None else 'driver',
             'vehicle_id': vehicle.id if vehicle is not None else None,
@@ -494,7 +518,7 @@ def _documents_visible(user, driver):
 def documents_payload(user, driver):
     visible = _documents_visible(user, driver)
     rows = _document_rows(driver, None, visible) + _extra_rows(driver, None, visible)
-    for vehicle in driver.vehicle_set.order_by('id'):
+    for vehicle in driver.vehicle_set.exclude(status='archived').order_by('id'):
         rows.extend(_document_rows(driver, vehicle, visible))
         rows.extend(_extra_rows(driver, vehicle, visible))
     return rows
@@ -565,12 +589,21 @@ def queue_response(request):
     def build(page):
         from .admin_views import _compliance_payload
 
-        out = []
+        out, tzs = [], {}
         for driver in page:
-            row = _row(driver, today)
+            row = _row(driver, today, tzs)
             since = getattr(driver, 'waiting_since', None)
             row['waiting_seconds'] = int((now - since).total_seconds()) if since else None
+            # 12 Nov: the city's review target (working days) and whether this driver is past it.
+            from .review_target import due as _review_due
+            due_at, days = _review_due(driver, since)
+            row['review_target_days'] = days
+            row['review_due_at'] = _iso(due_at)
+            row['past_target'] = bool(due_at and due_at < now)
             row['checklist'] = _compliance_payload(driver)
+            # 12 Nov: the shared checklist (requirements.py), as the driver and the approval see it.
+            from . import requirements as _req
+            row['requirements'] = _req.summary(driver)
             row['documents'] = documents_payload(request.user, driver)
             out.append(row)
         return out
@@ -635,7 +668,7 @@ def rejected_documents(driver):
 
 def documents_payload_raw(driver):
     rows = _document_rows(driver, None, False) + _extra_rows(driver, None, False)
-    for vehicle in driver.vehicle_set.order_by('id'):
+    for vehicle in driver.vehicle_set.exclude(status='archived').order_by('id'):
         rows.extend(_document_rows(driver, vehicle, False))
         rows.extend(_extra_rows(driver, vehicle, False))
     return rows
@@ -663,10 +696,13 @@ def _ratings(driver):
     for row in given.values('score').annotate(n=Count('id')):
         if 1 <= (row['score'] or 0) <= 5:
             distribution[str(row['score'])] = row['n']
+    from .ratings import summary
+    s = summary(driver)
     return {
         'average': str(driver.ratings),
         'computed_average': (round(float(agg['avg']), 2) if agg['avg'] is not None else None),
-        'count': agg['count'],
+        'count': s['count'],
+        'low': s['low'],
         'distribution': distribution,
     }
 
@@ -731,6 +767,8 @@ def _requirements_summary(driver):
     c = requirements.checklist(driver)
     bank = DriverBankAccount.objects.filter(driver=driver).first()
     return {'done': c['done'], 'total': c['total'], 'blocking': c['blocking'],
+            # 12 Nov: the badge reads these, so the console and the driver's pages agree.
+            'summary': requirements.summary(driver, c),
             'items': [{k: i[k] for k in ('key', 'label', 'status', 'reason', 'blocks_online', 'need', 'expires')}
                       for i in c['items']],
             'name_pending': driver.name_pending or None,
@@ -739,6 +777,11 @@ def _requirements_summary(driver):
                       'verification_status': bank.verification_status} if bank else None),
             'police_verification_status': driver.police_verification_status,
             'background_check_status': driver.background_check_status}
+
+
+def _verification(driver):
+    from . import verification
+    return verification.latest(driver)
 
 
 def detail_extras(request, driver):
@@ -756,6 +799,8 @@ def detail_extras(request, driver):
         'mvag_records': _records_status(driver),
         # 10 Nov: the market's checklist, a name change waiting, the bank account's check.
         'requirements': _requirements_summary(driver),
+        # 12 Nov: automated checks (licence, RC, Aadhaar, name, face, police) via verification.py.
+        'verification': _verification(driver),
         'approval_blockers': blockers,
         'ratings_summary': _ratings(driver),
         'counts': _counts(driver),
@@ -1244,6 +1289,20 @@ def admin_note_driver(request, driver_id):
 # Vehicles
 # ---------------------------------------------------------------------------
 
+def _make_room_to_activate(driver, vehicle):
+    """12 Nov: a plate is on one active vehicle anywhere, and a driver has one active vehicle.
+    False when the plate is on another driver's active vehicle; otherwise takes this driver's other
+    active vehicle off the road (inactive) and returns True. `driver` is already in scope."""
+    from .plates import normalise_plate, normalised_plate_expression
+
+    if (Vehicle.objects.annotate(_plate=normalised_plate_expression())
+            .filter(_plate=normalise_plate(vehicle.vehicle_number), status='active')
+            .exclude(driver_id=driver).exists()):
+        return False
+    Vehicle.objects.filter(driver_id=driver, status='active').exclude(pk=vehicle.pk).update(status='inactive')
+    return True
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, ScopedPermission('driver.write')])
 def admin_vehicle_status(request, driver_id, vehicle_id):
@@ -1274,12 +1333,17 @@ def admin_vehicle_status(request, driver_id, vehicle_id):
             return success_response({'driver_id': driver.id, 'vehicle_id': vehicle.id,
                                      'status': wanted, 'changed': False}, status.HTTP_200_OK)
         before = {'vehicle_status': vehicle.status, 'active_vehicle_id': driver.active_vehicle_id}
+        if wanted == 'active' and not _make_room_to_activate(driver, vehicle):
+            return error_response(code='PLATE_TAKEN',
+                                  message="That number plate is on another driver's active vehicle.",
+                                  field='vehicle_number', issue='plate on another active vehicle',
+                                  status=status.HTTP_409_CONFLICT)
         vehicle.status = wanted
         vehicle.save(update_fields=['status'])
         if wanted == 'inactive' and driver.active_vehicle_id == vehicle.id:
             driver.active_vehicle = None
             driver.save(update_fields=['active_vehicle'])
-        elif wanted == 'active' and driver.active_vehicle_id is None:
+        elif wanted == 'active' and driver.active_vehicle_id != vehicle.id:
             driver.active_vehicle = vehicle
             driver.save(update_fields=['active_vehicle'])
         record_admin_action(
@@ -1589,3 +1653,23 @@ def _records_status(driver):
     except Exception:  # noqa: BLE001 - the detail page renders without it
         logger.exception('records status failed for driver=%s', driver.id)
         return None
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.kyc')])
+def admin_run_verification(request, driver_id):
+    """POST /driver/admin/<id>/verify/  Run every automated document check now (12 Nov).
+
+    Through the configured provider (verification.py; the fake on QA). Results are stored and
+    shown on the review screen; nothing is approved by them. Audited."""
+    from . import verification
+
+    driver = scoped_or_none(request.user, for_kyc_view(request.user, Driver.objects.select_related(
+        'user_id', 'home_city', 'active_vehicle')), id=driver_id)
+    if driver is None:
+        return _not_found(driver_id)
+    rows = verification.run_all(driver, by=request.user)
+    record_admin_action(request, action='driver_documents_verified', target_type=TARGET, target_id=driver.id,
+                        before={}, after={r.kind: r.status for r in rows} | {'provider': rows[0].provider if rows else ''},
+                        reason='Automated document checks run')
+    return success_response(verification.latest(driver), status.HTTP_200_OK)

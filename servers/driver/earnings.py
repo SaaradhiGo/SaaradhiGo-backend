@@ -334,10 +334,27 @@ def _row_for(entry, trip, trip_id, settlement=None):
     )
 
 
+def _settled_ledger():
+    from servers.rider.models import WalletTransaction
+
+    return WalletTransaction.objects.filter(purpose__in=SETTLEMENT_PURPOSES, status='completed')
+
+
 def trip_count(driver):
     """How many trips the driver has done: the settled trips, as Earnings and the statement count
-    them (`summarise`). The one count every driver screen shows."""
-    return summarise(settlement_rows(driver, refunds=False))['total_trips']
+    them (one settlement ledger row per trip, `settlement_rows`). The one count every screen shows,
+    the driver's and the console's (12 Nov)."""
+    return _settled_ledger().filter(user_id=driver.user_id).count()
+
+
+def trip_count_annotation():
+    """`trip_count` for a Driver queryset, in the same query: `.annotate(trip_count=...)`."""
+    from django.db.models import Count, IntegerField, OuterRef, Subquery
+    from django.db.models.functions import Coalesce
+
+    rows = (_settled_ledger().filter(user_id=OuterRef('user_id')).order_by()
+            .values('user_id').annotate(n=Count('id')).values('n'))
+    return Coalesce(Subquery(rows, output_field=IntegerField()), 0)
 
 
 def summarise(rows):

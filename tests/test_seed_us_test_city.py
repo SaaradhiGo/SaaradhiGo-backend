@@ -617,7 +617,7 @@ class TestRemove:
         driver = seeded['drivers'][0]
         extra = Vehicle.objects.create(
             driver_id=driver, vehicle_type_id=driver.active_vehicle.vehicle_type_id,
-            vehicle_number='TX-REAL-01')
+            vehicle_number='TX-REAL-01', status='inactive')  # 12 Nov: one active vehicle per driver
         before = fingerprint()
 
         with pytest.raises(CommandError, match='did not create') as exc:

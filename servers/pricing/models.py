@@ -219,6 +219,13 @@ class ServiceZone(models.Model):
         null=True, blank=True,
         help_text='Seconds to look for a driver (30-900). Blank: the parent zone or 180.',
     )
+    #: 12 Nov (console QA): working days a driver's documents may wait for review before the KYC
+    #: queue marks them past target and alerts. Blank: the parent zone's, else 1. The driver's
+    #: "We usually review within ..." text reads the same value.
+    kyc_review_target_days = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text='Working days to review a driver (1-10). Blank: the parent zone or 1.',
+    )
 
     # ------------------------------------------------------------------
     # THE ADMIN SCOPE SPINE

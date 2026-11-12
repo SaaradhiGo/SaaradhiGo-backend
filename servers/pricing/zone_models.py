@@ -22,6 +22,7 @@ SNAPSHOT_FIELDS = (
     'code', 'name', 'country', 'state_code', 'city', 'zone_type', 'priority',
     'polygon_geojson', 'currency', 'timezone_name', 'distance_unit', 'tax_mode',
     'per_trip_fee', 'per_trip_fee_label', 'is_active', 'metadata', 'dispatch_timeout_seconds',
+    'kyc_review_target_days',
 )
 
 KIND_CREATE = 'create'

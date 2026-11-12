@@ -195,3 +195,11 @@ def remind_expiring_documents(today=None):
                 source=DOCUMENT_EXPIRING)
             queued += len(rows)
     return queued
+
+
+@shared_task(name='driver.kyc_review_target_sweep')
+def kyc_review_target_sweep():
+    """12 Nov: one alert per city while drivers wait past the KYC review target (review_target.py)."""
+    from .review_target import sweep
+
+    return sweep()

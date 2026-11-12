@@ -2,7 +2,7 @@ from django.urls import path
 
 from .views import (
     approve_request, cancel_request, change_policy, list_policies,
-    list_requests, reject_request, request_detail,
+    list_requests, reject_request, request_detail, self_approval,
 )
 
 # Mounted at api/v1/approvals/. The `admin/` segment is what puts every
@@ -15,5 +15,6 @@ urlpatterns = [
     path('admin/requests/<int:request_id>/reject/', reject_request, name='approvals_reject'),
     path('admin/requests/<int:request_id>/cancel/', cancel_request, name='approvals_cancel'),
     path('admin/policies/', list_policies, name='approvals_policies'),
+    path('admin/self-approval/', self_approval, name='approvals_self_approval'),
     path('admin/policies/change/', change_policy, name='approvals_policy_change'),
 ]

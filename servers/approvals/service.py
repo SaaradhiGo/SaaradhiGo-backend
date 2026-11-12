@@ -537,6 +537,27 @@ def _possible_checkers(row):
         yield user
 
 
+def self_approval_switch(now=None):
+    """Is self-approval on, and who turned it on (12 Nov)?
+
+    Production: only an active `SelfApprovalGrant` (a Super Admin, a reason, at most 7 days);
+    the APPROVALS_SOLO_SUPER_ADMIN setting is refused at start there. Elsewhere the setting also
+    turns it on, and says so."""
+    from .models import SelfApprovalGrant
+
+    grant = SelfApprovalGrant.active(now)
+    if grant is not None:
+        return {'on': True, 'source': 'grant', 'by': grant.granted_by_label,
+                'at': grant.granted_at.isoformat(), 'expires_at': grant.expires_at.isoformat(),
+                'reason': grant.reason, 'grant_id': grant.id}
+    if getattr(settings, 'APPROVALS_SOLO_SUPER_ADMIN', False) and not getattr(settings, 'IS_PRODUCTION', True):
+        return {'on': True, 'source': 'setting', 'by': 'Deployment setting APPROVALS_SOLO_SUPER_ADMIN',
+                'at': None, 'expires_at': None, 'reason': 'QA: one person checks everything until launch.',
+                'grant_id': None}
+    return {'on': False, 'source': None, 'by': None, 'at': None, 'expires_at': None, 'reason': None,
+            'grant_id': None}
+
+
 def self_approval_allowed(row, user):
     """May `user` decide a request they raised themselves? (owner, 2026-11-03)
 
@@ -546,7 +567,7 @@ def self_approval_allowed(row, user):
     a second real checker is assigned. Everything else a checker is asked
     (`approval.check`, scope, the action's capability) still applies.
     """
-    if not getattr(settings, 'APPROVALS_SOLO_SUPER_ADMIN', False):
+    if not self_approval_switch()['on']:
         return False
     if user is None or user.pk != row.maker_id:
         return False

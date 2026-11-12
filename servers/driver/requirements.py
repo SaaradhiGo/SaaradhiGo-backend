@@ -156,7 +156,8 @@ def age_on(dob, today):
 def _vehicle(driver):
     from .models import Vehicle
 
-    return driver.active_vehicle or Vehicle.objects.filter(driver_id=driver).order_by('id').first()
+    return driver.active_vehicle or (Vehicle.objects.filter(driver_id=driver).exclude(status='archived')
+                                     .order_by('id').first())
 
 
 def item_status(driver, key, config, *, vehicle=None, reviews=None, today=None):
@@ -419,6 +420,17 @@ def missing_expiry(driver):
         if getattr(getattr(vehicle, VEHICLE_DOCUMENT_COLUMNS[key], None), 'name', '') and not getattr(vehicle, column, None):
             out.append(ITEMS[key][1])
     return out
+
+
+def summary(driver, data=None):
+    """The checklist in a few numbers and labels (12 Nov), for the console's badges, list and KYC
+    queue: the same function the driver's own pages and the approval gate use."""
+    data = data or checklist(driver)
+    required = [r for r in data['items'] if r['need'] == REQUIRED]
+    return {'done': data['done'], 'total': data['total'],
+            'blocking': [ITEMS[k][1] for k in data['blocking']],
+            'outstanding': [r['label'] for r in required if r['status'] not in DONE_STATES],
+            'expiring': [r['label'] for r in required if r['status'] == 'expiring']}
 
 
 def blocking_unmet(driver):

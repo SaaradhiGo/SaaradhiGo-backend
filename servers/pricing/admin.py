@@ -34,7 +34,7 @@ class ServiceZoneAdmin(admin.ModelAdmin):
                                   'polygon_geojson')}),
         ('Market semantics', {
             'fields': ('currency', 'timezone_name', 'distance_unit',
-                       'tax_mode', 'per_trip_fee', 'per_trip_fee_label', 'dispatch_timeout_seconds',
+                       'tax_mode', 'per_trip_fee', 'per_trip_fee_label', 'dispatch_timeout_seconds', 'kyc_review_target_days',
                        'resolved_market'),
             'description': (
                 'Leave blank to inherit from the country. '

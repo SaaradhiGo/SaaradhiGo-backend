@@ -509,6 +509,12 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'promotions.sweep',
         'schedule': _crontab(minute='*/5'),
     },
+    'kyc-review-target-every-15-min': {
+        # 12 Nov: drivers waiting for document review past their city's target raise one alert
+        # per city, cleared when the queue is back within it (driver/review_target.py).
+        'task': 'driver.kyc_review_target_sweep',
+        'schedule': _crontab(minute='*/15'),
+    },
     'fraud-run-rules-every-15-min': {
         # Fraud & Risk (module 13): evaluates the enabled detection rules over their bounded recent
         # windows and raises or extends flags; then the queue-aging alert. Idempotent; it only
@@ -937,6 +943,15 @@ QA_BOOTSTRAP_ACTOR_EMAIL = (os.environ.get('QA_BOOTSTRAP_ACTOR_EMAIL') or '').st
 
 # QA only (11 Nov): a QA-simulated test driver (not approved) may go online without the market's
 # requirements. Off unless set; production refuses to boot with it on (below).
+# 12 Nov (console QA): a driver is "Low rating" when the average riders gave is below this, from at
+# least this many ratings. A driver with fewer (or none) is never low.
+# 12 Nov: automated document checks (servers/driver/verification.py). Blank: the fake outside
+# production, not connected in production. A real provider is added once signed (config-required.md).
+DOC_VERIFICATION_PROVIDER = os.environ.get('DOC_VERIFICATION_PROVIDER', '').strip().lower()
+# 12 Nov: working days a driver's documents may wait for review where the city sets none.
+KYC_REVIEW_TARGET_WORKING_DAYS = int(os.environ.get('KYC_REVIEW_TARGET_WORKING_DAYS', '1'))
+DRIVER_LOW_RATING_BELOW = os.environ.get('DRIVER_LOW_RATING_BELOW', '4.5')
+DRIVER_LOW_RATING_MIN_RATINGS = int(os.environ.get('DRIVER_LOW_RATING_MIN_RATINGS', '10'))
 QA_SIM_DRIVERS_SKIP_REQUIREMENTS = os.environ.get('QA_SIM_DRIVERS_SKIP_REQUIREMENTS', '').strip().lower() in ('1', 'true', 'yes')
 
 if IS_PRODUCTION:
@@ -965,6 +980,11 @@ if IS_PRODUCTION:
             'skips SMS delivery and throttling -- an authentication bypass.'
         )
 
+    if APPROVALS_SOLO_SUPER_ADMIN:
+        _production_faults.append(
+            'APPROVALS_SOLO_SUPER_ADMIN is on. In production self-approval is never a setting: a '
+            'Super Admin turns it on in the console (Approvals) with a reason and an expiry of at '
+            'most 7 days, and the banner names them (12 Nov).')
     if QA_SIM_DRIVERS_SKIP_REQUIREMENTS:
         _production_faults.append(
             'QA_SIM_DRIVERS_SKIP_REQUIREMENTS is on. It lets an unapproved test driver go online '

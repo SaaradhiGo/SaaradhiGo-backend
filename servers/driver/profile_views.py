@@ -37,6 +37,7 @@ from .models import (
 )
 from .permissions import IsDriver
 from servers.payments.payout_destination import payout_hold_until
+from .review_target import target_days as review_target_days
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,9 @@ def driver_requirements(request):
     return success_response({
         'config': config,
         'checklist': req.checklist(driver),
+        # 12 Nov: "We usually review within N working days" reads the city's KYC review target.
+        'review_target_working_days': __import__('servers.driver.review_target', fromlist=['x']).target_days(
+            driver.home_city),
         'personal': personal_dict(driver),
         'identity': identity_dict(driver),
         'payout_method': payout_method_dict(driver, country),

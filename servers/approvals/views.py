@@ -67,7 +67,11 @@ def _paginate(request, queryset, page_size=20, max_page_size=100):
     body = paginator.get_paginated_response([shown(row, request.user) for row in page]).data
     # Whether the sole-Super-Admin exception is switched on here, so the
     # Command Centre can say so (owner, 2026-11-03).
-    body['self_approval_on'] = bool(settings.APPROVALS_SOLO_SUPER_ADMIN)
+    from .service import self_approval_switch
+    switch = self_approval_switch()
+    body['self_approval_on'] = switch['on']
+    # 12 Nov: who turned it on and when, for the banner.
+    body['self_approval'] = switch
     return success_response(body, status.HTTP_200_OK)
 
 
@@ -340,3 +344,57 @@ def change_policy(request):
         {'approval_request': outcome.request.as_dict(), 'duplicate': outcome.duplicate},
         status.HTTP_202_ACCEPTED,
     )
+
+
+# ---------------------------------------------------------------------------
+# Self-approval (12 Nov): who turned it on, until when; a Super Admin sets or ends it
+# ---------------------------------------------------------------------------
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('report.read')])
+def self_approval(request):
+    """GET  self-approval/  {on, source, by, at, expires_at, reason}
+    POST self-approval/  {reason, days (1-7)}  Super Admin only: turn it on for a while.
+    POST self-approval/  {end: true, reason}   Super Admin only: turn it off now."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from servers.admin_access import breakglass
+    from servers.admin_access.access import is_super_admin
+    from servers.admin_audit.services import record_admin_action
+
+    from .models import SelfApprovalGrant
+    from .service import self_approval_switch
+
+    if request.method == 'GET':
+        return success_response(self_approval_switch(), status.HTTP_200_OK)
+    if not is_super_admin(request.user) or breakglass.is_break_glass(request.user):
+        return error_response(code='SUPER_ADMIN_REQUIRED', message='Only a Super Admin can change this.',
+                              field='', issue='not a super admin', status=status.HTTP_403_FORBIDDEN)
+    reason = str(request.data.get('reason') or '').strip()
+    if not reason:
+        return error_response(code='REASON_REQUIRED', message='Say why.', field='reason',
+                              issue='reason missing', status=status.HTTP_400_BAD_REQUEST)
+    now = timezone.now()
+    if request.data.get('end'):
+        changed = SelfApprovalGrant.objects.filter(revoked_at__isnull=True, expires_at__gt=now).update(
+            revoked_at=now, revoked_by=request.user)
+        record_admin_action(request, action='approvals_self_approval_ended', target_type='self_approval',
+                            target_id=0, before={'grants': changed}, after={'on': False}, reason=reason[:500])
+        return success_response(self_approval_switch(), status.HTTP_200_OK)
+    try:
+        days = int(request.data.get('days') or 0)
+    except (TypeError, ValueError):
+        days = 0
+    if not 1 <= days <= SelfApprovalGrant.MAX_DAYS:
+        return error_response(code='INVALID_EXPIRY', message='Choose 1 to 7 days.', field='days',
+                              issue='expiry out of range', status=status.HTTP_400_BAD_REQUEST)
+    grant = SelfApprovalGrant.objects.create(
+        granted_by=request.user, granted_by_label=(request.user.full_name or request.user.email or '')[:255],
+        reason=reason[:2000], expires_at=now + timedelta(days=days))
+    record_admin_action(request, action='approvals_self_approval_granted', target_type='self_approval',
+                        target_id=grant.id, before={'on': self_approval_switch(now)['on']},
+                        after={'on': True, 'expires_at': grant.expires_at.isoformat(), 'days': days},
+                        reason=reason[:500])
+    return success_response(self_approval_switch(), status.HTTP_201_CREATED)

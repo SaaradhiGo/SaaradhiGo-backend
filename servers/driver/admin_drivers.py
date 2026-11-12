@@ -1289,6 +1289,20 @@ def admin_note_driver(request, driver_id):
 # Vehicles
 # ---------------------------------------------------------------------------
 
+def _make_room_to_activate(driver, vehicle):
+    """12 Nov: a plate is on one active vehicle anywhere, and a driver has one active vehicle.
+    False when the plate is on another driver's active vehicle; otherwise takes this driver's other
+    active vehicle off the road (inactive) and returns True. `driver` is already in scope."""
+    from .plates import normalise_plate, normalised_plate_expression
+
+    if (Vehicle.objects.annotate(_plate=normalised_plate_expression())
+            .filter(_plate=normalise_plate(vehicle.vehicle_number), status='active')
+            .exclude(driver_id=driver).exists()):
+        return False
+    Vehicle.objects.filter(driver_id=driver, status='active').exclude(pk=vehicle.pk).update(status='inactive')
+    return True
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, ScopedPermission('driver.write')])
 def admin_vehicle_status(request, driver_id, vehicle_id):
@@ -1319,18 +1333,11 @@ def admin_vehicle_status(request, driver_id, vehicle_id):
             return success_response({'driver_id': driver.id, 'vehicle_id': vehicle.id,
                                      'status': wanted, 'changed': False}, status.HTTP_200_OK)
         before = {'vehicle_status': vehicle.status, 'active_vehicle_id': driver.active_vehicle_id}
-        if wanted == 'active':
-            # 12 Nov: a plate is on one active vehicle anywhere, and a driver has one active
-            # vehicle: activating this one takes the driver's other active vehicle off the road.
-            from .plates import normalise_plate, normalised_plate_expression
-            if (Vehicle.objects.annotate(_plate=normalised_plate_expression())
-                    .filter(_plate=normalise_plate(vehicle.vehicle_number), status='active')
-                    .exclude(driver_id=driver).exists()):
-                return error_response(code='PLATE_TAKEN',
-                                      message="That number plate is on another driver's active vehicle.",
-                                      field='vehicle_number', issue='plate on another active vehicle',
-                                      status=status.HTTP_409_CONFLICT)
-            Vehicle.objects.filter(driver_id=driver, status='active').exclude(pk=vehicle.pk).update(status='inactive')
+        if wanted == 'active' and not _make_room_to_activate(driver, vehicle):
+            return error_response(code='PLATE_TAKEN',
+                                  message="That number plate is on another driver's active vehicle.",
+                                  field='vehicle_number', issue='plate on another active vehicle',
+                                  status=status.HTTP_409_CONFLICT)
         vehicle.status = wanted
         vehicle.save(update_fields=['status'])
         if wanted == 'inactive' and driver.active_vehicle_id == vehicle.id:

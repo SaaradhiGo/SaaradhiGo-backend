@@ -502,6 +502,8 @@ def test_money_path_matches_the_pre_migration_golden_file(market, settings):
     fails the test. A value that equals only the HALF_EVEN run is a tie the new
     rule rounds the other way, and must differ by exactly one minor unit.
     """
+    # The golden file was cut with GST on; GST off (13 Nov) is tested in test_launch_legal_1113.
+    settings.LEGAL_ENTITIES_JSON = '{"IN": {"gst_registered": true}}'
     settings.PRICING_ALLOW_DEFAULT_FARE = False
     # This proves the minor-units migration, so it runs without the later
     # whole-rupee fare rule (owner, 2026-11-05; tests/test_inr_whole_rupee_fares.py).

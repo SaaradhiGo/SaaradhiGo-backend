@@ -13,6 +13,7 @@ from django.test import Client
 
 from base import sms_templates
 from integrations import stripe_http
+from tests.test_money_minor_units_parity import market  # noqa: F401
 
 User = get_user_model()
 
@@ -209,3 +210,19 @@ def test_usd_payouts_stay_held_until_stripe_connect_is_configured(settings):
     assert payout_rails.has_rail('INR') and not payout_rails.has_rail('USD')
     settings.STRIPE_SECRET_KEY = 'sk_test_x'
     assert payout_rails.has_rail('USD')
+
+
+# --- the public Fares page --------------------------------------------------------------------
+
+@pytest.mark.django_db
+def test_public_fares_lists_rate_cards_and_the_cancellation_rule(market):  # noqa: F811
+    from rest_framework.test import APIClient
+
+    r = APIClient().get('/api/v1/pricing/fares/?country=IN')
+    assert r.status_code == 200
+    cities = r.json()['data']['cities']
+    assert cities and all(c['country'] == 'IN' for c in cities)
+    row = next(c for c in cities if c['vehicles'])
+    v = row['vehicles'][0]
+    assert {'base_fare', 'per_distance', 'per_minute', 'minimum_fare', 'demand_band'} <= set(v)
+    assert 'commission_percent' not in json.dumps(r.json())

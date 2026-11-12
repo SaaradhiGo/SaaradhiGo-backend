@@ -15,7 +15,7 @@ from .commission_views import (
     regulation_list, regulation_update, state_cap_update,
     rule_detail, rule_preview, rule_submit, rules,
 )
-from .market_views import list_countries
+from .market_views import list_countries, public_fares
 from .vehicle_admin import vehicle_class_detail, vehicle_classes
 from .vehicle_views import list_vehicle_types
 
@@ -26,6 +26,7 @@ router.register(r'admin/rate-cards', RateCardViewSet, basename='admin-rate-cards
 urlpatterns = [
     path('zones/', list_active_zones, name='public-zones'),
     path('countries/', list_countries, name='public-countries'),
+    path('fares/', public_fares, name='public-fares'),
     path('vehicle-types/', list_vehicle_types, name='public-vehicle-types'),
     path('quote/', quote, name='fare-quote'),
     # Module 8: commission matrix / rules / config, and the fare-card overview.

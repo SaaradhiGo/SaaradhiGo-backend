@@ -72,3 +72,59 @@ def list_countries(request):
         },
         status.HTTP_200_OK,
     )
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def public_fares(request):
+    """GET /api/v1/pricing/fares/?country=IN (13 Nov): what the public Fares page shows.
+
+    Per city zone (live or launching soon): each vehicle type's active rate card (base, per
+    km or mile, per minute, minimum, night rate), the demand band the fare is held inside, the
+    tax convention and the cancellation rule. Public figures only; never commission or costs."""
+    from django.db.models import Q
+    from django.utils import timezone
+
+    from servers.platform_ops.markets import city_status_for_zone
+
+    from .models import RateCard, ServiceZone
+    from .regulation import cancel_policy, limits_for_zone, state_code_of_zone
+
+    country = str(request.query_params.get('country') or '').upper()[:2]
+    zones = ServiceZone.objects.filter(is_active=True, parent__isnull=True)
+    if country:
+        zones = zones.filter(country=country)
+    now = timezone.now()
+    out = []
+    for zone in zones.order_by('country', 'name'):
+        state, city_name = city_status_for_zone(zone)
+        if state == 'paused':
+            continue
+        cards = (RateCard.objects.filter(zone=zone, is_active=True, effective_from__lte=now)
+                 .filter(Q(effective_to__isnull=True) | Q(effective_to__gt=now))
+                 .select_related('vehicle_type').order_by('vehicle_type_id', '-version'))
+        seen, rows = set(), []
+        for card in cards:
+            if card.vehicle_type_id in seen:
+                continue
+            seen.add(card.vehicle_type_id)
+            band = limits_for_zone(zone, card.surge_cap_multiplier)
+            rows.append({
+                'vehicle': card.vehicle_type.type,
+                'base_fare': str(card.base_fare), 'per_distance': str(card.per_km_fare),
+                'per_minute': str(card.per_min_fare), 'minimum_fare': str(card.min_fare),
+                'night_multiplier': str(card.night_surge_multiplier),
+                'night_hours': [card.night_surge_start_hour, card.night_surge_end_hour],
+                'demand_band': band.as_dict(),
+            })
+        policy = cancel_policy(zone.country, state_code_of_zone(zone))
+        out.append({
+            'zone': zone.code, 'city': city_name or zone.city or zone.name, 'city_status': state,
+            'country': zone.country,
+            'currency': zone.currency or zone.country_profile.currency,
+            'distance_unit': zone.distance_unit or zone.country_profile.distance_unit,
+            'tax_mode': zone.tax_mode or zone.country_profile.tax_mode, 'tax_label': zone.tax_label,
+            'vehicles': rows,
+            'cancellation': policy.as_dict() if policy else None,
+        })
+    return success_response({'cities': out}, status.HTTP_200_OK)

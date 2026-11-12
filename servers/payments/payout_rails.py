@@ -49,9 +49,12 @@ def has_rail(currency):
     if code == 'USD':
         # 13 Nov: Stripe Connect is the US rail, but only once it is configured; until then USD
         # payouts stay held (never dispatched to a provider that cannot pay, never refunded).
-        from servers.payments.payment_gateways.factory import get_payment_gateway_for_payouts
-        gateway = get_payment_gateway_for_payouts('US')
-        return bool(gateway) and gateway.get_name() == 'stripe_connect'
+        # Read from configuration only: no adapter is built just to ask.
+        from django.conf import settings
+
+        from integrations import stripe_http
+        provider = ((getattr(settings, 'PAYOUT_PROVIDERS', None) or {}).get('US') or '').lower()
+        return provider in ('stripe_connect', 'stripe-connect') and             stripe_http.key_refusal(stripe_http.secret_key()) is None
     return False
 
 

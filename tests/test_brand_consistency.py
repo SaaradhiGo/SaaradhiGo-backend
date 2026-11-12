@@ -143,11 +143,16 @@ def test_the_otp_message_uses_the_brand_setting():
 
     Every rider and every driver receives it before seeing a screen.
     """
+    # 13 Nov: India's DLT rules need the exact registered text, so the code SMS is rendered from
+    # base/sms_templates.py; its brand must be the platform's brand setting.
+    from django.conf import settings
+
+    from base import sms_templates
     source = (BACKEND_ROOT / 'servers' / 'auth_user' / 'views.py').read_text(
         encoding='utf-8')
-    assert 'Your OTP for {settings.PLATFORM_BRAND_NAME}' in source, (
-        'the OTP SMS must interpolate the brand setting rather than hardcode a name'
-    )
+    assert "sms_templates.render('otp'" in source
+    assert sms_templates.render('otp', otp='1').startswith(
+        f'Your OTP for {settings.PLATFORM_BRAND_NAME} is'), 'the OTP SMS names another brand'
 
 
 @pytest.mark.django_db

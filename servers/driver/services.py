@@ -1591,10 +1591,10 @@ def initiate_connect_payout(withdrawal, driver):
         return True
     account = (getattr(driver, 'stripe_account_id', '') or '').strip()
     if not account:
-        return _payout_failed(withdrawal, 'No Stripe payout account: finish payout setup in the app')
+        return _payout_failed(withdrawal, 'USD payout needs a Stripe payout account: finish payout setup in the app')
     gateway = get_payment_gateway_for_payouts('US')
     if not gateway or not hasattr(gateway, 'create_connect_transfer'):
-        return _payout_failed(withdrawal, 'No payout provider is configured for US')
+        return _payout_failed(withdrawal, 'No USD payout provider is configured for US')
     reference_id = f'withdrawal_{withdrawal.id}_driver_{driver.id}'
     result = gateway.create_connect_transfer(
         account_id=account, amount_minor=withdrawal.amount_minor - (withdrawal.fee_minor or 0),

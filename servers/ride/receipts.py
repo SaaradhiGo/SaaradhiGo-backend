@@ -136,7 +136,8 @@ def vehicle_line(v):
         return ''
     car = ' '.join(str(x) for x in (getattr(v, 'color', ''), getattr(v, 'brand', ''),
                                     getattr(v, 'model', '')) if x)
-    return ' · '.join(x for x in (car, str(getattr(v, 'vehicle_number', '') or '')) if x)
+    from servers.driver.plates import display_plate
+    return ' · '.join(x for x in (car, display_plate(getattr(v, 'vehicle_number', ''))) if x)
 
 
 def company_lines():

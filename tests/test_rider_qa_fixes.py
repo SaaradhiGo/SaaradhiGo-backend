@@ -183,7 +183,7 @@ class TestCancelReasons:
 
 def test_the_vehicle_line_names_the_car():
     from servers.ride.receipts import vehicle_line
-    v = mock.Mock(color='White', brand='Maruti Suzuki', model='Dzire', vehicle_number='TS 09 QT 0059')
+    v = mock.Mock(color='White', brand='Maruti Suzuki', model='Dzire', vehicle_number='TS09QT0059')
     assert vehicle_line(v) == 'White Maruti Suzuki Dzire · TS 09 QT 0059'
 
 

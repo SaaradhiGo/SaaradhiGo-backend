@@ -48,10 +48,10 @@ def target_of(step):
 
 
 def _call(phone, message):
-    from servers.callbridge.providers import CallingUnavailable, get_provider
+    from servers.callbridge.providers import CallingUnavailable, country_of_phone, get_provider
 
     try:
-        provider = get_provider()
+        provider = get_provider(country_of_phone(phone))
         return provider.name, provider.page(phone, message, 'sos_escalation')
     except CallingUnavailable:
         return '', None
@@ -60,7 +60,7 @@ def _call(phone, message):
         return '', None
 
 
-def _sms(phone, text):
+def _sms(phone, text, ref_name=''):
     from servers.sharing.sms import mode
 
     if mode() != 'live':
@@ -68,7 +68,8 @@ def _sms(phone, text):
     try:
         from base.utils import send_otp_via_sns, stash_sms_message
 
-        send_otp_via_sns.delay(phone, stash_sms_message(text, ttl=3600))
+        send_otp_via_sns.delay(phone, stash_sms_message(
+            text, ttl=3600, kind='oncall_page' if ref_name else '', values={'ref': ref_name}))
         return 'sms'
     except Exception:  # noqa: BLE001
         logger.exception('oncall: sms failed')
@@ -83,14 +84,15 @@ def page(event, step, now):
     rota = rota_for(event.anchor_node)
     name, phone = rota.contact(role) if rota else ('', '')
     ref_name = refs.incident_ref(event.incident) if event.incident_id else f'SOS-{event.id}'
-    message = f'SaaradhiGo SOS {ref_name} has not been acknowledged. Open the console now.'
+    from base import sms_templates
+    message = sms_templates.render('oncall_page', ref=ref_name)
     channel, outcome, provider, ref = 'none', 'no_rota' if rota is None else 'no_number', '', ''
     if phone:
         provider, ref = _call(phone, message)
         if ref:
             channel, outcome = 'call', 'placed'
         else:
-            sent = _sms(phone, message)
+            sent = _sms(phone, message, ref_name)
             channel, outcome, provider = 'sms', ('sent' if sent else 'failed'), sent or ''
     try:
         with transaction.atomic():

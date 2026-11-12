@@ -31,7 +31,7 @@ on:
   workflow_dispatch:
 
 # Don't run more than one deploy at a time on the same branch; queue them
-# so the second push waits for the first to settle on EC2.
+# so the second push waits for the first to settle.
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
@@ -270,6 +270,23 @@ jobs:
   # Nothing about the validation gates changes. `needs:` still requires all
   # three to pass before this job runs at all, so an unvalidated commit can
   # never reach EC2 -- that gate is not weakened, moved or made conditional.
+  infra-validate:
+    name: validate / terraform
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The production stack is code (infra/production); every push checks it formats and validates.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: fmt and validate
+        working-directory: infra/production
+        run: |
+          terraform fmt -check -recursive || echo "::warning::infra/production is not terraform-fmt formatted"
+          terraform init -backend=false -input=false
+          terraform validate
+
   secret-scan:
     name: secret scan
     runs-on: ubuntu-latest
@@ -297,136 +314,122 @@ jobs:
           docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.21.2             git /repo --config /repo/.gitleaks.toml --log-opts="$RANGE"             --redact --no-banner --exit-code 1
 
   deploy:
-    name: deploy to EC2 (optional)
-    needs: [test, lint, postgres-concurrency]
+    name: deploy production (AWS ap-south-1)
+    needs: [test, lint, postgres-concurrency, infra-validate]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     # Production deploys only from main, through CI, never by hand (owner rule, 12 Nov):
     #   - only a push to main (the merge of a dev -> main PR), never workflow_dispatch,
     #     a pull_request run or another branch;
     #   - only after lint, the suite and the Postgres check pass (`needs` above);
     #   - only once production is switched on on purpose: the repository variable
-    #     PRODUCTION_DEPLOY_ENABLED is 'true' AND the EC2 secrets exist in the
-    #     `production` environment. Setting a secret alone deploys nothing (the
-    #     2026-10-27 concern, AUDIT.md section 14).
+    #     PRODUCTION_DEPLOY_ENABLED is 'true' AND AWS_DEPLOY_ROLE_ARN is set. Setting one alone
+    #     deploys nothing (the 2026-10-27 concern, AUDIT.md section 14).
+    # 13 Nov: the target is the designed AWS stack (infra/production, Terraform), reached through
+    # the GitHub OIDC role (infra/bootstrap/github-oidc.yml); no AWS key is stored anywhere.
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       vars.PRODUCTION_DEPLOY_ENABLED == 'true'
     environment: production
-
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ap-south-1
+      TF_VAR_image_tag: ${{ github.sha }}
+      TF_VAR_certificate_validated: ${{ vars.PRODUCTION_CERT_VALIDATED == 'true' }}
+      TF_VAR_alert_email: ${{ vars.PRODUCTION_ALERT_EMAIL }}
     steps:
-      - name: Is a deploy target configured?
+      - name: Is the AWS role configured?
         id: preflight
-        env:
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
         run: |
-          missing=""
-          [ -n "$EC2_SSH_KEY" ] || missing="$missing EC2_SSH_KEY"
-          [ -n "$EC2_HOST" ]    || missing="$missing EC2_HOST"
-          [ -n "$EC2_USER" ]    || missing="$missing EC2_USER"
-
-          if [ -n "$missing" ]; then
+          if [ -z "${{ vars.AWS_DEPLOY_ROLE_ARN }}" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Deploy skipped::No EC2 deploy target is configured (missing:$missing). The application was validated; nothing was deployed."
-            {
-              echo "### Deploy skipped"
-              echo
-              echo "No EC2 deploy target is configured. Missing secrets:\`$missing\`."
-              echo
-              echo "The three \`validate\` jobs passed, so **the application is fine** --"
-              echo "this run deployed nothing because there is nowhere configured to"
-              echo "deploy to. Set the secrets to enable it, or remove this job if EC2"
-              echo "is no longer the deployment target."
-            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice title=Deploy skipped::AWS_DEPLOY_ROLE_ARN is not set (docs/config-required.md). Nothing was deployed."
           else
             echo "configured=true" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Deploying::EC2 target configured; deploying $GITHUB_SHA."
           fi
 
-      - name: Checkout code
+      - uses: actions/checkout@v4
         if: steps.preflight.outputs.configured == 'true'
-        uses: actions/checkout@v4
 
-      - name: Setup SSH
+      - uses: aws-actions/configure-aws-credentials@v4
         if: steps.preflight.outputs.configured == 'true'
-        env:
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_HOST_KEY: ${{ secrets.EC2_HOST_KEY }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Terraform state bucket and lock table (idempotent)
+        if: steps.preflight.outputs.configured == 'true'
         run: |
           set -euo pipefail
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/key.pem
-          chmod 600 ~/.ssh/key.pem
+          aws s3api head-bucket --bucket saaradhigo-prod-tfstate 2>/dev/null || {
+            aws s3api create-bucket --bucket saaradhigo-prod-tfstate \
+              --create-bucket-configuration LocationConstraint=ap-south-1
+            aws s3api put-bucket-versioning --bucket saaradhigo-prod-tfstate \
+              --versioning-configuration Status=Enabled
+            aws s3api put-public-access-block --bucket saaradhigo-prod-tfstate \
+              --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          }
+          aws dynamodb describe-table --table-name saaradhigo-prod-tflock >/dev/null 2>&1 || \
+            aws dynamodb create-table --table-name saaradhigo-prod-tflock \
+              --attribute-definitions AttributeName=LockID,AttributeType=S \
+              --key-schema AttributeName=LockID,KeyType=HASH --billing-mode PAY_PER_REQUEST
 
-          # Prefer the pinned host key (EC2_HOST_KEY from `ssh-keyscan <host>`).
-          # If that secret is missing/empty, derive it at runtime from EC2_HOST
-          # so a deploy never dies on "Host key verification failed".
-          if [ -n "${EC2_HOST_KEY// /}" ]; then
-            printf '%s\n' "$EC2_HOST_KEY" > ~/.ssh/known_hosts
-          elif [ -n "$EC2_HOST" ]; then
-            echo "EC2_HOST_KEY secret not set — running ssh-keyscan against $EC2_HOST"
-            ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
-          else
-            echo "::error::Neither EC2_HOST_KEY nor EC2_HOST is set; cannot verify host identity."
-            exit 1
-          fi
-
-          # Fail loudly if known_hosts is still empty — an empty file is
-          # exactly what produces "Host key verification failed".
-          if [ ! -s ~/.ssh/known_hosts ]; then
-            echo "::error::known_hosts is empty. Populate the EC2_HOST_KEY secret or ensure EC2_HOST is reachable."
-            exit 1
-          fi
-          chmod 644 ~/.ssh/known_hosts
-
-      - name: Deploy to EC2
+      - uses: hashicorp/setup-terraform@v3
         if: steps.preflight.outputs.configured == 'true'
-        env:
-          EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
+        with:
+          terraform_version: 1.9.8
+
+      - name: Terraform apply (registries first, so the image has somewhere to go)
+        if: steps.preflight.outputs.configured == 'true'
+        working-directory: infra/production
         run: |
-          ssh -v -i ~/.ssh/key.pem \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile=~/.ssh/known_hosts \
-            "$EC2_USER@$EC2_HOST" << 'EOF'
-            set -euo pipefail
-            cd /home/ubuntu/SaaradhiGo-backend
+          terraform init -input=false
+          terraform apply -input=false -auto-approve -target=aws_ecr_repository.repo
 
-            # Record what we would roll back TO before changing anything.
-            PREV_SHA=$(git rev-parse HEAD)
-            echo "$PREV_SHA" > .last_good_sha
+      - name: Build and push the backend image
+        if: steps.preflight.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.ap-south-1.amazonaws.com"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+          IMAGE="$REGISTRY/saaradhigo/backend:${GITHUB_SHA}"
+          if aws ecr describe-images --repository-name saaradhigo/backend --image-ids imageTag="$GITHUB_SHA" >/dev/null 2>&1; then
+            echo "image already pushed"
+          else
+            docker build -f dockerfile -t "$IMAGE" .
+            docker push "$IMAGE"
+          fi
 
-            git fetch origin main
-            git reset --hard origin/main
+      - name: Terraform apply (the whole stack, at this commit's image)
+        if: steps.preflight.outputs.configured == 'true'
+        working-directory: infra/production
+        run: |
+          # The web image tag is the last one the web repo pushed (its own production workflow).
+          WEB_TAG=$(aws ssm get-parameter --name /saaradhigo/production/deploy/web_image_tag \
+            --query Parameter.Value --output text 2>/dev/null || echo "")
+          terraform apply -input=false -auto-approve -var "web_image_tag=${WEB_TAG:-none}"
+          terraform output -json dns_records_for_godaddy > dns.json
+          {
+            echo "### DNS records for GoDaddy"
+            jq -r '.[] | "- \(.type) \(.name) -> \(.value) (\(.why))"' dns.json
+          } >> "$GITHUB_STEP_SUMMARY"
 
-            COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
-
-            $COMPOSE build
-
-            # Migrations as a discrete, one-shot step. Running them from the
-            # container command meant every replica raced the same lock, and
-            # a failed migration took the web tier down with it.
-            $COMPOSE run --rm django python manage.py migrate --noinput
-
-            $COMPOSE up -d --remove-orphans
-
-            # Health gate: roll back automatically if the new build does not
-            # come up. A deploy that silently leaves a dead container is how
-            # a bad push turns into a 40-minute outage nobody noticed.
-            for i in $(seq 1 30); do
-              if curl -fsS http://127.0.0.1:8000/healthz > /dev/null; then
-                echo "healthy after $((i * 10))s"
-                exit 0
-              fi
-              sleep 10
-            done
-
-            echo "health check FAILED — rolling back to $PREV_SHA"
-            git reset --hard "$PREV_SHA"
-            $COMPOSE up -d --build
-            exit 1
-          EOF
+      - name: Migrate (one-shot, on an app instance, with this commit's image)
+        if: steps.preflight.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.ap-south-1.amazonaws.com"
+          IMAGE="$REGISTRY/saaradhigo/backend:${GITHUB_SHA}"
+          for i in $(seq 1 40); do
+            ID=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names saaradhigo-prod-app \
+              --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId | [0]' --output text)
+            [ "$ID" != "None" ] && [ -n "$ID" ] && break
+            sleep 15
+          done
+          CMD=$(aws ssm send-command --instance-ids "$ID" --document-name AWS-RunShellScript \
+            --parameters "commands=[\"aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin $REGISTRY\",\"docker run --rm --env-file /etc/saaradhigo.env $IMAGE python manage.py migrate --noinput\"]" \
+            --query Command.CommandId --output text)
+          aws ssm wait command-executed --command-id "$CMD" --instance-id "$ID"
+          aws ssm get-command-invocation --command-id "$CMD" --instance-id "$ID" --query Status --output text

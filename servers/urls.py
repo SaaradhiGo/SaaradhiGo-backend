@@ -6,7 +6,7 @@ from servers.rider import urls as rider_urls
 from servers.driver import urls as driver_urls
 from servers.ride import urls as ride_urls
 from servers.payments import urls as payments_urls
-from servers.payments import razorpay_webhooks
+from servers.payments import razorpay_webhooks, stripe_webhooks
 from servers.sos import urls as sos_urls
 from servers.pricing import urls as pricing_urls
 from servers.support import urls as support_urls
@@ -34,6 +34,8 @@ urlpatterns = [
     # Provider webhooks (no JWT; authenticated by signature). See servers/payments/razorpay_webhooks.py
     path('webhooks/razorpay/', razorpay_webhooks.razorpay_webhook),
     path('webhooks/razorpayx/', razorpay_webhooks.razorpayx_webhook),
+    path('webhooks/stripe/', stripe_webhooks.stripe_webhook),
+    path('webhooks/stripe-connect/', stripe_webhooks.stripe_connect_webhook),
     path('sos/', include(sos_urls.urlpatterns)),
     path('pricing/', include(pricing_urls)),
     path('support/', include(support_urls)),

@@ -127,7 +127,7 @@ class TestBookingOptions:
                         return_value=True):
             _trip(rider, payment_method='upi')
             out = rb.payment_options(rider, *HYD)
-        assert out['methods'] == ['upi', 'card', 'cash'] and out['default'] == 'upi'
+        assert out['methods'] == ['upi', 'card', 'netbanking', 'cash'] and out['default'] == 'upi'
 
     def test_the_endpoint_answers_for_the_choose_screen(self, rider):
         ensure_zone_covering(*HYD)

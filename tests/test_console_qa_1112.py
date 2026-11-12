@@ -261,3 +261,28 @@ class TestSelfApproval:
         ops, _ = operator('city_ops_manager', geo)
         assert ops.post('/api/v1/approvals/admin/self-approval/', {'reason': 'x', 'days': 1},
                         format='json').status_code == 403
+
+
+class TestPerCityLowRating:
+    def test_a_city_setting_moves_its_own_drivers_only(self, geo):
+        from test_sos_support_zones_matrix import _zone
+
+        from servers.driver.ratings import low_threshold
+
+        client, _ = operator('super_admin', geo)
+        rider = _rider('+919811100050', 'R2')
+        hyd_few = _driver('+919811100051', 'Hyd few', geo['IN-TG-HYD'])
+        vij_few = _driver('+919811100052', 'Vij few', geo['IN-AP-VJA']) if 'IN-AP-VJA' in geo else None
+        _ratings(hyd_few, rider, [2, 2, 2])
+        if vij_few:
+            _ratings(vij_few, rider, [2, 2, 2])
+        assert low_threshold(geo['IN-TG-HYD']) == (Decimal('4.5'), 10)
+        from servers.pricing.models import ServiceZone
+        _zone('IN-TG-HYD', geo['IN-TG-HYD'])
+        ServiceZone.objects.filter(geo_node=geo['IN-TG-HYD']).update(low_rating_below=Decimal('4.00'),
+                                                                     low_rating_min_ratings=3)
+        assert low_threshold(geo['IN-TG-HYD']) == (Decimal('4.00'), 3)
+        flagged = {r['id'] for r in client.get(f'{LIST}?low_rating=1&page_size=50').json()['data']['results']}
+        assert hyd_few.id in flagged
+        if vij_few:
+            assert vij_few.id not in flagged

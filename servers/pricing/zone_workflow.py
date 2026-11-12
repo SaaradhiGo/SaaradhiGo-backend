@@ -75,7 +75,7 @@ IN_PROGRESS_STATUSES = ('requested', 'accepted', 'reached', 'in_progress')
 EDITABLE = ('name', 'country', 'state_code', 'city', 'zone_type', 'parent', 'priority',
             'polygon_geojson', 'currency', 'timezone_name', 'distance_unit', 'tax_mode',
             'per_trip_fee', 'per_trip_fee_label', 'metadata', 'dispatch_timeout_seconds',
-            'kyc_review_target_days')
+            'kyc_review_target_days', 'low_rating_below', 'low_rating_min_ratings')
 ZONE_TYPES = {k for k, _ in ServiceZone.ZONE_TYPE_CHOICES}
 AUDIT_ACTIONS = {KIND_CREATE: 'service_zone_created', KIND_UPDATE: 'service_zone_updated',
                  KIND_DEACTIVATE: 'service_zone_deactivated',
@@ -260,6 +260,32 @@ def clean_values(raw, base=None):
             raise InvalidRequest('The review target must be between 1 and 10 working days.',
                                  code='INVALID_NUMBER', field='kyc_review_target_days')
         values['kyc_review_target_days'] = target
+    below = values.get('low_rating_below')
+    if below in (None, ''):
+        values['low_rating_below'] = None
+    else:
+        try:
+            below = Decimal(str(below)).quantize(Decimal('0.01'))
+        except (InvalidOperation, ValueError):
+            raise InvalidRequest('The low-rating line must be a number like 4.5.',
+                                 code='INVALID_NUMBER', field='low_rating_below')
+        if not Decimal('1') <= below <= Decimal('5'):
+            raise InvalidRequest('The low-rating line must be between 1 and 5.',
+                                 code='INVALID_NUMBER', field='low_rating_below')
+        values['low_rating_below'] = str(below)
+    minimum = values.get('low_rating_min_ratings')
+    if minimum in (None, ''):
+        values['low_rating_min_ratings'] = None
+    else:
+        try:
+            minimum = int(minimum)
+        except (TypeError, ValueError):
+            raise InvalidRequest('The number of ratings must be a whole number.',
+                                 code='INVALID_NUMBER', field='low_rating_min_ratings')
+        if not 1 <= minimum <= 1000:
+            raise InvalidRequest('The number of ratings must be between 1 and 1000.',
+                                 code='INVALID_NUMBER', field='low_rating_min_ratings')
+        values['low_rating_min_ratings'] = minimum
     if not isinstance(values.get('metadata') or {}, dict):
         raise InvalidRequest('metadata must be an object.', code='INVALID_METADATA',
                              field='metadata')
@@ -552,8 +578,10 @@ def _apply(zone, values):
     for f in SNAPSHOT_FIELDS:
         if f == 'per_trip_fee':
             setattr(zone, f, Decimal(str(values[f])))
-        elif f in ('dispatch_timeout_seconds', 'kyc_review_target_days'):
+        elif f in ('dispatch_timeout_seconds', 'kyc_review_target_days', 'low_rating_min_ratings'):
             setattr(zone, f, values.get(f))
+        elif f == 'low_rating_below':
+            setattr(zone, f, Decimal(str(values[f])) if values.get(f) not in (None, '') else None)
         else:
             setattr(zone, f, values[f])
     zone.parent = parent

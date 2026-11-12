@@ -2,7 +2,7 @@
 
 Django + Django Channels backend that powers the SaaradhiGo / VahanGo ride-hailing platform. Serves the rider Flutter app ([SaaradhiGo-mobile](../SaaradhiGo-mobile)) and the web/native clients ([SaaradhiGo-web](../SaaradhiGo-web)).
 
-- **Branch:** `dev` (deployed automatically to EC2 — see `.github/workflows/deploy.yml`)
+- **Branches:** `dev` deploys to QA automatically; `main` is production (see [Branches and deploys](#branches-and-deploys))
 - **Base URL (QA):** `https://backend-qa-811d.up.railway.app`
 - **Base URL (production target):** `https://api.saaradhigo.com` _(DNS not yet configured)_
 - **API prefix:** `/api/v1/`
@@ -185,21 +185,13 @@ pytest tests/
 
 Existing test modules: `test_auth`, `test_rider`, `test_driver`, `test_driver_admin`, `test_driver_logic`, `test_ride`, `test_payments`, `test_payments_advanced`, `test_settlement`, `test_upload_integration`, `test_user_login`.
 
-## Deployment
+## Branches and deploys
 
-`.github/workflows/deploy.yml` deploys every push to `dev`:
-
-1. SSH into the EC2 host using `EC2_SSH_KEY` / `EC2_USER` / `EC2_HOST` repo secrets
-2. `git pull origin dev` in `/home/ubuntu/SaaradhiGo-backend`
-3. `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`
-
-The prod stack runs Django via Daphne (ASGI) and a Celery worker, both reading `.env.prod`, fronted by Redis.
-
-## Branching
-
-- `dev` — integration + auto-deploys to dev environment
-- `main` — production / release
-- `srini_fixes` — developer-specific working branch
+- **Feature branches** (`feat/*`, `fix/*`) open a PR into `dev`. CI must pass: lint, SAST and dependency audit, the test suite, the Postgres concurrency check and the secret scan.
+- **`dev` deploys to QA automatically.** Railway (QA project, services `backend` and `celery`) builds every new commit on `dev` once its GitHub checks pass ("wait for CI"). The backend runs `migrate` before the new version starts; the Celery worker waits until migrations are applied (`base/migration_gate.py`, `MIGRATION_WAIT_TIMEOUT`, default 300 s). Nobody deploys QA by hand except to redeploy a commit already on `dev`.
+- **`main` is production.** It takes pull requests from `dev` only (`source branch` check), with every CI check green, merged with a merge commit. No direct pushes or force-pushes, for admins too.
+- **Production deploys only from `main`, through CI, never by hand.** The `deploy` job in `.github/workflows/deploy.yml` runs only on a push to `main`, after the three validate jobs pass, and only when the repository variable `PRODUCTION_DEPLOY_ENABLED` is `true` and the EC2 secrets are set in the `production` environment. No `workflow_dispatch`, no manual Railway or console deploy, no SSH deploy.
+- **Today** there is no production environment, so a merge to `main` deploys nothing.
 
 ## Related repositories
 

@@ -26,7 +26,9 @@ def _payload(user):
         'effective': preferences.effective(user.pk),
         'locked': [{'channel': 'in_app', 'category': 'transactional'}],
         'rows': [{'channel': r.channel, 'category': r.category, 'opted_in': r.opted_in,
-                  'source': r.source, 'updated_at': r.updated_at.isoformat()} for r in rows],
+                  'source': r.source, 'updated_at': r.updated_at.isoformat(),
+                  'wording_version': r.wording_version} for r in rows],
+        'wording': preferences.CONSENT_WORDING,
     }
 
 
@@ -59,12 +61,23 @@ def my_preferences(request):
                 message='Each preference needs a channel, a category and opted_in true or false.',
                 field='preferences', issue='Malformed preference',
                 status=status.HTTP_400_BAD_REQUEST)
+        if (item['opted_in'] and item['category'] == 'promotional' and item['channel'] == 'sms'
+                and item.get('wording_version') not in preferences.CONSENT_WORDING):
+            return error_response(
+                code='WORDING_REQUIRED',
+                message='A text-message marketing opt-in needs the consent wording version shown.',
+                field='wording_version', issue='Unknown or missing wording version',
+                status=status.HTTP_400_BAD_REQUEST)
         if preferences.locked_on(item['channel'], item['category']) and not item['opted_in']:
             return error_response(
                 code='NOT_ALLOWED',
                 message='In-app transactional notifications cannot be switched off.',
                 field='preferences', issue='Locked on', status=status.HTTP_400_BAD_REQUEST)
     for item in items:
-        preferences.set_preference(user, item['channel'], item['category'], item['opted_in'],
-                                   source='app')
+        if item['category'] == 'promotional':
+            preferences.record_consent(user, item['channel'], item['category'], item['opted_in'],
+                                       str(item.get('wording_version') or ''))
+        else:
+            preferences.set_preference(user, item['channel'], item['category'], item['opted_in'],
+                                       source='app')
     return success_response(_payload(user), status.HTTP_200_OK)

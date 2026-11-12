@@ -308,7 +308,8 @@ class TestReceipt:
         assert receipts._tax_basis(trip, total) == total == D('22.15')
         assert receipts._receipt_tax(trip, total, D('8.25'))['amount'] == D('1.65')
 
-    def test_india_receipt_tax_is_unchanged(self, world):  # noqa: F811
+    def test_india_receipt_tax_is_unchanged(self, world, settings):  # noqa: F811
+        settings.LEGAL_ENTITIES_JSON = '{"IN": {"gst_registered": true}}'   # GST on: the arithmetic under test
         trip = world['ghost'](status='completed', method='online')
         Trip.objects.filter(pk=trip.pk).update(estimated_fare_minor=20_000)
         trip.refresh_from_db()

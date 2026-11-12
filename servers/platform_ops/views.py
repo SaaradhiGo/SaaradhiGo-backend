@@ -403,3 +403,37 @@ def options(request):
         'setting_types': list(settings_editor.TYPES),
         'notice_message_max': 280,
     }, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def launch_interest(request):
+    """POST /api/v1/platform/launch-interest/ {"zone": "<zone code>"} or {"lat", "lng"} (13 Nov).
+
+    "Tell me when we launch" for a city that has not launched yet. Idempotent per rider and city.
+    A live city answers `already_live`; a point in no zone answers 400."""
+    from servers.admin_access.models import ACTIVE
+    from servers.pricing.models import ServiceZone
+    from servers.pricing.services import find_zone_for_point
+
+    from .markets import city_of_zone
+    from .models import LaunchInterest
+
+    zone = None
+    code = str(request.data.get('zone') or '').strip()
+    if code:
+        zone = ServiceZone.objects.filter(code=code, is_active=True).first()
+    else:
+        try:
+            zone = find_zone_for_point(float(request.data.get('lat')), float(request.data.get('lng')))
+        except (TypeError, ValueError):
+            zone = None
+    city = city_of_zone(zone) if zone is not None else None
+    if city is None:
+        return error_response(code='NO_CITY', message='That place is not in a city we plan to serve.',
+                              status=status.HTTP_400_BAD_REQUEST)
+    if city.status == ACTIVE:
+        return success_response({'city': city.name, 'already_live': True}, status.HTTP_200_OK)
+    row, created = LaunchInterest.objects.get_or_create(user=request.user, city=city)
+    return success_response({'city': city.name, 'already_live': False, 'saved': True,
+                             'created': created}, status.HTTP_200_OK)

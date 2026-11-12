@@ -156,9 +156,10 @@ class TestTheReceiptItself:
         assert sent is True
         message = mail.outbox[0]
         assert message.subject.endswith(receipt.receipt_number)
-        assert message.alternatives == [
-            (receipt.html_body, 'text/html'),
-        ]
+        # The receipt's HTML, with the market entity's footer added before </body> (13 Nov).
+        [(html, mimetype)] = message.alternatives
+        assert mimetype == 'text/html'
+        assert html.startswith(receipt.html_body.split('</body>')[0]) and 'Operated by' in html
         assert message.attachments == [
             (f'{receipt.receipt_number}.pdf', b'%PDF-1.4 fake',
              'application/pdf'),

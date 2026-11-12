@@ -561,8 +561,10 @@ def test_a_missing_rate_card_does_not_tax_a_us_trip_at_indias_rate(
     ('us_zone', 'US', '$', '₹', 'Sales tax', 'mi'),
 ])
 def test_the_receipt_speaks_the_markets_language(
-    request, zone_fixture, country, symbol, wrong, label, unit, vehicle_type,
+    request, zone_fixture, country, symbol, wrong, label, unit, vehicle_type, settings,
 ):
+    # The tax label shows only with GST on (13 Nov: off by default, tested elsewhere).
+    settings.LEGAL_ENTITIES_JSON = '{"IN": {"gst_registered": true}}'
     from unittest import mock
 
     from servers.ride.receipts import issue_receipt

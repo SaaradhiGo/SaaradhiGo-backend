@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 TIMEOUT = 10
 _STATUS_MAP = {'delivered': 'delivered', 'sent': 'sent', 'undelivered': 'failed', 'failed': 'failed'}
 _STOP_WORDS = {'stop', 'stopall', 'unsubscribe', 'cancel', 'end', 'quit'}
+#: 13 Nov: HELP is answered and recorded; START re-subscribes (the CTIA keywords).
+_HELP_WORDS = {'help', 'info'}
+_START_WORDS = {'start', 'unstop', 'yes'}
 #: Twilio error codes that mean "do not retry".
 _PERMANENT_CODES = {21211, 21214, 21408, 21610, 21612, 21614, 30003, 30005, 30006}
 
@@ -114,9 +117,16 @@ class TwilioSms(Provider):
         sid = request.POST.get('MessageSid') or request.POST.get('SmsSid') or ''
         status = (request.POST.get('MessageStatus') or request.POST.get('SmsStatus') or '').lower()
         body = (request.POST.get('Body') or '').strip().lower()
-        if request.POST.get('OptOutType', '').upper() == 'STOP' or body in _STOP_WORDS:
+        opt = request.POST.get('OptOutType', '').upper()
+        if opt == 'STOP' or body in _STOP_WORDS:
             return [WebhookEvent(kind='stop', phone=request.POST.get('From', ''),
                                  provider_message_id=sid, detail='inbound STOP')]
+        if opt == 'HELP' or body in _HELP_WORDS:
+            return [WebhookEvent(kind='help', phone=request.POST.get('From', ''),
+                                 provider_message_id=sid, detail='inbound HELP')]
+        if opt == 'START' or body in _START_WORDS:
+            return [WebhookEvent(kind='start', phone=request.POST.get('From', ''),
+                                 provider_message_id=sid, detail='inbound START')]
         mapped = _STATUS_MAP.get(status)
         if sid and mapped:
             return [WebhookEvent(kind='status', provider_message_id=sid, status=mapped,

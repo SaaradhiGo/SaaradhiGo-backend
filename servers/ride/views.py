@@ -29,10 +29,21 @@ from django.db import transaction
 logger = logging.getLogger(__name__)
 
 
-def _fare_lines(fare):
+def _fare_lines(fare, pickup_lat=None, pickup_lng=None):
     from servers.ride import invoice_lines
     try:
-        return invoice_lines.from_quote(fare)
+        zone = None
+        if pickup_lat is not None and pickup_lng is not None:
+            from servers.pricing.services import find_zone_for_point
+            zone = find_zone_for_point(float(pickup_lat), float(pickup_lng))
+        from base import legal_entity
+        shown = zone is None or legal_entity.tax_shown(zone)
+        if not shown:
+            # Not GST-registered (13 Nov): the same total, explained without a GST line.
+            fare = {**fare, 'tax_amount': '0', 'tax_percent': '0'}
+        lines = invoice_lines.from_quote(fare)
+        lines['tax_shown'] = shown
+        return lines
     except Exception:  # noqa: BLE001 - the quote must still answer
         logger.exception('fare lines failed')
         return None
@@ -180,6 +191,12 @@ def estimate_fare(request):
     area_ok, area_code, area_msg = validate_service_area_detail(
         pickup_lat, pickup_long, destination_lat, destination_long,
     )
+    # A city not launched yet still shows its fares (13 Nov): riders sign up and see what a trip
+    # costs; only Book is refused, with "We're launching in <city> soon".
+    launching = None
+    if not area_ok and area_code == 'CITY_NOT_LIVE':
+        launching = {'code': area_code, 'message': area_msg}
+        area_ok = True
     if not area_ok:
         return error_response(
             code=area_code,
@@ -296,13 +313,15 @@ def estimate_fare(request):
         ],
         # 12 Nov: "How this fare is worked out" -- the lines before tax, the taxable value, the
         # tax and the total, adding up to the paisa, built as the tax invoice builds them.
-        'fare_lines': _fare_lines(fare),
+        'fare_lines': _fare_lines(fare, pickup_lat, pickup_long),
         'vehicle_type': fare['vehicle_type'],
         'pricing_source': fare['source'],
         'distance_km': distance_km,
         'duration_min': duration_min,
         'validated_km': validated_km,
         'validated_min': validated_min,
+        # 13 Nov: set when the pickup city has not launched yet (fares shown, booking refused).
+        'launching': launching,
     }, status.HTTP_200_OK)
 
 

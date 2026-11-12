@@ -325,6 +325,15 @@ PLATFORM_LEGAL_ENTITY = os.environ.get('PLATFORM_LEGAL_ENTITY', '').strip()
 # statement leaves a line out rather than print an invented one (docs/config-required.md).
 PLATFORM_LEGAL_ADDRESS = os.environ.get('PLATFORM_LEGAL_ADDRESS', '')
 PLATFORM_GSTIN = os.environ.get('PLATFORM_GSTIN', '')
+# The operating entity per market (13 Nov). Names are Srini's rulings (base/legal_entity.py); address,
+# company number, contacts, grievance officer and GST registration come from this JSON keyed "IN",
+# "US" or a state ("IN-TG"). Unset values are left off every page and document.
+LEGAL_ENTITIES_JSON = os.environ.get('LEGAL_ENTITIES_JSON', '')
+# From-address per market (13 Nov), JSON {"IN": "...", "US": "..."}; else DEFAULT_FROM_EMAIL.
+try:
+    EMAIL_FROM_BY_COUNTRY = json.loads(os.environ.get('EMAIL_FROM_BY_COUNTRY', '') or '{}')
+except ValueError:
+    EMAIL_FROM_BY_COUNTRY = {}
 
 # Domain used to build the operational contact addresses shown to drivers.
 #

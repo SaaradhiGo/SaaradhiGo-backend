@@ -538,6 +538,12 @@ class RateCardViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.ModelV
         return Response(RateCardSerializer(card).data)
 
 
+def _launch_fields(zone):
+    from servers.platform_ops.markets import city_status_for_zone
+    state, city_name = city_status_for_zone(zone)
+    return {'city_status': state, 'city_name': city_name}
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def list_active_zones(request):
@@ -570,6 +576,9 @@ def list_active_zones(request):
             'distance_unit': z.distance_unit or z.country_profile.distance_unit,
             'tax_mode': z.tax_mode or z.country_profile.tax_mode,
             'tax_label': z.tax_label,
+            # 13 Nov: `live`, `soon` (fares shown, Book says "We're launching in <city> soon") or
+            # `paused`. A client shows the launch notice before the rider tries to book.
+            **_launch_fields(z),
         }
         for z in zones
     ]

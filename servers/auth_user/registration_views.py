@@ -110,6 +110,80 @@ def _verification_is_deliverable():
     return verification_is_deliverable()
 
 
+def _register_rider_by_email(request, data):
+    """Name, email and password -> a working rider account and a session (201).
+
+    The ruling trades two old rules for a simpler sign-up: a taken address is said so (with Log in
+    and Forgot password on the form), and the account works before the address is confirmed. The
+    confirmation link is still sent; the lockout still counts every attempt per address.
+    """
+    from .email_auth_views import _issue_tokens
+    from .phone_identity import placeholder_phone
+
+    full_name = (data.get('full_name') or '').strip()
+    password = data.get('password') or ''
+    if not full_name:
+        return error_response(code='AUTH_VALIDATION_ERROR', message='Tell us what to call you.',
+                              field='full_name', issue='Name required',
+                              status=status.HTTP_400_BAD_REQUEST)
+    try:
+        email = normalize_email(data.get('email'))
+    except InvalidEmail as exc:
+        email = None
+        message = str(exc) or 'Enter a valid email address.'
+    else:
+        message = 'Enter a valid email address.'
+    if not email:
+        return error_response(code='AUTH_INVALID_EMAIL', message=message, field='email',
+                              issue='Invalid email', status=status.HTTP_400_BAD_REQUEST)
+    if len(password) < 10:
+        return error_response(code='AUTH_WEAK_PASSWORD', message='Use at least 10 characters.',
+                              field='password', issue='Password too short',
+                              status=status.HTTP_400_BAD_REQUEST)
+    try:
+        validate_password(password, user=user_model(email=email, full_name=full_name))
+    except DjangoValidationError as exc:
+        return error_response(code='AUTH_WEAK_PASSWORD', message=' '.join(exc.messages),
+                              field='password', issue='Password rejected',
+                              status=status.HTTP_400_BAD_REQUEST)
+    if login_guard.is_locked(request, email):
+        return error_response(code='AUTH_RATE_LIMITED',
+                              message='Too many attempts. Try again in a few minutes.',
+                              field='email', issue='Locked', status=status.HTTP_429_TOO_MANY_REQUESTS)
+    if user_model.objects.filter(email__iexact=email).exists():
+        login_guard.record_failure(request, email)
+        return error_response(code='AUTH_EMAIL_IN_USE',
+                              message='This email already has an account.', field='email',
+                              issue='Address belongs to an existing account',
+                              status=status.HTTP_409_CONFLICT)
+    try:
+        with transaction.atomic():
+            user = user_model(phone_number=placeholder_phone(), username='', email=email,
+                              role='rider', full_name=full_name, is_active=True)
+            user.username = user.phone_number
+            user.set_password(password)
+            user.email_verified_at = None
+            user.save()
+            ensure_role_profile(user)
+    except IntegrityError:
+        return error_response(code='AUTH_EMAIL_IN_USE',
+                              message='This email already has an account.', field='email',
+                              issue='Lost a race with another sign-up',
+                              status=status.HTTP_409_CONFLICT)
+    deliverable = _verification_is_deliverable()
+    if deliverable:
+        _send_verification_for(user)
+    else:
+        user.email_verified_at = timezone.now()
+        user.save(update_fields=['email_verified_at'])
+    user.last_login = timezone.now()
+    user.save(update_fields=['last_login'])
+    logger.info('register_ok user_id=%s role=rider email_only=1', user.pk)
+    return success_response(data={**_issue_tokens(user), 'verification_required': False,
+                                  'confirmation_sent': deliverable},
+                            status_code=status.HTTP_201_CREATED)
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def register_with_email(request):
@@ -139,6 +213,11 @@ def register_with_email(request):
             issue='Invalid role specified',
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+    # RIDERS SIGN UP BY EMAIL ONLY (11 Nov, Srini's ruling). The number is asked once, at the
+    # first booking, and proved there; drivers keep the proved-number sign-up below.
+    if role == 'rider' and not data.get('phone_number'):
+        return _register_rider_by_email(request, data)
 
     # A driver's name follows the driver-name rule from the first request (AUDIT 27.76): sign-up
     # used to store a name that profile completion then refused.

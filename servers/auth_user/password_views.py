@@ -242,9 +242,11 @@ def forgot_password(request):
         logger.warning('password_forgot_ignored reason=inactive user_id=%s',
                        user.pk)
         return _answer()
-    if not email_is_verified(user):
+    if not email_is_verified(user) and user.role != 'rider':
         # The address exists on the account but was never proven. Sending a
-        # reset here would let whoever set it take the account over.
+        # reset here would let whoever set it take the account over. A rider who signed up by
+        # email (11 Nov) can only have reached the account through this address, so the reset
+        # goes to it; using the link confirms the address.
         logger.warning(
             'password_forgot_ignored reason=email_unverified user_id=%s',
             user.pk,

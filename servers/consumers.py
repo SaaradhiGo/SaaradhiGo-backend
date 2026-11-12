@@ -656,6 +656,36 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 'trip': snapshot,
             }))
 
+    @database_sync_to_async
+    def _rider_booking_refusal(self, lat, lng, payment_method):
+        from servers.ride import rider_booking as rb
+        if rb.phone_required(self.user):
+            return {'code': rb.PHONE_REQUIRED, 'message': rb.PHONE_REQUIRED_MESSAGE}
+        method = str(payment_method or '').lower()
+        if method in rb.ONLINE_METHODS and lat and lng:
+            try:
+                offered = rb.payment_options(self.user, float(lat), float(lng))['methods']
+            except (TypeError, ValueError):
+                offered = []
+            if method not in offered:
+                return {'code': 'PAYMENT_METHOD_UNAVAILABLE',
+                        'message': 'That way to pay is not available here. Choose another.'}
+        return None
+
+    @database_sync_to_async
+    def _needs_street_address(self, label):
+        from servers.ride.rider_booking import needs_street_address
+        return needs_street_address(label)
+
+    @database_sync_to_async
+    def _street_address(self, lat, lng):
+        from servers.ride.rider_booking import street_address
+        try:
+            return street_address(lat, lng)
+        except Exception as exc:  # noqa: BLE001 -- a maps fault must not stop the booking
+            logger.warning('pickup_street_address_failed: %s', type(exc).__name__)
+            return ''
+
     async def disconnect(self, close_code):
         # Deliberately does NOT cancel dispatch. This method used to call
         # `self._dispatch_task.cancel()`, which meant a rider losing network
@@ -738,6 +768,16 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             self._promo_refusal = ''
             self._booking_refusal = None
             self._fresh_quote = None
+
+            # 11 Nov (rider QA fixes): the mobile is proved before the first booking, the pickup is
+            # a street address rather than "Current location", and the payment method is one the
+            # pickup's city offers.
+            refusal = await self._rider_booking_refusal(pickup_lat, pickup_lng, payment_method)
+            if refusal is not None:
+                await self.send(text_data=json.dumps({'type': 'error', **refusal}))
+                return
+            if pickup_lat and pickup_lng and await self._needs_street_address(pickup_address):
+                pickup_address = await self._street_address(pickup_lat, pickup_lng) or pickup_address
 
             # Validate required fields
             if not all([pickup_lat, pickup_lng, destination_lat, destination_lng, pickup_address, destination_address]):
@@ -1283,8 +1323,9 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             from servers.ride.tasks import auto_cancel_trip
             from django.conf import settings
             try:
+                from servers.ride.rider_booking import search_timeout_for_trip
                 auto_cancel_trip.apply_async(
-                    (trip.id,), countdown=settings.TRIP_ACCEPT_TIMEOUT_SECONDS,
+                    (trip.id,), countdown=search_timeout_for_trip(trip),
                 )
             except Exception as enqueue_error:  # noqa: BLE001
                 logger.error('trip_autocancel_enqueue_failed', extra={

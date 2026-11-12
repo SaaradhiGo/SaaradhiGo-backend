@@ -1,0 +1,107 @@
+# One-time, by Srini, in the AWS console (CloudFormation > Create stack > Upload this file),
+# region ap-south-1. It lets GitHub Actions deploy production WITHOUT any stored AWS key:
+#   - the GitHub OIDC identity provider;
+#   - the role `saaradhigo-github-deploy`, which ONLY the `production` environment of the two
+#     SaaradhiGo repos can assume (and that environment runs only on main, after CI);
+#   - its permissions, inline below (Policies): the services this stack uses, in ap-south-1 only,
+#     and IAM only for roles named saaradhigo-prod-*.
+# After the stack is created, copy the RoleArn output into the GitHub repository variable
+# AWS_DEPLOY_ROLE_ARN in both repos (docs/config-required.md has the exact steps).
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SaaradhiGo production - GitHub Actions OIDC deploy role
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: SaaradhiGo
+Resources:
+  GitHubOidc:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList: [6938fd4d98bab03faadb97b34396831e3780aea1]
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: saaradhigo-github-deploy
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidc
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubOrg}/SaaradhiGo-backend:environment:production
+                  - !Sub repo:${GitHubOrg}/SaaradhiGo-web:environment:production
+      Policies:
+        - PolicyName: saaradhigo-production-deploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: BuildAndRunTheStack
+                Effect: Allow
+                Action:
+                  - ec2:*
+                  - elasticloadbalancing:*
+                  - autoscaling:*
+                  - rds:*
+                  - elasticache:*
+                  - s3:*
+                  - ecr:*
+                  - ssm:*
+                  - secretsmanager:*
+                  - acm:*
+                  - wafv2:*
+                  - ses:*
+                  - sns:*
+                  - cloudwatch:*
+                  - logs:*
+                  - dynamodb:*
+                  - kms:Describe*
+                  - kms:List*
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: ap-south-1
+              - Sid: OnlyTheStacksOwnRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:TagRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListInstanceProfilesForRole
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:GetInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                  - iam:TagInstanceProfile
+                  - iam:PassRole
+                Resource:
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/saaradhigo-prod-*
+                  - !Sub arn:aws:iam::${AWS::AccountId}:instance-profile/saaradhigo-prod-*
+              - Sid: ServiceLinkedRoles
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: '*'
+              - Sid: WhoAmI
+                Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: '*'
+Outputs:
+  RoleArn:
+    Value: !GetAtt DeployRole.Arn

@@ -14,12 +14,12 @@ import importlib
 PAYMENT_ADAPTERS = {
     'cashfree': ('integrations.payments.cashfree', 'CashfreeGateway', 'implemented'),
     'razorpay': ('integrations.payments.razorpay', 'RazorpayGateway', 'implemented'),
-    'stripe': ('integrations.payments.stripe', 'StripeGateway', 'stub'),
+    'stripe': ('integrations.payments.stripe', 'StripeGateway', 'implemented'),
 }
 PAYOUT_ADAPTERS = {
     'cashfree': ('integrations.payouts.cashfree', 'CashfreeGateway', 'implemented'),
     'razorpay': ('integrations.payouts.razorpayx', 'RazorpayXGateway', 'implemented'),
-    'stripe_connect': ('integrations.payouts.stripe_connect', 'StripeConnectGateway', 'stub'),
+    'stripe_connect': ('integrations.payouts.stripe_connect', 'StripeConnectGateway', 'implemented'),
 }
 #: Names accepted as spellings of a registered provider.
 ALIASES = {'stripe-connect': 'stripe_connect', 'razorpayx': 'razorpay'}

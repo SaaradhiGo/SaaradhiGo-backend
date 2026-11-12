@@ -110,13 +110,18 @@ SMS_MESSAGE_CACHE_PREFIX = 'sms_message:'
 SMS_MESSAGE_TTL_SECONDS = 600  # the login OTP's own lifetime; a later send is useless anyway
 
 
-def stash_sms_message(message: str, ttl: int = SMS_MESSAGE_TTL_SECONDS) -> str:
-    """Store an SMS text for `send_otp_via_sns` and return the reference to enqueue."""
+def stash_sms_message(message: str, ttl: int = SMS_MESSAGE_TTL_SECONDS, kind: str = '',
+                      values=None) -> str:
+    """Store an SMS text for `send_otp_via_sns` and return the reference to enqueue.
+
+    `kind` and `values` (13 Nov) name its template in base/sms_templates.py, which MSG91 (India,
+    DLT) needs; they ride in the cache with the text, never in the task arguments."""
     import uuid
     from django.core.cache import cache
 
     ref = uuid.uuid4().hex
-    cache.set(f'{SMS_MESSAGE_CACHE_PREFIX}{ref}', message, ttl)
+    payload = {'text': message, 'kind': kind, 'values': dict(values or {})} if kind else message
+    cache.set(f'{SMS_MESSAGE_CACHE_PREFIX}{ref}', payload, ttl)
     return ref
 
 
@@ -157,7 +162,12 @@ def send_otp_via_sns(self, phone_number: str, message_ref: str) -> Dict[str, Any
     message_key = f'{SMS_MESSAGE_CACHE_PREFIX}{message_ref}'
     try:
         # Validate inputs
-        message = cache.get(message_key) if message_ref else None
+        stashed = cache.get(message_key) if message_ref else None
+        kind, values = '', {}
+        if isinstance(stashed, dict):
+            message, kind, values = stashed.get('text'), stashed.get('kind', ''), stashed.get('values') or {}
+        else:
+            message = stashed
         if not phone_number or not message:
             # Missing, expired (the TTL outlived every retry) or already sent.
             # Terminal: retrying cannot bring the text back.
@@ -168,6 +178,25 @@ def send_otp_via_sns(self, phone_number: str, message_ref: str) -> Dict[str, Any
                 "terminal": True,
             }
         
+        # 13 Nov: MSG91 (India) or Twilio (USA) when SMS_DIRECT_PROVIDERS names one for this number's
+        # country; otherwise SNS below, unchanged.
+        from integrations.sms import direct as direct_sms
+        if direct_sms.provider_for(phone_number):
+            from servers.notifications.providers.base import (
+                PermanentProviderError, TransientProviderError)
+            try:
+                message_id = direct_sms.send(phone_number, message, kind, values)
+            except PermanentProviderError as exc:
+                cache.delete(message_key)
+                logger.error('otp_send_terminal reason=%s', str(exc)[:200])
+                return {'success': False, 'error': str(exc)[:200], 'terminal': True}
+            except TransientProviderError as exc:
+                logger.error('otp_send_failure reason=direct_transient retry=%s/%s',
+                             self.request.retries, self.max_retries)
+                raise self.retry(exc=exc)
+            cache.delete(message_key)
+            return {'success': True, 'message_id': message_id}
+
         client = get_sns_client()
         if client is None:
             # Configuration or credentials. Retry: this is commonly transient

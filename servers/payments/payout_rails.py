@@ -43,7 +43,16 @@ NO_RAIL_NOTE = ('No payout rail for {currency} yet: approved payouts wait here; 
 
 
 def has_rail(currency):
-    return str(currency or '').upper() in RAILS
+    code = str(currency or '').upper()
+    if code in RAILS:
+        return True
+    if code == 'USD':
+        # 13 Nov: Stripe Connect is the US rail, but only once it is configured; until then USD
+        # payouts stay held (never dispatched to a provider that cannot pay, never refunded).
+        from servers.payments.payment_gateways.factory import get_payment_gateway_for_payouts
+        gateway = get_payment_gateway_for_payouts('US')
+        return bool(gateway) and gateway.get_name() == 'stripe_connect'
+    return False
 
 
 def rail_note(currency):

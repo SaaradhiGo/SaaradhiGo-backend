@@ -1570,6 +1570,51 @@ from servers.payments.payment_gateways.base_gateway import (  # noqa: E402
 )
 
 
+def _payout_failed(withdrawal, reason):
+    withdrawal.failure_reason = reason
+    withdrawal.failure_count += 1
+    withdrawal.last_failure_at = timezone.now()
+    withdrawal.save(update_fields=['failure_reason', 'failure_count', 'last_failure_at'])
+    return False
+
+
+def initiate_connect_payout(withdrawal, driver):
+    """A USD withdrawal as a Stripe Connect transfer (13 Nov). False (refundable) on a definite
+    refusal; PayoutDispatchUnknown propagates when the outcome is unknown (never refunded)."""
+    import logging
+
+    from servers.payments.payment_gateways.factory import get_payment_gateway_for_payouts
+
+    logger = logging.getLogger(__name__)
+    if withdrawal.payout_reference_id:
+        logger.warning('withdrawal %s already has payout reference', withdrawal.id)
+        return True
+    account = (getattr(driver, 'stripe_account_id', '') or '').strip()
+    if not account:
+        return _payout_failed(withdrawal, 'No Stripe payout account: finish payout setup in the app')
+    gateway = get_payment_gateway_for_payouts('US')
+    if not gateway or not hasattr(gateway, 'create_connect_transfer'):
+        return _payout_failed(withdrawal, 'No payout provider is configured for US')
+    reference_id = f'withdrawal_{withdrawal.id}_driver_{driver.id}'
+    result = gateway.create_connect_transfer(
+        account_id=account, amount_minor=withdrawal.amount_minor - (withdrawal.fee_minor or 0),
+        currency='USD', reference_id=reference_id)
+    if not result or not result.get('payout_id'):
+        return _payout_failed(withdrawal, 'Stripe refused the transfer')
+    withdrawal.payout_reference_id = result['payout_id']
+    withdrawal.payout_status = result.get('status', 'processed')
+    withdrawal.payout_mode = 'STRIPE_CONNECT'
+    withdrawal.status = 'processed'
+    withdrawal.processed_at = timezone.now()
+    withdrawal.failure_count = 0
+    withdrawal.last_failure_at = None
+    withdrawal.failure_reason = None
+    withdrawal.save(update_fields=['payout_reference_id', 'payout_status', 'payout_mode', 'status',
+                                   'processed_at', 'failure_count', 'last_failure_at', 'failure_reason'])
+    logger.info('stripe connect transfer accepted for withdrawal %s', withdrawal.id)
+    return True
+
+
 def initiate_upi_payout(withdrawal, driver):
     """
     Initiate UPI payout through the configured payment gateway.
@@ -1610,6 +1655,9 @@ def initiate_upi_payout(withdrawal, driver):
     # a mis-routing, not an unresolved payout.
     withdrawal_currency = normalize_currency(
         getattr(withdrawal, 'currency', None) or driver_currency(driver))
+    if withdrawal_currency == 'USD':
+        # 13 Nov: US payouts are Stripe Connect transfers to the driver's Express account.
+        return initiate_connect_payout(withdrawal, driver)
     if withdrawal_currency != 'INR':
         withdrawal.failure_reason = (
             f'UPI payouts settle in INR; this withdrawal is in '

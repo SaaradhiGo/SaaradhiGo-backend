@@ -79,9 +79,9 @@ def contacts(request):
             return _err('CONTACT_EXISTS', 'This number is already a trusted contact.', 'phone',
                         status.HTTP_409_CONFLICT)
     first = services.first_name(request.user.full_name, 'Someone')
-    sms.send(request.user, contact, 'added',
-             f'{first} added you as a trusted contact on {settings.PLATFORM_BRAND_NAME}. '
-             f'Reply STOP to opt out.')
+    from base import sms_templates
+    sms.send(request.user, contact, 'added', sms_templates.render('contact_added', name=first),
+             template=('contact_added', {'name': first}))
     return success_response({'contact': contact_json(contact)}, status.HTTP_201_CREATED)
 
 

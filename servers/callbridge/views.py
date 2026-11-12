@@ -79,7 +79,7 @@ def start_call(request, trip_id):
         return _err('CALL_NOT_AVAILABLE', 'Calling is available during the trip and for 15 minutes after.',
                     status.HTTP_409_CONFLICT)
     try:
-        provider = get_provider()
+        provider = get_provider(getattr(trip.zone, 'country', None))
     except CallingUnavailable:
         return _err('CALLING_UNAVAILABLE', 'Calling is not available right now.',
                     status.HTTP_503_SERVICE_UNAVAILABLE)
@@ -105,7 +105,7 @@ def end_call(request, session_id):
         session.duration_seconds = max(0, int((session.ended_at - session.started_at).total_seconds()))
         session.save(update_fields=['ended_at', 'duration_seconds'])
         try:
-            get_provider().end(session)
+            get_provider(getattr(trip.zone, 'country', None)).end(session)
         except CallingUnavailable:
             pass
     return success_response({'call': session_json(session)}, status.HTTP_200_OK)

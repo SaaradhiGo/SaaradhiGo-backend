@@ -42,7 +42,7 @@ def opted_out(phone):
     return SmsOptOut.objects.filter(phone=phone).exists()
 
 
-def send(rider, contact, kind, text, trip_id=None):
+def send(rider, contact, kind, text, trip_id=None, template=None):
     """Send (or sink) one message. Returns True when it went to the provider or the sink."""
     if opted_out(contact.phone):
         status = 'opted_out'
@@ -52,7 +52,9 @@ def send(rider, contact, kind, text, trip_id=None):
         try:
             from base.utils import send_otp_via_sns, stash_sms_message
 
-            send_otp_via_sns.delay(contact.phone, stash_sms_message(text, ttl=3600))
+            tkind, tvalues = template or ('', None)
+            send_otp_via_sns.delay(contact.phone, stash_sms_message(
+                text, ttl=3600, kind=tkind, values=tvalues))
             status = 'queued'
         except Exception:  # noqa: BLE001 - a failed send is logged, never raised into a trip
             logger.exception('contact_sms_failed kind=%s contact=%s', kind, contact.pk)

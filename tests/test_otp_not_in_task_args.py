@@ -85,6 +85,8 @@ class TestTheLoginEnqueue:
     def test_the_reference_resolves_to_the_message_with_the_otp(self, settings):
         call = _request_otp()
         message = cache.get(f'{base_utils.SMS_MESSAGE_CACHE_PREFIX}{call.args[1]}')
+        # 13 Nov: the stash carries the template kind and values beside the text (MSG91 DLT).
+        message = message['text'] if isinstance(message, dict) else message
         assert message == (f'Your OTP for {settings.PLATFORM_BRAND_NAME} is {OTP}. '
                            f'It will expire in 10 minutes.')
 
@@ -109,7 +111,7 @@ class TestTheSosEnqueue:
         phone, ref = delay.call_args.args
         assert phone == '+919888000079'
         assert 'Asha' not in _flatten(delay.call_args.args)
-        assert 'SOS' in cache.get(f'{base_utils.SMS_MESSAGE_CACHE_PREFIX}{ref}')
+        assert 'SOS' in cache.get(f'{base_utils.SMS_MESSAGE_CACHE_PREFIX}{ref}')['text']
 
 
 # ---------------------------------------------------------------------------

@@ -1230,6 +1230,10 @@ RAZORPAYX_WEBHOOK_SECRET=os.environ.get("RAZORPAYX_WEBHOOK_SECRET", "")
 # US driver payouts through Stripe Connect Express (10 Nov). Unset: QA's fake provider, else
 # "US payouts are not set up yet".
 STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
+# 13 Nov: US rider card payments (PaymentIntents) and Connect transfers. Test keys outside production.
+STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', '')
+STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
+STRIPE_CONNECT_WEBHOOK_SECRET = os.environ.get('STRIPE_CONNECT_WEBHOOK_SECRET', '')
 # Fernet key for PAN and bank account numbers at rest (base/encrypted.py). Unset: derived from
 # SECRET_KEY, so rotating SECRET_KEY would need these re-encrypted; set it before production.
 FIELD_ENCRYPTION_KEY = os.environ.get('FIELD_ENCRYPTION_KEY', '')
@@ -1410,6 +1414,28 @@ TRIP_SHARE_BASE_URL = os.environ.get('TRIP_SHARE_BASE_URL', '')
 CALL_BRIDGE_PROVIDER = os.environ.get('CALL_BRIDGE_PROVIDER', 'fake').strip().lower()
 CALL_BRIDGE_REAL_ENABLED = os.environ.get('CALL_BRIDGE_REAL_ENABLED', 'false').strip().lower() in {'1', 'true', 'yes'}
 CALL_BRIDGE_FAKE_NUMBER = os.environ.get('CALL_BRIDGE_FAKE_NUMBER', '+914000000000')
+# 13 Nov: the provider per market, JSON {"US": "twilio"}; a market not listed uses CALL_BRIDGE_PROVIDER.
+# India: no voice provider chosen yet (fake). Twilio Voice needs TWILIO_VOICE_NUMBER.
+try:
+    CALL_BRIDGE_PROVIDERS = json.loads(os.environ.get('CALL_BRIDGE_PROVIDERS', '') or '{}')
+except ValueError:
+    CALL_BRIDGE_PROVIDERS = {}
+TWILIO_VOICE_NUMBER = os.environ.get('TWILIO_VOICE_NUMBER', '')
+# 13 Nov: direct SMS (sign-in codes, shares, SOS, pages) per market, JSON {"IN": "msg91", "US":
+# "twilio"}. A market not listed keeps AWS SNS. MSG91 needs, per kind in base/sms_templates.py, a
+# flow id and a DLT template id (JSON objects keyed by kind), plus the sender id and DLT entity id.
+def _json_env(name):
+    try:
+        return json.loads(os.environ.get(name, '') or '{}')
+    except ValueError:
+        return {}
+
+
+SMS_DIRECT_PROVIDERS = _json_env('SMS_DIRECT_PROVIDERS')
+MSG91_FLOW_IDS = _json_env('MSG91_FLOW_IDS')
+MSG91_DLT_TEMPLATE_IDS = _json_env('MSG91_DLT_TEMPLATE_IDS')
+MSG91_SENDER_ID = os.environ.get('MSG91_SENDER_ID', '')
+MSG91_DLT_ENTITY_ID = os.environ.get('MSG91_DLT_ENTITY_ID', '')
 ETA_ROAD_FACTOR = float(os.environ.get('ETA_ROAD_FACTOR', '1.3'))
 ETA_MARKET_KMH = {'IN': 18.0, 'US': 35.0}
 if os.environ.get('ETA_MARKET_KMH_JSON', '').strip():

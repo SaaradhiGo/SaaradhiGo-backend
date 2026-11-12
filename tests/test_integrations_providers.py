@@ -291,10 +291,10 @@ class TestStubGatewaysAreCleanlyUnavailable:
         from integrations.payments import registry
         assert registry.status('payments', 'cashfree') == 'implemented'
         assert registry.status('payments', 'razorpay') == 'implemented'
-        assert registry.status('payments', 'stripe') == 'stub'
+        assert registry.status('payments', 'stripe') == 'implemented'   # 13 Nov
         assert registry.status('payouts', 'razorpay') == 'implemented'
         assert registry.status('payouts', 'razorpayx') == 'implemented'  # alias
-        assert registry.status('payouts', 'stripe_connect') == 'stub'
+        assert registry.status('payouts', 'stripe_connect') == 'implemented'   # 13 Nov
 
     def test_an_unknown_explicit_name_is_still_an_error(self):
         from servers.payments.payment_gateways.factory import get_payment_gateway

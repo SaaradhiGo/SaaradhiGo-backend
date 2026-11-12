@@ -105,6 +105,19 @@ def entity_footer(country):
     return lines
 
 
+def email_suppressed(address):
+    """True when SES reported a permanent bounce or a complaint for an account on this address
+    (the SNS webhook opted it out of all email, source `webhook:ses`). Nothing is sent to it."""
+    try:
+        from servers.notifications.models import NotificationPreference
+
+        return NotificationPreference.objects.filter(
+            user__email__iexact=str(address or '').strip(), channel='email', opted_in=False,
+            source__startswith='webhook:ses').exists()
+    except Exception:  # noqa: BLE001 - a lookup failure never blocks mail
+        return False
+
+
 def delivery_is_configured():
     """Can this deployment actually send a message?
 
@@ -269,6 +282,9 @@ def send_message(*, to, subject, body, html=None, attachments=None, country=None
     with somewhere to record it (Receipt.send_failure_reason) can.
     """
     allowed, why = recipient_allowed(to)
+    if allowed and email_suppressed(to):
+        # 13 Nov: SES reported a hard bounce or a complaint for this address (SNS webhook).
+        allowed, why = False, 'suppressed after a bounce or complaint'
     if not allowed:
         # The address is NOT logged, for the same reason as below.
         logger.warning(

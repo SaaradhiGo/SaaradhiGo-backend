@@ -52,12 +52,23 @@ class FakeProvider:
         return ref
 
 
-#: name -> "module:Class" of real adapters. Empty until a provider is chosen.
-_REAL = {}
+#: name -> "module:Class" of real adapters. Twilio Voice for the USA (13 Nov); India: none chosen.
+_REAL = {'twilio': 'integrations.voice.twilio_voice:TwilioVoice'}
 
 
-def get_provider():
-    name = (getattr(settings, 'CALL_BRIDGE_PROVIDER', 'fake') or 'fake').strip().lower()
+def provider_name(country=None):
+    """CALL_BRIDGE_PROVIDERS ({"US": "twilio"}) for the market, else CALL_BRIDGE_PROVIDER."""
+    table = getattr(settings, 'CALL_BRIDGE_PROVIDERS', None) or {}
+    name = table.get(str(country or '').upper()) if country else None
+    return (name or getattr(settings, 'CALL_BRIDGE_PROVIDER', 'fake') or 'fake').strip().lower()
+
+
+def country_of_phone(phone):
+    return 'US' if str(phone or '').startswith('+1') else 'IN'
+
+
+def get_provider(country=None):
+    name = provider_name(country)
     if name == 'fake':
         return FakeProvider()
     if not getattr(settings, 'CALL_BRIDGE_REAL_ENABLED', False) or name not in _REAL:

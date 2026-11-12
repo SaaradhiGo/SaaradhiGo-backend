@@ -67,7 +67,7 @@ class UserModelSerializer(ModelSerializer):
         # says "we sent a link" where nothing can be sent (QA has no mail settings).
         if data.get('email_verified') is False and data.get('email'):
             from base.auth_email import delivery_is_configured
-            data['email_mail_available'] = delivery_is_configured()[0]
+            data['email_mail_configured'] = delivery_is_configured()[0]
         from .phone_identity import is_placeholder_phone
         if is_placeholder_phone(data.get('phone_number')):
             data['phone_number'] = None

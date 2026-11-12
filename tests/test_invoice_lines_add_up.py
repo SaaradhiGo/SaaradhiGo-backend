@@ -183,7 +183,7 @@ def test_without_mail_a_rider_stays_unconfirmed_and_is_told_so(monkeypatch):
     assert r.status_code == 201, r.content.decode()
     user = r.json()['data']['user']
     assert user['email_verified'] is False
-    assert user['email_mail_available'] is False
+    assert user['email_mail_configured'] is False
     assert r.json()['data']['confirmation_sent'] is False
     c = APIClient()
     c.force_authenticate(User.objects.get(email__iexact='confirm.me@deeptrics.com'))

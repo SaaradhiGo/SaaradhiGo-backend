@@ -18,8 +18,11 @@ logger = logging.getLogger(__name__)
 PHONE_REQUIRED = 'PHONE_VERIFICATION_REQUIRED'
 PHONE_REQUIRED_MESSAGE = 'Add and verify your mobile number before your first ride.'
 GENERIC_PICKUP_LABELS = {'', 'current location', 'my location', 'your location', 'pickup'}
-CASH, UPI, CARD = 'cash', 'upi', 'card'
-ONLINE_METHODS = (UPI, CARD)
+CASH, UPI, CARD, NETBANKING = 'cash', 'upi', 'card', 'netbanking'
+ONLINE_METHODS = (UPI, CARD, NETBANKING)
+#: 13 Nov: what each market's gateway takes online. India: Razorpay (UPI, card, netbanking);
+#: the USA: Stripe (card).
+ONLINE_METHODS_BY_COUNTRY = {'IN': (UPI, CARD, NETBANKING), 'US': (CARD,)}
 DEFAULT_SEARCH_TIMEOUT_SECONDS = 180
 
 
@@ -76,7 +79,7 @@ def payment_options(user, lat, lng):
     reason = ''
     if zone is not None and online_payment_zone(zone):
         if get_payment_gateway_for_payments(zone.country):
-            methods = list(ONLINE_METHODS)
+            methods = list(ONLINE_METHODS_BY_COUNTRY.get(zone.country, (CARD,)))
         else:
             reason = 'gateway_not_configured'
     if not cash_disabled_for(user):

@@ -39,3 +39,13 @@ def normalised_plate_expression(field='vehicle_number'):
             Value('-'), Value(''),
         )
     )
+
+
+_INDIAN_PLATE = re.compile(r'^([A-Z]{2})(\d{1,2})([A-Z]{0,3})(\d{1,4})$')
+
+
+def display_plate(text):
+    """'TS09QT0059' -> 'TS 09 QT 0059' (11 Nov, the receipt and driver card); anything else as typed."""
+    raw = str(text or '').strip()
+    m = _INDIAN_PLATE.match(re.sub(r'[\s-]', '', raw.upper()))
+    return ' '.join(g for g in m.groups() if g) if m else raw

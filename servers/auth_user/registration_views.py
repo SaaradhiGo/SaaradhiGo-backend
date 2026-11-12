@@ -170,17 +170,15 @@ def _register_rider_by_email(request, data):
                               message='This email already has an account.', field='email',
                               issue='Lost a race with another sign-up',
                               status=status.HTTP_409_CONFLICT)
-    deliverable = _verification_is_deliverable()
-    if deliverable:
-        _send_verification_for(user)
-    else:
-        user.email_verified_at = timezone.now()
-        user.save(update_fields=['email_verified_at'])
+    # 12 Nov: a rider's address is never confirmed on its behalf, even where mail cannot be sent
+    # (QA): the rider signs in unconfirmed anyway, and sees "Confirm your email" until the link is
+    # opened. `_send_verification_for` logs `email_verify_sent ... delivered=` either way.
+    sent = _send_verification_for(user)
     user.last_login = timezone.now()
     user.save(update_fields=['last_login'])
     logger.info('register_ok user_id=%s role=rider email_only=1', user.pk)
     return success_response(data={**_issue_tokens(user), 'verification_required': False,
-                                  'confirmation_sent': deliverable},
+                                  'confirmation_sent': bool(sent)},
                             status_code=status.HTTP_201_CREATED)
 
 

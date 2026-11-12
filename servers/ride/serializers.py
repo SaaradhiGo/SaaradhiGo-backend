@@ -150,7 +150,7 @@ class TripDetailSerializer(TripListSerializer):
         if user is None or not (getattr(user, 'id', None) == obj.user_id_id or getattr(user, 'is_staff', False)):
             return None
         from servers.ride.models import Receipt
-        from servers.ride.receipts import _rider_name, company_lines
+        from servers.ride.receipts import _rider_name, company_lines, receipt_invoice
         receipt = Receipt.objects.filter(trip_id=obj).order_by('-version', '-id').first()
         if receipt is None:
             return None
@@ -164,6 +164,10 @@ class TripDetailSerializer(TripListSerializer):
             'tax_amount': str(receipt.gst_amount),
             'total': str(receipt.total_fare),
             'currency': receipt.currency,
+            # 12 Nov: the lines before tax, the taxable value, the tax and the total, adding up
+            # to the paisa: the same lines as the PDF (servers/ride/invoice_lines.py).
+            'breakdown': receipt_invoice(obj, total=receipt.total_fare, gst_amount=receipt.gst_amount,
+                                         currency=receipt.currency),
         }
 
     def get_search_expires_at(self, obj):

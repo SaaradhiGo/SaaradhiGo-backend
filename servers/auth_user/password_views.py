@@ -393,9 +393,18 @@ def request_email_verification(request):
     token = verify_tokens.make_token(user)
     sent = send_email_verification(user=user, uid=_uid(user), token=token)
     logger.info('email_verify_sent user_id=%s delivered=%s', user.pk, sent)
+    if not sent:
+        # 12 Nov: this said "We have sent" whether or not anything was sent.
+        return error_response(
+            code='EMAIL_NOT_SENT',
+            message='We could not send the email right now. Try again later.',
+            field='email',
+            issue='Mail could not be sent',
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
     return success_response(
-        data={'message': 'We have sent a verification link to your email.'},
+        data={'message': 'We have sent a verification link to your email.', 'sent': True},
         status_code=status.HTTP_200_OK,
     )
 

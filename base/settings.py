@@ -317,13 +317,10 @@ JWT_SIGNING_KEY = os.environ.get('JWT_SIGNING_KEY') or SECRET_KEY
 # Customer-facing copy must read these rather than hardcode a name.
 PLATFORM_BRAND_NAME = os.environ.get('PLATFORM_BRAND_NAME', 'SaaradhiGo')
 
-# The registered entity, which is NOT the same thing as the brand and appears on
-# the GST receipt. Left exactly as it was found; whether this is the correct
-# registered name, and whether a GSTIN and registered address must also appear,
-# is a question for the business and its accountants -- see the compliance list.
-PLATFORM_LEGAL_ENTITY = os.environ.get(
-    'PLATFORM_LEGAL_ENTITY', 'SaaradhiGo Mobility',
-)
+# The registered entity, which is NOT the same thing as the brand and appears on the rider's tax
+# invoice and the driver's statement. Config only, no default (12 Nov): a document leaves the line
+# out rather than print a name nobody registered (docs/config-required.md).
+PLATFORM_LEGAL_ENTITY = os.environ.get('PLATFORM_LEGAL_ENTITY', '').strip()
 # The registered address and GSTIN printed on the driver's statement (11 Nov). No default: a
 # statement leaves a line out rather than print an invented one (docs/config-required.md).
 PLATFORM_LEGAL_ADDRESS = os.environ.get('PLATFORM_LEGAL_ADDRESS', '')

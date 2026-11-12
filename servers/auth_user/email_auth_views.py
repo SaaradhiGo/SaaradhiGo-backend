@@ -192,15 +192,15 @@ def email_login(request):
         # misconfiguration, not a condition to accommodate, and production
         # refuses to boot without a mail backend anyway, so this branch is
         # unreachable there by construction and gated regardless.
-        if not verification_is_deliverable():
+        if user.role == 'rider':
+            pass  # never confirmed for them (12 Nov): the app shows "Confirm your email" instead
+        elif not verification_is_deliverable():
             user.email_verified_at = timezone.now()
             user.save(update_fields=['email_verified_at'])
             logger.info(
                 'email_login_autoverified user_id=%s reason=mail_not_deliverable',
                 user.pk,
             )
-        elif user.role == 'rider':
-            pass  # the app shows a "Confirm your email" reminder instead
         else:
             logger.info('email_login_unverified user_id=%s', user.pk)
             return error_response(

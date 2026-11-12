@@ -63,6 +63,11 @@ class UserModelSerializer(ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        # 12 Nov: whether a confirmation link can be emailed here at all, so the reminder never
+        # says "we sent a link" where nothing can be sent (QA has no mail settings).
+        if data.get('email_verified') is False and data.get('email'):
+            from base.auth_email import delivery_is_configured
+            data['email_mail_available'] = delivery_is_configured()[0]
         from .phone_identity import is_placeholder_phone
         if is_placeholder_phone(data.get('phone_number')):
             data['phone_number'] = None

@@ -398,7 +398,7 @@ def _identity_rows(st):
     """The statement's header lines (11 Nov): the company, the statement, the driver, the period.
     A company line that is not configured is left out, never invented (docs/config-required.md)."""
     c = st['company']
-    rows = [['Issued by', c['name']]]
+    rows = [['Issued by', c['name']]] if c['name'] else []
     if c['address']:
         rows.append(['Registered address', c['address']])
     if c['gstin']:

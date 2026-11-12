@@ -29,6 +29,15 @@ from django.db import transaction
 logger = logging.getLogger(__name__)
 
 
+def _fare_lines(fare):
+    from servers.ride import invoice_lines
+    try:
+        return invoice_lines.from_quote(fare)
+    except Exception:  # noqa: BLE001 - the quote must still answer
+        logger.exception('fare lines failed')
+        return None
+
+
 def _money_str(value):
     """Money as a string, or None when there is genuinely no value.
 
@@ -285,6 +294,9 @@ def estimate_fare(request):
             {'code': a['code'], 'label': a['label'], 'amount': str(a['amount'])}
             for a in fare.get('fare_adjustments', [])
         ],
+        # 12 Nov: "How this fare is worked out" -- the lines before tax, the taxable value, the
+        # tax and the total, adding up to the paisa, built as the tax invoice builds them.
+        'fare_lines': _fare_lines(fare),
         'vehicle_type': fare['vehicle_type'],
         'pricing_source': fare['source'],
         'distance_km': distance_km,

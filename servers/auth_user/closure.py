@@ -88,7 +88,7 @@ def request_closure(user, reason, request=None):
         AccountClosure.objects.update_or_create(
             user=user, defaults={'status': WAITING, 'reason': reason[:1000]})
         from servers.driver.models import Driver
-        Driver.objects.filter(user_id=user).update(status='offline')
+        Driver.objects.filter(user_id=user).update(status='offline', account_closing=True)
     logger.warning('account closure waiting for payouts user=%s', user.pk)
     return WAITING, pending
 

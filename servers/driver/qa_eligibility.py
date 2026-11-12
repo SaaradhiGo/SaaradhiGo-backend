@@ -73,9 +73,8 @@ def may_operate(driver) -> bool:
     """
     if driver is None:
         return False
-    from servers.auth_user.closure import is_closing
-    if is_closing(driver.user_id_id):
-        return False  # 13 Nov: closing their account; never back online
+    if getattr(driver, 'account_closing', False):
+        return False  # 13 Nov: closing their account; never back online (no extra query)
     if getattr(driver, 'approved', False):
         return True
     return is_qa_test_driver(driver) and qa_simulation_allowed()

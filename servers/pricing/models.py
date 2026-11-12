@@ -226,6 +226,17 @@ class ServiceZone(models.Model):
         null=True, blank=True,
         help_text='Working days to review a driver (1-10). Blank: the parent zone or 1.',
     )
+    #: 13 Nov: "Low rating" in the console for this city's drivers -- an average below
+    #: `low_rating_below` from at least `low_rating_min_ratings` ratings. Blank: the parent zone's,
+    #: else DRIVER_LOW_RATING_BELOW / DRIVER_LOW_RATING_MIN_RATINGS (4.5 from 10).
+    low_rating_below = models.DecimalField(
+        max_digits=3, decimal_places=2, null=True, blank=True,
+        help_text='Average rating below which a driver is "Low rating" (1.00-5.00). Blank: parent or 4.5.',
+    )
+    low_rating_min_ratings = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text='Ratings needed before a driver can be "Low rating" (1-1000). Blank: parent or 10.',
+    )
 
     # ------------------------------------------------------------------
     # THE ADMIN SCOPE SPINE

@@ -20,7 +20,7 @@ class ServiceZoneSerializer(serializers.ModelSerializer):
             'zone_type', 'parent', 'parent_code', 'polygon_geojson', 'priority',
             'currency', 'timezone_name', 'distance_unit', 'tax_mode',
             'per_trip_fee', 'per_trip_fee_label', 'geo_node', 'is_active', 'metadata',
-            'dispatch_timeout_seconds', 'kyc_review_target_days',
+            'dispatch_timeout_seconds', 'kyc_review_target_days', 'low_rating_below', 'low_rating_min_ratings',
             'version', 'area_km2', 'created_at', 'updated_at',
         )
         read_only_fields = fields

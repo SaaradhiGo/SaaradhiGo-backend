@@ -390,7 +390,7 @@ class TestPasswordReset:
         # Otherwise whoever set an unverified address on an account could
         # take it over.
         _user(email='unproven@example.test', phone='+919820000010',
-              verified=False)
+              verified=False, role='driver')
         client.post(FORGOT, {'email': 'unproven@example.test'}, format='json')
         assert mail.outbox == []
 

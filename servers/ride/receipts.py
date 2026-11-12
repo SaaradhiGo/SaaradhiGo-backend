@@ -130,6 +130,27 @@ def _legal_entity():
     return getattr(settings, 'PLATFORM_LEGAL_ENTITY', 'SaaradhiGo Mobility')
 
 
+def vehicle_line(v):
+    """'White Maruti Suzuki Dzire · TS 09 QT 0059' (11 Nov), the same on the screen and the PDF."""
+    if v is None:
+        return ''
+    car = ' '.join(str(x) for x in (getattr(v, 'color', ''), getattr(v, 'brand', ''),
+                                    getattr(v, 'model', '')) if x)
+    return ' · '.join(x for x in (car, str(getattr(v, 'vehicle_number', '') or '')) if x)
+
+
+def company_lines():
+    """The issuer on the tax invoice: name always; address and GSTIN when configured."""
+    return {'name': _legal_entity(), 'address': getattr(settings, 'PLATFORM_LEGAL_ADDRESS', ''),
+            'gstin': getattr(settings, 'PLATFORM_GSTIN', '')}
+
+
+def _rider_name(rider):
+    from servers.auth_user.phone_identity import is_placeholder_phone
+    phone = getattr(rider, 'phone_number', '')
+    return (getattr(rider, 'full_name', '') or ('' if is_placeholder_phone(phone) else phone)) or 'Rider'
+
+
 def _total_fare(trip):
     """What the receipt charges. A platform-funded operator end charged 0, which the usual
     `final_fare or estimated_fare` would read as "no final fare" and show the quote."""
@@ -312,7 +333,7 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
     from base.money import DEFAULT_CURRENCY, format_money
     currency = currency or DEFAULT_CURRENCY
     tax_label = tax_label or 'Tax'
-    rider_name = (getattr(rider, 'full_name', '') or rider.phone_number) or 'Rider'
+    rider_name = _rider_name(rider)
     driver_name = ''
     vehicle = ''
     if trip.driver_id and trip.driver_id.user_id:
@@ -320,8 +341,7 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
             trip.driver_id.user_id.full_name or ''
         )
     if trip.vehicle_id:
-        v = trip.vehicle_id
-        vehicle = ' '.join(filter(None, [str(v.brand or ''), str(v.model or ''), f'({v.vehicle_number})' if v.vehicle_number else '']))
+        vehicle = vehicle_line(trip.vehicle_id)
 
     surge = getattr(trip, 'surge_multiplier', None) or Decimal('1.00')
     base_fare = Decimal('0.00')
@@ -411,27 +431,30 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
 
     trip = receipt.trip_id
     rider = receipt.user_id
-    rider_name = (getattr(rider, 'full_name', '') or rider.phone_number or 'Rider')
+    rider_name = _rider_name(rider)
     driver_name = ''
     vehicle = ''
     if trip.driver_id and trip.driver_id.user_id:
         driver_name = trip.driver_id.user_id.full_name or ''
     if trip.vehicle_id:
-        v = trip.vehicle_id
-        vehicle = f"{v.brand or ''} {v.model or ''} ({v.vehicle_number or ''})".strip()
+        vehicle = vehicle_line(trip.vehicle_id)
+    company = company_lines()
 
     story = []
     story.append(Paragraph(f'{_brand()} / {_legal_entity()}', h1))
     story.append(Paragraph('Tax invoice / Trip receipt', h2))
+    for line in (company['address'], f"GSTIN {company['gstin']}" if company['gstin'] else ''):
+        if line:
+            story.append(Paragraph(escape(line), body))
     story.append(Spacer(1, 6))
 
     meta_rows = [
-        ['Receipt number', receipt.receipt_number],
+        ['Invoice number', receipt.receipt_number],
         ['Issued to', rider_name],
         ['Trip ID', f'#{trip.id}'],
         ['Date', (trip.completed_at or receipt.issued_at).strftime('%d %b %Y, %H:%M')],
-        ['Pickup', trip.pickup_address or '—'],
-        ['Drop', trip.destination_address or '—'],
+        ['Pickup', Paragraph(escape(trip.pickup_address or '—'), body)],
+        ['Drop', Paragraph(escape(trip.destination_address or '—'), body)],
         ['Distance', f"{trip.actual_distance_km or trip.estimated_distance_km or '—'} km"],
         ['Driver', driver_name or '—'],
         ['Vehicle', vehicle or '—'],

@@ -138,6 +138,44 @@ class TripDetailSerializer(TripListSerializer):
     # arithmetic (`settlement_amounts`), never a second calculation. None for anyone else, and
     # None when no commission rule governs the trip.
     driver_earning = serializers.SerializerMethodField()
+    # 11 Nov (rider QA fixes): the receipt screen is a tax invoice, the same as the PDF, and the
+    # finding screen counts down to the city's search time.
+    invoice = serializers.SerializerMethodField()
+    search_expires_at = serializers.SerializerMethodField()
+    vehicle_line = serializers.SerializerMethodField()
+
+    def get_invoice(self, obj):
+        request = self.context.get('request') if hasattr(self, 'context') else None
+        user = getattr(request, 'user', None)
+        if user is None or not (getattr(user, 'id', None) == obj.user_id_id or getattr(user, 'is_staff', False)):
+            return None
+        from servers.ride.models import Receipt
+        from servers.ride.receipts import _rider_name, company_lines
+        receipt = Receipt.objects.filter(trip_id=obj).order_by('-version', '-id').first()
+        if receipt is None:
+            return None
+        from base.countries import get_country
+        return {
+            'number': receipt.receipt_number,
+            'issued_at': receipt.issued_at.isoformat() if receipt.issued_at else None,
+            'rider_name': _rider_name(obj.user_id),
+            'company': company_lines(),
+            'tax_label': get_country(getattr(obj.zone, 'country', None)).tax_label,
+            'tax_amount': str(receipt.gst_amount),
+            'total': str(receipt.total_fare),
+            'currency': receipt.currency,
+        }
+
+    def get_search_expires_at(self, obj):
+        if obj.driver_id_id or not obj.requested_at:
+            return None
+        from datetime import timedelta
+        from servers.ride.rider_booking import search_timeout_for_trip
+        return (obj.requested_at + timedelta(seconds=search_timeout_for_trip(obj))).isoformat()
+
+    def get_vehicle_line(self, obj):
+        from servers.ride.receipts import vehicle_line
+        return vehicle_line(obj.vehicle_id) or None
 
     class Meta(TripListSerializer.Meta):
         fields = TripListSerializer.Meta.fields + [
@@ -146,6 +184,7 @@ class TripDetailSerializer(TripListSerializer):
             # The apps draw this instead of buying a route per location ping (Maps M1).
             'planned_route_polyline',
             'driver_photo_url', 'driver_total_trips', 'driver_earning',
+            'invoice', 'search_expires_at', 'vehicle_line',
         ]
 
     def _party(self, obj):

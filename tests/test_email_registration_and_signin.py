@@ -99,8 +99,9 @@ class TestItCreatesAnAccount:
 
 
 class TestVerificationIsRequiredToSignIn:
-    def test_a_freshly_registered_account_cannot_sign_in(self):
-        _register()
+    def test_a_freshly_registered_driver_cannot_sign_in(self):
+        # Riders sign in before confirming (11 Nov ruling); drivers keep the gate.
+        _register(role='driver')
 
         r = _login(GOOD['email'], GOOD['password'])
 
@@ -188,8 +189,8 @@ class TestInputValidation:
         assert r.status_code == 400
         assert r.json()['error']['code'] == 'AUTH_INVALID_EMAIL'
 
-    def test_a_missing_phone_is_refused(self):
-        r = _register(phone_number='')
+    def test_a_driver_without_a_phone_is_refused(self):
+        r = _register(phone_number='', role='driver')
         assert r.status_code == 400
         assert r.json()['error']['code'] == 'AUTH_INVALID_PHONE'
 
@@ -252,11 +253,12 @@ class TestAnAccountStrandedByAnUnmailableDeployment:
     """
 
     def _unverified_account(self):
+        # A driver: riders sign in unconfirmed anyway (11 Nov).
         user = User.objects.create_user(
             phone_number='+919870009001',
             username='+919870009001',
             email='stranded@deeptrics.com',
-            role='rider',
+            role='driver',
             full_name='Stranded Rider',
         )
         user.set_password('Monsoon-Ferry-2026!')

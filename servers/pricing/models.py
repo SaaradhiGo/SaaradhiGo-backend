@@ -213,6 +213,12 @@ class ServiceZone(models.Model):
         help_text='What the rider sees for the flat fee, e.g. '
                   "'Congestion surcharge'. Required if per_trip_fee > 0.",
     )
+    #: How long dispatch looks for a driver before the rider is told nobody is nearby (11 Nov).
+    #: Blank: the parent zone's, else TRIP_ACCEPT_TIMEOUT_SECONDS (3 minutes).
+    dispatch_timeout_seconds = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text='Seconds to look for a driver (30-900). Blank: the parent zone or 180.',
+    )
 
     # ------------------------------------------------------------------
     # THE ADMIN SCOPE SPINE

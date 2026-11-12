@@ -1240,6 +1240,10 @@ def driver_cancel_trip(request, trip_id):
         )
 
 
+#: Rider cancel reasons that only make sense once a driver is assigned (11 Nov).
+DRIVER_ONLY_CANCEL_REASONS = ('no_show', 'wrong_location')
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def rider_cancel_trip(request, trip_id):
@@ -1265,7 +1269,8 @@ def rider_cancel_trip(request, trip_id):
 
     # Optional: validate reason if provided
     if reason:
-        valid_reasons = {'no_show', 'wrong_location', 'too_long', 'safety', 'other'}
+        valid_reasons = {'no_show', 'wrong_location', 'too_long', 'safety', 'other',
+                         'changed_plans', 'booked_by_mistake'}
         if reason not in valid_reasons:
             return error_response(
                 code='INVALID_REASON',
@@ -1289,6 +1294,14 @@ def rider_cancel_trip(request, trip_id):
                     field='trip_id',
                     issue='Rider mismatch',
                     status=status.HTTP_403_FORBIDDEN,
+                )
+
+            # Before a driver is assigned there is no driver to be late or at the wrong point (11 Nov).
+            if reason in DRIVER_ONLY_CANCEL_REASONS and not trip.driver_id_id:
+                return error_response(
+                    code='INVALID_REASON', message='That reason needs a driver on the way.',
+                    field='reason', issue=f'Got reason={reason!r} before assignment',
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             # 2. State validation
@@ -1557,6 +1570,26 @@ def _maps_error_response():
         status=status.HTTP_502_BAD_GATEWAY,
     )
 
+def _rider_search_scope(user):
+    """(cache tag, bounds, country) for a search with no location: the last trip's city zone,
+    else the market country (the number's country, else the deployment's default)."""
+    if not getattr(user, 'is_authenticated', False):
+        return '', None, None
+    from servers.ride.maps_utils import zone_bounds
+    last = (Trip.objects.filter(user_id=user, zone__isnull=False).select_related('zone')
+            .order_by('-requested_at').first())
+    if last is not None:
+        zone = last.zone
+        while zone.parent_id and zone.zone_type not in ('city', 'state', 'country'):
+            zone = zone.parent
+        return zone.code, zone_bounds(zone.polygon_geojson), zone.country
+    from base.countries import country_of_phone
+    from servers.platform_ops.markets import default_phone_country
+    found = country_of_phone(getattr(user, 'phone_number', None))
+    country = (found.code if found else None) or default_phone_country()
+    return (f'country-{country}' if country else ''), None, country
+
+
 # Place SEARCH is open to guests so the public homepage can offer a real
 # pickup and destination before asking anyone to sign in. It looks a place
 # up and nothing else. Ride operations below stay authenticated.
@@ -1601,11 +1634,19 @@ def proxy_geocode(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    # No location and no zone (11 Nov): "Charminar" typed with location off listed two California
+    # restaurants first. A signed-in rider's search keeps to the city of their last trip, else
+    # their market's country.
+    if not location and not bounds:
+        scope_code, bounds, country = _rider_search_scope(request.user)
+        if bounds or country:
+            zone_code = scope_code
+
     # v2: entries cached before predictions carried `structured_formatting`
     # would serve blank rows for 30 days.
     # v3: v2 entries were cached for 30 days; the 1 h cap (M4) applies only to new keys.
     cache_key = (f"maps:geocode:v3:{search_text.lower().strip()}:{location or ''}"
-                 f"{':' + zone_code if bounds else ''}")
+                 f"{':' + zone_code if (bounds or country) and zone_code else ''}")
     cached_data = get_cached_map_data(cache_key)
     if cached_data:
         return success_response(cached_data, status.HTTP_200_OK)
@@ -1666,6 +1707,39 @@ def proxy_reverse_geocode(request):
 
     cache_map_data(cache_key, result, ttl_seconds=7*24*60*60)
     return success_response(result, status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def booking_options(request):
+    """GET /ride/booking-options/?lat=&lng=&types=auto,sedan (11 Nov, rider QA fixes).
+
+    For the choose screen: how the rider can pay at this pickup (and the default, the last method
+    used), minutes to the nearest driver of each class (None: nobody nearby), the city's driver
+    search time, and whether the mobile still has to be verified before booking.
+    """
+    from servers.ride import rider_booking as rb
+    try:
+        lat = float(request.query_params.get('lat'))
+        lng = float(request.query_params.get('lng'))
+    except (TypeError, ValueError):
+        return error_response(code='MISSING_FIELDS', message='lat and lng are required numbers',
+                              field='lat,lng', issue='Invalid coordinates',
+                              status=status.HTTP_400_BAD_REQUEST)
+    types = [t.strip().lower() for t in (request.query_params.get('types') or '').split(',') if t.strip()]
+    from servers.pricing.services import find_zone_for_point
+    zone = find_zone_for_point(lat, lng)
+    try:
+        times = rb.pickup_times(lat, lng, types)
+    except Exception as exc:  # noqa: BLE001 -- no estimate is better than no screen
+        logger.warning('pickup_times_failed: %s', type(exc).__name__)
+        times = {t: None for t in types}
+    return success_response({
+        'payment': rb.payment_options(request.user, lat, lng),
+        'pickup_min': times,
+        'search_timeout_seconds': rb.search_timeout_seconds(zone),
+        'phone_required': rb.phone_required(request.user),
+    }, status.HTTP_200_OK)
 
 
 # Open to guests for the same reason as `proxy_geocode`: resolving the

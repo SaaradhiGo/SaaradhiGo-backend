@@ -4,7 +4,7 @@ from .views import (
     trip_driver_details, get_active_trip, proxy_geocode, proxy_directions,
     proxy_place_details, proxy_reverse_geocode, maps_client_meter,
     driver_cancel_trip, rider_cancel_trip, rider_cancel_preview, resend_receipt, receipt_pdf,
-    apply_promo_endpoint, trip_chat_history, trip_eta,
+    apply_promo_endpoint, trip_chat_history, trip_eta, booking_options,
 )
 from .admin_views import admin_list_trips, admin_dashboard, admin_trip_detail
 from .admin_stale import (
@@ -37,6 +37,7 @@ urlpatterns = [
     path('maps/geocode', proxy_geocode),
     path('maps/place-details', proxy_place_details),
     path('maps/reverse-geocode', proxy_reverse_geocode),
+    path('booking-options/', booking_options),
     path('maps/directions', proxy_directions),
     path('maps/meter/', maps_client_meter),
 

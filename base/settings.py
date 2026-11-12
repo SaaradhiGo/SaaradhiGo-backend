@@ -1273,7 +1273,11 @@ PAYOUT_PROVIDERS = _provider_table("PAYOUT_PROVIDERS_JSON", {"IN": "razorpay", "
 # How long a rider's request stays open before auto-cancel. 600s meant a
 # rider stared at "finding a driver" for ten minutes; the rolling fanout
 # below has fully played out well before 90s.
-TRIP_ACCEPT_TIMEOUT_SECONDS=int(os.environ.get("TRIP_ACCEPT_TIMEOUT_SECONDS", "90"))
+# The driver search time when a city zone sets none (11 Nov: 3 minutes; set per city in Zones).
+TRIP_ACCEPT_TIMEOUT_SECONDS=int(os.environ.get("TRIP_ACCEPT_TIMEOUT_SECONDS", "180"))
+# Zone codes (a city or any parent) where riders may pay by UPI or card, comma-separated. Online
+# payment also needs that country's payment gateway keys; without them only cash is offered.
+ONLINE_PAYMENT_ZONES=os.environ.get("ONLINE_PAYMENT_ZONES", "")
 
 # SaaradhiGo's own support line per country, as JSON: {"IN": "+91...", "US": "+1..."}.
 # Published in app-config (`country.support.phone`); the apps hide the support

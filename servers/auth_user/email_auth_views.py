@@ -174,6 +174,8 @@ def email_login(request):
     # Accounts created by `bootstrap_qa_accounts` or by an operator invite
     # are verified at the point their password is set, so this does not lock
     # out the operator console.
+    # A rider's unconfirmed address no longer blocks sign-in (11 Nov ruling); the app shows a
+    # "Confirm your email" reminder instead. Drivers and operators keep the gate.
     if not email_is_verified(user):
         # AN ACCOUNT STRANDED BY A DEPLOYMENT THAT CANNOT MAIL.
         #
@@ -197,6 +199,8 @@ def email_login(request):
                 'email_login_autoverified user_id=%s reason=mail_not_deliverable',
                 user.pk,
             )
+        elif user.role == 'rider':
+            pass  # the app shows a "Confirm your email" reminder instead
         else:
             logger.info('email_login_unverified user_id=%s', user.pk)
             return error_response(

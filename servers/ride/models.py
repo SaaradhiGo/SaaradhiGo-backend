@@ -121,6 +121,10 @@ class Trip(CurrencyStampedModel, models.Model):
     pickup_lat=models.DecimalField(max_digits=10,decimal_places=7)
     pickup_long=models.DecimalField(max_digits=10,decimal_places=7)
     destination_address=models.CharField(max_length=512,blank=True,null=True)
+    #: 13 Nov: the place name plus its area ("Charminar, Ghansi Bazaar"), for lists and cards;
+    #: filled from the address on save (servers/ride/places.py). The full address stays above.
+    pickup_label=models.CharField(max_length=80,blank=True,default='')
+    destination_label=models.CharField(max_length=80,blank=True,default='')
     destination_lat=models.DecimalField(max_digits=10,decimal_places=7)
     destination_long=models.DecimalField(max_digits=10,decimal_places=7)
     estimated_distance_km=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
@@ -202,6 +206,17 @@ class Trip(CurrencyStampedModel, models.Model):
         'pricing.ServiceZone', on_delete=models.SET_NULL,
         null=True, blank=True, related_name='trips',
     )
+
+    def save(self, *args, **kwargs):
+        """13 Nov: the short place labels follow the addresses on every save."""
+        from .places import short_place
+        fields = kwargs.get('update_fields')
+        if fields is None or {'pickup_address', 'destination_address'} & set(fields):
+            self.pickup_label = short_place(self.pickup_address)
+            self.destination_label = short_place(self.destination_address)
+            if fields is not None:
+                kwargs['update_fields'] = set(fields) | {'pickup_label', 'destination_label'}
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f'Trip {self.id} - {self.user_id}'
@@ -1008,3 +1023,5 @@ class CancellationPenalty(models.Model):
 
 
 from servers.ride.maps_models import MapsBudget, MapsSkuPrice, MapsUsage  # noqa: E402,F401
+
+

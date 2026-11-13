@@ -49,6 +49,8 @@ class TripListSerializer(serializers.ModelSerializer):
         model = Trip
         fields = [
             'id', 'pickup_address', 'destination_address',
+            # 13 Nov: "Charminar, Ghansi Bazaar" for lists and cards; the full address above.
+            'pickup_label', 'destination_label',
             'pickup_lat', 'pickup_long', 'destination_lat', 'destination_long',
             # THE CURRENCY OF THESE FARES. It is stamped on the trip at
             # write time; without it every client renders a bare number and

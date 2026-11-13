@@ -118,6 +118,7 @@ def driver_trip_detail(request, trip_id):
     return success_response({
         'id': trip.id, 'status': getattr(trip.status_id, 'status_code', ''), 'currency': cur,
         'pickup_address': trip.pickup_address or '', 'destination_address': trip.destination_address or '',
+        'pickup_label': trip.pickup_label, 'destination_label': trip.destination_label,  # 13 Nov
         'requested_at': at(trip.requested_at), 'started_at': at(trip.started_at), 'completed_at': at(trip.completed_at),
         'distance_km': s(trip.actual_distance_km if trip.actual_distance_km is not None else trip.estimated_distance_km),
         'duration_min': s(minutes if minutes is not None else trip.estimated_duration_min),

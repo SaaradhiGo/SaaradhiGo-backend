@@ -138,3 +138,29 @@ def test_the_owner_still_sees_their_trip(world):
     trip = world['trips'][0]
     res = _client(trip.user_id).get(f'/api/v1/ride/trip/{trip.id}/')
     assert res.status_code == 200
+
+
+# --- short place labels (13 Nov) -------------------------------------------------------------
+
+@pytest.mark.parametrize('address,label', [
+    ('Charminar, Charminar Road, Char Kaman, Ghansi Bazaar, Hyderabad, Telangana, India', 'Charminar, Ghansi Bazaar'),
+    ('Gachibowli Stadium, Gachibowli, Hyderabad, Telangana 500032, India', 'Gachibowli Stadium, Gachibowli'),
+    ('Kothaguda Junction, Kondapur, Hyderabad', 'Kothaguda Junction, Kondapur'),
+    ('1600 Broadway, New York, NY 10019, USA', '1600 Broadway, New York'),
+    ('', ''), (None, ''),
+])
+def test_short_place(address, label):
+    from servers.ride.places import short_place
+    assert short_place(address) == label
+
+
+def test_a_trip_keeps_its_labels_with_its_addresses(world):
+    trip = world['trips'][0]
+    trip.pickup_address = 'Charminar, Charminar Road, Char Kaman, Ghansi Bazaar, Hyderabad, Telangana, India'
+    trip.save(update_fields=['pickup_address'])
+    trip.refresh_from_db()
+    assert trip.pickup_label == 'Charminar, Ghansi Bazaar'
+    body = _client(trip.user_id).get(f'/api/v1/ride/trip/{trip.id}/').json()
+    data = body.get('data', body)
+    assert data['pickup_label'] == 'Charminar, Ghansi Bazaar'
+    assert data['pickup_address'].startswith('Charminar, Charminar Road')

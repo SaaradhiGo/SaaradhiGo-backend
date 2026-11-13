@@ -90,7 +90,7 @@ def _candidates(config, floor=None):
 
     floor = max(1, config.minimum_withdrawal_minor if floor is None else floor)
     # 13 Nov: a driver closing their account is paid whatever they have, with no minimum.
-    closing = AccountClosure.objects.filter(status='waiting_payouts').values('user_id')
+    closing = AccountClosure.objects.filter(status__in=('waiting_payouts', 'waiting_settlement')).values('user_id')
     wallet_users = Wallet.objects.filter(
         Q(balance_minor__gte=floor) | Q(balance_minor__gte=1, user_id__in=closing),
         scope=Wallet.SCOPE_DRIVER, currency=config.currency,

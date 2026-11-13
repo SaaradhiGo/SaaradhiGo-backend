@@ -243,6 +243,11 @@ def driver_adjust(request, driver_id):
         reason = f'{ADJUST_REASONS[reason_code]}: {note}'[:2000]
         payload = {'driver_id': driver.id, 'direction': direction, 'amount_minor': amount,
                    'currency': wallet.currency, 'reason_code': reason_code, 'note': note}
+        if reason_code == 'closure_write_off':
+            # 13 Nov: forgiving what a closing driver owes is never one person's decision.
+            if direction != 'credit':
+                raise BadInput('INVALID_DIRECTION', 'A closure write-off is a credit.', 'direction')
+            payload['requires_checker'] = True
         # Resolving a payout reported paid after its refund (AUDIT 27.72): a debit of exactly
         # its amount that names it. On approval the payout becomes paid.
         if data.get('withdrawal_id') not in (None, ''):

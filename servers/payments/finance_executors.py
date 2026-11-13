@@ -40,6 +40,9 @@ ADJUST_REASONS = {
     'goodwill': 'Goodwill',
     'chargeback': 'Chargeback',
     'damage_recovery': 'Damage recovery',
+    # 13 Nov: what a closing driver owes SaaradhiGo, written off so the account can close.
+    # Always a checker (admin_actions.driver_adjust).
+    'closure_write_off': 'Write-off on account closure',
     'other': 'Other',
 }
 CREDIT_REASONS = {

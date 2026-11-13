@@ -334,7 +334,7 @@ def test_chat_history_forbidden_for_non_participant(auth_client_rider, auth_clie
     c = APIClient()
     c.credentials(HTTP_AUTHORIZATION=f'Bearer {AccessToken.for_user(interloper)}')
     resp = c.get(f'/api/v1/ride/trip/{trip.id}/chat/')
-    assert resp.status_code == 403
+    assert resp.status_code == 404  # 13 Nov: a non-participant is told the trip is not found
 
 
 # ---------------------------------------------------------------------------

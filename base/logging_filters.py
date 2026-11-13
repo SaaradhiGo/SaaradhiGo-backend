@@ -62,7 +62,7 @@ _REDACT_KEYS_EXACT = frozenset({
     'destination_lat', 'destination_lng', 'destination_long',
     'coords', 'coordinates', 'location',
     'rider_name', 'driver_name', 'full_name', 'payee_name',
-    'address', 'pickup_address', 'destination_address',
+    'address', 'pickup_address', 'destination_address', 'pickup_label', 'destination_label',
     'upi', 'vpa', 'account_number', 'ifsc',
     # 10 Nov: identity and address details a driver provides.
     'aadhaar', 'aadhaar_last4', 'pan', 'dob', 'date_of_birth', 'license_number', 'line1', 'line2',

@@ -318,6 +318,8 @@ NAME_FIELDS = frozenset({
 ADDRESS_FIELDS = frozenset({
     'pickup_address', 'destination_address', 'drop_address', 'address',
     'address_text',
+    # 13 Nov: the short place labels are part of the address.
+    'pickup_label', 'destination_label',
 })
 BLANKED_FIELDS = frozenset({
     'dob', 'date_of_birth', 'house_no', 'street', 'zip_code', 'postcode',

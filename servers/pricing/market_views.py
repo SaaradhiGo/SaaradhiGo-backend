@@ -85,7 +85,8 @@ def public_fares(request):
     from django.db.models import Q
     from django.utils import timezone
 
-    from servers.platform_ops.markets import city_status_for_zone
+    from servers.admin_access.models import ACTIVE, PAUSED
+    from servers.platform_ops.markets import city_of_zone
 
     from .models import RateCard, ServiceZone
     from .regulation import cancel_policy, limits_for_zone, state_code_of_zone
@@ -97,8 +98,19 @@ def public_fares(request):
     now = timezone.now()
     out = []
     for zone in zones.order_by('country', 'name'):
-        state, city_name = city_status_for_zone(zone)
-        if state == 'paused':
+        # 13 Nov (owner): rates only for a city open in the console's launch gate. A zone no city
+        # owns is not open anywhere, a paused city is not shown, a draft city is "Coming soon" with
+        # no rates.
+        city = city_of_zone(zone)
+        if city is None or city.status == PAUSED:
+            continue
+        state, city_name = ('live' if city.status == ACTIVE else 'soon'), city.name
+        if state == 'soon':
+            out.append({'zone': zone.code, 'city': city_name, 'city_status': state, 'country': zone.country,
+                        'currency': zone.currency or zone.country_profile.currency,
+                        'distance_unit': zone.distance_unit or zone.country_profile.distance_unit,
+                        'tax_mode': zone.tax_mode or zone.country_profile.tax_mode, 'tax_label': zone.tax_label,
+                        'vehicles': [], 'cancellation': None})
             continue
         cards = (RateCard.objects.filter(zone=zone, is_active=True, effective_from__lte=now)
                  .filter(Q(effective_to__isnull=True) | Q(effective_to__gt=now))

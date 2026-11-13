@@ -218,6 +218,10 @@ def test_usd_payouts_stay_held_until_stripe_connect_is_configured(settings):
 def test_public_fares_lists_rate_cards_and_the_cancellation_rule(market):  # noqa: F811
     from rest_framework.test import APIClient
 
+    from servers.pricing.models import ServiceZone
+    hyd = ServiceZone.objects.filter(city='Hyderabad', parent__isnull=True).order_by('id').first()  # 13 Nov: rates only for a city open in the launch gate
+    hyd.geo_node = _city('IN-TG-HYD-L', 'Hyderabad', 'active')
+    hyd.save(update_fields=['geo_node'])
     r = APIClient().get('/api/v1/pricing/fares/?country=IN')
     assert r.status_code == 200
     cities = r.json()['data']['cities']
@@ -226,3 +230,47 @@ def test_public_fares_lists_rate_cards_and_the_cancellation_rule(market):  # noq
     v = row['vehicles'][0]
     assert {'base_fare', 'per_distance', 'per_minute', 'minimum_fare', 'demand_band'} <= set(v)
     assert 'commission_percent' not in json.dumps(r.json())
+
+
+def _city(code, name, status):
+    """A launch-gate city under the seeded Telangana state (seed_admin_access)."""
+    from conftest import seed_admin_access
+    from servers.admin_access.models import GeoNode
+    if not GeoNode.objects.filter(code='IN-TG').exists():
+        seed_admin_access()
+    node = GeoNode(kind='city', code=code, name=name, status=status, parent=GeoNode.objects.get(code='IN-TG'))
+    node.save()
+    return node
+
+
+@pytest.mark.django_db
+def test_fares_show_rates_only_for_a_city_open_in_the_launch_gate(market):  # noqa: F811
+    """13 Nov (owner): only open cities have rates on the Fares page. A draft city is listed as
+    coming soon with no rates; a paused city and a zone no city owns are not listed at all."""
+    from rest_framework.test import APIClient
+
+    from servers.pricing.models import RateCard, ServiceZone
+
+    hyd = ServiceZone.objects.filter(city='Hyderabad', parent__isnull=True).order_by('id').first()
+    hyd.geo_node = _city('IN-TG-HYD-F', 'Hyderabad', 'active')
+    hyd.save(update_fields=['geo_node'])
+    card = RateCard.objects.filter(zone=hyd).first()
+
+    def clone(code, name, node):
+        z = ServiceZone.objects.get(pk=hyd.pk)
+        z.pk, z.id, z.code, z.name, z.city, z.geo_node = None, None, code, name, name, node
+        z.save()
+        c = RateCard.objects.get(pk=card.pk)
+        c.pk, c.id, c.zone = None, None, z
+        c.save()
+
+    clone('IN-TG-DRF-F', 'Draftpur', _city('IN-TG-DRF-F', 'Draftpur', 'draft'))
+    clone('IN-TG-PSD-F', 'Pausedpur', _city('IN-TG-PSD-F', 'Pausedpur', 'paused'))
+    clone('IN-TG-NON-F', 'Nocitypur', None)
+
+    cities = {c['city']: c for c in APIClient().get('/api/v1/pricing/fares/?country=IN').json()['data']['cities']}
+    assert cities['Hyderabad']['city_status'] == 'live' and cities['Hyderabad']['vehicles']
+    assert cities['Draftpur']['city_status'] == 'soon'
+    assert cities['Draftpur']['vehicles'] == [] and cities['Draftpur']['cancellation'] is None
+    assert 'Pausedpur' not in cities
+    assert 'Nocitypur' not in cities

@@ -91,6 +91,15 @@ def _rider_reason(fare):
         name = (ServiceZone.objects.filter(code=code).values_list('name', flat=True).first() or '').strip()
     return f'Higher demand near {name}' if name else 'Higher demand right now'
 
+def trip_not_found(trip_id):
+    """The one answer for a trip the caller may not see, the same as for a trip that does not
+    exist (13 Nov): a stranger learns nothing, not even that the trip is there."""
+    return error_response(
+        code='NOT_FOUND', message='Trip not found.', field='trip_id',
+        issue=f'No trip {trip_id}', status=status.HTTP_404_NOT_FOUND,
+    )
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([GuestFareThrottle, GuestFareGlobalThrottle])
@@ -645,13 +654,8 @@ def trip_detail(request, trip_id):
         trip.driver_id_id == request.user.driver.id
     )
     if not is_rider and not is_driver:
-        return error_response(
-            code='FORBIDDEN',
-            message='You do not have access to this trip',
-            field='trip_id',
-            issue='Only the rider or assigned driver can view this trip',
-            status=status.HTTP_403_FORBIDDEN
-        )
+        # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
+        return trip_not_found(trip_id)
 
     serializer = TripDetailSerializer(trip, context={'request': request})
     return success_response(serializer.data, status.HTTP_200_OK)
@@ -693,13 +697,8 @@ def trip_driver_details(request,trip_id):
         and auth_trip.driver_id_id == request.user.driver.id
     )
     if not (is_rider or is_driver or request.user.is_staff):
-        return error_response(
-            code='FORBIDDEN',
-            message='You do not have access to this trip',
-            field='trip_id',
-            issue='Only the rider or assigned driver can view this trip',
-            status=status.HTTP_403_FORBIDDEN
-        )
+        # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
+        return trip_not_found(trip_id)
 
     cached = get_cached_trip(trip_id)
     if cached and 'driver_id' in cached:
@@ -926,11 +925,8 @@ def receipt_pdf(request, trip_id):
             status=status.HTTP_404_NOT_FOUND,
         )
     if not (trip.user_id_id == request.user.id or request.user.is_staff):
-        return error_response(
-            code='FORBIDDEN', message='Not your trip.',
-            field='trip_id', issue='User mismatch',
-            status=status.HTTP_403_FORBIDDEN,
-        )
+        # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
+        return trip_not_found(trip_id)
     receipt = Receipt.objects.filter(trip_id=trip).order_by('-version', '-id').first()
     if not receipt or not receipt.pdf_file:
         return error_response(
@@ -1027,11 +1023,8 @@ def trip_chat_history(request, trip_id):
     is_rider = trip.user_id_id == request.user.id
     is_driver = trip.driver_id and trip.driver_id.user_id_id == request.user.id
     if not (is_rider or is_driver or request.user.is_staff):
-        return error_response(
-            code='FORBIDDEN', message='Not a participant.',
-            field='trip_id', issue='User mismatch',
-            status=status.HTTP_403_FORBIDDEN,
-        )
+        # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
+        return trip_not_found(trip_id)
 
     qs = ChatMessage.objects.filter(trip=trip).order_by('created_at')
     paginator = PageNumberPagination()
@@ -1079,11 +1072,8 @@ def resend_receipt(request, trip_id):
         )
 
     if not (trip.user_id_id == request.user.id or request.user.is_staff):
-        return error_response(
-            code='FORBIDDEN', message='Only the rider or an admin may resend.',
-            field='trip_id', issue='User mismatch',
-            status=status.HTTP_403_FORBIDDEN,
-        )
+        # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
+        return trip_not_found(trip_id)
 
     if not trip.status_id or trip.status_id.status_code != 'completed':
         return error_response(
@@ -1158,6 +1148,10 @@ def driver_cancel_trip(request, trip_id):
     from servers.driver.fatigue import apply_cancellation_penalty
     from servers.rider.models import Notification
 
+    # 13 Nov: a trip that is not this driver's is "not found", before anything about the body.
+    if not Trip.objects.filter(id=trip_id, driver_id__user_id=request.user).exists():
+        return trip_not_found(trip_id)
+
     reason = (request.data.get('reason') or '').strip()
     note = (request.data.get('note') or '').strip()
     valid_reasons = {'no_show', 'vehicle_issue', 'safety', 'personal', 'other'}
@@ -1177,13 +1171,7 @@ def driver_cancel_trip(request, trip_id):
             ).get(id=trip_id)
 
             if not trip.driver_id or trip.driver_id.user_id_id != request.user.id:
-                return error_response(
-                    code='FORBIDDEN',
-                    message='Only the assigned driver can cancel this trip.',
-                    field='trip_id',
-                    issue='Driver mismatch',
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+                return trip_not_found(trip_id)
 
             current_state = (trip.status_id.status_code if trip.status_id else '').lower()
             if current_state not in ('accepted', 'reached'):
@@ -1319,13 +1307,7 @@ def rider_cancel_trip(request, trip_id):
 
             # 1. Authorization: only the trip's rider
             if trip.user_id_id != request.user.id:
-                return error_response(
-                    code='FORBIDDEN',
-                    message='Only the rider who booked this trip can cancel it.',
-                    field='trip_id',
-                    issue='Rider mismatch',
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+                return trip_not_found(trip_id)  # 13 Nov: not yours reads as not there
 
             # Before a driver is assigned there is no driver to be late or at the wrong point (11 Nov).
             if reason in DRIVER_ONLY_CANCEL_REASONS and not trip.driver_id_id:

@@ -122,6 +122,9 @@ def me_delete(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
+    if state == closure.SETTLEMENT:
+        return success_response({'status': state, 'owed_to_saaradhigo': pending,
+                                 'message': pending['message']}, status.HTTP_202_ACCEPTED)
     if state == closure.WAITING:
         return success_response({
             'status': state, 'pending_payouts': pending,

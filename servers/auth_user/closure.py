@@ -15,7 +15,8 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
-WAITING, CLOSED = 'waiting_payouts', 'closed'
+WAITING, SETTLEMENT, CLOSED = 'waiting_payouts', 'waiting_settlement', 'closed'
+OPEN = (WAITING, SETTLEMENT)
 WEB_URL = 'https://www.saaradhigo.com/delete-account'
 
 DELETED = [
@@ -52,32 +53,61 @@ def pending_payouts(user):
             'in_flight': in_flight}
 
 
+def owed_to_platform(user):
+    """`{amount, currency}` while a driver's balance is below zero (for example the commission on
+    cash trips), else None. The account cannot close until it is paid or Finance writes it off."""
+    from base.money import from_minor
+    from servers.rider.models import Wallet
+
+    wallet = Wallet.objects.filter(user_id=user, scope=Wallet.SCOPE_DRIVER).first()
+    if wallet is None or wallet.balance_minor >= 0:
+        return None
+    return {'amount': str(from_minor(-wallet.balance_minor, wallet.currency)),
+            'currency': wallet.currency, 'amount_minor': -wallet.balance_minor}
+
+
+OWED_MESSAGE = ('You owe SaaradhiGo {currency} {amount} (for example commission on cash trips). '
+                'Your account stays open, offline, until it is paid or our Finance team writes it '
+                'off; we keep the amount on record. Contact support to settle it.')
+
+
 def closure_of(user):
     from .models import AccountClosure
 
-    return AccountClosure.objects.filter(user=user, status=WAITING).first()
+    return AccountClosure.objects.filter(user=user, status__in=OPEN).first()
 
 
 def is_closing(user_id):
     from .models import AccountClosure
 
-    return AccountClosure.objects.filter(user_id=user_id, status=WAITING).exists()
+    return AccountClosure.objects.filter(user_id=user_id, status__in=OPEN).exists()
 
 
 def preview(user):
     c = closure_of(user)
+    owed = owed_to_platform(user)
     return {'deleted': DELETED, 'kept': KEPT, 'pending_payouts': pending_payouts(user),
+            'owed_to_saaradhigo': ({**owed, 'message': OWED_MESSAGE.format(**owed)} if owed else None),
             'closure': ({'status': c.status, 'requested_at': c.requested_at.isoformat()} if c else None),
             'web_url': WEB_URL}
 
 
 def request_closure(user, reason, request=None):
-    """`('closed', None)` or `('waiting_payouts', pending)`."""
+    """`('closed', None)`, `('waiting_payouts', pending)` or `('waiting_settlement', owed)`."""
     from .erasure import anonymise_user
     from .models import AccountClosure
 
     pending = pending_payouts(user)
+    owed = owed_to_platform(user)
     with transaction.atomic():
+        if owed is not None:
+            AccountClosure.objects.update_or_create(user=user, defaults={
+                'status': SETTLEMENT, 'reason': reason[:1000], 'owed_minor': owed['amount_minor'],
+                'owed_currency': owed['currency']})
+            from servers.driver.models import Driver
+            Driver.objects.filter(user_id=user).update(status='offline', account_closing=True)
+            logger.warning('account closure waiting for settlement user=%s', user.pk)
+            return SETTLEMENT, {**owed, 'message': OWED_MESSAGE.format(**owed)}
         if pending is None:
             anonymise_user(user, reason=reason or 'self-service DPDP delete',
                            reference=f'self-service user {user.pk}', actor=user, request=request)
@@ -99,8 +129,13 @@ def sweep():
     from .models import AccountClosure
 
     closed = 0
-    for c in AccountClosure.objects.filter(status=WAITING).select_related('user')[:200]:
+    for c in AccountClosure.objects.filter(status__in=OPEN).select_related('user')[:200]:
+        if owed_to_platform(c.user) is not None:
+            continue                      # still owes SaaradhiGo: paid or written off first
         if pending_payouts(c.user) is not None:
+            if c.status == SETTLEMENT:    # settled with money to spare: now it waits for the payout
+                c.status = WAITING
+                c.save(update_fields=['status'])
             continue
         try:
             with transaction.atomic():

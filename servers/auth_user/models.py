@@ -243,7 +243,11 @@ class AccountClosure(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
                                 related_name='account_closure')
     status = models.CharField(max_length=20, choices=[('waiting_payouts', 'Waiting for payouts'),
+                                                      ('waiting_settlement', 'Waiting for settlement'),
                                                       ('closed', 'Closed')])
+    #: 13 Nov: what the driver owed SaaradhiGo when they asked (minor units), kept on record.
+    owed_minor = models.BigIntegerField(null=True, blank=True)
+    owed_currency = models.CharField(max_length=3, blank=True, default='')
     reason = models.TextField(blank=True, default='')
     requested_at = models.DateTimeField(auto_now_add=True)
     closed_at = models.DateTimeField(null=True, blank=True)

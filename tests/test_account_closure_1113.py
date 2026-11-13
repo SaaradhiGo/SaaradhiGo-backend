@@ -97,7 +97,7 @@ def test_a_driver_who_owes_stays_open_until_finance_writes_it_off(finance_world_
     r = c.post(URL, {'confirm': 'DELETE'}, format='json')
     assert r.status_code == 202 and r.json()['data']['status'] == 'waiting_settlement'
     row = AccountClosure.objects.get(user=drv.user_id)
-    assert (row.owed_minor, row.owed_currency) == (50000, 'INR')
+    assert (row.owed_minor, row.currency) == (50000, 'INR')
     drv.refresh_from_db()
     assert drv.account_closing and drv.status == 'offline'
     assert sweep() == 0

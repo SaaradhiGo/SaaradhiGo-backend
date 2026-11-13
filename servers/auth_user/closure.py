@@ -103,7 +103,7 @@ def request_closure(user, reason, request=None):
         if owed is not None:
             AccountClosure.objects.update_or_create(user=user, defaults={
                 'status': SETTLEMENT, 'reason': reason[:1000], 'owed_minor': owed['amount_minor'],
-                'owed_currency': owed['currency']})
+                'currency': owed['currency']})
             from servers.driver.models import Driver
             Driver.objects.filter(user_id=user).update(status='offline', account_closing=True)
             logger.warning('account closure waiting for settlement user=%s', user.pk)

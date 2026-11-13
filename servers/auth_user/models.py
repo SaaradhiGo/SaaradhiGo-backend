@@ -247,7 +247,7 @@ class AccountClosure(models.Model):
                                                       ('closed', 'Closed')])
     #: 13 Nov: what the driver owed SaaradhiGo when they asked (minor units), kept on record.
     owed_minor = models.BigIntegerField(null=True, blank=True)
-    owed_currency = models.CharField(max_length=3, blank=True, default='')
+    currency = models.CharField(max_length=3, blank=True, default='')
     reason = models.TextField(blank=True, default='')
     requested_at = models.DateTimeField(auto_now_add=True)
     closed_at = models.DateTimeField(null=True, blank=True)

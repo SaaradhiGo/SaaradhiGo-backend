@@ -12,7 +12,7 @@ class Migration(migrations.Migration):
     operations = [
         migrations.AddField(
             model_name='accountclosure',
-            name='owed_currency',
+            name='currency',
             field=models.CharField(blank=True, default='', max_length=3),
         ),
         migrations.AddField(

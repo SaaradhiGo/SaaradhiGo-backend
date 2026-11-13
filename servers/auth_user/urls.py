@@ -26,6 +26,7 @@ from .password_views import (
 
 from .phone_change_views import change_phone
 from .registration_views import register_with_email
+from .role_views import me_ride
 
 urlpatterns = [
     path('otp/', request_otp),
@@ -44,6 +45,8 @@ urlpatterns = [
     # DPDP Act 2023 data-subject endpoints.
     path('me/export/', me_export),
     path('me/delete/', me_delete),
+    # 13 Nov: a driver books with the account they have; adds the rider role.
+    path('me/ride/', me_ride),
 
     # Email + password. Additive: every path above is unchanged, and
     # phone+OTP remains the primary route for riders and drivers.

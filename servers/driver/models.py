@@ -143,6 +143,8 @@ class Driver(models.Model):
     payout_details_changed_at=models.DateTimeField(null=True,blank=True)
     #: US payouts: Stripe Connect Express. Bank details never touch SaaradhiGo.
     stripe_account_id=models.CharField(max_length=64,blank=True,default='')
+    # 13 Nov: the driver asked to close the account and waits for the last payout (auth_user/closure.py).
+    account_closing = models.BooleanField(default=False)
     STRIPE_CHOICES=[('not_started','Not started'),('in_progress','In progress'),('ready','Ready')]
     stripe_onboarding_status=models.CharField(max_length=16,choices=STRIPE_CHOICES,default='not_started')
     #: When each file column last changed, `{column: iso}` (10 Nov v2): "Uploaded 10 Nov" on its tile.

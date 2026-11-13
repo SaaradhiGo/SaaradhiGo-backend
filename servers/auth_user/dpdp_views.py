@@ -30,7 +30,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from base.utils import success_response, error_response
 
-from .erasure import AnonymisationRefused, anonymise_user
+from .erasure import AnonymisationRefused
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def export_payload(user):
     }
 
 
-@api_view(['POST'])
+@api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def me_delete(request):
     """Soft-delete the caller's account. Body:
@@ -78,6 +78,11 @@ def me_delete(request):
     expires (15 min); we also blacklist every active refresh token
     immediately so refresh paths die.
     """
+    from . import closure
+
+    if request.method == 'GET':
+        # 13 Nov: what will be deleted, what must be kept, and any money still owed (driver).
+        return success_response(closure.preview(request.user), status.HTTP_200_OK)
     if request.data.get('confirm') != 'DELETE':
         return error_response(
             code='CONFIRM_REQUIRED',
@@ -94,16 +99,9 @@ def me_delete(request):
         with transaction.atomic():
             from .data_request_views import log_self_service
             log_self_service(user, 'erasure')
-            anonymise_user(
-                user,
-                reason=reason or 'self-service DPDP delete',
-                # The request IS the reference for a self-service erasure:
-                # there is no ticket, and the row's target and timestamp
-                # identify it.
-                reference=f'self-service user {user.pk}',
-                actor=user,
-                request=request,
-            )
+            # 13 Nov: a driver still owed earnings is CLOSING until they are paid (closure.py);
+            # everyone else is anonymised now, exactly as before.
+            state, pending = closure.request_closure(user, reason, request=request)
     except AnonymisationRefused as e:
         # An operator signed in to the rider app and asked to be erased.
         # Staff are deactivated through the access tooling, never wiped.
@@ -124,9 +122,16 @@ def me_delete(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
+    if state == closure.WAITING:
+        return success_response({
+            'status': state, 'pending_payouts': pending,
+            'message': 'Your account closes after your earnings are paid. You stay signed in until '
+                       'then, and you cannot go online.',
+        }, status.HTTP_202_ACCEPTED)
     logger.warning(f"DPDP me_delete: user {user.id} anonymised")
     return success_response(
         {
+            'status': 'closed',
             'message': 'Account anonymised. Financial records retained per Indian retention rules. '
                        'Any existing app sessions will sign out within 15 minutes.',
         },

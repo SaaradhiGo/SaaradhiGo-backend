@@ -1,12 +1,15 @@
 """QA only: a Treasure Valley test market (14 Nov, USA from day 1).
 
-    python manage.py seed_us_idaho_qa --actor-email you@saaradhigo.com     (password: env QA_US_TEST_PASSWORD)
+    python manage.py seed_us_idaho_qa --actor-email you@saaradhigo.com
 
-Refuses in production. Idempotent: rows are found again by fixed keys. Everything it writes is
-labelled as test data:
+Refuses in production. Idempotent: rows are found again by fixed keys. Like every seed it CREATES
+accounts and never changes one (AUDIT 27.40, `base.seeding`): the two test logins are created with
+no usable password; their password and the driver's photo are set by the QA operator afterwards.
+Everything it writes is labelled as test data:
 
-  * the geo tree through `seed_admin_access` (it owns it), then the Treasure Valley zone ACTIVE and
-    its city node live on QA only (production starts closed and opens through the launch gate);
+  * the geo tree through `seed_admin_access` (it owns it), the Treasure Valley zone active, and the
+    city opened through the launch gate (`set_city_status`) when every readiness item is green --
+    otherwise it stays closed and the run lists what is missing;
   * QA TEST rate cards for Standard and XL (base, per mile, per minute, minimum) and a booking
     fee -- not real prices; production starts with none;
   * a QA TEST Fair Share fee plan for US-ID (active on QA only) and a QA TEST platform insurance
@@ -20,6 +23,7 @@ labelled as test data:
     test payout account.
 """
 import base64
+import logging
 import os
 from datetime import date, timedelta
 from decimal import Decimal
@@ -30,6 +34,11 @@ from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
+
+from servers.admin_audit.actor_option import add_actor_argument, require_actor
+
+logger = logging.getLogger(__name__)
+COMMAND = 'seed_us_idaho_qa'
 
 PNG = base64.b64decode(  # 1x1 grey PNG: a placeholder, never a real document
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN89+7dfwAJWAPpCbPvHgAAAABJRU5ErkJggg==')
@@ -45,14 +54,13 @@ class Command(BaseCommand):
     help = 'QA only: seed the Treasure Valley (Idaho) test market.'
 
     def add_arguments(self, parser):
-        parser.add_argument('--actor-email', required=True)
+        add_actor_argument(parser, help='Email of the operator running this (the audit row names them).')
 
-    def handle(self, *args, actor_email, **opts):
+    def handle(self, *args, **options):
         if getattr(settings, 'IS_PRODUCTION', True) or os.environ.get('ENVIRONMENT', '').lower() in ('prod', 'production'):
             raise CommandError('Refusing: this seeds QA test data and never runs in production.')
-        password = os.environ.get('QA_US_TEST_PASSWORD', '')
-        if len(password) < 12:
-            raise CommandError('Set QA_US_TEST_PASSWORD (12+ characters) for the two test logins.')
+        actor = require_actor(options, COMMAND)
+        actor_email = getattr(actor, 'email', '') or options.get('actor_email') or ''
         call_command('seed_admin_access', actor_email=actor_email, stdout=self.stdout)
         with transaction.atomic():
             node, zone = self._market()
@@ -60,8 +68,9 @@ class Command(BaseCommand):
             self._fee_plan()
             self._insurance()
             self._rota(node)
-            rider = self._rider(password)
-            driver = self._driver(password, node)
+            rider = self._rider()
+            driver = self._driver(node)
+        self._open(node, actor)
         from servers.admin_audit.services import record_admin_action
         record_admin_action(None, action='qa_seed_us_idaho', target_type='geo_node', target_id=str(node.id),
                             before={}, after={'zone': zone.code, 'rider': rider.id, 'driver': driver.id},
@@ -83,11 +92,20 @@ class Command(BaseCommand):
         zone.metadata = {**(zone.metadata or {}), 'qa_test_rates': True}
         zone.save()
         link_zones_to_nodes(ServiceZone, GeoNode)
-        if node.status != 'active':
-            GeoNode.objects.filter(pk=node.pk).update(status='active')  # QA only; production uses the gate
-            node.refresh_from_db()
         invalidate_polygon_cache()
         return node, zone
+
+    def _open(self, node, actor):
+        """Through the launch gate only (`set_city_status`): opened when every item is green."""
+        from servers.admin_access.readiness import CityNotReady, set_city_status
+
+        if node.status == 'active':
+            return
+        try:
+            set_city_status(node, 'active', actor, 'QA Treasure Valley test market (seed_us_idaho_qa)')
+            self.stdout.write('Treasure Valley opened through the launch gate.')
+        except CityNotReady as exc:
+            self.stdout.write(f'Treasure Valley stays closed; readiness still missing: {exc}')
 
     def _cards(self, zone):
         from servers.driver.models import VehicleType
@@ -133,47 +151,46 @@ class Command(BaseCommand):
             'backup_name': 'QA Safety Backup', 'backup_phone': '+12085550191',
             'head_name': 'QA Safety Head', 'head_phone': '+12085550192'})
 
-    def _user(self, phone, email, name, role, password):
+    def _account(self, phone, email, name, role, **extra):
         from django.contrib.auth import get_user_model
 
-        User = get_user_model()
-        user = User.objects.filter(phone_number=phone).first()
-        if user is None:
-            user = User.objects.create_user(phone_number=phone, role=role, email=email, full_name=name)
-        user.email, user.full_name = email, name
-        user.set_password(password)
-        for field, value in (('is_email_verified', True), ('email_verified', True), ('phone_verified', True)):
-            if hasattr(user, field):
-                setattr(user, field, value)
-        user.save()
-        return user
+        from base.seeding import get_or_create_account
 
-    def _rider(self, password):
+        account, _ = get_or_create_account(get_user_model(), lookup={'phone_number': phone}, defaults={
+            'username': phone, 'email': email, 'full_name': name, 'role': role, **extra})
+        return account
+
+    def _rider(self):
         from servers.rider.models import Rider
 
-        user = self._user(*RIDER, 'rider', password)
-        Rider.objects.get_or_create(user_id=user)
-        return user
+        account = self._account(*RIDER, 'rider')
+        Rider.objects.get_or_create(user_id=account)
+        return account
 
-    def _driver(self, password, node):
+    @staticmethod
+    def _file(field, name):
+        """A placeholder image; skipped where no file store is reachable (tests)."""
+        if field:
+            return
+        try:
+            field.save(name, ContentFile(PNG), save=False)
+        except Exception:  # noqa: BLE001 - the seed still runs without a bucket
+            logger.warning('seed_us_idaho_qa: no file store for %s', name)
+
+    def _driver(self, node):
         from servers.driver.models import (Driver, DriverAddress, DriverEmergencyContact, Vehicle,
                                            VehicleType)
         from servers.driver.requirements import approve_reviewed_files
 
-        user = self._user(*DRIVER, 'driver', password)
-        user.dob = date(1990, 4, 12)
-        if not user.avatar:
-            user.avatar.save('qa_us_driver.png', ContentFile(PNG), save=False)
-        user.save()
-        driver, _ = Driver.objects.get_or_create(user_id=user)
+        account = self._account(*DRIVER, 'driver', dob=date(1990, 4, 12))
+        driver, _ = Driver.objects.get_or_create(user_id=account)
         now = timezone.now()
         driver.home_city = node
         driver.is_seed = True
         driver.license_number = 'ID-QA-0000120'
         driver.license_expiry = date(2029, 4, 12)
         for col in ('license_doc', 'license_doc_back'):
-            if not getattr(driver, col):
-                getattr(driver, col).save(f'qa_us_{col}.png', ContentFile(PNG), save=False)
+            self._file(getattr(driver, col), f'qa_us_{col}.png')
         driver.background_check_provider = 'fake'
         driver.background_check_ref = f'fake-seed-{driver.id}'
         driver.background_check_status = 'clear'
@@ -201,8 +218,8 @@ class Command(BaseCommand):
             vehicle.is_seed = True
         for col in ('rc_doc', 'insurance_doc', 'vehicle_pic', 'photo_back', 'photo_left', 'photo_right',
                     'photo_interior'):
-            if hasattr(vehicle, col) and not getattr(vehicle, col):
-                getattr(vehicle, col).save(f'qa_us_{col}.png', ContentFile(PNG), save=False)
+            if hasattr(vehicle, col):
+                self._file(getattr(vehicle, col), f'qa_us_{col}.png')
         vehicle.save()
         if hasattr(driver, 'active_vehicle'):
             driver.active_vehicle = vehicle

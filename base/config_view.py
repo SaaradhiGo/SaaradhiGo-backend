@@ -45,8 +45,6 @@ def _brand():
     return getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo')
 
 
-@api_view(['GET'])
-@permission_classes([AllowAny])
 def _public_markets():
     from servers.pricing.regulation import market_rules
     from servers.pricing.regulation_models import MarketRegulation
@@ -63,6 +61,8 @@ def _public_markets():
     return out
 
 
+@api_view(['GET'])
+@permission_classes([AllowAny])
 def public_config(request):
     return success_response(
         {

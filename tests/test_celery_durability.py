@@ -305,6 +305,10 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # Driver fee plans (9 Nov). acks_late is safe: one DriverDailyFee per (driver, day) and a
         # ledger idempotency key, so a redelivered run writes nothing twice.
         'pricing.charge_driver_fees',
+        # 14 Nov (USA): capture a completed trip's card hold (idempotent per trip; a failure leaves
+        # the trip failed for the existing retry path); the daily background re-check sweep.
+        'payments.capture_card_hold',
+        'driver.recheck_background',
         # QA only (PAYOUT_FAKE_ALLOWED): the fake provider's 'processed' event goes through the
         # real, idempotent payout webhook handler.
         'payments.fake_payout_settle',

@@ -66,7 +66,7 @@ INDIA_SEED = {
 US_SEED = {
     'country': 'US',
     'fee_percent': Decimal('0.00'),
-    'minimum_withdrawal_minor': 1000,  # 10.00 USD (owner ruling 9 Nov; was 1.00 here only)
+    'minimum_withdrawal_minor': 100,  # 1.00 USD
     'stuck_payout_hours': 72,
     'payout_schedule': 'weekly',
     'payout_weekday': 0,

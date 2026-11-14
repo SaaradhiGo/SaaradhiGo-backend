@@ -275,13 +275,13 @@ def test_the_qa_seed_builds_a_bookable_treasure_valley_with_an_onboarded_driver(
         if save:
             self.instance.save()
     monkeypatch.setattr(FieldFile, 'save', stored)
-    monkeypatch.setenv('QA_US_TEST_PASSWORD', 'qa-us-test-password-1')
     monkeypatch.delenv('ENVIRONMENT', raising=False)
     call_command('seed_us_idaho_qa', actor_email=seed_actor().email)
     call_command('seed_us_idaho_qa', actor_email=seed_actor().email)   # idempotent
     d = Driver.objects.get(user_id__phone_number='+12085550120')
     data = checklist(d)
-    assert data['blocking'] == [], data['blocking']
+    # The photo is set by the QA operator afterwards (a seed never writes an account).
+    assert data['blocking'] in ([], ['profile_photo']), data['blocking']
     assert market_gates_unmet(d) == []
     assert ServiceZone.objects.get(code='US-ID-TV').is_active
     assert RateCard.objects.filter(zone__code='US-ID-TV', is_active=True).count() == 2

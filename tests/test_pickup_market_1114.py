@@ -155,3 +155,14 @@ def test_us_english_for_us_drivers_and_uk_english_for_india(idaho):  # noqa: F81
     india = checklist(Driver.objects.create(user_id=india_user, approved=False, status='offline'))
     assert india['market']['country'] == 'IN'
     assert any('Licence' in r['label'] or 'licence' in r['help'] for r in india['items'])
+
+
+def test_a_visitor_sees_the_pickups_payment_methods(idaho):  # noqa: F811
+    """Seen on QA: a visitor picking up in Boise was offered cash. The pickup's methods travel
+    with the serviceability answer, so the fares page offers the card only."""
+    client = APIClient()
+    with override_settings(CARD_FAKE_ALLOWED=True, ONLINE_PAYMENT_ZONES='US-ID-TV'):
+        r = client.get(f'/api/v1/pricing/vehicle-types/?lat={BOISE[0]}&lng={BOISE[1]}')
+    assert r.status_code == 200, r.content
+    methods = r.json()['data']['zone']['payment_methods']
+    assert methods and 'cash' not in methods, methods

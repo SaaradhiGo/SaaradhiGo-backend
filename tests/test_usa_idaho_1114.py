@@ -259,3 +259,38 @@ def test_the_rider_sees_the_driver_photo_and_plate_before_pickup(idaho):
     data = res.json()['data']
     assert data['driver_photo_url'] == 'https://files.test/driver.jpg'
     assert '7ID1234' in json.dumps(data)
+
+
+@override_settings(IS_PRODUCTION=False)
+def test_the_qa_seed_builds_a_bookable_treasure_valley_with_an_onboarded_driver(monkeypatch, tmp_path, settings):
+    from django.core.management import call_command
+
+    from servers.driver.requirements import checklist, market_gates_unmet
+    from tests.conftest import seed_actor
+
+    from django.db.models.fields.files import FieldFile
+
+    def stored(self, name, content, save=True):  # no bucket in tests: keep the name only
+        self.name, self._committed = f'test/{name}', True
+        if save:
+            self.instance.save()
+    monkeypatch.setattr(FieldFile, 'save', stored)
+    monkeypatch.setenv('QA_US_TEST_PASSWORD', 'qa-us-test-password-1')
+    monkeypatch.delenv('ENVIRONMENT', raising=False)
+    call_command('seed_us_idaho_qa', actor_email=seed_actor().email)
+    call_command('seed_us_idaho_qa', actor_email=seed_actor().email)   # idempotent
+    d = Driver.objects.get(user_id__phone_number='+12085550120')
+    data = checklist(d)
+    assert data['blocking'] == [], data['blocking']
+    assert market_gates_unmet(d) == []
+    assert ServiceZone.objects.get(code='US-ID-TV').is_active
+    assert RateCard.objects.filter(zone__code='US-ID-TV', is_active=True).count() == 2
+
+
+@override_settings(IS_PRODUCTION=True)
+def test_the_qa_seed_refuses_production(monkeypatch):
+    from django.core.management import call_command
+    from django.core.management.base import CommandError
+
+    with pytest.raises(CommandError):
+        call_command('seed_us_idaho_qa', actor_email='x@y.z')

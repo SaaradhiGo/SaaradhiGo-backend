@@ -25,11 +25,17 @@ def _is_region(part):
     return bool(re.fullmatch(r'([a-z .]+ )?\d{5,6}(-\d{4})?', p)) or bool(re.fullmatch(r'[a-z]{2} \d{5}(-\d{4})?', p))
 
 
+#: A leading house, plot or door number is not a place name (14 Nov: "10, HITEC City").
+NUMBER = re.compile(r'((plot|flat|door|h|house)\s*(no\.?|number)?\s*|no\.?\s*|#\s*)?[\d][\d\-/]*[a-z]?', re.I)
+
+
 def short_place(address):
     """The place name plus its area, or '' for no address."""
     parts = [p.strip() for p in (address or '').split(',') if p.strip()]
     if not parts:
         return ''
+    while len(parts) > 1 and NUMBER.fullmatch(parts[0]):
+        parts.pop(0)
     while len(parts) > 1 and _is_region(parts[-1]):
         parts.pop()
     name = parts[0]

@@ -41,3 +41,25 @@ def test_dry_run_changes_nothing(auth_client_rider):
     t.refresh_from_db()
     assert t.pickup_label == 'Current location'
     assert 'would fix 1 trips' in out.getvalue()
+
+
+def test_a_house_number_is_not_the_place_name():
+    from servers.ride.places import short_place
+    assert short_place('10, Hitech City Rd, HITEC City, Hyderabad, Telangana 500081, India') == 'Hitech City Rd, HITEC City'
+    assert short_place('2, Madhapur, Hyderabad, Telangana, India') == 'Madhapur, Hyderabad'
+    assert short_place('Plot No 12, Kondapur, Hyderabad') == 'Kondapur, Hyderabad'
+    assert short_place('7-1-28, Ameerpet, Hyderabad, Telangana 500016, India') == 'Ameerpet, Hyderabad'
+    assert short_place('1600 Broadway, New York, NY 10019, USA') == '1600 Broadway, New York'
+
+
+@pytest.mark.django_db
+def test_backfill_redoes_numbered_labels(auth_client_rider):
+    _, user = auth_client_rider
+    t = Trip.objects.create(user_id=user, pickup_address='Current location', destination_address='x',
+                            pickup_lat=17.44, pickup_long=78.38, destination_lat=1, destination_long=2)
+    Trip.objects.filter(pk=t.pk).update(pickup_label='10, HITEC City')
+    addr = '10, Hitech City Rd, HITEC City, Hyderabad, Telangana 500081, India'
+    with mock.patch('servers.ride.management.commands.backfill_place_labels.street_address', return_value=addr):
+        call_command('backfill_place_labels', stdout=StringIO())
+    t.refresh_from_db()
+    assert t.pickup_label == 'Hitech City Rd, HITEC City'

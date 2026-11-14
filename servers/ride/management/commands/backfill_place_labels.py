@@ -27,7 +27,10 @@ class Command(BaseCommand):
         parser.add_argument('--limit', type=int, default=0)
 
     def handle(self, *args, dry_run=False, limit=0, **opts):
-        todo = Trip.objects.filter(_generic('pickup_label') | _generic('destination_label')).order_by('id')
+        # 14 Nov: also labels that start with a house number ("10, HITEC City"), from before the rule
+        # skipped it.
+        numbered = Q(pickup_label__regex=r'^[0-9#]') | Q(destination_label__regex=r'^[0-9#]')
+        todo = Trip.objects.filter(_generic('pickup_label') | _generic('destination_label') | numbered).order_by('id')
         if limit:
             todo = todo[:limit]
         fixed = calls = unresolved = 0
@@ -35,10 +38,17 @@ class Command(BaseCommand):
             changed = []
             for side, lat, lng in (('pickup', trip.pickup_lat, trip.pickup_long),
                                    ('destination', trip.destination_lat, trip.destination_long)):
-                if not needs_street_address(getattr(trip, f'{side}_label')) or lat is None or lng is None:
+                current = getattr(trip, f'{side}_label') or ''
+                numbered = bool(current) and current[0] in '0123456789#'
+                if not (needs_street_address(current) or numbered) or lat is None or lng is None:
                     continue
-                calls += 1
-                label = short_place(street_address(lat, lng))
+                address = getattr(trip, f'{side}_address') or ''
+                if needs_street_address(address):
+                    calls += 1
+                    address = street_address(lat, lng)  # cached for 7 days: a rerun costs nothing
+                label = short_place(address)
+                if label == current:
+                    continue
                 if label and not needs_street_address(label):
                     setattr(trip, f'{side}_label', label)
                     changed.append(f'{side}_label')

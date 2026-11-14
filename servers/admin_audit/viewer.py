@@ -33,7 +33,7 @@ from django.utils import timezone
 
 from servers.admin_access.access import scope_paths
 from servers.admin_access.masking import BULLET, RAW_PII_PATTERNS, mask_contact
-from servers.admin_access.models import COUNTRY, GeoNode
+from servers.admin_access.models import COUNTRY, GLOBAL, GeoNode
 
 from .hashchain import GENESIS, compute_hash
 from .models import AdminAuditLog
@@ -149,11 +149,18 @@ def filtered(user, params):
         qs = qs.filter(created_at__lt=end)
     if start and end and end <= start:
         raise FilterError('"to" must be after "from".', 'to')
-    city = (params.get('city') or '').strip().upper()
-    if city:
-        node = GeoNode.objects.filter(code=city).first()
+    # `city` is the page's own place filter; `scope` is the console's market switch.
+    # Both narrow (they can only intersect with what `scope_queryset` already allows),
+    # and the Global node means every market, so it narrows nothing.
+    for field in ('city', 'scope'):
+        code = (params.get(field) or '').strip().upper()
+        if not code:
+            continue
+        node = GeoNode.objects.filter(code=code).first()
         if node is None:
-            raise FilterError(f'Unknown place {city!r}.', 'city')
+            raise FilterError(f'Unknown place {code!r}.', field)
+        if node.kind == GLOBAL:
+            continue
         inside = [n.code for n in GeoNode.objects.filter(path__startswith=node.path)]
         qs = qs.filter(_place_q(inside, [node.code] if node.kind == COUNTRY else []))
     return qs.order_by('-id')

@@ -84,7 +84,7 @@ def entry_export(request):
         return _bad(exc)
     text, count = viewer.csv_text(qs)
     filters = {k: request.query_params.get(k) for k in
-               ('actor', 'action', 'target_type', 'target_id', 'from', 'to', 'city')
+               ('actor', 'action', 'target_type', 'target_id', 'from', 'to', 'city', 'scope')
                if request.query_params.get(k)}
     audit = record_admin_action(
         request, action=viewer.EXPORT_ACTION, target_type='audit_log', target_id='export',

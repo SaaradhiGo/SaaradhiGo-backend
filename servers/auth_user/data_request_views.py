@@ -27,6 +27,7 @@ from base.countries import country_of_phone
 from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission
 from servers.admin_access.masking import mask_phone
+from servers.admin_access.scoping import ScopeNotHeld, market_country_code, market_node
 from servers.admin_audit.models import AdminAuditLog
 from servers.admin_audit.services import record_admin_action
 from servers.approvals import registry
@@ -133,7 +134,14 @@ def _driver_of_pk(pk):
 def data_requests(request):
     if request.method == 'POST':
         return _create(request)
-    qs = DataRequest.objects.select_related('subject', 'created_by', 'handled_by')
+    try:
+        country = market_country_code(market_node(request))
+    except ScopeNotHeld as exc:
+        return _refuse('SCOPE_NOT_HELD', str(exc), status.HTTP_403_FORBIDDEN, 'scope')
+    # The console's market switch: a request belongs to the subject's country (the
+    # law it falls under, DPDP or CCPA). Global, or no switch, is every market.
+    every = DataRequest.objects.filter(country=country) if country else DataRequest.objects.all()
+    qs = every.select_related('subject', 'created_by', 'handled_by')
     state = request.query_params.get('status', 'open')
     if state == 'open':
         qs = qs.filter(status__in=(DataRequest.OPEN, DataRequest.WAITING))
@@ -146,7 +154,7 @@ def data_requests(request):
         page = max(1, int(request.query_params.get('page', 1)))
     except ValueError:
         page = 1
-    open_qs = DataRequest.objects.filter(status__in=(DataRequest.OPEN, DataRequest.WAITING))
+    open_qs = every.filter(status__in=(DataRequest.OPEN, DataRequest.WAITING))
     return success_response({
         'count': qs.count(),
         'results': [_row(r) for r in qs[(page - 1) * PAGE_SIZE:page * PAGE_SIZE]],

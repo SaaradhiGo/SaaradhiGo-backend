@@ -294,3 +294,15 @@ def test_the_qa_seed_refuses_production(monkeypatch):
 
     with pytest.raises(CommandError):
         call_command('seed_us_idaho_qa', actor_email='x@y.z')
+
+
+def test_the_rider_accessibility_note_reaches_the_trips_driver(idaho):
+    zone, node = idaho
+    d = _driver(node)
+    trip = _trip(zone, d, status='accepted')
+    c = _client(trip.user_id)
+    assert c.put('/api/v1/rider/accessibility/', {'note': 'I use a folding  wheelchair'}, format='json').json()['data'] == {
+        'note': 'I use a folding wheelchair'}
+    data = _client(d.user_id).get(f'/api/v1/ride/trip/{trip.id}/').json()['data']
+    assert data['rider_accessibility_note'] == 'I use a folding wheelchair'
+    assert data['market_rules']['cash_allowed'] is False and data['market_rules']['tips_enabled'] is True

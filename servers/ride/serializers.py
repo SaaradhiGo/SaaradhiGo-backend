@@ -196,7 +196,7 @@ class TripDetailSerializer(TripListSerializer):
             'invoice', 'search_expires_at', 'vehicle_line',
             # 14 Nov (USA): a card held at booking (never "pay again"), the market's cash and tip
             # rules, and the tip given.
-            'card_held', 'market_rules', 'tip',
+            'card_held', 'market_rules', 'tip', 'rider_accessibility_note',
         ]
 
     def _party(self, obj):
@@ -209,6 +209,15 @@ class TripDetailSerializer(TripListSerializer):
     card_held = serializers.SerializerMethodField()
     market_rules = serializers.SerializerMethodField()
     tip = serializers.SerializerMethodField()
+
+    rider_accessibility_note = serializers.SerializerMethodField()
+
+    def get_rider_accessibility_note(self, obj):
+        # Only the trip's rider and driver read it.
+        if not self._party(obj):
+            return None
+        rider = getattr(obj.user_id, 'rider', None)
+        return (getattr(rider, 'accessibility_note', '') or None) if rider is not None else None
 
     def get_card_held(self, obj):
         hold = getattr(obj, 'card_hold', None) if hasattr(obj, 'card_hold') else None

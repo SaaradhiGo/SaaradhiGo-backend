@@ -122,7 +122,8 @@ class Command(BaseCommand):
         MarketRegulation.objects.filter(country='US', state_code='ID').update(platform_insurance={
             'insurer': 'QA TEST INSURER (not a real policy)', 'policy_number': 'QA-TEST-0000',
             'holder': 'platform', 'logged_in': '$50,000 / $100,000 / $25,000',
-            'on_trip': '$1,000,000 combined', 'certificate_url': '', 'expires': '12/31/2027'})
+            'on_trip': '$1,000,000 combined', 'certificate_url': '', 'expires': '12/31/2027'},
+            service_agent={'name': 'QA TEST AGENT (not a real agent)', 'address': 'Boise, ID 83702 (QA test)'})
 
     def _rota(self, node):
         from servers.safety.models import OnCallRota

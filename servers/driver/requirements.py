@@ -543,7 +543,11 @@ def approve_name(driver):
 def year_range(config, today=None):
     year = (today or date.today()).year
     oldest = config.get('max_vehicle_age_years')
-    return (year - oldest if oldest else year - 30), year
+    first = year - oldest if oldest else year - 30
+    # 14 Nov (USA): the market's oldest model year (Idaho default 2011) narrows it further.
+    if config.get('min_vehicle_year'):
+        first = max(first, int(config['min_vehicle_year']))
+    return first, year
 
 
 def state_names(country):

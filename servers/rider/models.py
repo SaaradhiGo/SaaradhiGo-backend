@@ -19,6 +19,8 @@ class Rider(models.Model):
     rider disputes a low score.
     """
     user_id=models.OneToOneField(User,on_delete=models.CASCADE,related_name='rider')
+    #: 14 Nov (USA; Idaho 49-3713): "I use a folding wheelchair". The trip's driver sees it.
+    accessibility_note=models.CharField(max_length=200,blank=True,default='')
     created_at=models.DateTimeField(auto_now_add=True)
     rating=models.DecimalField(decimal_places=2,max_digits=3,default=5.00)
     rating_count=models.PositiveIntegerField(default=0)

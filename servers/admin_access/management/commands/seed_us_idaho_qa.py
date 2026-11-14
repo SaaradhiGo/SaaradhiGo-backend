@@ -35,7 +35,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
-from servers.admin_audit.actor_option import add_actor_argument, require_actor
+from servers.admin_audit.actor_option import add_actor_argument, attributed, require_actor
 
 logger = logging.getLogger(__name__)
 COMMAND = 'seed_us_idaho_qa'
@@ -62,19 +62,21 @@ class Command(BaseCommand):
         actor = require_actor(options, COMMAND)
         actor_email = getattr(actor, 'email', '') or options.get('actor_email') or ''
         call_command('seed_admin_access', actor_email=actor_email, stdout=self.stdout)
-        with transaction.atomic():
-            node, zone = self._market()
-            self._cards(zone)
-            self._fee_plan()
-            self._insurance()
-            self._rota(node)
-            rider = self._rider()
-            driver = self._driver(node)
+        reason = 'QA Treasure Valley test market (seed_us_idaho_qa): labelled test data, never production.'
+        with attributed(actor, COMMAND, reason=reason):
+            with transaction.atomic():
+                node, zone = self._market()
+                self._cards(zone)
+                self._fee_plan()
+                self._insurance()
+                self._rota(node)
+                rider = self._rider()
+                driver = self._driver(node)
+            from servers.admin_audit.services import record_admin_action
+            record_admin_action(None, action='qa_seed_us_idaho', target_type='geo_node', target_id=str(node.id),
+                                before={}, after={'zone': zone.code, 'rider': rider.id, 'driver': driver.id},
+                                reason=reason)
         self._open(node, actor)
-        from servers.admin_audit.services import record_admin_action
-        record_admin_action(None, action='qa_seed_us_idaho', target_type='geo_node', target_id=str(node.id),
-                            before={}, after={'zone': zone.code, 'rider': rider.id, 'driver': driver.id},
-                            reason=f'QA Treasure Valley test market seeded by {actor_email}')
         self.stdout.write(f'Treasure Valley QA market ready: zone {zone.code}, rider user {rider.id}, '
                           f'driver {driver.id}.')
 

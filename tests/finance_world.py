@@ -79,7 +79,7 @@ def zone(code, node, **extra):
 
 def seed_in_payout_config():
     """What `seed_payout_config --country IN` leaves behind: the India row, the
-    owner's values (fee 0, minimum 500.00 INR, 24 hours, on request). The US is
+    owner's 2026-11-09 ruling (fee 0, minimum 100.00 INR, every 5 days). The US is
     seeded by the full command and by `apply_payout_ruling`."""
     from conftest import seed_actor
 

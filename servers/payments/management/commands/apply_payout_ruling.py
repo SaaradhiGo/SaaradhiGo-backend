@@ -9,7 +9,8 @@ already holds India's old row (platform fee 2 percent) would never get the
 ruling from it. This command writes the ruling:
 
   * India: a NEW config version with fee 0 (reason "Owner ruling, AUDIT 27.43")
-    when the active row differs from the ruling; the old version is closed and
+    when the active row still has the old platform fee (above 0); a row already at
+    fee 0 holds this ruling or the later 2026-11-09 one and is never rewritten; the old version is closed and
     stays in the history. Minimum, stuck hours and schedule are the ruling's.
   * United States: created if it has no row at all; an existing US row is left
     as it is (a person set it since).
@@ -61,7 +62,9 @@ class Command(BaseCommand):
                 active = PayoutCountryConfig.objects.filter(
                     country=INDIA_SEED['country'], is_active=True).first()
                 wanted = {k: INDIA_SEED[k] for k in CONFIG_FIELDS}
-                if active is None or values_of(active) != wanted:
+                # Only the OLD row it was written for (a platform fee above 0). A row already at
+                # 0 has had this ruling or a later one (2026-11-09); rewriting it would undo that.
+                if active is not None and active.fee_percent != INDIA_SEED['fee_percent']                         and values_of(active) != wanted:
                     row, previous = write_config_version(
                         INDIA_SEED['country'], wanted, reason=RULING_REASON, snapshot=snap)
                     changes.append({

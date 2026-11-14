@@ -140,6 +140,9 @@ ROOT_URLCONF = 'base.urls'
 # past this many trusted hops; the left end is client-written and ignored.
 # Railway's edge is one proxy, hence 1. Put a CDN in front and this is 2.
 TRUSTED_PROXY_COUNT = int(os.environ.get('TRUSTED_PROXY_COUNT', '1'))
+# 14 Nov: the website's session server vouches for the visitor's address with this secret
+# (base/client_ip.py). Unset, or shorter than 32 characters, and no header is believed.
+BFF_CLIENT_IP_SECRET = os.environ.get('BFF_CLIENT_IP_SECRET', '')
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [

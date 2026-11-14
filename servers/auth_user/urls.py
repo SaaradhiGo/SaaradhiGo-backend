@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.urls import path
+from .ws_ticket import ws_ticket
 from .views import (
     request_otp,
     verify_phone,
@@ -35,6 +36,7 @@ urlpatterns = [
     path('login/', token),
     path('refresh/', refresh),
     path('logout/', logout),
+    path('ws-ticket/', ws_ticket, name='ride_ws_ticket'),
     path('update/', update_user),
     path('profile/', get_user_profile),
     # The sign-in number changes only with a proof from otp/verify/ for the new one.

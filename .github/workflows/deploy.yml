@@ -314,8 +314,18 @@ jobs:
           docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.21.2             git /repo --config /repo/.gitleaks.toml --log-opts="$RANGE"             --redact --no-banner --exit-code 1
 
   deploy:
-    name: deploy production (AWS ap-south-1)
+    name: deploy production (${{ matrix.market }}, AWS ${{ matrix.region }})
     needs: [test, lint, postgres-concurrency, infra-validate]
+    # 14 Nov (owner ruling): one codebase, two regional deployments. India in Mumbai (DeepTrics
+    # Software Solutions Pvt Ltd), the USA in Oregon (DeepTrics LLC), each with its own database and
+    # storage. The USA deploys only once US_REGION_ENABLED is 'true' (docs/config-required.md).
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - { market: in, region: ap-south-1, state_key: production/terraform.tfstate, ssm: /saaradhigo/production, asg: saaradhigo-prod-app }
+          - { market: us, region: us-west-2, state_key: production-us/terraform.tfstate, ssm: /saaradhigo/production-us, asg: saaradhigo-prod-us-app }
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # Production deploys only from main, through CI, never by hand (owner rule, 12 Nov):
@@ -335,7 +345,7 @@ jobs:
       id-token: write
       contents: read
     env:
-      AWS_REGION: ap-south-1
+      AWS_REGION: ${{ matrix.region }}
       TF_VAR_image_tag: ${{ github.sha }}
       TF_VAR_certificate_validated: ${{ vars.PRODUCTION_CERT_VALIDATED == 'true' }}
       TF_VAR_alert_email: ${{ vars.PRODUCTION_ALERT_EMAIL }}
@@ -346,6 +356,9 @@ jobs:
           if [ -z "${{ vars.AWS_DEPLOY_ROLE_ARN }}" ]; then
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=Deploy skipped::AWS_DEPLOY_ROLE_ARN is not set (docs/config-required.md). Nothing was deployed."
+          elif [ "${{ matrix.market }}" = "us" ] && [ "${{ vars.US_REGION_ENABLED }}" != "true" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=US deploy skipped::US_REGION_ENABLED is not 'true' (docs/config-required.md). Nothing was deployed to us-west-2."
           else
             echo "configured=true" >> "$GITHUB_OUTPUT"
           fi
@@ -357,12 +370,14 @@ jobs:
         if: steps.preflight.outputs.configured == 'true'
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ap-south-1
+          aws-region: ${{ matrix.region }}
 
       - name: Terraform state bucket and lock table (idempotent)
         if: steps.preflight.outputs.configured == 'true'
         run: |
           set -euo pipefail
+          # One state bucket and lock table, in Mumbai, for both markets (two state keys).
+          export AWS_REGION=ap-south-1
           aws s3api head-bucket --bucket saaradhigo-prod-tfstate 2>/dev/null || {
             aws s3api create-bucket --bucket saaradhigo-prod-tfstate \
               --create-bucket-configuration LocationConstraint=ap-south-1
@@ -385,14 +400,14 @@ jobs:
         if: steps.preflight.outputs.configured == 'true'
         working-directory: infra/production
         run: |
-          terraform init -input=false
-          terraform apply -input=false -auto-approve -target=aws_ecr_repository.repo
+          terraform init -input=false -backend-config="key=${{ matrix.state_key }}"
+          terraform apply -input=false -auto-approve -var-file=regions/${{ matrix.market }}.tfvars -target=aws_ecr_repository.repo
 
       - name: Build and push the backend image
         if: steps.preflight.outputs.configured == 'true'
         run: |
           set -euo pipefail
-          REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.ap-south-1.amazonaws.com"
+          REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${{ matrix.region }}.amazonaws.com"
           aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
           IMAGE="$REGISTRY/saaradhigo/backend:${GITHUB_SHA}"
           if aws ecr describe-images --repository-name saaradhigo/backend --image-ids imageTag="$GITHUB_SHA" >/dev/null 2>&1; then
@@ -407,9 +422,9 @@ jobs:
         working-directory: infra/production
         run: |
           # The web image tag is the last one the web repo pushed (its own production workflow).
-          WEB_TAG=$(aws ssm get-parameter --name /saaradhigo/production/deploy/web_image_tag \
+          WEB_TAG=$(aws ssm get-parameter --name ${{ matrix.ssm }}/deploy/web_image_tag \
             --query Parameter.Value --output text 2>/dev/null || echo "")
-          terraform apply -input=false -auto-approve -var "web_image_tag=${WEB_TAG:-none}"
+          terraform apply -input=false -auto-approve -var-file=regions/${{ matrix.market }}.tfvars -var "web_image_tag=${WEB_TAG:-none}"
           terraform output -json dns_records_for_godaddy > dns.json
           {
             echo "### DNS records for GoDaddy"
@@ -420,16 +435,16 @@ jobs:
         if: steps.preflight.outputs.configured == 'true'
         run: |
           set -euo pipefail
-          REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.ap-south-1.amazonaws.com"
+          REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${{ matrix.region }}.amazonaws.com"
           IMAGE="$REGISTRY/saaradhigo/backend:${GITHUB_SHA}"
           for i in $(seq 1 40); do
-            ID=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names saaradhigo-prod-app \
+            ID=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names ${{ matrix.asg }} \
               --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId | [0]' --output text)
             [ "$ID" != "None" ] && [ -n "$ID" ] && break
             sleep 15
           done
           CMD=$(aws ssm send-command --instance-ids "$ID" --document-name AWS-RunShellScript \
-            --parameters "commands=[\"aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin $REGISTRY\",\"docker run --rm --env-file /etc/saaradhigo.env $IMAGE python manage.py migrate --noinput\"]" \
+            --parameters "commands=[\"aws ecr get-login-password --region ${{ matrix.region }} | docker login --username AWS --password-stdin $REGISTRY\",\"docker run --rm --env-file /etc/saaradhigo.env $IMAGE python manage.py migrate --noinput\"]" \
             --query Command.CommandId --output text)
           aws ssm wait command-executed --command-id "$CMD" --instance-id "$ID"
           aws ssm get-command-invocation --command-id "$CMD" --instance-id "$ID" --query Status --output text

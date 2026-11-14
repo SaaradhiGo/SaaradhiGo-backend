@@ -4,11 +4,15 @@ data "aws_availability_zones" "available" {
 
 locals {
   azs  = slice(data.aws_availability_zones.available.names, 0, 2)
-  name = "saaradhigo-prod"
+  # India keeps its original names; every other market is suffixed.
+  name       = var.market == "in" ? "saaradhigo-prod" : "saaradhigo-prod-${var.market}"
+  ssm_prefix = var.market == "in" ? "/saaradhigo/production" : "/saaradhigo/production-${var.market}"
+  www_host   = "www${var.host_suffix}.${var.domain}"
+  api_host   = "api${var.host_suffix}.${var.domain}"
 }
 
 resource "aws_vpc" "main" {
-  cidr_block           = "10.40.0.0/16"
+  cidr_block           = var.vpc_cidr
   enable_dns_hostnames = true
   enable_dns_support   = true
   tags                 = { Name = local.name }

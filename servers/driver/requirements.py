@@ -327,6 +327,14 @@ def checklist(driver, today=None):
         rows.append({'key': key, 'section': section, 'label': label, 'help': help_text,
                      'need': need['need'], 'blocks_online': need['blocks_online'], **st,
                      'step': STEP_OF[key], 'files': item_files(driver, key, vehicle, reviews)})
+    if config['country'] == 'US':
+        # 14 Nov (owner): US drivers read US English ("License, front"); India keeps UK English.
+        from base.us_english import us_english
+
+        for r in rows:
+            r['label'], r['help'] = us_english(r['label']), us_english(r['help'])
+            for f in r['files']:
+                f['label'] = us_english(f['label'])
     required = [r for r in rows if r['need'] == REQUIRED]
     steps = step_summary(rows)
     return {'market': {'country': config['country'], 'state': config['state']},

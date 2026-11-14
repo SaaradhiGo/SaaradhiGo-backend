@@ -133,3 +133,25 @@ def test_an_india_account_booking_from_boise_gets_usd_miles_card_only_and_deeptr
     assert 'cash' not in methods and methods, methods
     assert entity_for_zone(at)['legal_name'] == 'DeepTrics LLC'
     assert rules_for_zone(at)['cash_allowed'] is False
+
+
+def test_us_english_for_us_drivers_and_uk_english_for_india(idaho):  # noqa: F811
+    """14 Nov (owner): the apps show checklist labels as-is, so the API respells them for the US."""
+    from base.us_english import us_english
+    from servers.driver.requirements import checklist
+    from tests.test_usa_idaho_1114 import _driver
+
+    assert us_english('Licence, front') == 'License, front'
+    assert us_english('Trip cancelled; colour; centre; Authorisation') == 'Trip canceled; color; center; Authorization'
+    assert us_english('Cancellation fee and emphasis') == 'Cancellation fee and emphasis'
+    _, node = idaho
+    us = checklist(_driver(node, phone='+12085550177'))
+    text = ' '.join([r['label'] + ' ' + r['help'] + ' ' + ' '.join(f['label'] for f in r['files'])
+                     for r in us['items']] if 'items' in us else [str(us)])
+    assert 'icence' not in text and 'License' in text, text
+    india_user = User.objects.create_user(phone_number='+919000000177', role='driver')
+    from servers.driver.models import Driver
+
+    india = checklist(Driver.objects.create(user_id=india_user, approved=False, status='offline'))
+    assert india['market']['country'] == 'IN'
+    assert any('Licence' in r['label'] or 'licence' in r['help'] for r in india['items'])

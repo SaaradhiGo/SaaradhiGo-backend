@@ -44,7 +44,11 @@ ITEMS = {
     'aadhaar': ('identity', 'Aadhaar', 'The last 4 digits and a copy. We never store the full number.'),
     'pan': ('identity', 'PAN', 'For TDS on your earnings.'),
     'police_verification': ('identity', 'Police verification', 'Your police verification certificate.'),
+    'background_consent': ('identity', 'Background check consent',
+                           'Read the disclosure, then authorise the check. You enter your SSN only in the provider\'s form.'),
     'background_check': ('identity', 'Background check', 'We start this for you once your details are in.'),
+    'accessibility_ack': ('personal', 'Non-discrimination and accessibility',
+                          'Agree to serve every rider, including service animals and riders with wheelchairs.'),
     'vehicle': ('vehicle', 'Vehicle details', 'Type, make, model, year, colour and number plate.'),
     'vehicle_photos': ('vehicle', 'Vehicle photos', 'Front, back, both sides and the inside.'),
     'rc': ('vehicle', 'Registration Certificate (RC)', 'Issued by the RTO.'),
@@ -66,7 +70,13 @@ DRIVER_FILES = {
     'pan': 'pan_doc', 'police_verification': 'police_verification_doc',
 }
 EXPIRY_FOR = {'insurance': 'insurance_expiry', 'permit': 'permit_expiry', 'fitness': 'fitness_expiry',
-              'puc': 'puc_expiry'}
+              'puc': 'puc_expiry', 'registration': 'registration_expiry'}
+#: What an item is called in a market where it means something else (14 Nov, USA).
+LABELS_BY_COUNTRY = {
+    'US': {'insurance': ('Personal auto insurance', 'Your own policy for this vehicle, with its expiry date.'),
+           'driving_licence': ("Driver's license", 'Number, expiry date, front and back.'),
+           'registration': ('Vehicle registration', 'Your state registration, with its expiry date.')},
+}
 EXPIRING_DAYS = 30
 
 DEFAULT_LANGUAGES = {'IN': ['en', 'te', 'hi'], 'US': ['en', 'es']}
@@ -108,6 +118,7 @@ def resolve(country, state=''):
 
     return {'country': country, 'state': state, 'items': items,
             'min_driver_age': pick('min_driver_age'), 'max_vehicle_age_years': pick('max_vehicle_age_years'),
+            'min_vehicle_year': pick('min_vehicle_year'), 'vehicle_min_doors': pick('vehicle_min_doors'),
             'languages': pick('languages') or DEFAULT_LANGUAGES.get(country, ['en'])}
 
 
@@ -228,15 +239,35 @@ def item_status(driver, key, config, *, vehicle=None, reviews=None, today=None):
         return out
     if key == 'background_check':
         out['status'] = {'clear': 'approved', 'pending': 'in_review', 'consider': 'in_review',
-                         'failed': 'rejected'}.get(driver.background_check_status, 'missing')
+                         'failed': 'rejected', 'suspended': 'rejected'}.get(driver.background_check_status, 'missing')
+        if driver.background_check_status == 'consider':
+            out['reason'] = 'Our team is reviewing your report.'
+        if driver.background_check_status == 'suspended':
+            out['reason'] = 'Your check needs attention. Contact support.'
         return out
+    if key == 'background_consent':
+        if not driver.background_disclosure_at:
+            out['reason'] = 'Read the background check disclosure.'
+            return out
+        return done(bool(driver.background_consent_at))
+    if key == 'accessibility_ack':
+        return done(bool(driver.accessibility_ack_at))
     if key == 'vehicle':
         if vehicle is None:
             return out
         if vehicle.custom_make_model:
             out['status'] = 'in_review' if not driver.approved else 'approved'
             return out
-        return done(bool(vehicle.vehicle_number and vehicle.brand and vehicle.model))
+        # 14 Nov (USA): the market's oldest model year and minimum doors.
+        oldest, doors = config.get('min_vehicle_year'), config.get('vehicle_min_doors')
+        if oldest and vehicle.year and vehicle.year < oldest:
+            out['status'], out['reason'] = 'rejected', f'The vehicle must be {oldest} or newer here.'
+            return out
+        if doors and vehicle.doors is not None and vehicle.doors < doors:
+            out['status'], out['reason'] = 'rejected', f'The vehicle must have at least {doors} doors here.'
+            return out
+        return done(bool(vehicle.vehicle_number and vehicle.brand and vehicle.model
+                         and (not doors or vehicle.doors)))
     if key == 'vehicle_photos':
         if vehicle is None:
             out['reason'] = 'Add your vehicle first.'
@@ -286,10 +317,12 @@ def checklist(driver, today=None):
     vehicle = _vehicle(driver)
     reviews = _latest_reviews(driver, vehicle)
     rows = []
+    labels = LABELS_BY_COUNTRY.get(config['country'], {})
     for key, (section, label, help_text) in ITEMS.items():
         need = config['items'][key]
         if need['need'] == OFF:
             continue
+        label, help_text = labels.get(key, (label, help_text))
         st = item_status(driver, key, config, vehicle=vehicle, reviews=reviews, today=today)
         rows.append({'key': key, 'section': section, 'label': label, 'help': help_text,
                      'need': need['need'], 'blocks_online': need['blocks_online'], **st,
@@ -316,9 +349,11 @@ def checklist(driver, today=None):
 #: step key -> item keys, in the order the setup shows them. A step with no item the market asks
 #: for is not shown.
 STEPS = (
-    ('personal', ('profile_photo', 'legal_name', 'date_of_birth', 'address', 'permanent_address', 'address_proof')),
+    ('personal', ('profile_photo', 'legal_name', 'date_of_birth', 'address', 'permanent_address', 'address_proof',
+                  'accessibility_ack')),
     ('contact', ('emergency_contact',)),
-    ('identity', ('driving_licence', 'aadhaar', 'pan', 'police_verification', 'background_check')),
+    ('identity', ('driving_licence', 'aadhaar', 'pan', 'police_verification', 'background_consent',
+                  'background_check')),
     ('vehicle', ('vehicle',)),
     ('vehicle_docs', ('vehicle_photos', 'rc', 'registration', 'insurance', 'permit', 'fitness', 'puc', 'inspection')),
     ('payouts', ('payout_method',)),
@@ -328,6 +363,7 @@ STEP_OF = {key: step for step, keys in STEPS for key in keys}
 MINUTES = {'profile_photo': 1, 'legal_name': 1, 'date_of_birth': 1, 'address': 2, 'permanent_address': 1,
            'address_proof': 1, 'emergency_contact': 1, 'driving_licence': 2, 'aadhaar': 1, 'pan': 1,
            'police_verification': 1, 'background_check': 0, 'vehicle': 2, 'vehicle_photos': 3,
+           'background_consent': 2, 'accessibility_ack': 1,
            'payout_method': 2}
 
 
@@ -439,6 +475,27 @@ def blocking_unmet(driver):
     return [ITEMS[k][1] for k in data['blocking']]
 
 
+def market_gates_unmet(driver):
+    """What the MARKET still lacks before any driver here may go online (14 Nov, USA): an active
+    driver fee plan and the platform's TNC insurance (Idaho Code 41-2519), where required. These
+    never block approval: the driver did nothing wrong."""
+    from servers.pricing.regulation import market_rules, platform_insurance_ready
+
+    country, state = market_of(driver)
+    rules = market_rules(country or 'IN', state)
+    out = []
+    if rules['platform_insurance_required'] and not platform_insurance_ready(rules):
+        out.append('Platform insurance is not set up for your city yet')
+    if rules['fee_plan_required']:
+        from servers.pricing.fee_plans import local_day, resolve
+        from servers.payments.payout_scope import scope_codes_of_node
+
+        home = getattr(driver, 'home_city', None)
+        if resolve(country, scope_codes_of_node(home) if home else [], local_day(country)) is None:
+            out.append('The driver fee plan for your city is not set yet')
+    return out
+
+
 def approve_reviewed_files(driver, reviewer):
     """On approving a driver: every file of a blocking item nobody has decided on is approved."""
     from .models import DriverDocumentReview
@@ -486,7 +543,11 @@ def approve_name(driver):
 def year_range(config, today=None):
     year = (today or date.today()).year
     oldest = config.get('max_vehicle_age_years')
-    return (year - oldest if oldest else year - 30), year
+    first = year - oldest if oldest else year - 30
+    # 14 Nov (USA): the market's oldest model year (Idaho default 2011) narrows it further.
+    if config.get('min_vehicle_year'):
+        first = max(first, int(config['min_vehicle_year']))
+    return first, year
 
 
 def state_names(country):

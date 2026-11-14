@@ -186,3 +186,64 @@ def alert_rules_above_cap():
         raised.append(rule.id)
     return raised
 
+
+
+# ---------------------------------------------------------------------------
+# Per-state operating rules (14 Nov, USA from day 1)
+# ---------------------------------------------------------------------------
+
+#: Used when neither the state nor the country row sets a rule. India's behaviour today.
+RULE_DEFAULTS = {
+    'cash_allowed': True,
+    'tips_enabled': False,
+    'tip_presets': [15, 18, 20],
+    'sales_tax_enabled': True,
+    'vehicle_classes': None,
+    'min_vehicle_year': None,
+    'vehicle_min_doors': None,
+    'trip_record_retention_days': None,
+    'driver_record_retention_days': None,
+    'complaint_record_retention_days': None,
+    'background_recheck_months': 0,
+    'zero_tolerance_suspend': False,
+    'platform_insurance_required': False,
+    'platform_insurance': None,
+    'fee_plan_required': False,
+    'service_agent': None,
+    'citations': None,
+}
+
+
+def market_rules(country, state_code=''):
+    """Every operating rule for a market: the state value, else the country value, else the
+    default. `citations` merge (state over country)."""
+    country_row, state_row = _rows(country, state_code)
+    out = {}
+    for field, default in RULE_DEFAULTS.items():
+        value = None
+        for row in (state_row, country_row):
+            if row is not None and getattr(row, field, None) is not None:
+                value = getattr(row, field)
+                break
+        out[field] = default if value is None else value
+    cites = {}
+    for row in (country_row, state_row):
+        if row is not None and row.citations:
+            cites.update(row.citations)
+    out['citations'] = cites
+    return out
+
+
+def rules_for_zone(zone):
+    """`market_rules` for the zone's country and state (India defaults with no zone)."""
+    if zone is None:
+        return market_rules('IN')
+    from .commission import country_code_of_zone
+
+    return market_rules(country_code_of_zone(zone), state_code_of_zone(zone))
+
+
+def platform_insurance_ready(rules):
+    """True when the platform policy is configured enough for drivers to go online."""
+    p = rules.get('platform_insurance') or {}
+    return bool(p.get('insurer') and p.get('policy_number') and p.get('holder'))

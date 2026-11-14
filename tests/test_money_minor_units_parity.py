@@ -162,6 +162,8 @@ def market(db):
         state_code='NY', city='New York', zone_type='city', priority=500,
         polygon_geojson=_square(*NYC), is_active=True,
         currency='USD', timezone_name='America/New_York', tax_mode='additive',
+        # 14 Nov: a miles zone is priced per mile; this golden file was recorded per km.
+        distance_unit='km',
         per_trip_fee=Decimal('2.75'), per_trip_fee_label='Congestion surcharge',
     )
     invalidate_polygon_cache()

@@ -45,6 +45,22 @@ def _brand():
     return getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo')
 
 
+def _public_markets():
+    from servers.pricing.regulation import market_rules
+    from servers.pricing.regulation_models import MarketRegulation
+
+    out = {}
+    for row in MarketRegulation.objects.exclude(state_code='').only('country', 'state_code'):
+        r = market_rules(row.country, row.state_code)
+        agent = {k: v for k, v in (r['service_agent'] or {}).items() if k in ('name', 'address', 'phone') and v}
+        out[f'{row.country}-{row.state_code}'] = {
+            'cash_allowed': r['cash_allowed'], 'tips_enabled': r['tips_enabled'],
+            'tip_presets': r['tip_presets'] if r['tips_enabled'] else [],
+            **({'service_agent': agent} if agent else {}),
+        }
+    return out
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def public_config(request):
@@ -66,6 +82,9 @@ def public_config(request):
             # The operating entity per market (13 Nov): footer, About and Contact, both apps' About.
             # Only configured values appear; unset ones are absent, never blank.
             'legal': legal_entity.all_markets(),
+            # 14 Nov (USA): what the public pages say per state: the agent for service of process
+            # (Idaho 49-3705), no cash, tips, the emergency number. Only configured values.
+            'markets': _public_markets(),
         },
         status.HTTP_200_OK,
     )

@@ -2,7 +2,8 @@
 #   app     the Django app (HTTP and websockets on uvicorn), behind api.saaradhigo.com
 #   worker  Celery with beat embedded: exactly ONE instance, or every scheduled task double-fires
 #   web     the Next.js site, behind www.saaradhigo.com
-# Configuration comes from SSM Parameter Store at boot: /saaradhigo/production/<role>/<NAME>
+# Configuration comes from SSM Parameter Store at boot: <ssm_prefix>/<role>/<NAME>
+# (/saaradhigo/production for India, /saaradhigo/production-us for the USA)
 # (secrets are SecureString; Srini or CI puts the vendor keys there, docs/config-required.md).
 # A deploy pushes new images and starts an instance refresh; nothing is changed on a host by hand.
 
@@ -46,24 +47,26 @@ resource "aws_ssm_parameter" "backend" {
     AWS_S3_BUCKET_NAME     = aws_s3_bucket.media.bucket
     AWS_S3_REGION          = var.region
     AWS_REGION             = var.region
-    ALLOWED_HOSTS          = "api.${var.domain}"
-    CSRF_TRUSTED_ORIGINS   = "https://www.${var.domain},https://api.${var.domain}"
-    CORS_ALLOWED_ORIGINS   = "https://www.${var.domain}"
-    FRONTEND_URL           = "https://www.${var.domain}"
-    NOTIFY_WEBHOOK_BASE_URL = "https://api.${var.domain}"
+    ALLOWED_HOSTS          = local.api_host
+    CSRF_TRUSTED_ORIGINS   = "https://${local.www_host},https://${local.api_host}"
+    CORS_ALLOWED_ORIGINS   = "https://${local.www_host}"
+    FRONTEND_URL           = "https://${local.www_host}"
+    NOTIFY_WEBHOOK_BASE_URL = "https://${local.api_host}"
+    # 14 Nov: which market this regional deployment serves (riders and drivers are routed by it).
+    DEPLOY_MARKET          = upper(var.market)
   }
-  name  = "/saaradhigo/production/backend/${each.key}"
+  name  = "${local.ssm_prefix}/backend/${each.key}"
   type  = "String"
   value = each.value
 }
 
 resource "aws_ssm_parameter" "web" {
   for_each = {
-    NEXT_PUBLIC_SITE_URL     = "https://www.${var.domain}"
-    NEXT_PUBLIC_API_BASE_URL = "https://api.${var.domain}/api/v1"
-    NEXT_PUBLIC_WS_BASE_URL  = "wss://api.${var.domain}"
+    NEXT_PUBLIC_SITE_URL     = "https://${local.www_host}"
+    NEXT_PUBLIC_API_BASE_URL = "https://${local.api_host}/api/v1"
+    NEXT_PUBLIC_WS_BASE_URL  = "wss://${local.api_host}"
   }
-  name  = "/saaradhigo/production/web/${each.key}"
+  name  = "${local.ssm_prefix}/web/${each.key}"
   type  = "String"
   value = each.value
 }
@@ -96,7 +99,7 @@ resource "aws_iam_role_policy" "instance" {
       { Effect = "Allow", Action = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"],
         Resource = [for r in aws_ecr_repository.repo : r.arn] },
       { Effect = "Allow", Action = ["ssm:GetParametersByPath", "ssm:GetParameter"],
-        Resource = "arn:aws:ssm:${var.region}:${data.aws_caller_identity.me.account_id}:parameter/saaradhigo/production/*" },
+        Resource = "arn:aws:ssm:${var.region}:${data.aws_caller_identity.me.account_id}:parameter${local.ssm_prefix}/*" },
       { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"],
         Resource = aws_db_instance.main.master_user_secret[0].secret_arn },
       { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
@@ -140,7 +143,7 @@ resource "aws_launch_template" "role" {
     # repo's production workflow sets before it refreshes the web instances.
     image_tag  = each.value.image == "web" ? "" : var.image_tag
     role       = each.key
-    param_path = each.value.image == "web" ? "/saaradhigo/production/web/" : "/saaradhigo/production/backend/"
+    param_path = each.value.image == "web" ? "${local.ssm_prefix}/web/" : "${local.ssm_prefix}/backend/"
     db_secret  = each.value.image == "web" ? "" : aws_db_instance.main.master_user_secret[0].secret_arn
     port       = each.value.port
     command    = each.value.command

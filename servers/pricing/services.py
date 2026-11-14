@@ -573,7 +573,13 @@ def quote_fare(
         source = 'default'
         rate_card_version = None
 
-    distance_fare = per_km * distance_km
+    # 14 Nov: a zone priced in miles has its per-distance rate per MILE (the console enters it so,
+    # `ServiceZone.distance_unit`); the distance is converted before pricing. Kilometres unchanged.
+    from servers.ride.receipts import KM_PER_MILE
+    from base.countries import get_country as _gc
+    _unit = (getattr(zone, 'distance_unit', None) or _gc(getattr(zone, 'country', None)).distance_unit)
+    priced_distance = (Decimal(str(distance_km)) / KM_PER_MILE) if _unit == 'mi' else distance_km
+    distance_fare = per_km * priced_distance
     time_fare = per_min * duration_min
     subtotal = base_fare + distance_fare + time_fare
 
@@ -707,6 +713,10 @@ def quote_fare(
     tax_percent = (card.gst_percent if card is not None
                    else _DEFAULTS.get('gst_percent', Decimal('5.00')))
     tax_percent = Decimal(str(tax_percent or '0'))
+    # 14 Nov: no sales tax where the market has it off (US unless the CPA says otherwise).
+    from servers.pricing.regulation import rules_for_zone
+    if zone is not None and not rules_for_zone(zone)['sales_tax_enabled']:
+        tax_percent = Decimal('0')
     per_trip_fee = quantize(
         Decimal(str(getattr(zone, 'per_trip_fee', None) or '0')), currency)
     fee_label = getattr(zone, 'per_trip_fee_label', '') or 'Regulatory fee'

@@ -453,6 +453,11 @@ MIGRATION_WAIT_TIMEOUT = int(os.environ.get('MIGRATION_WAIT_TIMEOUT', '300'))
 # (or adopt django-celery-beat for a DB-backed schedule lock).
 from celery.schedules import crontab as _crontab
 CELERY_BEAT_SCHEDULE = {
+    'driver-recheck-background-daily': {
+        # 14 Nov (USA): background checks repeat on the market's schedule (Idaho: yearly).
+        'task': 'driver.recheck_background',
+        'schedule': _crontab(hour=4, minute=25),
+    },
     'pricing-charge-driver-fees-hourly': {
         # Driver fee plans (9 Nov): one platform_fee row per driver for the local day just ended.
         'task': 'pricing.charge_driver_fees',
@@ -1854,3 +1859,18 @@ SNS_PLATFORM_APPLICATION_ARN_FCM = os.environ.get('SNS_PLATFORM_APPLICATION_ARN_
 SNS_PLATFORM_APPLICATION_ARN_APNS = os.environ.get('SNS_PLATFORM_APPLICATION_ARN_APNS', '')
 # The public base URL Twilio signs against (the URL it was configured with).
 NOTIFY_WEBHOOK_BASE_URL = os.environ.get('NOTIFY_WEBHOOK_BASE_URL', '')
+
+
+# ---------------------------------------------------------------------------
+# Background checks (14 Nov, USA from day 1): servers.driver.background
+# ---------------------------------------------------------------------------
+# {"US": "fake"} on QA. The real provider is the owner's choice (Checkr recommended); the fake
+# never runs in production whatever is set. The webhook secret signs provider callbacks.
+try:
+    BACKGROUND_CHECK_PROVIDERS = json.loads(os.environ.get('BACKGROUND_CHECK_PROVIDERS_JSON', '') or '{}')
+except ValueError:
+    BACKGROUND_CHECK_PROVIDERS = {}
+BACKGROUND_CHECK_WEBHOOK_SECRET = os.environ.get('BACKGROUND_CHECK_WEBHOOK_SECRET', '')
+
+# 14 Nov (USA): the QA fake card processor (integrations/payments/fake_card.py). Never in production.
+CARD_FAKE_ALLOWED = os.environ.get('CARD_FAKE_ALLOWED', '').strip().lower() in ('1', 'true', 'yes')

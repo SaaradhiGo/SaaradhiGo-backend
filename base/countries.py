@@ -174,7 +174,9 @@ UNITED_STATES = Country(
     default_tax_percent='0.00',
     # A default only. US zones must set their own: a single national timezone
     # rolls a California driver's earnings over at 9pm the previous day.
-    default_timezone='America/New_York',
+    # 14 Nov: Boise, the only US market (Idaho, Treasure Valley). Country-level jobs (the daily
+    # driver fee, weekly payouts) use it; a second US time zone means a per-zone job first.
+    default_timezone='America/Boise',
     # A grid-ish network at American city speeds. Fallback-only; see the field
     # comments on `Country`.
     road_distance_factor=1.25,

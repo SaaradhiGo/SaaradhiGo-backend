@@ -452,8 +452,9 @@ def test_reporting_indias_inclusive_tax_does_not_add_it(india_zone, vehicle_type
 
 def test_us_tax_is_added_on_top(us_zone, vehicle_type):
     _card(us_zone, vehicle_type, '2.50', '1.75', '0.35', '8.00', '8.625')
+    # 14 Nov: a zone in miles is priced per MILE; 16.09344 km is 10 miles.
     q = quote_fare(pickup_lat=SF[0], pickup_lon=SF[1],
-                   distance_km=Decimal('10'), duration_min=Decimal('20'),
+                   distance_km=Decimal('16.09344'), duration_min=Decimal('20'),
                    vehicle_type='sedan', record_demand=False)
     assert q['tax_mode'] == 'additive'
     assert q['tax_amount'] > Decimal('0.00')
@@ -469,7 +470,7 @@ def test_a_flat_per_trip_fee_is_charged_and_named(us_zone, vehicle_type):
     _card(us_zone, vehicle_type, '2.50', '1.75', '0.35', '8.00', '8.625')
 
     q = quote_fare(pickup_lat=SF[0], pickup_lon=SF[1],
-                   distance_km=Decimal('10'), duration_min=Decimal('20'),
+                   distance_km=Decimal('16.09344'), duration_min=Decimal('20'),
                    vehicle_type='sedan', record_demand=False)
 
     fee = next(a for a in q['fare_adjustments'] if a['code'] == 'per_trip_fee')
@@ -1041,3 +1042,12 @@ def test_every_console_template_still_compiles():
             broken.append(f'{path.name}: {exc}')
 
     assert not broken, f'templates failed to compile: {broken}'
+
+
+def test_a_miles_zone_is_priced_per_mile(us_zone, vehicle_type):
+    """14 Nov (USA): the card's per-distance rate is per MILE in a miles zone."""
+    _card(us_zone, vehicle_type, '2.00', '1.50', '0.00', '1.00', '0')
+    q = quote_fare(pickup_lat=SF[0], pickup_lon=SF[1], distance_km=Decimal('16.09344'),
+                   duration_min=Decimal('0'), vehicle_type='sedan', record_demand=False)
+    assert q['distance_unit'] == 'mi'
+    assert q['distance_fare'] == Decimal('15.00')      # 10 miles x $1.50

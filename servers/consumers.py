@@ -747,6 +747,15 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             payment_method = data.get('payment_method', 'deferred')
             # Online payment only (a rider restricted after a payment-abuse review): a booking
             # that names cash is refused with a stable code and a neutral message.
+            # 14 Nov: where the market forbids cash (Idaho 49-3712), a cash or undecided booking
+            # is refused: payment must be made electronically through the app.
+            if (str(payment_method or 'deferred').lower() in ('cash', 'deferred')
+                    and not await self._cash_allowed_at(pickup_lat, pickup_lng)):
+                from servers.ride.rider_booking import CASH_NOT_ALLOWED_HERE, CASH_NOT_ALLOWED_MESSAGE
+                await self.send(text_data=json.dumps({
+                    'type': 'error', 'code': CASH_NOT_ALLOWED_HERE, 'message': CASH_NOT_ALLOWED_MESSAGE,
+                }))
+                return
             if str(payment_method or '').lower() == 'cash' and await self._cash_disabled():
                 from servers.rider.models import CASH_NOT_AVAILABLE, CASH_NOT_AVAILABLE_MESSAGE
                 await self.send(text_data=json.dumps({
@@ -829,6 +838,14 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     'message': 'Failed to create trip'
                 }))
                 return
+
+            # 14 Nov (USA): a card held at booking is linked to the trip.
+            hold_id = data.get('card_hold_id')
+            if hold_id and not reused:
+                refusal = await self._link_card_hold(hold_id, trip)
+                if refusal:
+                    await self.send(text_data=json.dumps({'type': 'warning', 'code': 'CARD_HOLD_NOT_LINKED',
+                                                          'message': refusal}))
 
             # Confirm trip creation to rider. `reused` is additive and tells an
             # app that its retry was recognised rather than duplicated.
@@ -946,6 +963,19 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     def _cash_disabled(self):
         from servers.rider.models import cash_disabled_for
         return cash_disabled_for(self.user)
+
+    @database_sync_to_async
+    def _link_card_hold(self, hold_id, trip):
+        from servers.payments.card_hold import link_to_trip
+        try:
+            return link_to_trip(self.user, int(hold_id), trip)
+        except (TypeError, ValueError):
+            return 'This card hold cannot be used.'
+
+    @database_sync_to_async
+    def _cash_allowed_at(self, lat, lng):
+        from servers.ride.rider_booking import cash_allowed_at
+        return cash_allowed_at(lat, lng)
 
     @database_sync_to_async
     def _start_dispatch(self, trip_id, radius=None, reason='initial'):
@@ -2421,6 +2451,10 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                         'success': False,
                         'error': f'Cash can only be confirmed on a completed trip (currently {current}).',
                     }
+                # 14 Nov: never where the market forbids cash (Idaho 49-3712).
+                from servers.ride.rider_booking import cash_allowed_in
+                if not cash_allowed_in(getattr(trip, 'zone', None)):
+                    return {'success': False, 'error': 'Cash is not accepted in this market.'}
 
                 # Paid another way (the rider paid from the wallet, AUDIT 27.71): there is no cash
                 # to collect, and confirming would charge the rider twice.

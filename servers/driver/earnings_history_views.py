@@ -127,7 +127,19 @@ def driver_trip_detail(request, trip_id):
         # The fee net of its refund, as the Trips row shows it; the refund itself is tagged.
         'fare': s(row.gross) if row else None,
         'platform_fee': s(row.commission - refund) if row and row.commission is not None else None,
-        'platform_fee_refunded': s(refund) if refund else None, 'tips': '0.00', 'earned': s(earned),
+        'platform_fee_refunded': s(refund) if refund else None, 'tips': s(_trip_tip(trip)),
+        'earned': s(earned + _trip_tip(trip)) if earned is not None else None,
         'cash_in_hand': s(row.gross) if row is not None and row.driver_holds_cash else None,
         'rider': {'first_name': first, 'rating': s(rating)},
     }, status.HTTP_200_OK)
+
+
+def _trip_tip(trip):
+    """14 Nov (USA): the rider's tip on this trip, all of it the driver's."""
+    from decimal import Decimal
+
+    from base.money import from_minor
+    from servers.payments.models import Tip
+
+    tip = Tip.objects.filter(trip=trip, status='succeeded').first()
+    return from_minor(tip.amount_minor, tip.currency) if tip else Decimal('0.00')

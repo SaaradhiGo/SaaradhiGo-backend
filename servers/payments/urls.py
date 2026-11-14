@@ -19,7 +19,12 @@ from .admin_finance import (
     finance_settlements,
 )
 
+from . import card_hold  # noqa: E402
+
 urlpatterns = [
+    # 14 Nov (USA): the card hold at booking.
+    path('card/hold/', card_hold.hold_view),
+    path('card/hold/<int:hold_id>/', card_hold.hold_status_view),
     path('create-order/', create_order),
     path('verify/', verify_payment),
     path('webhook/', payment_webhook),

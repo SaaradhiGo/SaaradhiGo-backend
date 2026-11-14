@@ -15,6 +15,9 @@ from .admin_trips import (
     admin_note_trip, admin_refund_trip, admin_resend_pickup_code, admin_unflag_trip,
 )
 
+from . import zero_tolerance  # noqa: E402
+from servers.payments import card_hold  # noqa: E402
+
 urlpatterns = [
     # path('ride-request/', ride_request),
     path('estimate-fare/', estimate_fare),
@@ -22,6 +25,8 @@ urlpatterns = [
     path('driver-history/', driver_history),
     path('active/', get_active_trip),
     path('trip/<int:trip_id>/', trip_detail),
+    path('trips/<int:trip_id>/report-impairment/', zero_tolerance.report_impairment),
+    path('trips/<int:trip_id>/tip/', card_hold.tip_view),
     path('trip/<int:trip_id>/details/',trip_driver_details),
     path('trip/<int:trip_id>/eta/', trip_eta),
     path('trip/<int:trip_id>/driver-cancel/', driver_cancel_trip),

@@ -70,13 +70,15 @@ def resolve(country, scope_codes=(), day=None):
     return None
 
 
-def local_day(country, when=None):
+def local_day(country, when=None, zone=None):
+    """The local date; in the zone's own time zone when a zone is given (14 Nov: Boise)."""
     from zoneinfo import ZoneInfo
 
     from base.countries import get_country
 
     when = when or timezone.now()
-    return when.astimezone(ZoneInfo(get_country(country or None).default_timezone)).date()
+    tz = (getattr(zone, 'timezone_name', '') or get_country(country or None).default_timezone)
+    return when.astimezone(ZoneInfo(tz)).date()
 
 
 def plan_for_zone(zone, when=None):
@@ -85,7 +87,7 @@ def plan_for_zone(zone, when=None):
     if zone is None:
         return None
     country = country_code_of_zone(zone)
-    return resolve(country, scope_codes_of_zone(zone), local_day(country, when))
+    return resolve(country, scope_codes_of_zone(zone), local_day(country, when, zone))
 
 
 def snapshot_for_booking(zone, vehicle_type=None, when=None):
@@ -358,7 +360,7 @@ def overcharged(driver, country):
     for t in trips:
         if commission.get(t.id, 0) <= 0 or t.zone is None:
             continue
-        day = local_day(country, t.completed_at)
+        day = local_day(country, t.completed_at, t.zone)
         # A driver never pays for configuration written late (owner ruling, 11 Nov): a day before any
         # plan existed is judged by the plan in force now, waiver included.
         plan = resolve(country, scope_codes_of_zone(t.zone), day)

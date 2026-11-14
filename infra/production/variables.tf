@@ -3,6 +3,33 @@ variable "region" {
   default = "ap-south-1"
 }
 
+# 14 Nov (owner ruling): one codebase, two regional deployments, each with its own database and
+# storage so each country's data stays in its region and with its own company:
+#   in  AWS Mumbai (ap-south-1)  DeepTrics Software Solutions Pvt Ltd, Razorpay
+#   us  AWS Oregon (us-west-2)   DeepTrics LLC, Stripe
+# India keeps every name it had (`saaradhigo-prod`, /saaradhigo/production/...), so nothing there
+# is recreated. Select with -var-file=regions/<market>.tfvars and the state key in deploy.yml.
+variable "market" {
+  description = "in | us: which regional deployment this state describes."
+  type        = string
+  default     = "in"
+  validation {
+    condition     = contains(["in", "us"], var.market)
+    error_message = "market must be in or us."
+  }
+}
+
+variable "host_suffix" {
+  description = "Appended to the www and api host names: '' for India (www, api), '-us' for the USA (www-us, api-us). The owner confirms the US host names (docs/config-required.md)."
+  type        = string
+  default     = ""
+}
+
+variable "vpc_cidr" {
+  type    = string
+  default = "10.40.0.0/16"
+}
+
 variable "domain" {
   type    = string
   default = "saaradhigo.com"

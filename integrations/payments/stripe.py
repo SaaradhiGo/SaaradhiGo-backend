@@ -74,6 +74,70 @@ class StripeGateway(BasePaymentGateway):
             'status': data.get('status'),
         }
 
+    # ---- 14 Nov (USA): hold at booking, capture at trip end, tips off-session ------------------
+
+    def create_customer(self, user):
+        try:
+            code, data = stripe.request('POST', '/customers', {'metadata': {'user_id': str(user.id)}},
+                                        idempotency_key=f'cus_user_{user.id}')
+        except stripe.StripeTransportError:
+            return None
+        return data.get('id') if code == 200 else None
+
+    def create_hold(self, amount_minor, *, currency='USD', customer_id=None, reference=None, metadata=None):
+        """A PaymentIntent for exactly `amount_minor`, captured later. Cards, Apple Pay and Google Pay
+        (automatic payment methods, confirmed in the browser); saved for an off-session tip."""
+        if not self or not _positive_minor(amount_minor):
+            return None
+        body = {'amount': amount_minor, 'currency': str(currency).lower(), 'capture_method': 'manual',
+                'automatic_payment_methods': {'enabled': 'true'},
+                'metadata': {k: str(v) for k, v in (metadata or {}).items()}}
+        if customer_id:
+            body.update({'customer': customer_id, 'setup_future_usage': 'off_session'})
+        try:
+            code, data = stripe.request('POST', '/payment_intents', body,
+                                        idempotency_key=f'hold_{reference}' if reference else None)
+        except stripe.StripeTransportError as exc:
+            logger.error('stripe create_hold transport failure: %s', exc)
+            return None
+        return data if code == 200 and data.get('id') else None
+
+    def get_intent(self, intent_id):
+        return self._intent(intent_id) if self and intent_id else None
+
+    def capture_hold(self, intent_id, amount_minor, reference=None):
+        if not self or not _positive_minor(amount_minor):
+            return None
+        try:
+            code, data = stripe.request('POST', f'/payment_intents/{intent_id}/capture',
+                                        {'amount_to_capture': amount_minor},
+                                        idempotency_key=f'cap_{reference}' if reference else None)
+        except stripe.StripeTransportError as exc:
+            return {'error': type(exc).__name__}
+        return data if code == 200 else {'error': stripe.error_text(data)}
+
+    def release_hold(self, intent_id):
+        try:
+            code, _ = stripe.request('POST', f'/payment_intents/{intent_id}/cancel', {})
+        except stripe.StripeTransportError:
+            return False
+        return code == 200
+
+    def charge_saved(self, customer_id, payment_method_id, amount_minor, *, currency='USD', reference=None,
+                     metadata=None):
+        """Charge the saved card off-session (a tip). Returns the intent or None."""
+        if not self or not _positive_minor(amount_minor):
+            return None
+        try:
+            code, data = stripe.request('POST', '/payment_intents', {
+                'amount': amount_minor, 'currency': str(currency).lower(), 'customer': customer_id,
+                'payment_method': payment_method_id, 'off_session': 'true', 'confirm': 'true',
+                'metadata': {k: str(v) for k, v in (metadata or {}).items()}},
+                idempotency_key=f'tip_{reference}' if reference else None)
+        except stripe.StripeTransportError:
+            return None
+        return data if code == 200 else None
+
     def _intent(self, intent_id):
         try:
             code, data = stripe.request('GET', f'/payment_intents/{intent_id}')

@@ -2,8 +2,8 @@
 # the CNAMEs are an output (and listed in docs/config-required.md); once Srini has added them,
 # the repository variable PRODUCTION_CERT_VALIDATED is set to true and HTTPS comes up.
 resource "aws_acm_certificate" "main" {
-  domain_name               = "www.${var.domain}"
-  subject_alternative_names = [var.domain, "api.${var.domain}"]
+  domain_name               = local.www_host
+  subject_alternative_names = var.market == "in" ? [var.domain, local.api_host] : [local.api_host]
   validation_method         = "DNS"
   lifecycle {
     create_before_destroy = true
@@ -88,7 +88,7 @@ resource "aws_lb_listener_rule" "api" {
   priority     = 10
   condition {
     host_header {
-      values = ["api.${var.domain}"]
+      values = [local.api_host]
     }
   }
   action {
@@ -110,7 +110,7 @@ resource "aws_lb_listener_rule" "apex" {
   action {
     type = "redirect"
     redirect {
-      host        = "www.${var.domain}"
+      host        = local.www_host
       status_code = "HTTP_301"
     }
   }

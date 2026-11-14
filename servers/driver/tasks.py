@@ -211,3 +211,11 @@ def account_closure_sweep():
     from servers.auth_user.closure import sweep
 
     return sweep()
+
+
+@shared_task(name='driver.recheck_background', max_retries=0)
+def recheck_background():
+    """Daily: start the yearly (market setting) background re-checks that are due (14 Nov)."""
+    from .background import recheck_due
+
+    return recheck_due()

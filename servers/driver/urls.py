@@ -18,6 +18,8 @@ from .admin_views import (
     list_withdrawals_admin, approve_withdrawal_admin, reject_withdrawal_admin, bulk_action_withdrawal_admin
 )
 
+from . import background_views  # noqa: E402
+
 urlpatterns = [
     # path('add/', add_driver),
     # path('update_location/', update_location),
@@ -82,6 +84,12 @@ urlpatterns = [
     path('admin/<int:driver_id>/approve/', admin_approve_driver),
     path('admin/<int:driver_id>/verify/', admin_run_verification),
     path('admin/<int:driver_id>/suspend/', admin_suspend_driver),
+    # 14 Nov (USA): background checks and the accessibility acknowledgement.
+    path('admin/<int:driver_id>/background/', background_views.admin_background_decision),
+    path('background/disclosure/', background_views.background_disclosure),
+    path('background/authorise/', background_views.background_authorise),
+    path('accessibility/acknowledge/', background_views.accessibility_acknowledge),
+    path('webhooks/background/<str:provider>/', background_views.background_webhook),
     path('admin/<int:driver_id>/reinstate/', admin_reinstate_driver),
     path('admin/<int:driver_id>/records/', admin_driver_records),
     path('admin/<int:driver_id>/note/', admin_note_driver),

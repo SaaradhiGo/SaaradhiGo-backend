@@ -1871,3 +1871,6 @@ try:
 except ValueError:
     BACKGROUND_CHECK_PROVIDERS = {}
 BACKGROUND_CHECK_WEBHOOK_SECRET = os.environ.get('BACKGROUND_CHECK_WEBHOOK_SECRET', '')
+
+# 14 Nov (USA): the QA fake card processor (integrations/payments/fake_card.py). Never in production.
+CARD_FAKE_ALLOWED = os.environ.get('CARD_FAKE_ALLOWED', '').strip().lower() in ('1', 'true', 'yes')

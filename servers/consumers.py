@@ -839,6 +839,14 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 }))
                 return
 
+            # 14 Nov (USA): a card held at booking is linked to the trip.
+            hold_id = data.get('card_hold_id')
+            if hold_id and not reused:
+                refusal = await self._link_card_hold(hold_id, trip)
+                if refusal:
+                    await self.send(text_data=json.dumps({'type': 'warning', 'code': 'CARD_HOLD_NOT_LINKED',
+                                                          'message': refusal}))
+
             # Confirm trip creation to rider. `reused` is additive and tells an
             # app that its retry was recognised rather than duplicated.
             await self.send(text_data=json.dumps({
@@ -955,6 +963,14 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
     def _cash_disabled(self):
         from servers.rider.models import cash_disabled_for
         return cash_disabled_for(self.user)
+
+    @database_sync_to_async
+    def _link_card_hold(self, hold_id, trip):
+        from servers.payments.card_hold import link_to_trip
+        try:
+            return link_to_trip(self.user, int(hold_id), trip)
+        except (TypeError, ValueError):
+            return 'This card hold cannot be used.'
 
     @database_sync_to_async
     def _cash_allowed_at(self, lat, lng):

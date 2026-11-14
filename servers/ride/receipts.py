@@ -82,6 +82,20 @@ def _rider_fee_line(trip):
     return None
 
 
+def _tip_rows_html(trip, currency):
+    """14 Nov (USA): the rider's tip, 100% to the driver, on its own line."""
+    from base.money import from_minor
+
+    try:
+        tip = trip.tips.filter(status='succeeded').first()
+    except Exception:  # noqa: BLE001 - a receipt never fails for want of a tip
+        tip = None
+    if tip is None:
+        return ''
+    return (f'<tr><td>Tip (100% to your driver)</td><td style="text-align:right;">'
+            f'+{format_money(from_minor(tip.amount_minor, tip.currency), currency)}</td></tr>')
+
+
 def _due_rows_html(trip, currency):
     fee = _rider_fee_line(trip)
     head = (f'<tr><td>{escape(fee[0])}</td><td style="text-align:right;">'
@@ -440,7 +454,7 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
             f'-{format_money(discount, currency)}</td></tr>'
             f'<tr style="background: #f9fafb;"><td><b>Amount charged</b></td>'
             f'<td style="text-align:right;"><b>{format_money(charged, currency)}</b></td></tr>'
-            for label, discount, charged in promo_lines(trip)),
+            for label, discount, charged in promo_lines(trip)) + _tip_rows_html(trip, currency),
         payment_method=escape(str(trip.payment_method or '—')),
         payment_status=escape(str(trip.payment_status or '—')),
     )
@@ -665,7 +679,33 @@ def _send_receipt_email(receipt):
         logger.warning(
             'receipt email not sent for receipt=%s: %s', receipt.id, reason,
         )
+    _log_receipt_email(receipt, to_addr, sent, reason)
     return sent, reason[:512]
+
+
+def _log_receipt_email(receipt, to_addr, sent, reason):
+    """14 Nov: every receipt email, sent or not, is a row in the console's message log, with the
+    address masked. QA cannot send email, so there the row says why."""
+    try:
+        from servers.notifications.models import FAILED, SENT, NotificationMessage
+
+        local, _, domain = (to_addr or '').partition('@')
+        masked = f'{local[:2]}***@{domain}' if domain else '***'
+        trip = getattr(receipt, 'trip_id', None)
+        n = NotificationMessage.objects.filter(template_key='trip_receipt',
+                                               idempotency_key__startswith=f'receipt:{receipt.id}:').count()
+        NotificationMessage.objects.create(
+            template_key='trip_receipt', channel='email', category='transactional',
+            country=getattr(getattr(trip, 'zone', None), 'country', '') or '',
+            recipient_user_id=getattr(receipt, 'user_id_id', 0) or 0, recipient_masked=masked,
+            provider='ses', status=SENT if sent else FAILED, attempts=1,
+            last_error='' if sent else str(reason or '')[:500], source=f'receipt {receipt.receipt_number}',
+            idempotency_key=f'receipt:{receipt.id}:{n + 1}',
+            subject=f'Your {_brand()} receipt {receipt.receipt_number}'[:200],
+            body=f'Receipt {receipt.receipt_number} for trip {getattr(trip, "id", "")}',
+            sent_at=timezone.now() if sent else None)
+    except Exception:  # noqa: BLE001 - the log never stops a receipt
+        logger.exception('receipt email log failed receipt=%s', getattr(receipt, 'id', None))
 
 
 def _resolve_tax_rate(trip):

@@ -190,6 +190,33 @@ def summarise_period(trips, fees, payouts, tz):
     }
 
 
+def _tips_enabled(driver):
+    """14 Nov: tips are a market rule (USA on, India off)."""
+    from servers.pricing.regulation import market_rules
+
+    from .records import market_of
+
+    country, state = market_of(driver)
+    return bool(market_rules(country or 'IN', state)['tips_enabled'])
+
+
+def _with_tips(driver, summary, first, last, tz):
+    """Add the period's tips (100% the driver's) to the summary and to what they earned."""
+    from datetime import datetime, time, timedelta
+
+    from base.money import from_minor
+    from servers.payments.models import Tip
+
+    start = datetime.combine(first, time.min, tz)
+    end = datetime.combine(last + timedelta(days=1), time.min, tz)
+    tips = list(Tip.objects.filter(driver=driver, status='succeeded', created_at__gte=start, created_at__lt=end)
+                .values_list('amount_minor', 'currency'))
+    if not tips:
+        return summary
+    total = sum((from_minor(m, c) for m, c in tips), ZERO)
+    return {**summary, 'tips': total, 'tip_riders': len(tips), 'earned': summary['earned'] + total}
+
+
 def _strings(summary):
     return {k: (str(v) if isinstance(v, Decimal) else v) for k, v in summary.items()}
 
@@ -264,7 +291,8 @@ def history(driver, period, anchor=None, start=None, end=None):
         'has_prev': joined is not None and first > joined,
         'has_next': last < today,
         'prev': shift(period, first, last, -1).isoformat(), 'next': shift(period, first, last, 1).isoformat(),
-        'summary': {**_strings(summary), 'fee_note': fee_note(driver), 'tips_enabled': False},
+        'summary': {**_strings(_with_tips(driver, summary, first, last, tz)), 'fee_note': fee_note(driver),
+                    'tips_enabled': _tips_enabled(driver)},
         'chart': {'unit': unit, 'bars': [{**b, 'earned': str(b['earned']), 'fares': str(b['fares']),
                                           'platform_fee': str(b['platform_fee'])} for b in bars.values()]},
     }

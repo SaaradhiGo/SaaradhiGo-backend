@@ -102,7 +102,8 @@ def payment_options(user, lat, lng):
     methods = []
     reason = ''
     if zone is not None and online_payment_zone(zone):
-        if get_payment_gateway_for_payments(zone.country):
+        from servers.payments.card_hold import card_available
+        if get_payment_gateway_for_payments(zone.country) or card_available(zone.country):
             methods = list(ONLINE_METHODS_BY_COUNTRY.get(zone.country, (CARD,)))
         else:
             reason = 'gateway_not_configured'

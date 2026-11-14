@@ -200,6 +200,16 @@ def _tips_enabled(driver):
     return bool(market_rules(country or 'IN', state)['tips_enabled'])
 
 
+def cash_allowed_for(driver):
+    """14 Nov: cash is a market rule (Idaho 49-3712 bans it); the driver pages hide cash wording."""
+    from servers.pricing.regulation import market_rules
+
+    from .records import market_of
+
+    country, state = market_of(driver)
+    return bool(market_rules(country or 'IN', state)['cash_allowed'])
+
+
 def _with_tips(driver, summary, first, last, tz):
     """Add the period's tips (100% the driver's) to the summary and to what they earned."""
     from datetime import datetime, time, timedelta
@@ -292,7 +302,7 @@ def history(driver, period, anchor=None, start=None, end=None):
         'has_next': last < today,
         'prev': shift(period, first, last, -1).isoformat(), 'next': shift(period, first, last, 1).isoformat(),
         'summary': {**_strings(_with_tips(driver, summary, first, last, tz)), 'fee_note': fee_note(driver),
-                    'tips_enabled': _tips_enabled(driver)},
+                    'tips_enabled': _tips_enabled(driver), 'cash_allowed': cash_allowed_for(driver)},
         'chart': {'unit': unit, 'bars': [{**b, 'earned': str(b['earned']), 'fares': str(b['fares']),
                                           'platform_fee': str(b['platform_fee'])} for b in bars.values()]},
     }

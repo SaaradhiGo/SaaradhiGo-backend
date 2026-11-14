@@ -388,6 +388,8 @@ def driver_earnings_period(request):
         nxt = (start.date().replace(day=28) + timedelta(days=4)).replace(day=1)
         last = nxt - timedelta(days=1)
 
+    from .earnings_history import cash_allowed_for
+
     t = summarise(settlement_rows(driver, since=start))
     return success_response({
         'period': period,
@@ -401,6 +403,7 @@ def driver_earnings_period(request):
         'net': str(t['total_net']),
         'cash_collected': str(t['cash_collected']),
         'unresolved_trips': t['unresolved_trips'],
+        'cash_allowed': cash_allowed_for(driver),
     }, status.HTTP_200_OK)
 
 

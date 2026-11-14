@@ -212,8 +212,13 @@ class Trip(CurrencyStampedModel, models.Model):
         from .places import short_place
         fields = kwargs.get('update_fields')
         if fields is None or {'pickup_address', 'destination_address'} & set(fields):
-            self.pickup_label = short_place(self.pickup_address)
-            self.destination_label = short_place(self.destination_address)
+            # 14 Nov: a generic address ("Current location") never replaces a real label that the
+            # backfill (backfill_place_labels) found from the coordinates.
+            from .rider_booking import needs_street_address
+            for side in ('pickup', 'destination'):
+                label = short_place(getattr(self, f'{side}_address'))
+                if not (needs_street_address(label) and not needs_street_address(getattr(self, f'{side}_label', ''))):
+                    setattr(self, f'{side}_label', label)
             if fields is not None:
                 kwargs['update_fields'] = set(fields) | {'pickup_label', 'destination_label'}
         return super().save(*args, **kwargs)

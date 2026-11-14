@@ -339,6 +339,8 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
     # Withdraw now (10 Nov): the provider fee on the driver's statement line,
     # "Withdrawn ₹200.00 · provider fee ₹4.72 · received ₹195.28"; empty for a scheduled payout.
     statement_line = serializers.SerializerMethodField()
+    # 14 Nov (owner): a rejected or failed payout says why in one line, and where the money went.
+    outcome = serializers.SerializerMethodField()
 
     class Meta:
         model = WithdrawalRequest
@@ -353,7 +355,7 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
             'currency',
             'driver_kyc_approved', 'amount', 'status', 'requested_at',
             'processed_at', 'admin_notes', 'payout_reference_id',
-            'origin', 'fee_minor', 'statement_line',
+            'origin', 'fee_minor', 'statement_line', 'outcome',
         ]
         read_only_fields = [
             'id', 'driver', 'currency', 'status', 'requested_at',
@@ -365,6 +367,27 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
             return ''
         from servers.payments.ledger import fee_line
         return fee_line(obj.amount_minor, obj.fee_minor or 0, obj.currency)['label']
+
+    def get_outcome(self, obj):
+        """{reason, money} for a rejected or failed payout, else None. `money` is read from the
+        wallet: "returned" only when the refund credit exists, "held" while it does not."""
+        if obj.status not in ('rejected', 'failed'):
+            return None
+        from servers.rider.models import WalletTransaction
+
+        raw = obj.admin_notes if obj.status == 'rejected' else (obj.failure_reason or obj.admin_notes)
+        line = ' '.join((raw or '').split())
+        if len(line) > 120:
+            line = line[:119].rstrip() + '…'
+        returned = WalletTransaction.objects.filter(
+            txn_type='credit', status='completed',
+            purpose__in=('refund_rejected_withdrawal', 'refund_failed_withdrawal'),
+            reference_id__in=[f'refund_rejected_withdrawal_{obj.id}', f'refund_withdrawal_{obj.id}'],
+        ).exists() or WalletTransaction.objects.filter(
+            txn_type='credit', status='completed', purpose='refund_failed_withdrawal',
+            reference_id__startswith=f'refund_withdrawal_{obj.id}_r',
+        ).exists()
+        return {'reason': line or None, 'money': 'returned' if returned else 'held'}
 
     def get_driver_name(self, obj):
         user = getattr(obj.driver, 'user_id', None)

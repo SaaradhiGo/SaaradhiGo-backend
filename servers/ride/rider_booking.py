@@ -68,6 +68,30 @@ def online_payment_zone(zone):
     return any(z.code.upper() in allowed for z in _zone_chain(zone))
 
 
+def cash_allowed_in(zone):
+    """False where the market forbids cash (14 Nov; Idaho Code 49-3712: payment only through the
+    app). A point outside every zone keeps today's behaviour."""
+    if zone is None:
+        return True
+    from servers.pricing.regulation import rules_for_zone
+
+    return bool(rules_for_zone(zone)['cash_allowed'])
+
+
+def cash_allowed_at(lat, lng):
+    from servers.pricing.services import find_zone_for_point
+
+    try:
+        return cash_allowed_in(find_zone_for_point(lat, lng))
+    except Exception:  # noqa: BLE001 - a bad point is refused elsewhere
+        return True
+
+
+#: The stable code a cash booking gets where cash is not allowed.
+CASH_NOT_ALLOWED_HERE = 'CASH_NOT_ALLOWED_HERE'
+CASH_NOT_ALLOWED_MESSAGE = 'Cash is not accepted here. Pay in the app by card, Apple Pay or Google Pay.'
+
+
 def payment_options(user, lat, lng):
     """{"methods": [...], "default": ..., "online_unavailable_reason": ''}."""
     from servers.payments.payment_gateways.factory import get_payment_gateway_for_payments
@@ -82,7 +106,7 @@ def payment_options(user, lat, lng):
             methods = list(ONLINE_METHODS_BY_COUNTRY.get(zone.country, (CARD,)))
         else:
             reason = 'gateway_not_configured'
-    if not cash_disabled_for(user):
+    if not cash_disabled_for(user) and cash_allowed_in(zone):
         methods.append(CASH)
     default = None
     if methods:

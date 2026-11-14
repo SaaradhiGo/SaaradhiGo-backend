@@ -842,10 +842,11 @@ class TestWalletRowsAreNarrowedToWhereThePermissionIsHeld:
 # The weekly run
 # ===========================================================================
 
-# 2026-11-02 is a Monday. America/New_York is on standard time (UTC-5).
-SUNDAY_NIGHT_NY = datetime(2026, 11, 2, 4, 0, tzinfo=dt_timezone.utc)      # Sun 23:00 New York
-MONDAY_MORNING_NY = datetime(2026, 11, 2, 6, 0, tzinfo=dt_timezone.utc)    # Mon 01:00 New York
-MONDAY_LATER_NY = datetime(2026, 11, 2, 20, 0, tzinfo=dt_timezone.utc)     # Mon 15:00 New York
+# 2026-11-02 is a Monday. 14 Nov: the US day is Boise's (America/Boise, MST, UTC-7), the only US
+# market. The names keep _NY so the tests below read as before.
+SUNDAY_NIGHT_NY = datetime(2026, 11, 2, 6, 0, tzinfo=dt_timezone.utc)      # Sun 23:00 Boise
+MONDAY_MORNING_NY = datetime(2026, 11, 2, 8, 0, tzinfo=dt_timezone.utc)    # Mon 01:00 Boise
+MONDAY_LATER_NY = datetime(2026, 11, 2, 22, 0, tzinfo=dt_timezone.utc)     # Mon 15:00 Boise
 NEXT_MONDAY_NY = datetime(2026, 11, 9, 12, 0, tzinfo=dt_timezone.utc)
 
 

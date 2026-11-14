@@ -135,8 +135,18 @@ class Driver(models.Model):
     POLICE_CHOICES=[('not_submitted','Not submitted'),('pending','Pending'),('verified','Verified'),('failed','Failed')]
     police_verification_status=models.CharField(max_length=16,choices=POLICE_CHOICES,default='not_submitted')
     #: US: filled by the background-check provider later; nothing is collected here.
-    BACKGROUND_CHOICES=[('not_started','Not started'),('pending','Pending'),('clear','Clear'),('consider','Consider'),('failed','Failed')]
+    BACKGROUND_CHOICES=[('not_started','Not started'),('pending','Pending'),('clear','Clear'),('consider','Consider'),('failed','Failed'),('suspended','Suspended')]
     background_check_status=models.CharField(max_length=16,choices=BACKGROUND_CHOICES,default='not_started')
+    # 14 Nov (USA): the background check through a provider (servers.driver.background). The SSN is
+    # never stored here: the driver enters it in the provider's own form.
+    background_check_provider=models.CharField(max_length=32,blank=True,default='')
+    background_check_ref=models.CharField(max_length=128,blank=True,default='')
+    background_checked_at=models.DateTimeField(null=True,blank=True)
+    #: FCRA: the disclosure was shown on its own page, then the driver authorised the check.
+    background_disclosure_at=models.DateTimeField(null=True,blank=True)
+    background_consent_at=models.DateTimeField(null=True,blank=True)
+    #: Non-discrimination and accessibility (Idaho 49-3713): acknowledged at sign-up.
+    accessibility_ack_at=models.DateTimeField(null=True,blank=True)
     address_proof_doc=models.FileField(blank=True, max_length=512, null=True, storage=private_document_storage,
         upload_to=PrefixedUUIDPath('address_proof_docs'), validators=[validate_document_file, validate_file_size])
     #: Bank or UPI changed: payouts wait 24 hours from here.
@@ -359,6 +369,9 @@ class Vehicle(models.Model):
         blank=True,
         null=True
     )
+    #: 14 Nov (USA): the state registration's expiry, and the number of doors (Idaho: 4 doors).
+    registration_expiry = models.DateField(blank=True, null=True)
+    doors = models.PositiveSmallIntegerField(blank=True, null=True)
 
     permit_expiry = models.DateField(
         blank=True,
@@ -708,6 +721,9 @@ class DriverSuspension(models.Model):
         ('rider_complaints', 'Repeated rider complaints'),
         ('other', 'Other (note required)'),
         ('deactivated', 'Permanently deactivated'),
+        # 14 Nov (USA): a rider's impairment report (Idaho 49-3709) and a background check result.
+        ('zero_tolerance', 'Zero tolerance report (drugs or alcohol)'),
+        ('background_check', 'Background check'),
     ]
 
     driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='suspensions')

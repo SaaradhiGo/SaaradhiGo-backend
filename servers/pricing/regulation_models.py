@@ -58,6 +58,42 @@ class MarketRegulation(models.Model):
     max_vehicle_age_years = models.PositiveSmallIntegerField(null=True, blank=True)
     #: The app and web languages offered here, e.g. ["en", "te", "hi"].
     languages = models.JSONField(null=True, blank=True)
+    # ---- Per-state operating rules (14 Nov, USA from day 1; Idaho TNC Act, Idaho Code 49-37).
+    # Every field is NULL = "not set here": the country value applies, then the code default
+    # (`regulation.market_rules`). None of them changes India unless set on an India row.
+    #: Cash may be offered and accepted (Idaho 49-3712: no; payment only through the app).
+    cash_allowed = models.BooleanField(null=True, blank=True)
+    #: Riders may tip at trip end; the tip goes 100% to the driver.
+    tips_enabled = models.BooleanField(null=True, blank=True)
+    #: The tip presets offered, in percent of the fare, e.g. [15, 18, 20].
+    tip_presets = models.JSONField(null=True, blank=True)
+    #: Sales tax on rides is charged and shown. Off in the US unless the CPA says otherwise.
+    sales_tax_enabled = models.BooleanField(null=True, blank=True)
+    #: The ride classes this market offers, e.g. ["standard", "xl"]; NULL = every class.
+    vehicle_classes = models.JSONField(null=True, blank=True)
+    #: The oldest model year accepted (US default 2011) and the minimum number of doors.
+    min_vehicle_year = models.PositiveSmallIntegerField(null=True, blank=True)
+    vehicle_min_doors = models.PositiveSmallIntegerField(null=True, blank=True)
+    #: Records kept, in days (Idaho 49-3714: trips 2 years; driver records 1 year after the
+    #: driver's activation ends; 49-3709(3): zero-tolerance complaints 2 years).
+    trip_record_retention_days = models.PositiveIntegerField(null=True, blank=True)
+    driver_record_retention_days = models.PositiveIntegerField(null=True, blank=True)
+    complaint_record_retention_days = models.PositiveIntegerField(null=True, blank=True)
+    #: Background checks are repeated every N months (0 = never).
+    background_recheck_months = models.PositiveSmallIntegerField(null=True, blank=True)
+    #: A rider's impairment report suspends the driver at once, pending review (49-3709(2)).
+    zero_tolerance_suspend = models.BooleanField(null=True, blank=True)
+    #: No driver may go online until the platform insurance below is configured (41-2519).
+    platform_insurance_required = models.BooleanField(null=True, blank=True)
+    #: The platform's TNC policy: {"insurer", "policy_number", "holder": platform|driver|both,
+    #: "logged_in": "...limits...", "on_trip": "...limits...", "certificate_url", "expires"}.
+    platform_insurance = models.JSONField(null=True, blank=True)
+    #: No driver may go online until a driver fee plan is active here.
+    fee_plan_required = models.BooleanField(null=True, blank=True)
+    #: The agent for service of process (Idaho 49-3705): {"name", "address", "phone"}.
+    service_agent = models.JSONField(null=True, blank=True)
+    #: The statute behind each rule, shown in the console: {"cash_allowed": "Idaho Code 49-3712"}.
+    citations = models.JSONField(null=True, blank=True)
     note = models.CharField(max_length=255, blank=True, default='')
     version = models.PositiveIntegerField(default=1)
     updated_at = models.DateTimeField(auto_now=True)

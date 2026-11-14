@@ -240,12 +240,12 @@ class TestCapAndCarryOver:
         drv = us_driver(w, 'C2')
         debt, flag = self._us_debt(w, drv, 8_000)
         config = PayoutCountryConfig.objects.get(country='US', is_active=True)
-        credit(drv.user_id, 150, currency='USD')                     # $1.50, minimum is $1.00
+        credit(drv.user_id, 1500, currency='USD')                    # $15.00, minimum is $10.00
         run_country(config, datetime(2026, 11, 2, 18, 0, tzinfo=dt_tz.utc))
         w1 = WithdrawalRequest.objects.filter(driver=drv, origin='scheduled').latest('id')
         debt.refresh_from_db()
-        assert w1.amount_minor >= 100
-        assert debt.recovered_minor == 150 - w1.amount_minor <= 75
+        assert w1.amount_minor >= config.minimum_withdrawal_minor == 1000
+        assert debt.recovered_minor == 1500 - w1.amount_minor <= 750
 
     def test_the_cap_follows_the_countrys_config(self, money_world):
         from conftest import seed_actor

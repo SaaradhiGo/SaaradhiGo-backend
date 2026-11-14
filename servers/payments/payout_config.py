@@ -27,14 +27,16 @@ holds display and charge to the same value.
 
 THE OWNER'S VALUES
 ------------------
-`OWNER_RULING` is what the owner ruled in AUDIT 27.43 (India: fee 0, minimum
-500.00 INR, stuck after 24 hours, on request. United States: fee 0, minimum
-1.00 USD, stuck after 72 hours, weekly). `seed_payout_config` writes them for a
-fresh environment (create-if-missing); the one-off `apply_payout_ruling`
-command writes them as a new version on an environment that already has the
-old India row. Nothing here reads them as a fallback.
+`FRESH_SEED` is what `seed_payout_config` writes on a fresh database: the owner's
+ruling of 2026-11-09 (India every 5 days from 5 Nov at 10:00, minimum 100.00 INR;
+United States weekly on Monday at 10:00, minimum 10.00 USD; both free, instant
+withdrawal at the provider fee) with the 10 Nov daily Withdraw now limits, the
+same values payments migrations 0026 and 0031 put on QA. `OWNER_RULING` keeps the
+superseded AUDIT 27.43 values for the one-off `apply_payout_ruling` command only.
+Nothing here reads them as a fallback.
 """
 
+from datetime import date, time
 from decimal import ROUND_HALF_UP, Decimal
 
 from base.countries import COUNTRIES, get_country
@@ -76,6 +78,30 @@ US_SEED = {
     **_NO_CYCLE,
 }
 OWNER_RULING = (INDIA_SEED, US_SEED)
+
+#: A fresh database (owner, 14 Nov): the 2026-11-09 ruling plus the 2026-11-10 daily limits,
+#: field for field what payments migrations 0026 and 0031 leave on QA.
+INDIA_FRESH = {
+    **INDIA_SEED,
+    'minimum_withdrawal_minor': 10000,  # 100.00 INR
+    'payout_schedule': 'every_n_days', 'payout_weekday': None,
+    'payout_interval_days': 5, 'payout_anchor_date': date(2026, 11, 5),
+    'payout_time_local': time(10, 0), 'instant_cashout_enabled': True,
+    'instant_fee_provider': 'RazorpayX',
+    'instant_fee_tiers': [[99999, 472], [2500000, 708], [None, 1062]],
+    'instant_max_per_day': 3, 'instant_max_amount_per_day_minor': 5_000_000,
+}
+US_FRESH = {
+    **US_SEED,
+    'minimum_withdrawal_minor': 1000,  # 10.00 USD
+    'payout_schedule': 'weekly', 'payout_weekday': 0,
+    'payout_time_local': time(10, 0), 'instant_cashout_enabled': True,
+    'instant_fee_provider': 'Stripe',
+    'instant_max_per_day': 3, 'instant_max_amount_per_day_minor': 100_000,
+}
+FRESH_SEED = (INDIA_FRESH, US_FRESH)
+FRESH_REASON = ("Seed: the owner's payout ruling of 2026-11-09 with the 2026-11-10 daily limits "
+                '(India every 5 days, minimum 100.00 INR; United States weekly, minimum 10.00 USD).')
 RULING_REASON = 'Owner ruling, AUDIT 27.43'
 
 _COUNTRY_OF_CURRENCY = {c.currency: c.code for c in COUNTRIES.values()}

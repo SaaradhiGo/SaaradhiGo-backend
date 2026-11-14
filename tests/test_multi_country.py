@@ -930,8 +930,8 @@ def test_the_minimum_is_no_longer_what_blocks_a_us_driver(vehicle_type):
     assert '$' in msg and '₹' not in msg
 
 
-def test_an_indian_driver_still_has_a_500_rupee_minimum(vehicle_type):
-    """India's threshold must not have moved."""
+def test_an_indian_driver_has_the_rulings_100_rupee_minimum(vehicle_type):
+    """India's threshold is the owner's 2026-11-09 ruling: 100.00 INR."""
     _configure_payouts('IN')
     from servers.driver.services import (
         minimum_withdrawal_for, validate_withdrawal_amount,
@@ -941,10 +941,10 @@ def test_an_indian_driver_still_has_a_500_rupee_minimum(vehicle_type):
     Wallet.objects.create(user_id=d.user_id, balance=Decimal('1000.00'),
                           currency='INR')
 
-    assert minimum_withdrawal_for(d) == Decimal('500')
-    ok, msg = validate_withdrawal_amount(d, Decimal('100'))
+    assert minimum_withdrawal_for(d) == Decimal('100')
+    ok, msg = validate_withdrawal_amount(d, Decimal('50'))
     assert ok is False
-    assert '₹500.00' in msg, f'message was {msg!r}'
+    assert '₹100.00' in msg, f'message was {msg!r}'
 
 
 def test_an_insufficient_balance_message_uses_the_right_symbol(vehicle_type):

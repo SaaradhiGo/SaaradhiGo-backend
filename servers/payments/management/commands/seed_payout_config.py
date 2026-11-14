@@ -2,10 +2,10 @@
 
     python manage.py seed_payout_config --actor-email <operator>
 
-A fresh environment gets the owner's values (AUDIT 27.43, see
-OWNER_RULING in payout_config): India fee 0, minimum 500.00 INR, stuck after 24
-hours, on request; United States fee 0, minimum 1.00 USD, stuck after 72 hours,
-weekly (Mondays).
+A fresh environment gets the owner's ruling of 2026-11-09 with the 10 Nov daily
+limits (FRESH_SEED in payout_config): India free, every 5 days from 5 Nov at
+10:00, minimum 100.00 INR; United States free, weekly on Monday at 10:00, minimum
+10.00 USD; instant withdrawal at the provider fee, 3 a day.
 
 CREATE-IF-MISSING
 -----------------
@@ -24,14 +24,12 @@ from servers.admin_audit.actor_option import add_actor_argument, attributed, req
 from servers.admin_audit.models import actor_snapshot
 from servers.admin_audit.services import record_admin_action
 from servers.payments.models import PayoutCountryConfig
-from servers.payments.payout_config import OWNER_RULING
+from servers.payments.payout_config import FRESH_REASON, FRESH_SEED
 from servers.payments.payout_config_write import CONFIG_FIELDS
 
 COMMAND = 'seed_payout_config'
 AUDIT_ACTION = 'payout_config_seeded'
-SEED_REASON = ("Seed: the owner's payout values (AUDIT 27.43): India fee 0, minimum 500.00 INR, "
-               'stuck after 24 hours, on request; United States fee 0, minimum 1.00 USD, '
-               'stuck after 72 hours, weekly.')
+SEED_REASON = FRESH_REASON
 
 
 class Command(BaseCommand):
@@ -50,7 +48,7 @@ class Command(BaseCommand):
             with transaction.atomic():
                 snap = actor_snapshot(actor)
                 only = {c.upper() for c in (options.get('country') or [])}
-                for seed in OWNER_RULING:
+                for seed in FRESH_SEED:
                     country = seed['country']
                     if only and country not in only:
                         continue

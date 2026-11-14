@@ -285,17 +285,17 @@ def test_the_withdrawal_endpoint_uses_the_us_minimum_not_indias(vehicle_type):
 
 
 def test_the_withdrawal_endpoint_still_enforces_indias_minimum(vehicle_type):
-    """The control. Rs.100 is below India's Rs.500 and must still be refused,
-    in rupees."""
+    """The control. Rs.50 is below India's Rs.100 (the 2026-11-09 ruling) and must
+    still be refused, in rupees."""
     from test_multi_country import _configure_payouts
     _configure_payouts('IN')
     client, _ = _driver_client(vehicle_type, calling_code='91', currency='INR',
                                balance='5000.00')
-    resp = client.post(WITHDRAW_URL, {'amount': '100.00'}, format='json')
+    resp = client.post(WITHDRAW_URL, {'amount': '50.00'}, format='json')
 
     assert resp.status_code == 400, resp.content
     message = str(resp.json())
-    assert '500' in message
+    assert '100.00' in message
     assert '₹' in message, 'India lost its own currency symbol'
     assert WithdrawalRequest.objects.count() == 0
 

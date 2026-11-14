@@ -50,7 +50,7 @@ from servers.driver.models import WithdrawalRequest
 from servers.payments import ledger
 from servers.payments.models import PayoutCountryConfig, PayoutRun, TripSettlement
 from servers.payments.payout_config import (
-    INDIA_SEED, US_SEED, fee_display, fee_percent, withdrawal_fee,
+    INDIA_FRESH, INDIA_SEED, US_FRESH, US_SEED, fee_display, fee_percent, withdrawal_fee,
 )
 from servers.payments.scope import money_visible_to
 from servers.rider.models import Wallet, WalletTransaction
@@ -229,7 +229,7 @@ class TestFeeRule:
         body = client_for(world.in_driver.user_id).get(
             '/api/v1/driver/withdrawals/balance/').json()['data']
         assert body['fee_percent'] == 0.0 and body['fee_display'] is None
-        assert body['currency'] == 'INR' and body['minimum_withdrawal'] == 500.0
+        assert body['currency'] == 'INR' and body['minimum_withdrawal'] == 100.0
 
     def test_an_amount_that_does_not_exceed_the_fee_is_refused(self, world):
         PayoutCountryConfig.objects.filter(country='IN').update(
@@ -334,7 +334,7 @@ class TestPayoutRuling:
     def test_the_seed_gives_a_fresh_environment_the_same_values(self, geo):
         call_command('seed_payout_config', actor_email=seed_actor().email, stdout=StringIO())
         seeded = {r.country: r for r in PayoutCountryConfig.objects.all()}
-        for ruled in (INDIA_SEED, US_SEED):
+        for ruled in (INDIA_FRESH, US_FRESH):  # the 2026-11-09 ruling (owner, 14 Nov)
             row = seeded[ruled['country']]
             assert (row.fee_percent, row.minimum_withdrawal_minor, row.stuck_payout_hours,
                     row.payout_schedule, row.payout_weekday) == (
@@ -853,6 +853,9 @@ NEXT_MONDAY_NY = datetime(2026, 11, 9, 12, 0, tzinfo=dt_timezone.utc)
 @pytest.fixture
 def us_weekly(world):
     apply_ruling()
+    # These tests are about the US weekly run: India pays on request here, as the 27.43 ruling had it.
+    PayoutCountryConfig.objects.filter(country='IN').update(payout_schedule='on_request',
+                                                             payout_interval_days=None)
     WithdrawalRequest.objects.filter(driver=world.us_driver).delete()
     return world
 
@@ -1243,6 +1246,9 @@ US_ROWS = {
 def us_world(world):
     call_command('seed_approval_policies', actor_email=seed_actor().email, stdout=StringIO())
     apply_ruling()
+    # These tests are about the US weekly run: India pays on request here, as the 27.43 ruling had it.
+    PayoutCountryConfig.objects.filter(country='IN').update(payout_schedule='on_request',
+                                                             payout_interval_days=None)
     WithdrawalRequest.objects.filter(driver=world.us_driver).delete()
     return world
 

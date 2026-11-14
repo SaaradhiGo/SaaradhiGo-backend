@@ -413,8 +413,8 @@ class TestPayoutConfigRead:
         countries = {c['country']: c for c in data(client.get(f'{BASE}/payout-config/'))['countries']}
         assert set(countries) == {'IN'} and countries['IN']['configured'] is True
         cfg = countries['IN']['config']
-        # The owner's values (AUDIT 27.43): fee 0, minimum 500.00 INR.
-        assert cfg['fee_percent'] == '0.00' and cfg['minimum_withdrawal_minor'] == 50000
+        # The owner's ruling of 2026-11-09: fee 0, minimum 100.00 INR.
+        assert cfg['fee_percent'] == '0.00' and cfg['minimum_withdrawal_minor'] == 10000
         assert cfg['stuck_payout_hours'] == 24 and cfg['currency'] == 'INR'
 
     def test_super_admin_sees_the_us_as_not_configured(self, world, geo):
@@ -478,17 +478,17 @@ class TestIndiaPayoutsAreUnchanged:
         body = client.get('/api/v1/driver/withdrawals/balance/').json()['data']
         # Same keys in the same order, then the two Part B additions.
         assert [k for k in body if k in self.LEGACY_BALANCE_KEYS] == self.LEGACY_BALANCE_KEYS and set(body) - set(self.LEGACY_BALANCE_KEYS) - {'withdrawals_available', 'message'} == {'fee_display', 'currency', 'payout_details_on_file', 'next_payout', 'instant'}
-        assert body['fee_percent'] == 0.0 and body['minimum_withdrawal'] == 500.0
+        assert body['fee_percent'] == 0.0 and body['minimum_withdrawal'] == 100.0
         assert body['fee_display'] is None and body['currency'] == 'INR'
         assert isinstance(body['fee_percent'], float) and isinstance(body['minimum_withdrawal'], float)
         assert body['blocked'] is False and body['block_remaining_seconds'] is None
         assert body['available_balance'] == float(calculate_available_balance(world.in_driver))
 
-    def test_the_minimum_is_still_500_rupees_in_rupees(self, world):
+    def test_the_minimum_is_100_rupees_in_rupees(self, world):
         client = client_for(world.in_driver.user_id)
-        refused = client.post('/api/v1/driver/withdrawals/request/', {'amount': '499.00'}, format='json')
+        refused = client.post('/api/v1/driver/withdrawals/request/', {'amount': '99.00'}, format='json')
         assert refused.status_code == 400
-        assert 'Minimum withdrawal amount is ₹500.00' in str(refused.json())
+        assert 'Minimum withdrawal amount is ₹100.00' in str(refused.json())
 
     def test_a_valid_request_creates_a_pending_withdrawal_in_inr(self, world):
         w = world.in_pending
@@ -523,7 +523,7 @@ class TestIndiaPayoutsAreUnchanged:
         Wallet.objects.filter(user_id=d.user_id).delete()
         body = client_for(d.user_id).get('/api/v1/driver/withdrawals/balance/').json()['data']
         assert [k for k in body if k in self.LEGACY_BALANCE_KEYS] == self.LEGACY_BALANCE_KEYS and set(body) - set(self.LEGACY_BALANCE_KEYS) - {'withdrawals_available', 'message'} == {'fee_display', 'currency', 'payout_details_on_file', 'next_payout', 'instant'}
-        assert body['fee_percent'] == 0.0 and body['minimum_withdrawal'] == 500.0
+        assert body['fee_percent'] == 0.0 and body['minimum_withdrawal'] == 100.0
 
     def test_a_us_driver_is_never_given_indias_rules_whatever_their_wallet_says(self, geo):
         """A wallet written without a currency was labelled INR. The phone number
@@ -558,9 +558,10 @@ class TestSeedPayoutConfig:
         rows = list(PayoutCountryConfig.objects.order_by('country'))
         assert [(r.country, r.fee_percent, r.minimum_withdrawal_minor, r.stuck_payout_hours,
                  r.payout_schedule, r.payout_weekday, r.currency) for r in rows] == [
-            ('IN', Decimal('0.00'), 50000, 24, 'on_request', None, 'INR'),
-            ('US', Decimal('0.00'), 100, 72, 'weekly', 0, 'USD')]
-        assert not any(r.instant_cashout_enabled or r.instant_cashout_fee_flat_minor for r in rows)
+            ('IN', Decimal('0.00'), 10000, 24, 'every_n_days', None, 'INR'),
+            ('US', Decimal('0.00'), 1000, 72, 'weekly', 0, 'USD')]
+        # The 2026-11-09 ruling: instant withdrawal on, at the provider fee only (no flat fee).
+        assert all(r.instant_cashout_enabled and not r.instant_cashout_fee_flat_minor for r in rows)
 
     def test_a_minimum_is_an_amount_so_it_carries_its_countrys_currency(self, geo):
         seed_in_payout_config()

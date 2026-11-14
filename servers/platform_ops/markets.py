@@ -251,10 +251,15 @@ def city_row(node, user, pending=None, with_items=False):
     }
 
 
-def overview(user):
-    """Countries, each with its cities, scoped to what the operator may read."""
-    nodes = list(_covered(user, GeoNode.objects.filter(kind__in=[COUNTRY, STATE, CITY])
-                          .select_related('parent__parent')).order_by('path'))
+def overview(user, within=None):
+    """Countries, each with its cities, scoped to what the operator may read.
+
+    `within` is the node of the console's market switch: only the places under it."""
+    covered = _covered(user, GeoNode.objects.filter(kind__in=[COUNTRY, STATE, CITY])
+                       .select_related('parent__parent'))
+    if within is not None:
+        covered = covered.filter(path__startswith=within.path)
+    nodes = list(covered.order_by('path'))
     pending = pending_requests()
     countries = {}
     for node in nodes:

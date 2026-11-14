@@ -18,6 +18,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from base.utils import error_response, success_response
 from servers.admin_access.bridge import AnyOfScopedPermission
+from servers.admin_access.scoping import ScopeNotHeld, market_node
 
 from . import audit
 from .config import TICKET_TTL_SECONDS
@@ -32,6 +33,18 @@ logger = logging.getLogger(__name__)
 GATE = AnyOfScopedPermission(READ, AGGREGATE)
 
 WS_PATH = '/ws/admin/live-locations/'
+
+
+def _market_path(request):
+    """`(path or None, refusal or None)` for the console's market switch (`?scope=`)."""
+    try:
+        node = market_node(request)
+    except ScopeNotHeld as exc:
+        return None, error_response(
+            code='SCOPE_NOT_HELD', message=str(exc), field='scope',
+            issue='Requested scope is outside your assignments',
+            status=status.HTTP_403_FORBIDDEN)
+    return (node.path if node is not None else None), None
 
 
 def _no_such_city(code):
@@ -82,9 +95,12 @@ def snapshot(request):
             field='capability', issue='Neither liveops.read nor liveops.aggregate',
             status=status.HTTP_403_FORBIDDEN)
     city = (request.query_params.get('city') or '').strip()
+    within, refusal = _market_path(request)
+    if refusal:
+        return refusal
     try:
         data = build_snapshot(request.user, scope, city_code=city,
-                              exact=coordinates_exact(request.user))
+                              exact=coordinates_exact(request.user), within=within)
     except CityNotVisible:
         return _no_such_city(city)
     audit.view_once(request, kind='snapshot', scope=scope, city=city)
@@ -102,8 +118,12 @@ def heatmap(request):
             field='capability', issue='Neither liveops.read nor liveops.aggregate',
             status=status.HTTP_403_FORBIDDEN)
     city = (request.query_params.get('city') or '').strip()
+    within, refusal = _market_path(request)
+    if refusal:
+        return refusal
     try:
-        data = build_heatmap(scope, city_code=city, window=request.query_params.get('window'))
+        data = build_heatmap(scope, city_code=city, window=request.query_params.get('window'),
+                             within=within)
     except BadWindow:
         return error_response(
             code='INVALID_WINDOW', message='window must be one of: 15, 60, 1440',

@@ -49,7 +49,7 @@ from .config import (
     HEATMAP_K_ANONYMITY, HEATMAP_WINDOWS,
 )
 from .geo import Geography
-from .snapshot import CityNotVisible, _zone_node_ids, visible_cities
+from .snapshot import CityNotVisible, _zone_node_ids, in_market, visible_cities
 
 #: 1 / cell size, an integer so the SQL stays integer arithmetic.
 _PER_DEGREE = round(1 / HEATMAP_CELL_DEGREES)
@@ -114,7 +114,7 @@ def suppress_small(cells, k=HEATMAP_K_ANONYMITY):
     return kept, len(cells) - len(kept)
 
 
-def build_heatmap(scope, *, city_code='', window=None, geography=None, now=None):
+def build_heatmap(scope, *, city_code='', window=None, geography=None, now=None, within=None):
     from servers.ride.models import Trip
 
     from .models import SupplySample
@@ -123,7 +123,7 @@ def build_heatmap(scope, *, city_code='', window=None, geography=None, now=None)
     now = now or timezone.now()
     since = now - timedelta(minutes=window)
     geography = geography or Geography.get()
-    cities = visible_cities(scope, geography, _zone_node_ids())
+    cities = in_market(visible_cities(scope, geography, _zone_node_ids()), within)
     selected = None
     if city_code:
         selected = next((c for c in cities if c.code == city_code), None)

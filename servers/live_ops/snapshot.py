@@ -65,6 +65,13 @@ def visible_cities(scope, geography, zone_node_ids):
     ]
 
 
+def in_market(cities, within):
+    """The cities under the market switch's node path; all of them when none is set."""
+    if not within:
+        return cities
+    return [c for c in cities if c.path.startswith(within)]
+
+
 def zone_outlines(scope, geography, cities):
     """Zone outlines for the picked cities: [lat, lng] rings, no more."""
     from servers.pricing.models import ServiceZone
@@ -238,12 +245,16 @@ def dots_for(scope, placed, shown, selected, exact):
     return dots, len(candidates)
 
 
-def build_snapshot(user, scope, *, city_code='', exact=True, geography=None, positions=None):
-    """The snapshot for `user`. Raises `CityNotVisible` for a bad `city_code`."""
+def build_snapshot(user, scope, *, city_code='', exact=True, geography=None, positions=None,
+                   within=None):
+    """The snapshot for `user`. Raises `CityNotVisible` for a bad `city_code`.
+
+    `within` is the path of the console's market switch (`?scope=`): only the
+    cities under it are shown, counted, or offered in the city picker."""
     now = timezone.now()
     geography = geography or Geography.get()
     zone_nodes = _zone_node_ids()
-    cities = visible_cities(scope, geography, zone_nodes)
+    cities = in_market(visible_cities(scope, geography, zone_nodes), within)
 
     selected = None
     if city_code:

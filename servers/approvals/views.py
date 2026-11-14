@@ -34,6 +34,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission
+from servers.admin_access.scoping import ScopeNotHeld, market_node
 
 from . import service
 from base import refs
@@ -166,6 +167,16 @@ def list_requests(request):
     APPROVALS_SOLO_SUPER_ADMIN), `?target_type=&target_id=`.
     """
     rows = visible(request.user, ApprovalRequest.objects.select_related('scope_node', 'policy'))
+    try:
+        node = market_node(request)
+    except ScopeNotHeld as exc:
+        return error_response(code='SCOPE_NOT_HELD', message=str(exc), field='scope',
+                              issue='Requested scope is outside your assignments',
+                              status=status.HTTP_403_FORBIDDEN)
+    if node is not None:
+        # The console's market switch: requests raised at this place or inside it.
+        # A request with no place (a platform-wide setting) is shown under Global only.
+        rows = rows.filter(scope_node__path__startswith=node.path)
 
     status_filter = (request.query_params.get('status') or '').strip()
     if status_filter:

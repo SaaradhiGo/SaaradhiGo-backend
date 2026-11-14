@@ -27,6 +27,7 @@ from rest_framework.throttling import UserRateThrottle
 from base.money import from_minor
 from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission
+from servers.admin_access.models import GLOBAL, GeoNode
 from servers.admin_audit.services import record_admin_action
 from servers.command_centre.overview import city_contexts
 from servers.payments.finance_common import csv_safe
@@ -70,6 +71,19 @@ def _city_rows(cities):
              'timezone': str(contexts[c.id].tz)} for c in cities]
 
 
+def _market_code(request):
+    """The console's market switch (`?scope=`) as a place code, or '' for Global / none.
+
+    It is only a default for `?city=`: an explicit city wins, and `resolve_cities`
+    makes the same hold check (a place the caller does not hold is a 404).
+    """
+    code = (request.query_params.get('scope') or '').strip()
+    if not code:
+        return ''
+    node = GeoNode.objects.filter(code=code).only('kind').first()
+    return '' if node is not None and node.kind == GLOBAL else code
+
+
 def _prepare(request, key):
     """`(report, cities, params, refusal)`; refusal is a ready Response or None."""
     report = REPORTS.get(key)
@@ -79,7 +93,8 @@ def _prepare(request, key):
         return None, None, None, _forbidden()
     try:
         cities, _node = service.resolve_cities(
-            request.user, report, (request.query_params.get('city') or '').strip())
+            request.user, report,
+            (request.query_params.get('city') or '').strip() or _market_code(request))
         params = service.parse_params(request.query_params, report,
                                       service.default_to_date(cities))
     except NotInScope:
@@ -101,6 +116,11 @@ def report_catalogue(request):
         cards.append(report.as_card())
         cities_seen.update({c.code: c for c in cities})
     scope_cities = sorted(cities_seen.values(), key=lambda c: c.path)
+    code = _market_code(request)
+    market = GeoNode.objects.filter(code=code).first() if code else None
+    if market is not None:
+        # The market switch narrows the city filter (and the freshness stamp) to its cities.
+        scope_cities = [c for c in scope_cities if c.path.startswith(market.path)]
     from .models import RebuildLog
 
     latest = RebuildLog.objects.filter(city__in=scope_cities).order_by('-built_at').values_list(

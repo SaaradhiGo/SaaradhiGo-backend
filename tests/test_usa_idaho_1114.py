@@ -306,3 +306,15 @@ def test_the_rider_accessibility_note_reaches_the_trips_driver(idaho):
     data = _client(d.user_id).get(f'/api/v1/ride/trip/{trip.id}/').json()['data']
     assert data['rider_accessibility_note'] == 'I use a folding wheelchair'
     assert data['market_rules']['cash_allowed'] is False and data['market_rules']['tips_enabled'] is True
+
+
+def test_driver_pages_know_cash_is_banned_in_idaho():
+    """Idaho 49-3712: the driver's Payouts and Earnings pages read `cash_allowed` and drop cash wording."""
+    from unittest import mock
+
+    from servers.driver import earnings_history
+
+    with mock.patch('servers.driver.records.market_of', return_value=('US', 'ID')):
+        assert earnings_history.cash_allowed_for(object()) is False
+    with mock.patch('servers.driver.records.market_of', return_value=('IN', '')):
+        assert earnings_history.cash_allowed_for(object()) is True

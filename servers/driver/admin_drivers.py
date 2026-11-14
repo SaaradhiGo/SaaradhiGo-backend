@@ -67,12 +67,12 @@ TARGET = 'driver'
 
 KYC_STATES = ('pending', 'in_review', 'approved', 'rejected', 'expired')
 ONLINE_STATUSES = ('online', 'on ride')
-VEHICLE_EXPIRIES = ('insurance_expiry', 'permit_expiry', 'fitness_expiry', 'puc_expiry')
+VEHICLE_EXPIRIES = ('insurance_expiry', 'permit_expiry', 'fitness_expiry', 'puc_expiry', 'registration_expiry')
 #: Document key -> its expiry column on the owner (driver or vehicle).
 DOCUMENT_EXPIRY = {'license_front': 'license_expiry', 'license_back': 'license_expiry',
                    'health_insurance': 'health_insurance_expiry', 'term_insurance': 'term_insurance_expiry',
                    'insurance': 'insurance_expiry', 'permit': 'permit_expiry', 'fitness': 'fitness_expiry',
-                   'puc': 'puc_expiry'}
+                   'puc': 'puc_expiry', 'registration': 'registration_expiry'}
 SUSPEND_REASONS = {k: v for k, v in DriverSuspension.REASON_CHOICES if k != 'deactivated'}
 BULK_ACTIONS = ('suspend', 'reinstate')
 BULK_MAX_IDS = 500

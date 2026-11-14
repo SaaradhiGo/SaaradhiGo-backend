@@ -1021,7 +1021,8 @@ def update_vehicle(request, vehicle_id):
             setattr(vehicle, field_name, field_value)
             files_set.append(field_name)
 
-    allowed_fields = ['brand', 'model', 'color', 'year', 'capacity', 'vehicle_number', 'insurance_expiry', 'permit_expiry','fitness_expiry','puc_expiry',]
+    allowed_fields = ['brand', 'model', 'color', 'year', 'capacity', 'vehicle_number', 'insurance_expiry', 'permit_expiry','fitness_expiry','puc_expiry',
+                      'registration_expiry', 'doors']  # 14 Nov (USA)
     # An upload alone writes only its own column (10 Nov v2): two uploads at once used to save the
     # whole row each, and the later one put the earlier file back to what it was before.
     only_files = bool(files_set) and not any(

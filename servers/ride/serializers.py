@@ -194,6 +194,9 @@ class TripDetailSerializer(TripListSerializer):
             'planned_route_polyline',
             'driver_photo_url', 'driver_total_trips', 'driver_earning',
             'invoice', 'search_expires_at', 'vehicle_line',
+            # 14 Nov (USA): a card held at booking (never "pay again"), the market's cash and tip
+            # rules, and the tip given.
+            'card_held', 'market_rules', 'tip',
         ]
 
     def _party(self, obj):
@@ -202,6 +205,28 @@ class TripDetailSerializer(TripListSerializer):
         if uid is None or not obj.driver_id:
             return False
         return uid in (obj.user_id_id, obj.driver_id.user_id_id)
+
+    card_held = serializers.SerializerMethodField()
+    market_rules = serializers.SerializerMethodField()
+    tip = serializers.SerializerMethodField()
+
+    def get_card_held(self, obj):
+        hold = getattr(obj, 'card_hold', None) if hasattr(obj, 'card_hold') else None
+        return {'status': hold.status} if hold is not None else None
+
+    def get_market_rules(self, obj):
+        from servers.pricing.regulation import rules_for_zone
+
+        r = rules_for_zone(getattr(obj, 'zone', None))
+        return {'cash_allowed': bool(r['cash_allowed']), 'tips_enabled': bool(r['tips_enabled']),
+                'tip_presets': r['tip_presets'] if r['tips_enabled'] else [],
+                'zero_tolerance': bool(r['zero_tolerance_suspend'])}
+
+    def get_tip(self, obj):
+        from base.money import to_major_string
+
+        tip = obj.tips.filter(status='succeeded').first() if hasattr(obj, 'tips') else None
+        return {'amount': to_major_string(tip.amount_minor, tip.currency), 'currency': tip.currency} if tip else None
 
     def get_driver_photo_url(self, obj):
         # A short-lived signed URL to the driver's own photo, or None (no photo, or the store

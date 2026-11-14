@@ -1583,24 +1583,42 @@ def _maps_error_response():
         status=status.HTTP_502_BAD_GATEWAY,
     )
 
-def _rider_search_scope(user):
-    """(cache tag, bounds, country) for a search with no location: the last trip's city zone,
-    else the market country (the number's country, else the deployment's default)."""
-    if not getattr(user, 'is_authenticated', False):
-        return '', None, None
+def operating_countries():
+    """The countries with an active service zone (14 Nov: IN and US), sorted."""
+    from servers.pricing.models import ServiceZone
+
+    return sorted({str(c).upper() for c in ServiceZone.objects.filter(is_active=True)
+                   .exclude(country='').values_list('country', flat=True) if c})
+
+
+def _country_centre(country):
+    """`"lat,lng"` of a country's first active city zone (its launch city), or None."""
+    from servers.pricing.models import ServiceZone
     from servers.ride.maps_utils import zone_bounds
-    last = (Trip.objects.filter(user_id=user, zone__isnull=False).select_related('zone')
-            .order_by('-requested_at').first())
-    if last is not None:
-        zone = last.zone
-        while zone.parent_id and zone.zone_type not in ('city', 'state', 'country'):
-            zone = zone.parent
-        return zone.code, zone_bounds(zone.polygon_geojson), zone.country
-    from base.countries import country_of_phone
-    from servers.platform_ops.markets import default_phone_country
-    found = country_of_phone(getattr(user, 'phone_number', None))
-    country = (found.code if found else None) or default_phone_country()
-    return (f'country-{country}' if country else ''), None, country
+
+    zones = ServiceZone.objects.filter(is_active=True, country=country).order_by('id')
+    for zone in sorted(zones, key=lambda z: z.zone_type != 'city'):
+        box = zone_bounds(zone.polygon_geojson)
+        if box:
+            south, west, north, east = box
+            return f'{(south + north) / 2:.5f},{(west + east) / 2:.5f}'
+    return None
+
+
+def _search_bias(request, countries):
+    """Where to rank suggestions from, with no location (14 Nov, owner): the country chosen in
+    the header (`market`), else the signed-in account's market (its phone number's country)."""
+    chosen = str(request.data.get('market') or '').strip().upper()
+    if chosen in countries:
+        return _country_centre(chosen), chosen
+    user = request.user
+    if getattr(user, 'is_authenticated', False):
+        from base.countries import country_of_phone
+
+        found = country_of_phone(getattr(user, 'phone_number', None))
+        if found is not None and found.code in countries:
+            return _country_centre(found.code), found.code
+    return None, ''
 
 
 # Place SEARCH is open to guests so the public homepage can offer a real
@@ -1647,13 +1665,20 @@ def proxy_geocode(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # No location and no zone (11 Nov): "Charminar" typed with location off listed two California
-    # restaurants first. A signed-in rider's search keeps to the city of their last trip, else
-    # their market's country.
-    if not location and not bounds:
-        scope_code, bounds, country = _rider_search_scope(request.user)
-        if bounds or country:
-            zone_code = scope_code
+    # The pickup point decides the market (owner, 14 Nov). With no zone, suggestions come from
+    # EVERY operating country (IN, US), ranked nearest the visitor: their location, else the
+    # country chosen in the header, else their account's market. "Boise State University"
+    # typed by an India visitor in Hyderabad still finds Boise.
+    if not bounds:
+        countries = operating_countries()
+        country = countries or None
+        if not location:
+            location, chosen = _search_bias(request, countries)
+            zone_code = f'near-{chosen}' if chosen else ''
+        else:
+            zone_code = ''
+        if countries:
+            zone_code = f"{zone_code}:{'-'.join(countries)}"
 
     # v2: entries cached before predictions carried `structured_formatting`
     # would serve blank rows for 30 days.

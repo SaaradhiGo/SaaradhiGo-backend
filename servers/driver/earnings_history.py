@@ -328,6 +328,8 @@ def months(driver):
         s = summarise_period([r for r in data.trips if r.created_at and month_of(r.created_at) == key],
                              [f for f in data.fees if month_of(f.created_at) == key],
                              [p for p in data.payouts if month_of(p.created_at) == key], tz)
+        # 14 Nov: the month's tips too, as the history and the dashboard count them.
+        s = _with_tips(driver, s, m, _month_end(m), tz)
         out.append({'month': key, 'so_far': m == today.replace(day=1), **_strings(s)})
         m = (m - timedelta(days=1)).replace(day=1)
     return {'currency': driver_currency(driver), 'joined': joined.strftime('%Y-%m'), 'months': out}
@@ -345,7 +347,8 @@ def statement(driver, year, month):
     last = _month_end(first)
     since, until = _start(tz, first), _start(tz, last + timedelta(days=1))
     data = _Data(driver, since, until)
-    summary = summarise_period(data.trips, data.fees, data.payouts, tz)
+    # 14 Nov: the statement counts the month's tips, as the screen does.
+    summary = _with_tips(driver, summarise_period(data.trips, data.fees, data.payouts, tz), first, last, tz)
     ledger = build_statement(driver, since, until)
     country = req.for_driver(driver)['country']
     from base.encrypted import mask

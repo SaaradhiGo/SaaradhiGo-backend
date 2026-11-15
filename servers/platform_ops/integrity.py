@@ -60,6 +60,11 @@ def scan(fix=False, now=None):
             fixed_wallets += int(created)
     out['driver_without_wallet'] = {'drivers': no_wallet[:SAMPLE], 'found': len(no_wallet), 'fixed': fixed_wallets}
 
+    # 14 Nov (QA, USA): a driver wallet opened in the platform default (INR) for a driver paid in
+    # another market's currency. Relabelled only when every entry on it is already in the market's
+    # currency, so no amount changes meaning; anything mixed is reported, never touched.
+    out['driver_wallet_wrong_currency'] = _wrong_currency_wallets(fix)
+
     # Seed trips (`is_seed`, 11 Nov) may be written completed and never settled on purpose (the US
     # display city has no commission rule); they are not trips anyone drove.
     trips = Trip.objects.filter(status_id__status_code='completed', driver_id__isnull=False,
@@ -83,6 +88,39 @@ def scan(fix=False, now=None):
     _alert(out)
     logger.info('integrity_scan found=%s fixed=%s', out['total_found'], out['total_fixed'])
     return out
+
+
+def _wrong_currency_wallets(fix):
+    from base.countries import currency_for
+    from servers.driver.models import Driver
+    from servers.payments.payout_config import driver_payout_country
+    from servers.rider.models import Wallet, WalletTransaction
+
+    found, fixed, mixed = [], 0, []
+    for driver in Driver.objects.select_related('user_id', 'home_city').iterator():
+        wallet = Wallet.objects.filter(user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER).first()
+        if wallet is None:
+            continue
+        country = driver_payout_country(driver)
+        want = currency_for(country) if country else None
+        if not want or (wallet.currency or '').upper() == want:
+            continue
+        found.append(driver.id)
+        seen = set(WalletTransaction.objects.filter(user_id=driver.user_id).values_list('currency', flat=True))
+        if seen - {want}:
+            mixed.append(driver.id)
+            continue
+        if fix:
+            from servers.admin_audit.services import record_admin_action
+
+            before = wallet.currency
+            Wallet.objects.filter(pk=wallet.pk).update(currency=want)
+            record_admin_action(None, action='wallet_currency_relabelled', target_type='wallet',
+                                target_id=str(wallet.pk), before={'currency': before}, after={'currency': want},
+                                reason='Integrity: wallet opened in the platform default; every entry is in '
+                                       f'{want}, the driver\'s market currency.')
+            fixed += 1
+    return {'drivers': found[:SAMPLE], 'found': len(found), 'fixed': fixed, 'mixed_left_alone': mixed[:SAMPLE]}
 
 
 def _alert(result):

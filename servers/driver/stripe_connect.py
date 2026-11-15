@@ -55,7 +55,8 @@ def confirmed_status(driver):
 
     if not driver.stripe_account_id or driver.stripe_account_id.startswith('acct_fake_') or not _key():
         return driver.stripe_onboarding_status
-    if cache.add(f'stripe-status:{driver.pk}', 1, 300):
+    # Not ready yet: ask every time (the driver may be back from Stripe); ready: at most every 5 min.
+    if driver.stripe_onboarding_status != 'ready' or cache.add(f'stripe-status:{driver.pk}', 1, 300):
         try:
             refresh_status(driver)
         except Exception:  # noqa: BLE001 - the page still loads; the next view re-checks

@@ -103,10 +103,15 @@ def _candidates(config, floor=None):
             .order_by('id')[:MAX_DRIVERS_PER_RUN + 1])
 
 
-def has_payout_handle(driver):
+def has_payout_handle(driver, currency=''):
     """Could a payout be sent to this driver? A UPI contact with something to send
-    to, or a bank account."""
+    to, or a bank account. In dollars (15 Nov): a Stripe connected account Stripe confirms
+    can be paid, since a US driver never gives us bank details."""
     from servers.driver.models import DriverBankAccount, DriverUPIContact
+
+    if str(currency or '').upper() == 'USD':
+        from servers.driver import stripe_connect
+        return bool(driver.stripe_account_id) and stripe_connect.confirmed_status(driver) == 'ready'
 
     upi = DriverUPIContact.objects.filter(driver=driver, is_active=True).first()
     if upi is not None and (upi.upi_id or upi.gateway_fund_account_id):
@@ -314,7 +319,7 @@ def run_scope(config, scope_key, members, now):
                 if payout_hold_until(d, now) is not None:
                     skipped.append({'driver_id': d.id, 'reason': SKIP_DETAILS_CHANGED})
                     continue
-                if needs_handle and not has_payout_handle(d):
+                if needs_handle and not has_payout_handle(d, config.currency):
                     skipped.append({'driver_id': d.id, 'reason': SKIP_NO_HANDLE})
                     skipped_drivers.append(d)
                 else:

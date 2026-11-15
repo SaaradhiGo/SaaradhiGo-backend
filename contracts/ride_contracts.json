@@ -112,7 +112,8 @@
           "dispatch_eligible": false,
           "qa_simulated_eligibility": false,
           "total_trips": 0,
-          "ratings": "5.00"
+          "ratings": "5.00",
+          "rating_count": 1
         },
         "meta": {
           "timestamp": "2026-01-01T00:00:00.000000+05:30"
@@ -130,12 +131,19 @@
           "block_remaining_seconds": null,
           "fee_percent": 0.0,
           "fee_display": null,
-          "minimum_withdrawal": 500.0,
+          "minimum_withdrawal": 100.0,
           "currency": "INR",
-          "next_payout": null,
+          "next_payout": {
+            "date": "2026-11-20",
+            "at": "2026-01-01T00:00:00.000000+05:30",
+            "estimated_amount": "0.00",
+            "estimated_amount_minor": 0,
+            "currency": "INR",
+            "below_minimum": false
+          },
           "instant": {
-            "available": false,
-            "provider": null,
+            "available": true,
+            "provider": "RazorpayX",
             "saaradhigo_fee": "0"
           },
           "payout_details_on_file": false,
@@ -156,6 +164,9 @@
           "id": 1,
           "pickup_address": "Banjara Hills",
           "destination_address": "Hitech City",
+          "total_charged": "192.00",
+          "pickup_label": "Banjara Hills",
+          "destination_label": "Hitech City",
           "pickup_lat": "17.4450000",
           "pickup_long": "78.3800000",
           "destination_lat": "17.4650000",
@@ -199,6 +210,19 @@
           "driver_photo_url": null,
           "driver_total_trips": 0,
           "driver_earning": null,
+          "invoice": null,
+          "search_expires_at": null,
+          "vehicle_line": null,
+          "card_held": null,
+          "market_rules": {
+            "cash_allowed": true,
+            "tips_enabled": false,
+            "tip_presets": [],
+            "zero_tolerance": false
+          },
+          "tip": null,
+          "rider_accessibility_note": null,
+          "refunds": [],
           "is_active": false,
           "recovery": "recently_completed"
         },
@@ -213,13 +237,13 @@
       "body": {
         "status": "success",
         "data": {
-          "estimated_fare": "214.00",
+          "estimated_fare": "268.00",
           "pickup_eta_min": null,
           "drivers_nearby": false,
           "seats": 4,
           "cancellation_due": null,
-          "rider_reason": null,
-          "quote_id": "647b8ade300449a490096286bc7fe447",
+          "rider_reason": "Higher demand near Hyderabad",
+          "quote_id": "fe65dd0b5c494c2d9a46672a2e6b8d75",
           "quote_expires_at": "2026-01-01T00:00:00.000000+05:30",
           "currency": "INR",
           "distance_unit": "km",
@@ -227,8 +251,8 @@
             "base_fare": "60.00",
             "distance_fare": "114.07",
             "time_fare": "40.25",
-            "surge_multiplier": "1.00",
-            "demand_label": null,
+            "surge_multiplier": "1.25",
+            "demand_label": "Higher demand",
             "fare_limits": {
               "max_dynamic_multiplier": "1.50",
               "min_dynamic_multiplier": "0.50",
@@ -239,22 +263,63 @@
             "tax_mode": "inclusive",
             "tax_label": "GST",
             "tax_percent": "5.000",
-            "tax_amount": "10.19",
+            "tax_amount": "12.76",
             "per_trip_fee": "0.00"
           },
           "fare_adjustments": [
             {
+              "code": "surge",
+              "label": "Higher demand",
+              "amount": "53.58"
+            },
+            {
               "code": "rounding",
               "label": "Rounding",
-              "amount": "-0.32"
+              "amount": "0.10"
             }
           ],
+          "fare_lines": {
+            "lines": [
+              {
+                "code": "base",
+                "label": "Base fare",
+                "amount": "60.00"
+              },
+              {
+                "code": "distance_time",
+                "label": "Distance and time",
+                "amount": "154.32"
+              },
+              {
+                "code": "surge",
+                "label": "Higher demand",
+                "amount": "53.58"
+              },
+              {
+                "code": "rounding",
+                "label": "Rounding",
+                "amount": "0.10"
+              }
+            ],
+            "taxable": "268.00",
+            "tax": {
+              "label": "GST",
+              "percent": "0",
+              "amount": "0",
+              "included": true
+            },
+            "extras": [],
+            "total": "268.00",
+            "currency": "INR",
+            "tax_shown": false
+          },
           "vehicle_type": "sedan",
           "pricing_source": "db",
           "distance_km": 5.2,
           "duration_min": 18.0,
           "validated_km": 6.71,
-          "validated_min": 16.1
+          "validated_min": 16.1,
+          "launching": null
         },
         "meta": {
           "timestamp": "2026-01-01T00:00:00.000000+05:30"
@@ -290,6 +355,9 @@
               "id": 1,
               "pickup_address": "Banjara Hills",
               "destination_address": "Hitech City",
+              "total_charged": "192.00",
+              "pickup_label": "Banjara Hills",
+              "destination_label": "Hitech City",
               "pickup_lat": "17.4450000",
               "pickup_long": "78.3800000",
               "destination_lat": "17.4650000",
@@ -338,6 +406,9 @@
               "id": 1,
               "pickup_address": "Banjara Hills",
               "destination_address": "Hitech City",
+              "total_charged": "192.00",
+              "pickup_label": "Banjara Hills",
+              "destination_label": "Hitech City",
               "pickup_lat": "17.4450000",
               "pickup_long": "78.3800000",
               "destination_lat": "17.4650000",
@@ -423,15 +494,15 @@
     },
     "ride_trip_detail_denied_other_rider": {
       "note": "GET /ride/trip/<id>/ as an unrelated rider - must be refused",
-      "status_code": 403,
+      "status_code": 404,
       "body": {
         "status": "error",
         "error": {
-          "code": "FORBIDDEN",
-          "message": "You do not have access to this trip",
+          "code": "NOT_FOUND",
+          "message": "Trip not found.",
           "details": {
             "field": "trip_id",
-            "issue": "Only the rider or assigned driver can view this trip"
+            "issue": "No trip 1"
           }
         }
       }
@@ -445,6 +516,9 @@
           "id": 1,
           "pickup_address": "Banjara Hills",
           "destination_address": "Hitech City",
+          "total_charged": "192.00",
+          "pickup_label": "Banjara Hills",
+          "destination_label": "Hitech City",
           "pickup_lat": "17.4450000",
           "pickup_long": "78.3800000",
           "destination_lat": "17.4650000",
@@ -487,7 +561,20 @@
           "planned_route_polyline": null,
           "driver_photo_url": null,
           "driver_total_trips": 0,
-          "driver_earning": "163.20"
+          "driver_earning": "163.20",
+          "invoice": null,
+          "search_expires_at": null,
+          "vehicle_line": null,
+          "card_held": null,
+          "market_rules": {
+            "cash_allowed": true,
+            "tips_enabled": false,
+            "tip_presets": [],
+            "zero_tolerance": false
+          },
+          "tip": null,
+          "rider_accessibility_note": null,
+          "refunds": []
         },
         "meta": {
           "timestamp": "2026-01-01T00:00:00.000000+05:30"
@@ -503,6 +590,9 @@
           "id": 1,
           "pickup_address": "Banjara Hills",
           "destination_address": "Hitech City",
+          "total_charged": "192.00",
+          "pickup_label": "Banjara Hills",
+          "destination_label": "Hitech City",
           "pickup_lat": "17.4450000",
           "pickup_long": "78.3800000",
           "destination_lat": "17.4650000",
@@ -545,7 +635,20 @@
           "planned_route_polyline": null,
           "driver_photo_url": null,
           "driver_total_trips": 0,
-          "driver_earning": null
+          "driver_earning": null,
+          "invoice": null,
+          "search_expires_at": null,
+          "vehicle_line": null,
+          "card_held": null,
+          "market_rules": {
+            "cash_allowed": true,
+            "tips_enabled": false,
+            "tip_presets": [],
+            "zero_tolerance": false
+          },
+          "tip": null,
+          "rider_accessibility_note": null,
+          "refunds": []
         },
         "meta": {
           "timestamp": "2026-01-01T00:00:00.000000+05:30"

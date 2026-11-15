@@ -187,7 +187,42 @@ def receipt_invoice(trip, *, total, gst_amount, currency, fare_pricing=None, tax
     invoice['title'] = document_title(invoice)
     if (getattr(getattr(trip, 'zone', None), 'country', '') or '').upper() == 'US':
         invoice = us_receipt(trip, invoice)
-    return invoice
+    return with_refunds(trip, invoice)
+
+
+def with_refunds(trip, invoice):
+    """15 Nov: each refund sent on the trip, then what the rider was charged net of them."""
+    from base.market_dates import full_date
+    from base.market_time import trip_timezone
+    from base.money import from_minor
+    from servers.ride.models import TripMoneyAction
+
+    try:
+        rows = list(TripMoneyAction.objects.filter(trip=trip, kind=TripMoneyAction.REFUND,
+                                                   status=TripMoneyAction.COMPLETED).order_by('created_at', 'id'))
+    except Exception:  # noqa: BLE001 - a receipt never fails for want of its refunds
+        logger.exception('refunds for receipt failed trip=%s', getattr(trip, 'pk', None))
+        rows = []
+    if not rows:
+        return invoice
+    country = (getattr(getattr(trip, 'zone', None), 'country', '') or 'IN').upper()
+    tz = trip_timezone(trip)
+    refunds = [{'label': 'Refunded to your wallet' if r.method == TripMoneyAction.WALLET_CREDIT
+                else 'Refunded to your card',
+                'amount': str(from_minor(r.amount_minor, r.currency)),
+                'date': full_date(r.created_at.astimezone(tz), country)} for r in rows]
+    charged = Decimal(invoice.get('total_charged') or invoice['total'])
+    net = charged - sum((Decimal(x['amount']) for x in refunds), Decimal('0'))
+    return {**invoice, 'refunds': refunds, 'net_charged': str(max(net, Decimal('0')))}
+
+
+def _refund_rows_html(invoice, currency):
+    if not invoice.get('refunds'):
+        return ''
+    rows = ''.join(f'<tr><td>{escape(x["label"])} · {escape(x["date"])}</td><td style="text-align:right;">'
+                   f'-{format_money(Decimal(x["amount"]), currency)}</td></tr>' for x in invoice['refunds'])
+    return rows + ('<tr style="background: #f9fafb;"><td><b>Net charged</b></td><td style="text-align:right;"><b>'
+                   f'{format_money(Decimal(invoice["net_charged"]), currency)}</b></td></tr>')
 
 
 def us_receipt(trip, invoice):
@@ -499,7 +534,8 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
             f'-{format_money(discount, currency)}</td></tr>'
             f'<tr style="background: #f9fafb;"><td><b>Amount charged</b></td>'
             f'<td style="text-align:right;"><b>{format_money(charged, currency)}</b></td></tr>'
-            for label, discount, charged in promo_lines(trip)) + ('' if us else _tip_rows_html(trip, currency)),
+            for label, discount, charged in promo_lines(trip)) + ('' if us else _tip_rows_html(trip, currency))
+        + _refund_rows_html(invoice, currency),
         payment_method=escape(str(trip.payment_method or '—')),
         payment_status=escape(str(trip.payment_status or '—')),
     )
@@ -614,6 +650,8 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         *[row for label, discount, charged in promo_lines(trip) for row in (
             [label, '-' + format_money(discount, _currency, with_symbol=False)],
             ['Amount charged', format_money(charged, _currency, with_symbol=False)])],
+        *[[f"{x['label']} · {x['date']}", '-' + _m(x['amount'])] for x in invoice.get('refunds') or []],
+        *([['Net charged', _m(invoice['net_charged'])]] if invoice.get('refunds') else []),
     ]
     fare_table = Table(fare_rows, colWidths=[110 * mm, 55 * mm])
     fare_table.setStyle(TableStyle([

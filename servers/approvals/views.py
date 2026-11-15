@@ -317,6 +317,16 @@ def list_policies(request):
     }, status.HTTP_200_OK)
 
 
+def _int_or_none(value):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise service.InvalidRequest('maker_daily_limit must be an integer', code='AMOUNT_NOT_INTEGER',
+                                     field='maker_daily_limit') from None
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, ScopedPermission('platform.settings')])
 def change_policy(request):
@@ -348,6 +358,8 @@ def change_policy(request):
             maker_limit=maker_limit,
             reason=str(data.get('reason', '') or ''),
             http_request=request,
+            maker_daily_limit=_int_or_none(data.get('maker_daily_limit')),
+            cumulative_per_target=data.get('cumulative_per_target') is True,
         )
     except service.ApprovalError as exc:
         return exc.response()

@@ -348,7 +348,9 @@ def driver_identity(request):
 def payout_method_dict(driver, country):
     hold = payout_hold_until(driver)
     if country == 'US':
-        return {'kind': 'stripe', 'stripe_status': driver.stripe_onboarding_status, 'held_until': None}
+        # 15 Nov: what Stripe says now (cached a few minutes), never a stored "ready" alone.
+        from . import stripe_connect
+        return {'kind': 'stripe', 'stripe_status': stripe_connect.confirmed_status(driver), 'held_until': None}
     bank = DriverBankAccount.objects.filter(driver=driver).first()
     return {
         'kind': 'bank' if bank else ('upi' if (driver.upi_id or '').strip() else None),

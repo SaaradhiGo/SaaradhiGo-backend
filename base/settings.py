@@ -466,6 +466,12 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'pricing.charge_driver_fees',
         'schedule': _crontab(minute=17),
     },
+    'payments-collect-unpaid-trips-hourly': {
+        # 15 Nov (Srini's ruling): a completed trip pays the driver even if the payment failed;
+        # the card is retried and repeated rider-driver failures are flagged for fraud review.
+        'task': 'payments.collect_unpaid_trips',
+        'schedule': _crontab(minute=29),
+    },
     'platform-integrity-scan-daily': {
         # Roles without profiles, drivers without wallets, trips and payouts without ledger rows
         # (10 Nov): a console alert when anything does not line up. Reports only; no fixes.

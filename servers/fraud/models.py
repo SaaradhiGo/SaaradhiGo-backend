@@ -47,6 +47,7 @@ INCENTIVE_FARMING = 'incentive_farming'
 GPS_ANOMALY = 'gps_anomaly'
 CANCELLATION_ABUSE = 'cancellation_abuse'
 PAYMENT_ABUSE = 'payment_abuse'
+UNPAID_PAIR = 'unpaid_pair'
 
 KIND_CHOICES = [
     (REFERRAL_ABUSE, 'Referral abuse'),
@@ -56,6 +57,7 @@ KIND_CHOICES = [
     (GPS_ANOMALY, 'GPS anomaly'),
     (CANCELLATION_ABUSE, 'Cancellation abuse'),
     (PAYMENT_ABUSE, 'Payment abuse'),
+    (UNPAID_PAIR, 'Failed payments with one driver'),
 ]
 
 # --- status -------------------------------------------------------------------------------

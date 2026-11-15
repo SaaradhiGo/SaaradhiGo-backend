@@ -44,11 +44,14 @@ class TripListSerializer(serializers.ModelSerializer):
     cancellation_message = serializers.SerializerMethodField()
     estimated_fare = MoneyField(read_only=True, allow_null=True)
     final_fare = MoneyField(read_only=True, allow_null=True)
+    #: 15 Nov: what the rider was charged for a completed trip, the receipt's "Total charged":
+    #: the trip's total plus a tip that succeeded. None until the trip is completed.
+    total_charged = serializers.SerializerMethodField()
 
     class Meta:
         model = Trip
         fields = [
-            'id', 'pickup_address', 'destination_address',
+            'id', 'pickup_address', 'destination_address', 'total_charged',
             # 13 Nov: "Charminar, Ghansi Bazaar" for lists and cards; the full address above.
             'pickup_label', 'destination_label',
             'pickup_lat', 'pickup_long', 'destination_lat', 'destination_long',
@@ -78,6 +81,18 @@ class TripListSerializer(serializers.ModelSerializer):
             from servers.ride.tasks import NO_DRIVER_MESSAGE
             return NO_DRIVER_MESSAGE
         return None
+
+    def get_total_charged(self, obj):
+        from base.money import from_minor
+        from servers.ride.receipts import _total_fare
+
+        if (obj.status_id.status_code if obj.status_id else '') != 'completed':
+            return None
+        total = _total_fare(obj)
+        tip = next((t for t in obj.tips.all() if t.status == 'succeeded'), None)
+        if tip is not None:
+            total += from_minor(tip.amount_minor, tip.currency)
+        return str(total)
 
     def get_timezone(self, obj):
         from base.market_time import trip_timezone

@@ -541,3 +541,12 @@ def capture_card_hold(self, trip_id):
     from .card_hold import capture_for_trip
 
     return capture_for_trip(trip_id)
+
+
+@shared_task(name='payments.collect_unpaid_trips')
+def collect_unpaid_trips():
+    """Hourly (15 Nov ruling): pay the driver for every completed trip whose payment failed, flag a
+    repeated rider-driver pattern, and retry US cards when due. See payments.unpaid."""
+    from .unpaid import sweep
+
+    return sweep()

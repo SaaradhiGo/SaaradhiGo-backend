@@ -17,7 +17,7 @@ import logging
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
-from django.db.models import BigIntegerField, Sum, Value
+from django.db.models import BigIntegerField, Q, Sum, Value
 from django.db.models.functions import Coalesce
 
 logger = logging.getLogger(__name__)
@@ -116,11 +116,14 @@ def _bucket_keys(unit, first, last):
 
 def _fee_rows(driver, since=None, until=None):
     from servers.payments.ledger import counted
-    from servers.pricing.fee_plans import PURPOSE
+    from servers.pricing.fee_plans import PURPOSE, REFUND_PURPOSE
     from servers.rider.models import WalletTransaction
 
-    # A refund for a trip is on that trip's row (`settlement_rows`), on the trip's day; not here.
-    qs = counted(WalletTransaction.objects.filter(user_id=driver.user_id_id, purpose=PURPOSE))
+    # A refund for a trip is on that trip's row (`settlement_rows`), on the trip's day; not here. A
+    # refund of a whole day's fee (`DAY_<yyyymmdd>`, 15 Nov) is a fee line with the sign turned.
+    qs = counted(WalletTransaction.objects.filter(
+        Q(purpose=PURPOSE) | Q(purpose=REFUND_PURPOSE, reference_id__startswith='DAY_'),
+        user_id=driver.user_id_id))
     if since is not None:
         qs = qs.filter(created_at__gte=since)
     if until is not None:

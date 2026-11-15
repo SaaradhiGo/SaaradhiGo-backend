@@ -48,6 +48,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
+from django.db.models import Q
+
 logger = logging.getLogger(__name__)
 
 # The two purposes `credit_driver_wallet` writes. Anything else in the driver's
@@ -96,6 +98,10 @@ class EarningRow:
     # A platform fee returned for this trip (`platform_fee_refund`, 11 Nov), whenever it was written:
     # already taken off `commission` and added to `net`, so every view shows it on the trip's day.
     refunded: Decimal = Decimal('0.00')
+    # 15 Nov (US round 4): `created_at` above is when the trip ENDED (the date every driver screen
+    # shows and buckets by); this is when its money was settled, which is later for a trip whose
+    # card payment failed first (trip 219 ended on the 14th and settled on the 15th).
+    settled_at: Optional[datetime] = None
 
     def _fee_label(self):
         return (f'{self.fee_name} collected (remitted by SaaradhiGo)' if self.fee_name
@@ -137,6 +143,7 @@ class EarningRow:
             'commission': _s(self.commission),
             'net_amount': _s(self.net),
             'created_at': self.created_at.isoformat() if self.created_at else None,
+            'settled_at': self.settled_at.isoformat() if self.settled_at else None,
             'method': self.method,
             'user_name': self.rider_name,
             'cash_in_hand': self.driver_holds_cash,
@@ -202,10 +209,9 @@ def settlement_rows(driver, since=None, until=None, limit=None, refunds=True):
                 status='completed')
         .order_by('-created_at', '-id')
     )
-    if since is not None:
-        qs = qs.filter(created_at__gte=since)
-    if until is not None:
-        qs = qs.filter(created_at__lt=until)
+    if since is not None or until is not None:
+        # A trip belongs to the day it ENDED (15 Nov): its ledger row may have been written later.
+        qs = qs.filter(_written_in(since, until) | Q(reference_id__in=_ended_in(driver, since, until)))
     if limit is not None:
         qs = qs[:limit]
 
@@ -248,7 +254,31 @@ def settlement_rows(driver, since=None, until=None, limit=None, refunds=True):
         rows.append(row)
     if refunds and trip_ids:
         _apply_refunds(driver, rows, trip_ids)
+    rows = [r for r in rows if r.created_at is None
+            or ((since is None or r.created_at >= since) and (until is None or r.created_at < until))]
+    rows.sort(key=lambda r: (r.created_at is not None, r.created_at, r.ledger_id), reverse=True)
     return rows
+
+
+def _written_in(since, until):
+    q = Q()
+    if since is not None:
+        q &= Q(created_at__gte=since)
+    if until is not None:
+        q &= Q(created_at__lt=until)
+    return q
+
+
+def _ended_in(driver, since, until):
+    """Ledger references of the driver's trips that ended in the window."""
+    from servers.ride.models import Trip
+
+    trips = Trip.objects.filter(driver_id=driver, completed_at__isnull=False)
+    if since is not None:
+        trips = trips.filter(completed_at__gte=since)
+    if until is not None:
+        trips = trips.filter(completed_at__lt=until)
+    return [f'{_REFERENCE_PREFIX}{t}' for t in trips.values_list('id', flat=True)]
 
 
 def _apply_refunds(driver, rows, trip_ids):
@@ -323,7 +353,8 @@ def _row_for(entry, trip, trip_id, settlement=None):
         commission=commission,
         net=net,
         method=method,
-        created_at=entry.created_at,
+        created_at=(trip.completed_at if trip is not None and trip.completed_at else entry.created_at),
+        settled_at=entry.created_at,
         rider_name=rider_name,
         # A cash trip the rider then paid from the wallet (AUDIT 27.71): the driver holds nothing.
         driver_holds_cash=is_cash and not (trip is not None and trip.payment_method

@@ -187,3 +187,16 @@ class LaunchInterest(models.Model):
 
     def __str__(self):
         return f'launch interest user={self.user_id} city={self.city_id}'
+
+
+class SchedulerHeartbeat(models.Model):
+    """When the scheduled jobs last ran (15 Nov). The `platform_ops.scheduler_heartbeat` task, sent
+    by Celery beat and run by a worker, stamps the `beat` row every few minutes; a stamp older than
+    two hours means beat or every worker is down (`scheduler_watch`). In the database, not Redis,
+    so a Redis flush cannot fake an outage or hide one."""
+
+    name = models.CharField(max_length=40, primary_key=True)
+    last_run_at = models.DateTimeField()
+
+    def __str__(self):
+        return f'{self.name} last ran {self.last_run_at:%Y-%m-%d %H:%M}'

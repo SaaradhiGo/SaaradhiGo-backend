@@ -280,6 +280,9 @@ def admin_list_alerts(request):
             code='INVALID_STATUS', message=f'status must be one of: {", ".join(STATUSES)}',
             field='status', issue=f'Got {wanted!r}', status=status.HTTP_400_BAD_REQUEST,
         )
+    from servers.platform_ops.scheduler_watch import check_on_read
+
+    check_on_read()
     qs = _visible_alerts(request.user)
     if wanted == 'open':
         qs = qs.filter(acknowledged_at__isnull=True)

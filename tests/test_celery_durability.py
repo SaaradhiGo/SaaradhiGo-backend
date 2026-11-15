@@ -302,6 +302,9 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # Daily data integrity scan (10 Nov): reads only and raises one alert keyed on the day, so a
         # redelivered run returns the open alert. It never writes money rows or fixes anything.
         'platform_ops.integrity_scan',
+        # Scheduler heartbeat (15 Nov): overwrites one timestamp and raises or clears one alert keyed
+        # on 'beat', so a redelivered run changes nothing.
+        'platform_ops.scheduler_heartbeat',
         # Driver fee plans (9 Nov). acks_late is safe: one DriverDailyFee per (driver, day) and a
         # ledger idempotency key, so a redelivered run writes nothing twice.
         'pricing.charge_driver_fees',

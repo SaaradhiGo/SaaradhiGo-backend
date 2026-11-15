@@ -665,8 +665,11 @@ def driver_withdrawal_request(request):
     import uuid
 
     with transaction.atomic():
+        from servers.rider.models import new_wallet_currency
+
         wallet, _ = Wallet.objects.select_for_update().get_or_create(
             user_id=driver.user_id, scope=Wallet.SCOPE_DRIVER,
+            defaults={'currency': new_wallet_currency(driver.user_id, Wallet.SCOPE_DRIVER)},
         )
         if wallet.balance is None:
             wallet.balance = Decimal('0.00')

@@ -970,6 +970,8 @@ class TripMoneyAction(models.Model):
     created_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    # The provider's refund id once a gateway refund is sent (Stripe re_...); blank until then.
+    gateway_refund_id = models.CharField(max_length=64, blank=True, default='')
 
     class Meta:
         constraints = [

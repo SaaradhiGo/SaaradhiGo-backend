@@ -147,8 +147,13 @@ def _fee_note(row, notes):
     from servers.pricing.fee_plans import REFUND_PURPOSE
 
     if row.purpose == REFUND_PURPOSE:
+        from datetime import date
+
+        from base.market_dates import day_month
+
         ref = row.reference_id or ''
-        day = f'{ref[4:8]}-{ref[8:10]}-{ref[10:12]}' if ref.startswith('DAY_') and len(ref) == 12 else ''
+        day = (day_month(date(int(ref[4:8]), int(ref[8:10]), int(ref[10:12])), 'US' if row.currency == 'USD' else 'IN')
+               if ref.startswith('DAY_') and len(ref) == 12 else '')
         return f'Platform fee refunded{f" for {day}" if day else ""}'
     return notes.get(row.reference_id, '')
 
@@ -405,7 +410,9 @@ def statement(driver, year, month):
     from servers.admin_access.masking import mask_phone
     from servers.pricing.fee_plan_models import DriverDailyFee
 
-    notes = {f'DAY_{r.day:%Y%m%d}': r.explanation for r in DriverDailyFee.objects.filter(
+    from servers.pricing.fee_plans import dated_explanation
+
+    notes = {f'DAY_{r.day:%Y%m%d}': dated_explanation(r, country) for r in DriverDailyFee.objects.filter(
         driver=driver, day__gte=first - timedelta(days=1), day__lte=last)}
     today = datetime.now(tz).date()
     produced = datetime.now(tz)

@@ -177,6 +177,17 @@ def provider_label(config):
 # ---------------------------------------------------------------------------
 
 def zone_of(config):
+    """The schedule's clock: a city's (or state's) own schedule runs on that place's time zone,
+    the country's on the country's (US: Mountain, where its cities are; India: IST)."""
+    scope = getattr(config, 'schedule_scope', '') or ''
+    if scope:
+        from django.db.models import Q
+
+        from servers.pricing.models import ServiceZone
+        name = (ServiceZone.objects.filter(Q(geo_node__code=scope) | Q(geo_node__parent__code=scope))
+                .exclude(timezone_name='').order_by('id').values_list('timezone_name', flat=True).first())
+        if name:
+            return ZoneInfo(name)
     return ZoneInfo(get_country(config.country).default_timezone)
 
 

@@ -1155,13 +1155,19 @@ def _locked_trip(request_row):
     return trip
 
 
+def _send_quietly(send, row_id):
+    try:
+        send(row_id)
+    except Exception:  # noqa: BLE001 - the hourly sweep retries; the refund stays recorded
+        logger.exception('gateway refund send failed money_action=%s', row_id)
+
+
 def execute_refund(request_row):
     """Carry out an approved (or within-limit) trip refund; writes the ledger row.
 
     Cash and wallet trips: a wallet credit through `rider.credits`
-    (idempotent on the request id). Online trips: TODO(integration) -- the
-    gateway refund is RECORDED as pending_gateway and no provider is called;
-    finance completes it out of band until the provider call is tested.
+    (idempotent on the request id). Online trips: recorded as pending_gateway, then sent to
+    the provider after commit (`gateway_refunds`; Stripe only so far).
     """
     from servers.rider.credits import issue_refund_credit
 
@@ -1190,9 +1196,8 @@ def execute_refund(request_row):
             wallet_txn = result.transaction_id
             state = TripMoneyAction.COMPLETED
         else:
-            # TODO(integration): send this refund to the payment provider once
-            # the provider call is tested end to end. Until then it is
-            # recorded as owed and finance completes it manually.
+            # Sent to the provider after commit (gateway_refunds); providers not yet tested
+            # stay pending for Finance, and the hourly sweep retries a failed send.
             state = TripMoneyAction.PENDING_GATEWAY
         row = TripMoneyAction.objects.create(
             trip=trip, kind=TripMoneyAction.REFUND, amount_minor=amount,
@@ -1208,6 +1213,10 @@ def execute_refund(request_row):
                    'action_key': request_row.action_key},
             reason=request_row.request_reason or '',
         )
+        if state == TripMoneyAction.PENDING_GATEWAY:
+            from .gateway_refunds import send as send_refund
+            row_id = row.id
+            transaction.on_commit(lambda: _send_quietly(send_refund, row_id))
     ticket_id = payload.get('ticket_id')
     if ticket_id:
         from servers.support.service import post_system_message

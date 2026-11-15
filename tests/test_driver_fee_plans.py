@@ -120,6 +120,39 @@ class TestEndOfDay:
         assert not WalletTransaction.objects.filter(purpose='platform_fee').exists()
         assert fee_plans.charge_day(india.driver, 'IN', DAY) == row
 
+    def test_a_days_fee_is_refunded_once_and_shows_on_the_statement_and_earnings(self, india):
+        # 15 Nov (QA driver 30): Nov 14's fee under a plan never approved goes back as a
+        # platform_fee_refund credit against the day; a second run writes nothing.
+        from servers.driver.earnings_history import _fee_rows
+        from servers.payments.ledger import build_statement, entry_dicts
+
+        trips_on(india, DAY, 12)
+        row = fee_plans.charge_day(india.driver, 'IN', DAY)
+        wallet = Wallet.objects.get(user_id=india.driver.user_id, scope='driver')
+        before = wallet.balance_minor
+        assert fee_plans.refund_day(india.driver, DAY) == (row.fee_minor, row.fee_minor, False)
+        assert fee_plans.refund_day(india.driver, DAY, apply=True) == (row.fee_minor, row.fee_minor, True)
+        assert fee_plans.refund_day(india.driver, DAY, apply=True)[2] is True
+        refunds = WalletTransaction.objects.filter(purpose='platform_fee_refund', reference_id=f'DAY_{DAY:%Y%m%d}')
+        assert refunds.count() == 1 and refunds.get().amount_minor == row.fee_minor
+        wallet.refresh_from_db()
+        assert wallet.balance_minor == before + row.fee_minor
+        assert sum(r.amount_minor if r.txn_type == 'debit' else -r.amount_minor
+                   for r in _fee_rows(india.driver)) == 0
+        from datetime import timedelta
+
+        from django.utils import timezone
+        today = timezone.now().date()
+        from datetime import datetime, time
+
+        st = build_statement(india.driver, datetime.combine(today - timedelta(days=400), time.min, dt_tz.utc),
+                             datetime.combine(today + timedelta(days=1), time.min, dt_tz.utc))
+        entries = entry_dicts(india.driver, st['rows'], st['opening_minor'], 0, 50)
+        assert 'Platform fee refunded' in str(entries)
+        from servers.driver.earnings_history import _fee_note
+        refund_row = WalletTransaction.objects.get(purpose='platform_fee_refund')
+        assert _fee_note(refund_row, {}) == f'Platform fee refunded for {DAY:%Y-%m-%d}'
+
     def test_cash_driver_owes_it_from_the_next_earnings(self, india):
         trips_on(india, DAY, 12, method='cash')
         fee_plans.charge_day(india.driver, 'IN', DAY)

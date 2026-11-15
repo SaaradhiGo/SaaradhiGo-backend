@@ -8,3 +8,13 @@ def integrity_scan():
 
     result = scan(fix=False)
     return {'found': result['total_found']}
+
+
+@shared_task(name='platform_ops.scheduler_heartbeat', max_retries=0)
+def scheduler_heartbeat():
+    """Every five minutes: stamp that beat and a worker are alive, and clear a stale alert.
+    Idempotent: it only overwrites one timestamp."""
+    from . import scheduler_watch
+
+    scheduler_watch.beat()
+    return {'scheduler': scheduler_watch.check()}

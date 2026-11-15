@@ -143,11 +143,14 @@ ACK_ALSO = {PROMOTION_BUDGET_EXHAUSTED: ('incentive.write',),
 MAPS_BUDGET = 'platform.maps_budget'
 #: The daily integrity scan found rows that do not line up (10 Nov; platform_ops.integrity).
 DATA_INTEGRITY = 'platform.data_integrity'
-PLATFORM_ALERT_KINDS = frozenset({NOTIFY_PROVIDER_FAILING, MAPS_BUDGET, DATA_INTEGRITY})
+#: Celery beat or every worker has not run a scheduled job for two hours (15 Nov; platform_ops.scheduler_watch).
+SCHEDULER_STOPPED = 'platform.scheduler_stopped'
+PLATFORM_ALERT_KINDS = frozenset({NOTIFY_PROVIDER_FAILING, MAPS_BUDGET, DATA_INTEGRITY, SCHEDULER_STOPPED})
 ACK_PERMISSION = {
     NOTIFY_PROVIDER_FAILING: 'platform.settings',
     MAPS_BUDGET: 'platform.settings',
     DATA_INTEGRITY: 'platform.settings',
+    SCHEDULER_STOPPED: 'platform.settings',
     FINANCE_PLATFORM_FUNDED_END: 'finance.read',
     FINANCE_PAYOUT_REVERSED: 'finance.read',
     PROMOTION_BUDGET_OVERSHOOT: 'finance.read',

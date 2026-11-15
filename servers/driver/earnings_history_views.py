@@ -89,6 +89,7 @@ def driver_trip_detail(request, trip_id):
     from servers.ride.models import Trip
     from servers.rider.models import WalletTransaction
     from .earnings import SETTLEMENT_PURPOSES, _row_for
+    from .paid_out import paid_out_at
     from .services import driver_currency
 
     driver = request.user.driver
@@ -133,6 +134,9 @@ def driver_trip_detail(request, trip_id):
         'rider': {'first_name': first, 'rating': s(rating)},
         # 15 Nov (trip 219): the rider's card payment failed, so nothing is settled for it yet.
         'payment': 'not_collected' if row is None and trip.payment_status == 'failed' else 'settled',
+        # 15 Nov (US round 4): when the money was settled, and the payout that carried it to the bank.
+        'settled_at': at(entry.created_at) if entry is not None else None,
+        'paid_out_at': at(paid_out_at(driver, entry)),
     }, status.HTTP_200_OK)
 
 

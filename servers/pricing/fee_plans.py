@@ -454,6 +454,30 @@ def refund_overcharged(driver, country, *, apply=False):
     return report
 
 
+def refund_day(driver, day, *, apply=False):
+    """Return a day's plan fee (15 Nov: Nov 14's $3.00 under a plan never approved). The same
+    append-only `platform_fee_refund` credit as a trip refund, against `DAY_<yyyymmdd>`, idempotent
+    per driver and day. Returns `(charged_minor, refund_minor, written)`; nothing for a day with no fee."""
+    from servers.rider.models import Wallet, WalletTransaction, get_wallet
+
+    fee = DriverDailyFee.objects.filter(driver=driver, day=day).first()
+    if fee is None or not fee.fee_minor:
+        return 0, 0, False
+    key = f'PLATFORM_FEE_REFUND_DAY_{driver.id}_{day:%Y%m%d}'
+    if WalletTransaction.objects.filter(idempotency_key=key).exists():
+        return fee.fee_minor, fee.fee_minor, True
+    if not apply:
+        return fee.fee_minor, fee.fee_minor, False
+    with transaction.atomic():
+        wallet = get_wallet(driver.user_id, Wallet.SCOPE_DRIVER, lock=True)
+        WalletTransaction.objects.create(
+            user_id=driver.user_id, currency=fee.currency, amount_minor=fee.fee_minor, txn_type='credit',
+            status='completed', purpose=REFUND_PURPOSE, reference_id=f'DAY_{day:%Y%m%d}', idempotency_key=key)
+        wallet.balance_minor += fee.fee_minor
+        wallet.save(update_fields=['balance_minor'])
+    return fee.fee_minor, fee.fee_minor, True
+
+
 # ---------------------------------------------------------------------------
 # The words on the driver's screens (11 Nov): always from the plan in force
 # ---------------------------------------------------------------------------

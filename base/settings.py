@@ -472,6 +472,12 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'payments.collect_unpaid_trips',
         'schedule': _crontab(minute=29),
     },
+    'platform-scheduler-heartbeat': {
+        # Proves beat and a worker are alive (15 Nov); the console alerts Super Admin when the
+        # last stamp is over two hours old (platform_ops.scheduler_watch).
+        'task': 'platform_ops.scheduler_heartbeat',
+        'schedule': 300.0,
+    },
     'platform-integrity-scan-daily': {
         # Roles without profiles, drivers without wallets, trips and payouts without ledger rows
         # (10 Nov): a console alert when anything does not line up. Reports only; no fixes.
@@ -759,7 +765,10 @@ TRIP_STALE_AFTER_SECONDS = int(os.environ.get('TRIP_STALE_AFTER_SECONDS', '600')
 TRIP_OPERATOR_ATTENTION_AFTER_SECONDS = int(os.environ.get(
     'TRIP_OPERATOR_ATTENTION_AFTER_SECONDS', '1800'))
 
+# Every crontab above is in India time: minute=29 fires at :59 UTC, and hour=3 is 21:30 UTC the day
+# before. Country jobs (payouts, fees) work out their own local day inside the task.
 CELERY_TIMEZONE = 'Asia/Kolkata'
+SCHEDULER_SILENT_HOURS = 2
 
 # Let Django's LOGGING own worker output.
 #

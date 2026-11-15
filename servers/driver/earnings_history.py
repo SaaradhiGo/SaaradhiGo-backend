@@ -17,7 +17,7 @@ import logging
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
-from django.db.models import BigIntegerField, Sum, Value
+from django.db.models import BigIntegerField, Q, Sum, Value
 from django.db.models.functions import Coalesce
 
 logger = logging.getLogger(__name__)
@@ -116,11 +116,14 @@ def _bucket_keys(unit, first, last):
 
 def _fee_rows(driver, since=None, until=None):
     from servers.payments.ledger import counted
-    from servers.pricing.fee_plans import PURPOSE
+    from servers.pricing.fee_plans import PURPOSE, REFUND_PURPOSE
     from servers.rider.models import WalletTransaction
 
-    # A refund for a trip is on that trip's row (`settlement_rows`), on the trip's day; not here.
-    qs = counted(WalletTransaction.objects.filter(user_id=driver.user_id_id, purpose=PURPOSE))
+    # A refund for a trip is on that trip's row (`settlement_rows`), on the trip's day; not here. A
+    # refund of a whole day's fee (`DAY_<yyyymmdd>`, 15 Nov) is a fee line with the sign turned.
+    qs = counted(WalletTransaction.objects.filter(
+        Q(purpose=PURPOSE) | Q(purpose=REFUND_PURPOSE, reference_id__startswith='DAY_'),
+        user_id=driver.user_id_id))
     if since is not None:
         qs = qs.filter(created_at__gte=since)
     if until is not None:
@@ -137,6 +140,17 @@ def _payout_rows(driver, since=None, until=None):
     if until is not None:
         qs = qs.filter(created_at__lt=until)
     return list(qs.order_by('created_at', 'id'))
+
+
+def _fee_note(row, notes):
+    """The day's explanation for a fee line; a refund of a day's fee (15 Nov) says so."""
+    from servers.pricing.fee_plans import REFUND_PURPOSE
+
+    if row.purpose == REFUND_PURPOSE:
+        ref = row.reference_id or ''
+        day = f'{ref[4:8]}-{ref[8:10]}-{ref[10:12]}' if ref.startswith('DAY_') and len(ref) == 12 else ''
+        return f'Platform fee refunded{f" for {day}" if day else ""}'
+    return notes.get(row.reference_id, '')
 
 
 def _fee_amount(row):
@@ -417,7 +431,7 @@ def statement(driver, year, month):
                    'tip': _s(tips.get(r.trip_id, ZERO)),
                    'earned': _s(None if r.net is None else r.net + tips.get(r.trip_id, ZERO))} for r in data.trips],
         'fees': [{'at': f.created_at.astimezone(tz).isoformat(), 'amount': str(_fee_amount(f)),
-                  'note': notes.get(f.reference_id, '')} for f in data.fees],
+                  'note': _fee_note(f, notes)} for f in data.fees],
         'payouts': [{'at': p.created_at.astimezone(tz).isoformat(), 'amount': str(_payout_amount(p)),
                      'method': p.method, 'withdrawal_id': p.withdrawal_request_id} for p in data.payouts],
     }

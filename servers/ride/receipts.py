@@ -185,7 +185,38 @@ def receipt_invoice(trip, *, total, gst_amount, currency, fare_pricing=None, tax
         fare_pricing, tax_percent, label)
     invoice['tax_shown'] = shown
     invoice['title'] = document_title(invoice)
+    if (getattr(getattr(trip, 'zone', None), 'country', '') or '').upper() == 'US':
+        invoice = us_receipt(trip, invoice)
     return invoice
+
+
+def us_receipt(trip, invoice):
+    """A US rider's receipt (Srini's ruling, 14 Nov; text only, no amount changes): titled
+    "Receipt", no taxable value, and the lines Fare, Booking fee, Tip, Total charged. A sales tax
+    line appears only if a tax was charged. India keeps its receipt or tax invoice rules."""
+    total = Decimal(invoice['total'])
+    fee = sum((Decimal(x['amount']) for x in invoice['extras'] if x['code'] == 'per_trip_fee'), Decimal('0'))
+    others = [dict(x) for x in invoice['extras'] if x['code'] != 'per_trip_fee']
+    tax = Decimal(invoice['tax']['amount'] or '0')
+    fare = total - fee - tax - sum((Decimal(x['amount']) for x in others), Decimal('0'))
+    tip = Decimal('0')
+    try:
+        t = trip.tips.filter(status='succeeded').first()
+        if t is not None:
+            from base.money import from_minor
+            tip = from_minor(t.amount_minor, t.currency)
+    except Exception:  # noqa: BLE001 - a receipt never fails for want of a tip
+        logger.exception('tip lookup for receipt failed trip=%s', getattr(trip, 'pk', None))
+    extras = others + ([{'code': 'per_trip_fee', 'label': 'Booking fee', 'amount': str(fee)}] if fee else [])
+    return {**invoice,
+            'title': 'Receipt',
+            'lines': [{'code': 'fare', 'label': 'Fare', 'amount': str(fare)}],
+            'taxable': None,
+            'tax_shown': tax != 0,
+            'extras': extras,
+            'tip': str(tip) if tip else None,
+            'total_charged': str(total + tip),
+            'market': 'US'}
 
 
 def invoice_tax_label(invoice):
@@ -291,7 +322,7 @@ _RECEIPT_TEMPLATE = """\
   <table cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; border: 1px solid #e5e7eb;">
     {fare_rows}
     {note_row}
-    <tr style="background: #f9fafb;"><td><b>Total fare</b></td><td style="text-align:right;"><b>{total_fare}</b></td></tr>
+    <tr style="background: #f9fafb;"><td><b>{total_label}</b></td><td style="text-align:right;"><b>{total_fare}</b></td></tr>
     {promo_rows}
   </table>
 
@@ -422,12 +453,16 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
     fare_rows = ''.join(_row.format(escape(x['label']), format_money(Decimal(x['amount']), currency))
                         for x in invoice['lines'])
     if invoice['tax_shown']:
-        fare_rows += ('<tr><td><b>Taxable value</b></td><td style="text-align:right;"><b>'
-                      f"{format_money(Decimal(invoice['taxable']), currency)}</b></td></tr>")
+        if invoice.get('taxable') is not None:
+            fare_rows += ('<tr><td><b>Taxable value</b></td><td style="text-align:right;"><b>'
+                          f"{format_money(Decimal(invoice['taxable']), currency)}</b></td></tr>")
         fare_rows += _row.format(escape(invoice_tax_label(invoice)),
                                  format_money(Decimal(invoice['tax']['amount']), currency))
     fare_rows += ''.join(_row.format(escape(x['label']), format_money(Decimal(x['amount']), currency))
                          for x in invoice['extras'])
+    us = invoice.get('market') == 'US'
+    if us and invoice.get('tip'):
+        fare_rows += _row.format('Tip (100% to your driver)', format_money(Decimal(invoice['tip']), currency))
 
     return _RECEIPT_TEMPLATE.format(
         # Read from settings, never hardcoded: this document used to name two
@@ -446,7 +481,8 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
         driver_name=escape(str(driver_name)),
         vehicle=escape(str(vehicle or '—')),
         fare_rows=fare_rows,
-        total_fare=format_money(total, currency),
+        total_label='Total charged' if us else 'Total fare',
+        total_fare=format_money(Decimal(invoice['total_charged']) if us else total, currency),
         note_row=(f'<tr><td colspan="2"><b>{escape(operator_end_note(trip))}</b></td></tr>'
                   if operator_end_note(trip) else ''),
         promo_rows=_due_rows_html(trip, currency) + ''.join(
@@ -454,7 +490,7 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
             f'-{format_money(discount, currency)}</td></tr>'
             f'<tr style="background: #f9fafb;"><td><b>Amount charged</b></td>'
             f'<td style="text-align:right;"><b>{format_money(charged, currency)}</b></td></tr>'
-            for label, discount, charged in promo_lines(trip)) + _tip_rows_html(trip, currency),
+            for label, discount, charged in promo_lines(trip)) + ('' if us else _tip_rows_html(trip, currency)),
         payment_method=escape(str(trip.payment_method or '—')),
         payment_status=escape(str(trip.payment_status or '—')),
     )
@@ -508,7 +544,9 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     story = []
     story.append(Paragraph(escape(' / '.join(x for x in (_brand(), company['name']) if x)), h1))
     _shown = tax_shown_for(trip, receipt.gst_amount)
-    story.append(Paragraph('Tax invoice / Trip receipt' if _shown else 'Receipt', h2))
+    _us = (getattr(getattr(trip, 'zone', None), 'country', '') or '').upper() == 'US'
+    # 14 Nov (Srini): a US rider's document is a Receipt, never a tax invoice.
+    story.append(Paragraph('Receipt' if _us else ('Tax invoice / Trip receipt' if _shown else 'Receipt'), h2))
     for line in (company['address'], f"CIN {company['cin']}" if company['cin'] else '',
                  f"GSTIN {company['gstin']}" if company['gstin'] else ''):
         if line:
@@ -556,11 +594,13 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     fare_rows = [
         ['Description', f'Amount ({_currency})'],
         *[[x['label'], _m(x['amount'])] for x in invoice['lines']],
-        *([['Taxable value', _m(invoice['taxable'])],
-           [invoice_tax_label(invoice), _m(invoice['tax']['amount'])]] if invoice['tax_shown'] else []),
+        *([['Taxable value', _m(invoice['taxable'])]] if invoice['tax_shown'] and invoice.get('taxable') is not None else []),
+        *([[invoice_tax_label(invoice), _m(invoice['tax']['amount'])]] if invoice['tax_shown'] else []),
         *[[x['label'], _m(x['amount'])] for x in invoice['extras']],
+        *([['Tip (100% to your driver)', _m(invoice['tip'])]] if invoice.get('market') == 'US' and invoice.get('tip') else []),
         *([[operator_end_note(trip), '']] if operator_end_note(trip) else []),
-        ['Total fare', format_money(receipt.total_fare, _currency, with_symbol=False)],
+        (['Total charged', _m(invoice['total_charged'])] if invoice.get('market') == 'US'
+         else ['Total fare', format_money(receipt.total_fare, _currency, with_symbol=False)]),
         *_due_rows_pdf(trip, _currency),
         *[row for label, discount, charged in promo_lines(trip) for row in (
             [label, '-' + format_money(discount, _currency, with_symbol=False)],

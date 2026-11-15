@@ -130,7 +130,34 @@ def driver_requirements(request):
         'vehicle_types': [vt.type for vt in VehicleType.objects.order_by('id')],
         'vehicle_years': list(range(newest, oldest - 1, -1)),
         'upload_kinds': UPLOAD_KIND,
+        # 14 Nov (owner): a paused driver is told so, why, and how to reach support.
+        'paused': paused_dict(driver),
     }, status.HTTP_200_OK)
+
+
+#: What a driver reads about their own pause, by reason (never the operator's note).
+PAUSE_REASON = {
+    'zero_tolerance': 'A rider reported a zero tolerance concern (drugs or alcohol) on a trip. Your account is paused while our safety team investigates.',
+    'safety': 'A safety concern was raised. Your account is paused while our safety team looks into it.',
+    'documents': 'There is a problem with one of your documents. Your account is paused until it is fixed.',
+    'background_check': 'Your background check needs review. Your account is paused until it is complete.',
+    'fraud': 'Your account is paused while we review recent activity.',
+    'conduct': 'Your account is paused while we review complaints about trips.',
+    'rider_complaints': 'Your account is paused while we review complaints about trips.',
+    'deactivated': 'Your account has been closed.',
+    'other': 'Your account is paused while we review it.',
+}
+
+
+def paused_dict(driver):
+    """`{reason_code, reason, since, permanent}` while a suspension is in force, else None."""
+    from servers.driver.models import DriverSuspension
+
+    s = DriverSuspension.objects.filter(driver=driver, lifted_at__isnull=True).order_by('-created_at').first()
+    if s is None:
+        return None
+    return {'reason_code': s.reason_code, 'reason': PAUSE_REASON.get(s.reason_code, PAUSE_REASON['other']),
+            'since': s.created_at.isoformat(), 'permanent': s.reason_code == 'deactivated'}
 
 
 def _address_from(data, country, field):

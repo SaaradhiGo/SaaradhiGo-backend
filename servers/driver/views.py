@@ -391,6 +391,18 @@ def driver_earnings_period(request):
     from .earnings_history import cash_allowed_for
 
     t = summarise(settlement_rows(driver, since=start))
+    # 14 Nov (owner): "Today you earned" includes tips (100% the driver's). `net` stays the ledger's
+    # trip earnings, as the apps and the reconciliation read it; `earned` = net + tips.
+    from datetime import datetime
+    from decimal import Decimal
+
+    from base.money import from_minor
+    from servers.payments.models import Tip
+
+    tips = sum((from_minor(m, c) for m, c in Tip.objects.filter(
+        driver=driver, status='succeeded', created_at__gte=start,
+        created_at__lt=datetime.combine(last + timedelta(days=1), datetime.min.time(), tz),
+    ).values_list('amount_minor', 'currency')), Decimal('0.00'))
     return success_response({
         'period': period,
         'start': start.date().isoformat(),
@@ -401,6 +413,8 @@ def driver_earnings_period(request):
         'gross': str(t['total_gross']),
         'commission': str(t['total_commission']),
         'net': str(t['total_net']),
+        'tips': str(tips),
+        'earned': str(t['total_net'] + tips),
         'cash_collected': str(t['cash_collected']),
         'unresolved_trips': t['unresolved_trips'],
         'cash_allowed': cash_allowed_for(driver),

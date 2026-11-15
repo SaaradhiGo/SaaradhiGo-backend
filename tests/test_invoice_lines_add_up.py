@@ -33,6 +33,12 @@ def _check(inv):
     assert invoice_lines.adds_up(inv), inv
     for x in inv['lines'] + inv['extras']:
         assert D(x['amount']) == D(x['amount']).quantize(D('0.01')), x
+    if inv.get('market') == 'US':
+        # 14 Nov (Srini): a US receipt is Fare, Booking fee, Tip, Total charged; no taxable value.
+        assert inv['title'] == 'Receipt' and inv['taxable'] is None
+        assert [x['label'] for x in inv['lines']] == ['Fare']
+        assert all(x['label'] == 'Booking fee' for x in inv['extras'] if x['code'] == 'per_trip_fee')
+        return
     assert _sum(inv['lines']) == D(inv['taxable'])
 
 
@@ -148,9 +154,12 @@ def test_every_issued_receipt_adds_up_on_the_pdf_and_the_screen(market, settings
         # The PDF builds, and names no company that is not configured.
         pdf = _build_receipt_pdf(receipt)
         assert pdf and b'SaaradhiGo Mobility' not in pdf
-        # The email lists the taxable value and the included tax.
+        # The email lists the taxable value and the included tax (India); a US receipt has none.
         if receipt.currency == 'INR':
             assert 'Taxable value' in receipt.html_body and '(included)' in receipt.html_body
+        else:
+            assert 'Taxable value' not in receipt.html_body and 'Tax invoice' not in receipt.html_body
+            assert 'Minimum fare adjustment' not in receipt.html_body and 'Total charged' in receipt.html_body
         assert 'SaaradhiGo Mobility' not in receipt.html_body
 
 

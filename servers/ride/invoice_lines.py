@@ -110,6 +110,15 @@ def from_quote(fare):
                  tax_label=fare.get('tax_label'), currency=fare.get('currency') or 'INR', extras=extras)
 
 
+def per_trip_fee(fare_pricing, zone, currency):
+    """The flat per-trip fee in this fare, or 0."""
+    snap = getattr(fare_pricing, 'per_trip_fee_minor', None)
+    if snap is not None:
+        from base.money import from_minor
+        return from_minor(snap, currency)
+    return quantize(_d(getattr(zone, 'per_trip_fee', None) or 0), currency)
+
+
 def from_receipt(trip, receipt, fare_pricing, tax_percent, tax_label):
     """The lines for an issued receipt: its own total and tax (never recomputed), decomposed from
     the trip's fare snapshot. Whatever the snapshot does not explain is named: under one minor unit
@@ -132,6 +141,12 @@ def from_receipt(trip, receipt, fare_pricing, tax_percent, tax_label):
         if fee_minor:
             from base.money import from_minor
             extras.append(('rider_platform_fee', 'Platform fee', from_minor(fee_minor, currency)))
+        # 14 Nov (US receipt): the city's flat per-trip fee is its own line, never left in the
+        # residual (it read "Minimum fare adjustment"). The trip's snapshot when it has one, else
+        # the zone's fee, which is what the quote added.
+        trip_fee = per_trip_fee(fare_pricing, zone, currency)
+        if trip_fee:
+            extras.append(('per_trip_fee', getattr(zone, 'per_trip_fee_label', '') or 'Regulatory fee', trip_fee))
         gross = total - sum((_d(a) for _, _, a in extras), ZERO)
         if tax_mode == 'additive':
             gross -= _d(receipt.gst_amount)
@@ -151,6 +166,12 @@ def adds_up(invoice):
     and the extras sum to the total, exactly."""
     lines = sum((_d(x['amount']) for x in invoice['lines']), ZERO)
     extras = sum((_d(x['amount']) for x in invoice['extras']), ZERO)
+    if invoice.get('taxable') is None:
+        # A US receipt (14 Nov): Fare (+ sales tax) + Booking fee = total; total + tip = charged.
+        tip = _d(invoice.get('tip') or 0)
+        total = _d(invoice['total'])
+        return (lines + _d(invoice['tax']['amount']) + extras == total
+                and _d(invoice.get('total_charged', total)) == total + tip)
     taxable = _d(invoice['taxable'])
     tax = _d(invoice['tax']['amount'])
     return lines == taxable and taxable + tax + extras == _d(invoice['total'])

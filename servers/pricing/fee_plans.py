@@ -70,6 +70,12 @@ def resolve(country, scope_codes=(), day=None):
     return None
 
 
+def in_force(plan, day):
+    """The plan governed `day`: active or archived, started on or before it, not ended by it."""
+    return (plan.status in (ACTIVE, ARCHIVED) and plan.effective_from is not None
+            and plan.effective_from <= day and not (plan.effective_to and plan.effective_to <= day))
+
+
 def local_day(country, when=None, zone=None):
     """The local date; in the zone's own time zone when a zone is given (14 Nov: Boise)."""
     from zoneinfo import ZoneInfo
@@ -253,6 +259,17 @@ def charge_day(driver, country, day):
     if not trips:
         return None
     plan = DriverFeePlan.objects.get(pk=trips[0].fee_plan_id)
+    if not in_force(plan, day):
+        # 15 Nov: a trip keeps the plan it was booked under, but a plan retired (or never in force)
+        # for this day charges nothing. Recorded as a zero row so the day is not looked at again.
+        try:
+            with transaction.atomic():
+                return DriverDailyFee.objects.create(
+                    driver=driver, day=day, plan=plan, plan_version=plan.version, currency=plan.currency,
+                    trips=len(trips), fares_minor=0, fee_minor=0, reason='not_in_force',
+                    explanation='No fee: the plan was not in force on this day.', trip_ids=[t.id for t in trips])
+        except IntegrityError:
+            return DriverDailyFee.objects.filter(driver=driver, day=day).first()
     vt = trip_class(trips[0])
     fares = [t.final_fare_minor if t.final_fare_minor is not None else (t.estimated_fare_minor or 0)
              for t in trips]

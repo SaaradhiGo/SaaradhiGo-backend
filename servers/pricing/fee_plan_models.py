@@ -94,7 +94,7 @@ class DriverDailyFee(models.Model):
     fee_minor = models.BigIntegerField(default=0)
     #: What the fee would have been before the legal 80% guard, when the guard reduced it.
     guard_reduced_from_minor = models.BigIntegerField(null=True, blank=True)
-    #: 'charged' | 'waiver' | 'under_floor' | 'no_trips'
+    #: 'charged' | 'waiver' | 'under_floor' | 'no_trips' | 'not_in_force' (15 Nov)
     reason = models.CharField(max_length=16)
     explanation = models.CharField(max_length=255)
     trip_ids = models.JSONField(default=list)

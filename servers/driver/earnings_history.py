@@ -142,6 +142,17 @@ def _payout_rows(driver, since=None, until=None):
     return list(qs.order_by('created_at', 'id'))
 
 
+def _fee_note(row, notes):
+    """The day's explanation for a fee line; a refund of a day's fee (15 Nov) says so."""
+    from servers.pricing.fee_plans import REFUND_PURPOSE
+
+    if row.purpose == REFUND_PURPOSE:
+        ref = row.reference_id or ''
+        day = f'{ref[4:8]}-{ref[8:10]}-{ref[10:12]}' if ref.startswith('DAY_') and len(ref) == 12 else ''
+        return f'Platform fee refunded{f" for {day}" if day else ""}'
+    return notes.get(row.reference_id, '')
+
+
 def _fee_amount(row):
     from base.money import from_minor
 
@@ -420,7 +431,7 @@ def statement(driver, year, month):
                    'tip': _s(tips.get(r.trip_id, ZERO)),
                    'earned': _s(None if r.net is None else r.net + tips.get(r.trip_id, ZERO))} for r in data.trips],
         'fees': [{'at': f.created_at.astimezone(tz).isoformat(), 'amount': str(_fee_amount(f)),
-                  'note': notes.get(f.reference_id, '')} for f in data.fees],
+                  'note': _fee_note(f, notes)} for f in data.fees],
         'payouts': [{'at': p.created_at.astimezone(tz).isoformat(), 'amount': str(_payout_amount(p)),
                      'method': p.method, 'withdrawal_id': p.withdrawal_request_id} for p in data.payouts],
     }

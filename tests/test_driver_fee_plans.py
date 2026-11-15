@@ -149,6 +149,9 @@ class TestEndOfDay:
                              datetime.combine(today + timedelta(days=1), time.min, dt_tz.utc))
         entries = entry_dicts(india.driver, st['rows'], st['opening_minor'], 0, 50)
         assert 'Platform fee refunded' in str(entries)
+        from servers.driver.earnings_history import _fee_note
+        refund_row = WalletTransaction.objects.get(purpose='platform_fee_refund')
+        assert _fee_note(refund_row, {}) == f'Platform fee refunded for {DAY:%Y-%m-%d}'
 
     def test_cash_driver_owes_it_from_the_next_earnings(self, india):
         trips_on(india, DAY, 12, method='cash')

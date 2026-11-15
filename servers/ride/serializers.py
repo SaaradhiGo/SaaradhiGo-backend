@@ -161,6 +161,24 @@ class TripDetailSerializer(TripListSerializer):
     search_expires_at = serializers.SerializerMethodField()
     vehicle_line = serializers.SerializerMethodField()
 
+    refunds = serializers.SerializerMethodField()
+
+    def get_refunds(self, obj):
+        """Refunds on this trip for its rider (or staff): amount, where it went, sent or not."""
+        from base.money import from_minor
+        from servers.ride.models import TripMoneyAction
+
+        request = self.context.get('request') if hasattr(self, 'context') else None
+        user = getattr(request, 'user', None)
+        if user is None or not (getattr(user, 'id', None) == obj.user_id_id or getattr(user, 'is_staff', False)):
+            return []
+        rows = TripMoneyAction.objects.filter(trip=obj, kind=TripMoneyAction.REFUND).exclude(
+            status=TripMoneyAction.RECORDED).order_by('created_at', 'id')
+        return [{'amount': str(from_minor(r.amount_minor, r.currency)), 'currency': r.currency,
+                 'to': 'wallet' if r.method == TripMoneyAction.WALLET_CREDIT else 'card',
+                 'status': 'sent' if r.status == TripMoneyAction.COMPLETED else 'processing',
+                 'at': r.created_at.isoformat()} for r in rows]
+
     def get_invoice(self, obj):
         request = self.context.get('request') if hasattr(self, 'context') else None
         user = getattr(request, 'user', None)
@@ -212,6 +230,8 @@ class TripDetailSerializer(TripListSerializer):
             # 14 Nov (USA): a card held at booking (never "pay again"), the market's cash and tip
             # rules, and the tip given.
             'card_held', 'market_rules', 'tip', 'rider_accessibility_note',
+            # 15 Nov (USA round 5): refunds on the trip, for the receipt.
+            'refunds',
         ]
 
     def _party(self, obj):

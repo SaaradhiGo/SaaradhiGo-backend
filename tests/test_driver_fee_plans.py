@@ -97,14 +97,14 @@ class TestEndOfDay:
         rows = WalletTransaction.objects.filter(purpose='platform_fee')
         assert rows.count() == (1 if fee else 0) and sum(r.amount_minor for r in rows) == fee
         if n == 12:
-            assert row.explanation == 'Today: 12 trips × ₹10.00 = ₹120.00 (cap ₹149.00)'
+            assert row.explanation == '20 Nov: 12 trips × ₹10.00 = ₹120.00 (cap ₹149.00)'
         if n == 3:
-            assert row.explanation == 'No fee today: earnings under ₹1,000.00.'
+            assert row.explanation == 'No fee on 20 Nov: earnings under ₹1,000.00.'
 
     def test_the_hourly_job_charges_yesterday_once(self, india):
         trips_on(india, DAY, 12)
         now = datetime(2026, 11, 21, 3, 0, tzinfo=dt_tz.utc)              # 08:30 IST next day
-        assert fee_plans.charge_yesterday(now)['IN'] == {'day': '2026-11-20', 'drivers': 1}
+        assert fee_plans.charge_yesterday(now)['IN'] == {'drivers': 1, 'days': {'Asia/Kolkata': '2026-11-20'}}
         fee_plans.charge_yesterday(now)
         assert WalletTransaction.objects.filter(purpose='platform_fee').count() == 1
 
@@ -151,7 +151,7 @@ class TestEndOfDay:
         assert 'Platform fee refunded' in str(entries)
         from servers.driver.earnings_history import _fee_note
         refund_row = WalletTransaction.objects.get(purpose='platform_fee_refund')
-        assert _fee_note(refund_row, {}) == f'Platform fee refunded for {DAY:%Y-%m-%d}'
+        assert _fee_note(refund_row, {}) == 'Platform fee refunded for 20 Nov'
 
     def test_cash_driver_owes_it_from_the_next_earnings(self, india):
         trips_on(india, DAY, 12, method='cash')

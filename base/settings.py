@@ -472,6 +472,11 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'payments.collect_unpaid_trips',
         'schedule': _crontab(minute=29),
     },
+    'ride-send-pending-gateway-refunds-hourly': {
+        # 15 Nov: approved card refunds a send missed (provider down) are retried hourly.
+        'task': 'ride.send_pending_gateway_refunds',
+        'schedule': _crontab(minute=11),
+    },
     'platform-scheduler-heartbeat': {
         # Proves beat and a worker are alive (15 Nov); the console alerts Super Admin when the
         # last stamp is over two hours old (platform_ops.scheduler_watch).

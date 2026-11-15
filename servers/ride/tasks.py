@@ -518,3 +518,10 @@ def check_maps_budgets():
     from servers.ride.maps_budget import check_budgets
 
     return check_budgets()
+
+
+@shared_task(name='ride.send_pending_gateway_refunds', acks_late=True)
+def send_pending_gateway_refunds():
+    """Hourly: send approved card refunds still waiting for the provider (gateway_refunds)."""
+    from servers.ride.gateway_refunds import send_pending
+    return send_pending()

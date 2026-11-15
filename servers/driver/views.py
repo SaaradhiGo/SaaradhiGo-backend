@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from base.utils import success_response, error_response
@@ -196,9 +197,44 @@ def driver_earnings(request):
     page = paginator.paginate_queryset(rows, request)
 
     data = [row.to_api() for row in page]
+    # 15 Nov: each row's tip, all of it the driver's, so the rows add up to the cards.
+    from servers.driver.earnings_history import tips_by_trip
+
+    tips = tips_by_trip(driver, [r.trip_id for r in page])
+    for row, item in zip(page, data, strict=True):
+        item['tip'] = str(tips.get(row.trip_id, Decimal('0.00')))
     _add_places(data)
     logger.info('Driver settlement rows returned: %s', len(data))
-    return success_response(paginator.get_paginated_response(data).data, status.HTTP_200_OK)
+    body = paginator.get_paginated_response(data).data
+    # 15 Nov (trip 219): a completed trip whose card payment was not collected has no settlement,
+    # so it was missing here. It is listed apart, with no amounts: it is not in the earnings.
+    body['unsettled'] = _unsettled_trips(driver, since, until, q) if paginator.page.number == 1 else []
+    return success_response(body, status.HTTP_200_OK)
+
+
+def _unsettled_trips(driver, since, until, q=''):
+    """The driver's completed trips with no settlement because the rider's payment failed."""
+    from servers.rider.models import WalletTransaction
+    from servers.driver.earnings import SETTLEMENT_PURPOSES
+    from servers.ride.models import Trip
+
+    trips = Trip.objects.filter(driver_id=driver, status_id__status_code='completed', payment_status='failed')
+    if since is not None:
+        trips = trips.filter(completed_at__gte=since)
+    if until is not None:
+        trips = trips.filter(completed_at__lt=until)
+    settled = set(WalletTransaction.objects.filter(
+        user_id=driver.user_id, purpose__in=SETTLEMENT_PURPOSES,
+        reference_id__in=[f'TRIP_{t}' for t in trips.values_list('id', flat=True)]).values_list('reference_id', flat=True))
+    rows = [t for t in trips.order_by('-completed_at') if f'TRIP_{t.id}' not in settled]
+    if q:
+        rows = [t for t in rows if t.id in _trips_matching(driver, q)]
+    out = [{'id': f'unsettled-{t.id}', 'trip_id_val': t.id, 'unsettled': True, 'payment': 'not_collected',
+            'created_at': t.completed_at.isoformat() if t.completed_at else None,
+            'amount': None, 'commission': None, 'net_amount': None, 'tip': None,
+            'method': t.payment_method or 'card'} for t in rows]
+    _add_places(out)
+    return out
 
 
 def _local_days(request, driver):
@@ -280,6 +316,9 @@ def driver_earnings_daily(request):
     today_start = local_day_start(tz)
     starts = [today_start - timedelta(days=i) for i in range(days - 1, -1, -1)]
     rows = settlement_rows(driver, since=starts[0])
+    from servers.driver.earnings_history import tips_between
+
+    tips = tips_between(driver, starts[0], None)
 
     out = []
     for i, start in enumerate(starts):
@@ -287,12 +326,16 @@ def driver_earnings_daily(request):
         day_rows = [r for r in rows if r.created_at is not None and r.created_at >= start
                     and (end is None or r.created_at < end)]
         t = summarise(day_rows)
+        tip = sum((a for at, a in tips if at >= start and (end is None or at < end)), Decimal('0.00'))
         out.append({
             'date': start.date().isoformat(),
             'trips': t['total_trips'],
             'gross': str(t['total_gross']),
             'commission': str(t['total_commission']),
             'net': str(t['total_net']),
+            # 15 Nov: the day's tips, and net plus tips, as "Today you earned" counts them.
+            'tips': str(tip),
+            'earned': str(t['total_net'] + tip),
         })
     # Additive (9 Nov): the day's platform fee under a driver fee plan, with why ("Today: 12 trips x
     # Rs 10 = Rs 120 (cap Rs 149)"). Past days from the ledger's daily row, today as worked out so far.
@@ -643,7 +686,7 @@ def driver_withdrawal_request(request):
     from servers.payments.payout_destination import HELD_CODE, held_message, payout_hold_until
     held = payout_hold_until(driver)
     if held is not None:
-        return error_response(code=HELD_CODE, message=held_message(held), field='payout_details',
+        return error_response(code=HELD_CODE, message=held_message(held, driver), field='payout_details',
                               issue='Payout details changed in the last 24 hours',
                               status=status.HTTP_400_BAD_REQUEST)
 

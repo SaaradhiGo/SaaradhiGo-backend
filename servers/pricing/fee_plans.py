@@ -142,6 +142,8 @@ def _money(minor, currency):
 
 def day_fee(plan, vehicle_type, fares_minor, *, day=None, first_trip_day=None, state_code=''):
     """The fee for one driver-day under `plan`. `fares_minor` is the day's completed trip fares."""
+    from base.market_dates import day_month
+
     cur = plan.currency or 'INR'
     n, total = len(fares_minor), sum(int(f) for f in fares_minor)
     if plan.plan_type == PERCENT_COMMISSION:
@@ -149,12 +151,12 @@ def day_fee(plan, vehicle_type, fares_minor, *, day=None, first_trip_day=None, s
     if n == 0:
         return DayFee(0, 'no_trips', 'No trips, no fee.', 0, 0)
     if plan.waiver_until and day and day < plan.waiver_until:
-        return DayFee(0, 'waiver', f'No fee: launch waiver until {plan.waiver_until:%d %b}.', n, total)
+        return DayFee(0, 'waiver', f'No fee: launch waiver until {day_month(plan.waiver_until, plan.country)}.', n, total)
     if plan.waiver_first_days and day and first_trip_day and \
             day < first_trip_day + timedelta(days=plan.waiver_first_days):
         until = first_trip_day + timedelta(days=plan.waiver_first_days)
         return DayFee(0, 'waiver', f'No fee: your first {plan.waiver_first_days} days are free '
-                                   f'(until {until:%d %b}).', n, total)
+                                   f'(until {day_month(until, plan.country)}).', n, total)
     if plan.earnings_floor_minor and total < plan.earnings_floor_minor:
         return DayFee(0, 'under_floor', f'No fee today: earnings under {_money(plan.earnings_floor_minor, cur)}.',
                       n, total)
@@ -451,6 +453,10 @@ def fee_words(driver, today=None):
     plan = resolve(country, scope_codes_of_node(home) if home else [], today)
     vehicle = getattr(driver, 'active_vehicle', None)
     vt = getattr(getattr(vehicle, 'vehicle_type_id', None), 'type', '') if vehicle is not None else ''
+    if plan is None and _fee_plan_market(driver):
+        # 15 Nov: a market that charges by fee plan (USA) with no plan in force charges nothing,
+        # and says so; it never shows a rate the owner has not approved.
+        return 'No platform fee'
     if plan is None or plan.plan_type == PERCENT_COMMISSION or not plan.amounts_for(vt):
         return 'A commission on each trip, shown on every trip'
     cur, a = plan.currency, plan.amounts_for(vt)
@@ -467,8 +473,22 @@ def fee_words(driver, today=None):
     if plan.waiver_first_days and today < first + timedelta(days=plan.waiver_first_days):
         until = max(until or today, first + timedelta(days=plan.waiver_first_days))
     if until:
-        return f'No fee until {until.day} {until:%b}, then {text}'
+        from base.market_dates import day_month
+
+        return f'No fee until {day_month(until, country)}, then {text}'
     return text[0].upper() + text[1:]
+
+
+def _fee_plan_market(driver):
+    """Whether drivers here pay a fee plan instead of a commission (`fee_plan_required`, USA)."""
+    from servers.driver.records import market_of
+    from servers.pricing.regulation import market_rules
+
+    try:
+        country, state = market_of(driver)
+        return bool(market_rules(country or 'IN', state)['fee_plan_required'])
+    except Exception:  # noqa: BLE001 - the words fall back to the commission wording
+        return False
 
 
 # ---------------------------------------------------------------------------

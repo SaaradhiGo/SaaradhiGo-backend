@@ -12,7 +12,8 @@ Everything it writes is labelled as test data:
     otherwise it stays closed and the run lists what is missing;
   * QA TEST rate cards for Standard and XL (base, per mile, per minute, minimum) and a booking
     fee -- not real prices; production starts with none;
-  * a QA TEST Fair Share fee plan for US-ID (active on QA only) and a QA TEST platform insurance
+  * NO driver fee plan (15 Nov): a rate the owner has not approved is never shown or charged, so
+    the US-ID plan stays the empty draft until the owner sets it; and a QA TEST platform insurance
     policy on the US-ID regulation row ("not a real policy");
   * an on-call rota for the Treasure Valley with fictional 555 numbers;
   * one US test rider and one US test driver (+1 208 555 01xx, qa.us.*@saaradhigo.test; the driver
@@ -67,7 +68,6 @@ class Command(BaseCommand):
             with transaction.atomic():
                 node, zone = self._market()
                 self._cards(zone)
-                self._fee_plan()
                 self._insurance()
                 self._rota(node)
                 rider = self._rider()
@@ -120,21 +120,6 @@ class Command(BaseCommand):
             RateCard.objects.create(zone=zone, vehicle_type=vt, base_fare=base, per_km_fare=per_mile,
                                     per_min_fare=per_min, min_fare=minimum, commission_percent=Decimal('0'),
                                     gst_percent=Decimal('0'), is_active=True)
-
-    def _fee_plan(self):
-        from servers.pricing.fee_plan_models import DriverFeePlan
-
-        if DriverFeePlan.objects.filter(country='US', scope_code='US-ID', status='active').exists():
-            return
-        from django.db.models import Max
-
-        version = (DriverFeePlan.objects.filter(country='US', scope_code='US-ID')
-                   .aggregate(v=Max('version'))['v'] or 0) + 1
-        DriverFeePlan.objects.create(
-            country='US', scope_code='US-ID', currency='USD', plan_type='fair_share', version=version,
-            amounts={'*': {'per_trip_fee_minor': 100}}, daily_cap_minor=1500, status='active',
-            effective_from=timezone.localdate() - timedelta(days=1), activated_at=timezone.now(),
-            note='QA TEST PLAN - not a real plan', created_by_label='seed_us_idaho_qa')
 
     def _insurance(self):
         from servers.pricing.regulation_models import MarketRegulation

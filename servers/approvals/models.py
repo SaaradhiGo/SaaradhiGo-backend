@@ -77,6 +77,12 @@ class ApprovalPolicy(models.Model):
     #: `currency` for money, a record count for count. NULL means there is
     #: no amount at which a maker acts alone: always a checker.
     maker_limit = models.BigIntegerField(null=True, blank=True)
+    #: Money only (15 Nov, US refunds): what one maker may do alone in a local day, summed over
+    #: their within-limit requests for this action. NULL = no daily cap.
+    maker_daily_limit = models.BigIntegerField(null=True, blank=True)
+    #: Money only: `maker_limit` is per target in total (every within-limit request on the same
+    #: trip counts), not per request, so a refund cannot be split to stay under it.
+    cumulative_per_target = models.BooleanField(default=False)
 
     is_active = models.BooleanField(default=True)
     version = models.PositiveIntegerField(default=1)
@@ -159,6 +165,8 @@ class ApprovalPolicy(models.Model):
             'limit_kind': self.limit_kind,
             'currency': self.currency,
             'maker_limit': self.maker_limit,
+            'maker_daily_limit': self.maker_daily_limit,
+            'cumulative_per_target': self.cumulative_per_target,
             'always_checker': self.always_checker,
             'is_active': self.is_active,
             'version': self.version,

@@ -59,7 +59,15 @@ def send(action_id):
                    'provider': provider, 'gateway_refund_id': row.gateway_refund_id,
                    'provider_status': result.get('status')},
             reason=row.reason or 'approved trip refund')
+        _reissue_on_commit(row)
     return 'sent'
+
+
+def _reissue_on_commit(row):
+    from .tasks import reissue_receipt_after_refund
+
+    trip_id, action_id = row.trip_id, row.id
+    transaction.on_commit(lambda: reissue_receipt_after_refund.delay(trip_id, action_id))
 
 
 def send_pending(limit=100):

@@ -49,6 +49,20 @@ def onboarding_link(driver, return_url=''):
     return url
 
 
+def confirmed_status(driver):
+    """The stored status, re-checked with Stripe at most every 5 minutes per driver."""
+    from django.core.cache import cache
+
+    if not driver.stripe_account_id or driver.stripe_account_id.startswith('acct_fake_') or not _key():
+        return driver.stripe_onboarding_status
+    if cache.add(f'stripe-status:{driver.pk}', 1, 300):
+        try:
+            refresh_status(driver)
+        except Exception:  # noqa: BLE001 - the page still loads; the next view re-checks
+            cache.delete(f'stripe-status:{driver.pk}')
+    return driver.stripe_onboarding_status
+
+
 def refresh_status(driver, fake_done=False):
     if not driver.stripe_account_id:
         return driver.stripe_onboarding_status
@@ -60,9 +74,21 @@ def refresh_status(driver, fake_done=False):
     if not _key():
         return driver.stripe_onboarding_status
     acct = vendor.stripe_account(driver.stripe_account_id)
-    if acct is not None:
-        driver.stripe_onboarding_status = ('ready' if acct.get('payouts_enabled')
-                                           else 'in_progress' if acct.get('details_submitted') is not None
-                                           else 'not_started')
-        driver.save(update_fields=['stripe_onboarding_status'])
+    if acct is None:
+        return driver.stripe_onboarding_status            # Stripe did not answer: unchanged
+    if acct.get('_unknown_account'):
+        # Stripe does not know this id (a seeded placeholder): start again, never "ready".
+        driver.stripe_account_id, driver.stripe_onboarding_status = '', 'not_started'
+        driver.save(update_fields=['stripe_account_id', 'stripe_onboarding_status'])
+        return driver.stripe_onboarding_status
+    driver.stripe_onboarding_status = status_of(acct)
+    driver.save(update_fields=['stripe_onboarding_status'])
     return driver.stripe_onboarding_status
+
+
+def status_of(acct):
+    """Ready only when Stripe says the account can receive transfers and be paid out."""
+    caps = acct.get('capabilities') or {}
+    if acct.get('payouts_enabled') and caps.get('transfers') == 'active':
+        return 'ready'
+    return 'in_progress' if acct.get('details_submitted') is not None else 'not_started'

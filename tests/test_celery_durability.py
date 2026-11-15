@@ -308,6 +308,9 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # Card refunds (15 Nov): Stripe's idempotency key is the money action, and the row is locked
         # and moved off pending_gateway on success, so a redelivered run refunds nothing twice.
         'ride.send_pending_gateway_refunds',
+        # A refund's new receipt (15 Nov): guarded once per money action by a cache key, so a
+        # redelivery sends no second email.
+        'ride.reissue_receipt_after_refund',
         # Driver fee plans (9 Nov). acks_late is safe: one DriverDailyFee per (driver, day) and a
         # ledger idempotency key, so a redelivered run writes nothing twice.
         'pricing.charge_driver_fees',

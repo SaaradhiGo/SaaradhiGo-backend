@@ -633,7 +633,30 @@ def allowed_actions(user, trip, refundable=None):
         'cancellable_statuses': list(CANCELLABLE_STATUSES),
         'cancel_reasons': CANCEL_REASONS,
         'flag_reasons': FLAG_REASONS,
+        'refund_limits': refund_limits(user, trip) if may_refund else None,
     }
+
+
+def refund_limits(user, trip):
+    """What this person may refund alone on this trip right now, for the refund form (15 Nov):
+    the per-trip and daily limits, what is used and what is left. None when no policy applies."""
+    from servers.approvals.service import active_policy, has_room_limits, maker_room
+
+    key = FINANCE_REFUND if granted(user, 'finance.read', node_of(trip))[0] else SUPPORT_REFUND
+    country = (getattr(trip.zone, 'country', '') or '').upper() if trip.zone_id else ''
+    policy = active_policy(country, key) if country else None
+    if policy is None or policy.limit_kind != 'money' or policy.maker_limit is None:
+        return None
+    room = maker_room(policy, maker_id=user.pk, target_type=TARGET, target_id=trip.id) \
+        if has_room_limits(policy) else {'on_target_minor': 0, 'today_minor': 0}
+    per_trip_left = max(0, policy.maker_limit - (room['on_target_minor'] if policy.cumulative_per_target else 0))
+    out = {'action_key': key, 'currency': policy.currency, 'per_trip_minor': policy.maker_limit,
+           'per_trip_left_minor': per_trip_left, 'per_day_minor': policy.maker_daily_limit,
+           'used_today_minor': room['today_minor'], 'per_day_left_minor': None}
+    if policy.maker_daily_limit is not None:
+        out['per_day_left_minor'] = max(0, policy.maker_daily_limit - room['today_minor'])
+    out['alone_up_to_minor'] = min(x for x in (per_trip_left, out['per_day_left_minor']) if x is not None)
+    return out
 
 
 def _stale_detail(trip, reason):
@@ -1213,6 +1236,9 @@ def execute_refund(request_row):
                    'action_key': request_row.action_key},
             reason=request_row.request_reason or '',
         )
+        if state == TripMoneyAction.COMPLETED:
+            from .gateway_refunds import _reissue_on_commit
+            _reissue_on_commit(row)
         if state == TripMoneyAction.PENDING_GATEWAY:
             from .gateway_refunds import send as send_refund
             row_id = row.id

@@ -33,9 +33,18 @@ def stripe_account_link(account_id, back_url):
 
 
 def stripe_account(account_id):
-    """The account's JSON, or None when Stripe does not answer."""
-    r = requests.get(f'{STRIPE_API}/accounts/{account_id}', auth=(stripe_key(), ''), timeout=15)
-    return r.json() if r.ok else None
+    """The account's JSON; {'_unknown_account': True} when Stripe says no such account (or not
+    ours); None when Stripe does not answer."""
+    try:
+        r = requests.get(f'{STRIPE_API}/accounts/{account_id}', auth=(stripe_key(), ''), timeout=15)
+    except requests.RequestException:
+        return None
+    if r.ok:
+        return r.json()
+    code = ((r.json() if r.content else {}).get('error') or {}).get('code') if r.status_code in (400, 403, 404) else None
+    if code in ('account_invalid', 'resource_missing'):
+        return {'_unknown_account': True}
+    return None
 
 
 def ifsc_lookup(code):

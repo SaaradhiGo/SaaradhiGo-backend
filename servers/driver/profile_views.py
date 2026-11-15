@@ -488,6 +488,14 @@ def driver_stripe_onboarding(request):
         return error_response(code='STRIPE_NOT_CONFIGURED', message='US payouts are not set up yet.',
                               field='general', issue='STRIPE_SECRET_KEY missing',
                               status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    except stripe_connect.StripeRefused as exc:
+        # 15 Nov: Stripe said no (e.g. the platform's Connect settings); the driver gets a plain
+        # answer, and the reason goes to the log for us, never to the driver.
+        logger.error('stripe_onboarding_refused', extra={'event': 'stripe_onboarding_refused',
+                                                         'driver_id': driver.pk, 'stripe_error': str(exc)[:300]})
+        return error_response(code='STRIPE_UNAVAILABLE',
+                              message='Payout setup with Stripe is not available right now. Please try again later.',
+                              field='general', issue='stripe_refused', status=status.HTTP_503_SERVICE_UNAVAILABLE)
     return success_response({'url': url, 'stripe_status': driver.stripe_onboarding_status}, status.HTTP_200_OK)
 
 

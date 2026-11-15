@@ -16,6 +16,10 @@ class NotConfigured(Exception):
     pass
 
 
+class StripeRefused(Exception):
+    """Stripe answered with an error when creating the account or the onboarding link."""
+
+
 def _key():
     return vendor.stripe_key()
 
@@ -41,9 +45,14 @@ def onboarding_link(driver, return_url=''):
         driver.save(update_fields=['stripe_account_id', 'stripe_onboarding_status'])
         sep = '&' if '?' in back else '?'
         return f'{back}{sep}fake=1'
-    if not driver.stripe_account_id:
-        driver.stripe_account_id = vendor.stripe_express_account(driver.pk)
-    url = vendor.stripe_account_link(driver.stripe_account_id, back)
+    import requests
+    try:
+        if not driver.stripe_account_id:
+            driver.stripe_account_id = vendor.stripe_express_account(driver.pk)
+        url = vendor.stripe_account_link(driver.stripe_account_id, back)
+    except requests.HTTPError as exc:
+        body = getattr(exc.response, 'text', '') or ''
+        raise StripeRefused(body[:300] or str(exc)) from None
     driver.stripe_onboarding_status = 'in_progress'
     driver.save(update_fields=['stripe_account_id', 'stripe_onboarding_status'])
     return url

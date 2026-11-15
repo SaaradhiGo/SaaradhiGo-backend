@@ -286,6 +286,9 @@ jobs:
           terraform fmt -check -recursive || echo "::warning::infra/production is not terraform-fmt formatted"
           terraform init -backend=false -input=false
           terraform validate
+      - name: plan both regions (AWS provider mocked; tests/plan.tftest.hcl)
+        working-directory: infra/production
+        run: terraform test
 
   secret-scan:
     name: secret scan

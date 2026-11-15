@@ -3,7 +3,7 @@ data "aws_availability_zones" "available" {
 }
 
 locals {
-  azs  = slice(data.aws_availability_zones.available.names, 0, 2)
+  azs = slice(data.aws_availability_zones.available.names, 0, 2)
   # India keeps its original names; every other market is suffixed.
   name       = var.market == "in" ? "saaradhigo-prod" : "saaradhigo-prod-${var.market}"
   ssm_prefix = var.market == "in" ? "/saaradhigo/production" : "/saaradhigo/production-${var.market}"

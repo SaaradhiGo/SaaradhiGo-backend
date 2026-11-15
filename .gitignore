@@ -34,3 +34,7 @@ celerybeat-schedule
 opencode.json
 # Celery beat runtime state (recreated on start)
 celerybeat-schedule*
+
+# Terraform working files (init); the lock file is created in CI.
+infra/production/.terraform/
+infra/production/.terraform.lock.hcl

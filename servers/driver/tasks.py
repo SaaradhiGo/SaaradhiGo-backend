@@ -179,6 +179,9 @@ def remind_expiring_documents(today=None):
     for _key, _label, column, on_vehicle in dated:
         path = f'active_vehicle__{column}' if on_vehicle else column
         soon |= Q(**{f'{path}__gte': today, f'{path}__lte': horizon})
+    from base.market_dates import full_date
+    from servers.driver.records import market_of
+
     queued = 0
     for driver in Driver.objects.filter(soon, approved=True).select_related('user_id', 'active_vehicle'):
         for key, label, column, on_vehicle in dated:
@@ -190,7 +193,7 @@ def remind_expiring_documents(today=None):
             window = min(w for w in REMIND_DAYS if w >= left)
             rows = dispatcher.notify(
                 DOCUMENT_EXPIRING, driver.user_id,
-                {'document': label, 'date': f'{expiry.day} {expiry:%b %Y}', 'days': str(left)},
+                {'document': label, 'date': full_date(expiry, market_of(driver)[0]), 'days': str(left)},
                 idempotency_key=f'doc_expiring:{driver.id}:{key}:{expiry.isoformat()}:{window}',
                 source=DOCUMENT_EXPIRING)
             queued += len(rows)

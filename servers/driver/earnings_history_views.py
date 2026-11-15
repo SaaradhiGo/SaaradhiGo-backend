@@ -131,6 +131,8 @@ def driver_trip_detail(request, trip_id):
         'earned': s(earned + _trip_tip(trip)) if earned is not None else None,
         'cash_in_hand': s(row.gross) if row is not None and row.driver_holds_cash else None,
         'rider': {'first_name': first, 'rating': s(rating)},
+        # 15 Nov (trip 219): the rider's card payment failed, so nothing is settled for it yet.
+        'payment': 'not_collected' if row is None and trip.payment_status == 'failed' else 'settled',
     }, status.HTTP_200_OK)
 
 

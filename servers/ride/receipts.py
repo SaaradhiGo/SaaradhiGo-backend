@@ -413,6 +413,15 @@ def format_distance(km, unit='km'):
     return f'{value.quantize(Decimal("0.01"))} km'
 
 
+def _receipt_when(trip, when):
+    """The trip's time where it happened, in the market's style (15 Nov): "Nov 14, 2026, 7:30 PM"
+    in the USA, "14 Nov 2026, 19:30" in India. It printed UTC before."""
+    from base.market_dates import date_time
+    from base.market_time import trip_timezone
+
+    return date_time(when.astimezone(trip_timezone(trip)), getattr(getattr(trip, 'zone', None), 'country', None))
+
+
 def _format_distance(trip):
     """The distance line on a receipt, in the trip's zone's unit."""
     km = trip.actual_distance_km or trip.estimated_distance_km
@@ -446,7 +455,7 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
         vehicle = vehicle_line(trip.vehicle_id)
 
     total = _total_fare(trip)
-    date_str = (trip.completed_at or timezone.now()).strftime('%d %b %Y, %H:%M')
+    date_str = _receipt_when(trip, trip.completed_at or timezone.now())
     invoice = receipt_invoice(trip, total=total, gst_amount=gst_amount, currency=currency,
                               fare_pricing=fare_pricing, tax_percent=gst_rate)
     _row = '<tr><td>{}</td><td style="text-align:right;">{}</td></tr>'
@@ -557,10 +566,10 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         ['Invoice number' if _shown else 'Receipt number', receipt.receipt_number],
         ['Issued to', rider_name],
         ['Trip ID', f'#{trip.id}'],
-        ['Date', (trip.completed_at or receipt.issued_at).strftime('%d %b %Y, %H:%M')],
+        ['Date', _receipt_when(trip, trip.completed_at or receipt.issued_at)],
         ['Pickup', Paragraph(escape(trip.pickup_address or '—'), body)],
         ['Drop', Paragraph(escape(trip.destination_address or '—'), body)],
-        ['Distance', f"{trip.actual_distance_km or trip.estimated_distance_km or '—'} km"],
+        ['Distance', _format_distance(trip)],
         ['Driver', driver_name or '—'],
         ['Vehicle', vehicle or '—'],
     ]

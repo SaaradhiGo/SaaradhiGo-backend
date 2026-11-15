@@ -37,6 +37,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 
 from base.countries import COUNTRIES, get_country
+from base.market_dates import clock, weekday_date
 from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission
 from servers.admin_access.masking import mask_last4, mask_payload, mask_upi, policy_for
@@ -79,6 +80,12 @@ PAYOUT_TAB_ORDER = ['pending', 'approved', 'processed', 'completed', 'failed', '
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
+
+
+def _node_country(node):
+    """A geo node's country code ('US', 'IN'), for dates in the market's style."""
+    country = getattr(node, 'country', None)
+    return getattr(country, 'code', country) or ''
 
 def _bad(exc):
     return error_response(
@@ -1323,8 +1330,8 @@ def _payout_scopes(country, cfg):
             'override': override.as_dict() if override else None,
             'effective': eff.as_dict(),
             'next_payout_date': when.date().isoformat() if when else None,
-            'preview': (f'Drivers in {node.name} are next paid on {when.strftime("%a %d %b")} '
-                        f'at {when.strftime("%H:%M")}.' if when and node.kind == 'city'
+            'preview': (f'Drivers in {node.name} are next paid on {weekday_date(when, _node_country(node))} '
+                        f'at {clock(when, _node_country(node))}.' if when and node.kind == 'city'
                         else (f'Drivers in {node.name} withdraw on request.'
                               if node.kind == 'city' else None)),
         })

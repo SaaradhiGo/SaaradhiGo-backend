@@ -282,7 +282,14 @@ def test_the_qa_seed_builds_a_bookable_treasure_valley_with_an_onboarded_driver(
     data = checklist(d)
     # The photo is set by the QA operator afterwards (a seed never writes an account).
     assert data['blocking'] in ([], ['profile_photo']), data['blocking']
-    assert market_gates_unmet(d) == []
+    # 15 Nov: the seed sets no fee plan (a rate the owner has not approved is never shown or
+    # charged), so the market gate holds US drivers offline until the owner approves one.
+    assert market_gates_unmet(d) == ['The driver fee plan for your city is not set yet']
+    from servers.pricing.fee_plan_models import DriverFeePlan
+    from servers.pricing.fee_plans import fee_words
+
+    assert not DriverFeePlan.objects.filter(country='US', status='active').exists()
+    assert fee_words(d) == 'No platform fee'
     assert ServiceZone.objects.get(code='US-ID-TV').is_active
     assert RateCard.objects.filter(zone__code='US-ID-TV', is_active=True).count() == 2
 

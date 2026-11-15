@@ -321,5 +321,7 @@ def instant_limit(driver, config, amount_minor, now=None):
         return None
     when = next_payout_at(config, now)
     if when is not None:
-        message += f' Your next scheduled payout is {when.strftime("%d %b")}.'
+        from base.market_dates import day_month
+
+        message += f' Your next scheduled payout is {day_month(when, getattr(config, "country", ""))}.'
     return {'code': code, 'message': message, 'used_count': count, 'used_amount_minor': total}

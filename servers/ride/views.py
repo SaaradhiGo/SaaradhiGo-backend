@@ -526,7 +526,7 @@ def ride_history(request):
         user_id=request.user
     ).select_related(
         'status_id', 'driver_id', 'driver_id__user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
-    ).order_by('-requested_at')
+    ).prefetch_related('tips').order_by('-requested_at')
 
     # Optional status filter
     status_filter = request.query_params.get('status')
@@ -569,7 +569,7 @@ def driver_history(request):
         driver_id=driver
     ).select_related(
         'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
-    ).order_by('-requested_at')
+    ).prefetch_related('tips').order_by('-requested_at')
 
     # Optional status filter
     status_filter = request.query_params.get('status')

@@ -115,7 +115,11 @@ def payment_options(user, lat, lng):
         last = (Trip.objects.filter(user_id=user, payment_method__in=methods)
                 .order_by('-requested_at').values_list('payment_method', flat=True).first())
         default = last or (CASH if CASH in methods else methods[0])
-    return {'methods': methods, 'default': default, 'online_unavailable_reason': reason}
+    # 15 Nov: the rider's unpaid last trip, if any; booking waits until it is paid.
+    from servers.payments.unpaid import summary, unpaid_trip_for
+    unpaid = unpaid_trip_for(user)
+    return {'methods': methods, 'default': default, 'online_unavailable_reason': reason,
+            'unpaid_trip': summary(unpaid) if unpaid is not None else None}
 
 
 def search_timeout_seconds(zone):

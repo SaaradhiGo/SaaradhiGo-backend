@@ -11,7 +11,8 @@ Where cash is not allowed (Idaho Code 49-3712) the rider pays in the app. The fl
 3. Book:  the booking socket links the hold to the trip (`link_to_trip`).
 4. End:   at completion the trip's payable amount (never more than the hold) is captured
           (`capture_for_trip`, a task after commit) and the trip settles as any online payment.
-          A failed capture leaves the trip `failed`: the existing unsettled-trip retry path.
+          A failed capture leaves the trip `failed`; the driver is paid all the same and the card
+          is retried (`payments.unpaid`, Srini's ruling of 15 Nov).
 5. Cancel: an uncaptured hold is released.
 6. Tip:   POST /ride/trips/<id>/tip/ {percent | amount} after the trip, charged off-session to the
           saved card; 100% is credited to the driver (`WalletTransaction` purpose `tip`).
@@ -72,6 +73,9 @@ def create_hold(user, quote_id):
     quote = quotes.cache.get(quotes.KEY.format(quote_id)) if quote_id else None
     if quote is None or (quote['rider_id'] is not None and quote['rider_id'] != user.id):
         return None, ('QUOTE_EXPIRED', 'This fare has expired. Get a new one.')
+    from .unpaid import UNPAID_CODE, UNPAID_MESSAGE, unpaid_trip_for
+    if unpaid_trip_for(user) is not None:
+        return None, (UNPAID_CODE, UNPAID_MESSAGE)
     fare = quote['fare']
     currency = str(fare.get('currency') or '').upper()
     gateway = _gateway()
@@ -181,6 +185,10 @@ def capture_for_trip(trip_id):
             trip.payment_status = 'failed'
             trip.save(update_fields=['payment_status'])
             logger.error('card capture failed trip=%s', trip.id)
+            # 15 Nov ruling: the driver is still paid; the card is retried (payments.unpaid).
+            from .unpaid import on_payment_failed
+            failed_trip = trip
+            transaction.on_commit(lambda: on_payment_failed(failed_trip))
             return 'failed'
         payment.gateway_payment_id = str(data.get('latest_charge') or hold.intent_id)
         payment.status = 'completed'
@@ -360,3 +368,42 @@ def tip_view(request, trip_id):
     return success_response({'tip_id': tip.id, 'amount': to_major_string(tip.amount_minor, tip.currency),
                              'currency': tip.currency, 'to_driver': '100%',
                              'at': timezone.now().isoformat()}, status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def pay_unpaid_view(request):
+    """POST /payments/unpaid/pay/ -> charge the card saved on the rider's unpaid trip now.
+
+    15 Nov: a rider whose last trip was not paid cannot book until it is. In the US the card on
+    the trip is charged again; in India the rider pays again from the trip (UPI, card, netbanking).
+    """
+    from .unpaid import retry_card, summary, unpaid_trip_for
+
+    trip = unpaid_trip_for(request.user)
+    if trip is None:
+        return success_response({'unpaid': None, 'result': 'nothing_to_pay'}, status.HTTP_200_OK)
+    result = retry_card(trip, by_rider=True)
+    if result == 'paid':
+        return success_response({'unpaid': None, 'result': 'paid', 'trip_id': trip.id}, status.HTTP_200_OK)
+    messages = {
+        'declined': 'Your card was declined. Nothing was charged.',
+        'not_due': 'We have tried this card too many times. Contact support to pay for this trip.',
+        'no_card': 'This trip cannot be charged to a saved card. Open the trip to pay.',
+    }
+    if result == 'declined':
+        return error_response(code='UNPAID_NOT_COLLECTED', message=messages[result],
+                              status=status.HTTP_402_PAYMENT_REQUIRED, field='trip_id')
+    return success_response({'unpaid': summary(trip), 'result': result, 'message': messages[result]},
+                            status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def unpaid_view(request):
+    """GET /payments/unpaid/ -> {unpaid: {trip_id, amount, currency, can_retry_card} | null}."""
+    from .unpaid import UNPAID_MESSAGE, summary, unpaid_trip_for
+
+    trip = unpaid_trip_for(request.user)
+    return success_response({'unpaid': summary(trip) if trip else None,
+                             'message': UNPAID_MESSAGE if trip else ''}, status.HTTP_200_OK)

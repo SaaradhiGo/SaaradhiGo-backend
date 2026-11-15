@@ -661,6 +661,11 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
         from servers.ride import rider_booking as rb
         if rb.phone_required(self.user):
             return {'code': rb.PHONE_REQUIRED, 'message': rb.PHONE_REQUIRED_MESSAGE}
+        # 15 Nov: a rider whose last trip was not paid books again once it is.
+        from servers.payments.unpaid import refusal_for
+        unpaid = refusal_for(self.user)
+        if unpaid is not None:
+            return unpaid
         method = str(payment_method or '').lower()
         if method in rb.ONLINE_METHODS and lat and lng:
             try:

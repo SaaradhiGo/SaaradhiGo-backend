@@ -330,6 +330,11 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # Writes CityRollup rows only; no trip, money or status.
         'command_centre.refresh_city_rollups',
         'command_centre.backfill_city_rollups',
+        # Unpaid trips (hourly, beat, 15 Nov ruling). acks_late is safe: the driver's settlement is
+        # one per trip, checked under the wallet lock; a card retry counts the attempt before it
+        # charges, is at most one per 6 hours, and Stripe's idempotency key is per trip and attempt,
+        # so a doubled run charges once. No retry: the next hour is the retry.
+        'payments.collect_unpaid_trips',
     }
     actual = set(tasks)
     added = actual - expected

@@ -113,7 +113,7 @@ class TestBookingOptions:
         settings.ONLINE_PAYMENT_ZONES = ''
         ensure_zone_covering(*HYD)
         assert rb.payment_options(rider, *HYD) == {
-            'methods': ['cash'], 'default': 'cash', 'online_unavailable_reason': ''}
+            'methods': ['cash'], 'default': 'cash', 'online_unavailable_reason': '', 'unpaid_trip': None}
 
     def test_online_needs_the_city_and_a_gateway(self, rider, settings):
         ensure_zone_covering(*HYD)

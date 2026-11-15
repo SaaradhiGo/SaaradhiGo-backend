@@ -108,6 +108,18 @@ class TestEndOfDay:
         fee_plans.charge_yesterday(now)
         assert WalletTransaction.objects.filter(purpose='platform_fee').count() == 1
 
+    def test_a_plan_retired_before_the_day_charges_nothing(self, india):
+        # 15 Nov (QA, US test driver): trips booked under a plan keep it, but if that plan was
+        # retired before the day (or never in force), the day is not charged.
+        trips_on(india, DAY, 12)
+        india.plan.status = 'archived'
+        india.plan.effective_to = DAY
+        india.plan.save()
+        row = fee_plans.charge_day(india.driver, 'IN', DAY)
+        assert (row.fee_minor, row.reason) == (0, 'not_in_force')
+        assert not WalletTransaction.objects.filter(purpose='platform_fee').exists()
+        assert fee_plans.charge_day(india.driver, 'IN', DAY) == row
+
     def test_cash_driver_owes_it_from_the_next_earnings(self, india):
         trips_on(india, DAY, 12, method='cash')
         fee_plans.charge_day(india.driver, 'IN', DAY)

@@ -86,14 +86,19 @@ class StripeGateway(BasePaymentGateway):
 
     def create_hold(self, amount_minor, *, currency='USD', customer_id=None, reference=None, metadata=None):
         """A PaymentIntent for exactly `amount_minor`, captured later; saved for an off-session tip.
-        Card only (16 Nov ruling): Apple Pay and Google Pay are cards; no Klarna, Cash App, bank."""
+        Card only (16 Nov ruling): Stripe refuses `payment_method_types` on this API version, so
+        redirect methods (Klarna, Cash App, Amazon Pay, bank) are off and a card-only payment method
+        configuration narrows it to cards and wallets when one is set."""
         if not self or not _positive_minor(amount_minor):
             return None
         body = {'amount': amount_minor, 'currency': str(currency).lower(), 'capture_method': 'manual',
-                'payment_method_types': ['card'],
+                'automatic_payment_methods': {'enabled': 'true', 'allow_redirects': 'never'},
                 'metadata': {k: str(v) for k, v in (metadata or {}).items()}}
         if customer_id:
             body.update({'customer': customer_id, 'setup_future_usage': 'off_session'})
+        from django.conf import settings
+        if getattr(settings, 'STRIPE_RIDE_PAYMENT_METHOD_CONFIGURATION', ''):
+            body['payment_method_configuration'] = settings.STRIPE_RIDE_PAYMENT_METHOD_CONFIGURATION
         try:
             code, data = stripe.request('POST', '/payment_intents', body,
                                         idempotency_key=f'hold_{reference}' if reference else None)

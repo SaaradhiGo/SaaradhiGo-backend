@@ -1267,6 +1267,8 @@ STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
 STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', '')
 STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
 STRIPE_CONNECT_WEBHOOK_SECRET = os.environ.get('STRIPE_CONNECT_WEBHOOK_SECRET', '')
+# A card-only payment method configuration (pmc_...) for ride holds (16 Nov ruling); not a secret.
+STRIPE_RIDE_PAYMENT_METHOD_CONFIGURATION = os.environ.get('STRIPE_RIDE_PAYMENT_METHOD_CONFIGURATION', '')
 # Fernet key for PAN and bank account numbers at rest (base/encrypted.py). Unset: derived from
 # SECRET_KEY, so rotating SECRET_KEY would need these re-encrypted; set it before production.
 FIELD_ENCRYPTION_KEY = os.environ.get('FIELD_ENCRYPTION_KEY', '')

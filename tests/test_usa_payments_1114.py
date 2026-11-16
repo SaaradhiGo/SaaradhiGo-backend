@@ -183,8 +183,14 @@ def test_the_stripe_hold_is_manual_capture_card_only():
     method, path, body = rq.call_args[0][:3]
     assert (method, path) == ('POST', '/payment_intents')
     assert body['capture_method'] == 'manual' and body['amount'] == 1840 and body['currency'] == 'usd'
-    # 16 Nov ruling: card only (Apple Pay and Google Pay are cards); no Klarna, Cash App, bank.
-    assert body['payment_method_types'] == ['card'] and 'automatic_payment_methods' not in body
+    # 16 Nov ruling: card only. Stripe refuses payment_method_types on this API version (QA 400),
+    # so redirect methods are off; a card-only configuration narrows it further when set.
+    assert body['automatic_payment_methods'] == {'enabled': 'true', 'allow_redirects': 'never'}
+    assert 'payment_method_types' not in body and 'payment_method_configuration' not in body
+    with override_settings(STRIPE_RIDE_PAYMENT_METHOD_CONFIGURATION='pmc_rides'), \
+            mock.patch('integrations.stripe_http.request', return_value=(200, {'id': 'pi_2'})) as rq2:
+        StripeGateway().create_hold(1840, currency='USD', customer_id='cus_1', reference='r2')
+    assert rq2.call_args[0][2]['payment_method_configuration'] == 'pmc_rides'
     assert body['setup_future_usage'] == 'off_session' and body['customer'] == 'cus_1'
     with mock.patch('integrations.stripe_http.request', return_value=(200, {'status': 'succeeded'})) as rq:
         StripeGateway().capture_hold('pi_1', 1800, reference='t1')

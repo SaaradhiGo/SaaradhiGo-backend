@@ -110,7 +110,8 @@ def test_service_area_helper_polygon():
     assert is_inside_service_area('abc', 'def') is False
     ok, msg = validate_service_area(17.385, 78.486, 19.0760, 72.8777)
     assert ok is False
-    assert 'Drop' in msg
+    # Round 3: the rider reads the area's name, not which end was out.
+    assert msg == 'This place is outside our service area (Hyderabad).'
 
 
 # -------------------------------------------------------------------------

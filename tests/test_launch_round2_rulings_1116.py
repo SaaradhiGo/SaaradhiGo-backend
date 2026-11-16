@@ -47,14 +47,18 @@ def test_a_token_in_the_socket_address_signs_nobody_in(world):  # noqa: F811
 
 
 @pytest.mark.django_db(transaction=True)
-def test_a_ticket_signs_the_socket_in(world):  # noqa: F811
+def test_a_ticket_signs_the_socket_in():
+    # Transactional (the middleware reads on another thread), so no migration-seeded zone here.
+    from django.contrib.auth import get_user_model
+
     from tests.ws_auth import ws_q
 
+    rider = get_user_model().objects.create_user(phone_number='+12085550499', role='rider')
     try:
-        query = ws_q(AccessToken.for_user(world['rider']))
+        query = ws_q(AccessToken.for_user(rider))
     except Exception:  # noqa: BLE001
         pytest.skip('tickets live in Redis')
-    assert _scope_user(query) == world['rider']
+    assert _scope_user(query) == rider
 
 
 def test_a_token_in_a_logged_url_is_redacted():

@@ -702,6 +702,6 @@ def consensus_first(data):
     top, n = counts.most_common(1)[0]
     if n <= len(results) // 2:
         return data
-    agree = [r for r, loc in zip(results, named) if loc == top]
-    rest = [r for r, loc in zip(results, named) if loc != top]
+    agree = [r for r, loc in zip(results, named, strict=True) if loc == top]
+    rest = [r for r, loc in zip(results, named, strict=True) if loc != top]
     return {**data, 'results': agree + rest}

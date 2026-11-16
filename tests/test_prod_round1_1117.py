@@ -114,3 +114,24 @@ def test_without_mail_the_invite_waits_and_says_so(settings):
     out = StringIO()
     call_command('invite_super_admin', email='owner@example.com', stdout=out)
     assert 'Invite NOT sent' in out.getvalue() and len(mail.outbox) == 0
+
+
+@pytest.mark.django_db
+def test_prod_first_setup_seeds_invites_the_owner_and_leaves_no_other_operator(settings):
+    from django.contrib.auth import get_user_model
+    from servers.admin_access.models import ACTIVE
+    settings.EMAIL_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
+    settings.DEFAULT_FROM_EMAIL = 'no-reply@example.com'
+    U = get_user_model()
+    U.objects.all().delete()
+    GeoNode.objects.all().delete()
+    out = StringIO()
+    call_command('prod_first_setup', owner_email='owner@example.com', owner_name='Owner', stdout=out)
+    live = set(GeoNode.objects.filter(kind=CITY, status=ACTIVE).values_list('code', flat=True))
+    assert live == {'IN-TG-HYD'}
+    active_ops = list(U.objects.filter(is_active=True, is_staff=True).values_list('email', flat=True))
+    assert active_ops == ['owner@example.com']
+    assert AdminAssignment.objects.get(is_active=True).admin.email == 'owner@example.com'
+    assert len(mail.outbox) == 1
+    with pytest.raises(CommandError):
+        call_command('prod_first_setup', owner_email='x@example.com', stdout=StringIO())

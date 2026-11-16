@@ -1456,6 +1456,14 @@ try:
 except ValueError:
     CALL_BRIDGE_PROVIDERS = {}
 TWILIO_VOICE_NUMBER = os.environ.get('TWILIO_VOICE_NUMBER', '')
+# Exotel Voice for India (16 Nov): CALL_BRIDGE_PROVIDERS {"IN": "exotel"} once these are set.
+# EXOTEL_SUBDOMAIN is api.exotel.com (Singapore) or api.in.exotel.com (Mumbai), per account.
+EXOTEL_ACCOUNT_SID = os.environ.get('EXOTEL_ACCOUNT_SID', '')
+EXOTEL_API_KEY = os.environ.get('EXOTEL_API_KEY', '')
+EXOTEL_API_TOKEN = os.environ.get('EXOTEL_API_TOKEN', '')
+EXOTEL_CALLER_ID = os.environ.get('EXOTEL_CALLER_ID', '')
+EXOTEL_SUBDOMAIN = os.environ.get('EXOTEL_SUBDOMAIN', 'api.exotel.com')
+EXOTEL_SOS_FLOW_ID = os.environ.get('EXOTEL_SOS_FLOW_ID', '')
 # 13 Nov: direct SMS (sign-in codes, shares, SOS, pages) per market, JSON {"IN": "msg91", "US":
 # "twilio"}. A market not listed keeps AWS SNS. MSG91 needs, per kind in base/sms_templates.py, a
 # flow id and a DLT template id (JSON objects keyed by kind), plus the sender id and DLT entity id.

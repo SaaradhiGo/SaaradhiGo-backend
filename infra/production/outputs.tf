@@ -7,10 +7,10 @@ output "dns_records_for_godaddy" {
       { type = "CNAME", name = "api", value = aws_lb.main.dns_name, why = "the API and the apps" },
     ],
     [for o in aws_acm_certificate.main.domain_validation_options : {
-      type = o.resource_record_type, name = trimsuffix(o.resource_record_name, ".${var.domain}."),
+      type  = o.resource_record_type, name = trimsuffix(o.resource_record_name, ".${var.domain}."),
       value = o.resource_record_value, why = "TLS certificate validation (${o.domain_name})"
     }],
-    [for t in aws_sesv2_email_identity.domain.dkim_signing_attributes[0].tokens : {
+    [for t in try(aws_sesv2_email_identity.domain.dkim_signing_attributes[0].tokens, []) : {
       type = "CNAME", name = "${t}._domainkey", value = "${t}.dkim.amazonses.com", why = "SES DKIM"
     }],
     [

@@ -17,19 +17,19 @@ locals {
   registry = "${data.aws_caller_identity.me.account_id}.dkr.ecr.${var.region}.amazonaws.com"
   roles = {
     app = {
-      image = "backend", instance_type = var.app_instance_type, min = 2, max = 4, desired = 2,
-      port  = 8000, target_groups = [aws_lb_target_group.app.arn],
+      image   = "backend", instance_type = var.app_instance_type, min = 2, max = 4, desired = 2,
+      port    = 8000, target_groups = [aws_lb_target_group.app.arn],
       command = "sh -c 'python manage.py collectstatic --noinput && uvicorn base.asgi:application --host 0.0.0.0 --port 8000 --workers 4 --proxy-headers --forwarded-allow-ips=* --ws-ping-interval 20'"
     }
     worker = {
-      image = "backend", instance_type = var.worker_instance_type, min = 1, max = 1, desired = 1,
-      port  = 0, target_groups = [],
+      image   = "backend", instance_type = var.worker_instance_type, min = 1, max = 1, desired = 1,
+      port    = 0, target_groups = [],
       command = "celery -A base worker -B -l INFO --concurrency 4"
     }
     web = {
-      image = "web", instance_type = var.web_instance_type,
-      min = var.web_image_tag == "none" ? 0 : 2, max = 4, desired = var.web_image_tag == "none" ? 0 : 2,
-      port  = 3000, target_groups = [aws_lb_target_group.web.arn],
+      image   = "web", instance_type = var.web_instance_type,
+      min     = var.web_image_tag == "none" ? 0 : 2, max = 4, desired = var.web_image_tag == "none" ? 0 : 2,
+      port    = 3000, target_groups = [aws_lb_target_group.web.arn],
       command = ""
     }
   }
@@ -38,22 +38,22 @@ locals {
 # Non-secret values Terraform knows; secrets are added beside them as SecureString.
 resource "aws_ssm_parameter" "backend" {
   for_each = {
-    ENVIRONMENT            = "production"
-    DB_HOST                = aws_db_instance.main.address
-    DB_NAME                = aws_db_instance.main.db_name
-    DB_USER                = aws_db_instance.main.username
-    DB_SSLMODE             = "require"
-    REDIS_URL              = "redis://${aws_elasticache_replication_group.main.primary_endpoint_address}:6379"
-    AWS_S3_BUCKET_NAME     = aws_s3_bucket.media.bucket
-    AWS_S3_REGION          = var.region
-    AWS_REGION             = var.region
-    ALLOWED_HOSTS          = local.api_host
-    CSRF_TRUSTED_ORIGINS   = "https://${local.www_host},https://${local.api_host}"
-    CORS_ALLOWED_ORIGINS   = "https://${local.www_host}"
-    FRONTEND_URL           = "https://${local.www_host}"
+    ENVIRONMENT             = "production"
+    DB_HOST                 = aws_db_instance.main.address
+    DB_NAME                 = aws_db_instance.main.db_name
+    DB_USER                 = aws_db_instance.main.username
+    DB_SSLMODE              = "require"
+    REDIS_URL               = "redis://${aws_elasticache_replication_group.main.primary_endpoint_address}:6379"
+    AWS_S3_BUCKET_NAME      = aws_s3_bucket.media.bucket
+    AWS_S3_REGION           = var.region
+    AWS_REGION              = var.region
+    ALLOWED_HOSTS           = local.api_host
+    CSRF_TRUSTED_ORIGINS    = "https://${local.www_host},https://${local.api_host}"
+    CORS_ALLOWED_ORIGINS    = "https://${local.www_host}"
+    FRONTEND_URL            = "https://${local.www_host}"
     NOTIFY_WEBHOOK_BASE_URL = "https://${local.api_host}"
     # 14 Nov: which market this regional deployment serves (riders and drivers are routed by it).
-    DEPLOY_MARKET          = upper(var.market)
+    DEPLOY_MARKET = upper(var.market)
   }
   name  = "${local.ssm_prefix}/backend/${each.key}"
   type  = "String"
@@ -97,13 +97,13 @@ resource "aws_iam_role_policy" "instance" {
     Statement = [
       { Effect = "Allow", Action = ["ecr:GetAuthorizationToken"], Resource = "*" },
       { Effect = "Allow", Action = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"],
-        Resource = [for r in aws_ecr_repository.repo : r.arn] },
+      Resource = [for r in aws_ecr_repository.repo : r.arn] },
       { Effect = "Allow", Action = ["ssm:GetParametersByPath", "ssm:GetParameter"],
-        Resource = "arn:aws:ssm:${var.region}:${data.aws_caller_identity.me.account_id}:parameter${local.ssm_prefix}/*" },
+      Resource = "arn:aws:ssm:${var.region}:${data.aws_caller_identity.me.account_id}:parameter${local.ssm_prefix}/*" },
       { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"],
-        Resource = aws_db_instance.main.master_user_secret[0].secret_arn },
+      Resource = aws_db_instance.main.master_user_secret[0].secret_arn },
       { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"],
-        Resource = [aws_s3_bucket.media.arn, "${aws_s3_bucket.media.arn}/*"] },
+      Resource = [aws_s3_bucket.media.arn, "${aws_s3_bucket.media.arn}/*"] },
       { Effect = "Allow", Action = ["ses:SendEmail", "ses:SendRawEmail"], Resource = "*" },
       { Effect = "Allow", Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"], Resource = "*" },
     ]
@@ -155,14 +155,14 @@ resource "aws_launch_template" "role" {
 }
 
 resource "aws_autoscaling_group" "role" {
-  for_each            = local.roles
-  name                = "${local.name}-${each.key}"
-  min_size            = each.value.min
-  max_size            = each.value.max
-  desired_capacity    = each.value.desired
-  vpc_zone_identifier = aws_subnet.private[*].id
-  target_group_arns   = each.value.target_groups
-  health_check_type   = length(each.value.target_groups) > 0 ? "ELB" : "EC2"
+  for_each                  = local.roles
+  name                      = "${local.name}-${each.key}"
+  min_size                  = each.value.min
+  max_size                  = each.value.max
+  desired_capacity          = each.value.desired
+  vpc_zone_identifier       = aws_subnet.private[*].id
+  target_group_arns         = each.value.target_groups
+  health_check_type         = length(each.value.target_groups) > 0 ? "ELB" : "EC2"
   health_check_grace_period = 180
   launch_template {
     id      = aws_launch_template.role[each.key].id

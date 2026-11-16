@@ -60,11 +60,7 @@ jobs:
         run: bandit -r base servers integrations -ll --exclude "*/migrations/*"
 
       - name: pip-audit (known CVEs in dependencies)
-        # Non-blocking for now: cashfree-pg pins pydantic <2, which drags in
-        # transitive advisories we cannot resolve without dropping the SDK.
-        # Tracked separately — the report still surfaces on every PR so a
-        # NEW advisory is visible immediately.
-        continue-on-error: true
+        # Blocking since 16 Nov: the Cashfree SDK that pinned vulnerable versions is gone.
         run: pip-audit -r requirements.txt
 
   test:

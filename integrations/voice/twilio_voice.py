@@ -8,8 +8,7 @@ with our number as caller ID. Neither side sees the other's number. The call is 
 of the trip's call window. Paging (SOS escalation): Twilio rings the on-call phone and reads the
 message twice. Numbers are never logged.
 
-India has no voice provider yet (MSG91 SMS does not cover voice): CALL_BRIDGE_PROVIDERS maps only
-"US" to this adapter, and India stays on the fake until Srini chooses one.
+India uses Exotel (integrations/voice/exotel_voice.py) once its keys exist; until then the fake.
 """
 
 import logging

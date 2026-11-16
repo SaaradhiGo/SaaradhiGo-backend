@@ -52,8 +52,9 @@ class FakeProvider:
         return ref
 
 
-#: name -> "module:Class" of real adapters. Twilio Voice for the USA (13 Nov); India: none chosen.
-_REAL = {'twilio': 'integrations.voice.twilio_voice:TwilioVoice'}
+#: name -> "module:Class" of real adapters. Twilio Voice for the USA (13 Nov); Exotel for India (16 Nov).
+_REAL = {'twilio': 'integrations.voice.twilio_voice:TwilioVoice',
+         'exotel': 'integrations.voice.exotel_voice:ExotelVoice'}
 
 
 def provider_name(country=None):

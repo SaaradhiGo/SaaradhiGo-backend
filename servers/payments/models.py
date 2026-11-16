@@ -876,3 +876,50 @@ OVERRIDE_FIELDS = (
     'instant_fee_max_minor', 'instant_fee_provider', 'instant_fee_tiers',
     'instant_max_per_day', 'instant_max_amount_per_day_minor',
 )
+
+
+class CardHold(models.Model):
+    """A card authorisation for a booking (14 Nov, USA): Stripe PaymentIntent with manual capture,
+    for exactly the locked fare; captured at trip end, released on cancel (`payments.card_hold`)."""
+    CREATED, AUTHORISED, CAPTURED, RELEASED, FAILED = 'created', 'authorised', 'captured', 'released', 'failed'
+    STATUS_CHOICES = [(s, s) for s in (CREATED, AUTHORISED, CAPTURED, RELEASED, FAILED)]
+
+    user = models.ForeignKey(User, on_delete=models.PROTECT, related_name='card_holds')
+    trip = models.OneToOneField('ride.Trip', on_delete=models.PROTECT, null=True, blank=True,
+                                related_name='card_hold')
+    provider = models.CharField(max_length=16, default='stripe')
+    intent_id = models.CharField(max_length=128, unique=True)
+    customer_id = models.CharField(max_length=128, blank=True, default='')
+    #: The saved card (or wallet) the rider confirmed: used for the tip, off-session.
+    payment_method_id = models.CharField(max_length=128, blank=True, default='')
+    quote_id = models.CharField(max_length=64, blank=True, default='')
+    amount_minor = models.BigIntegerField()
+    captured_minor = models.BigIntegerField(null=True, blank=True)
+    currency = models.CharField(max_length=3)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=CREATED, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'CardHold {self.intent_id} {self.status}'
+
+
+class Tip(models.Model):
+    """A rider's tip after a trip (14 Nov, USA): charged to the trip's card, 100% to the driver."""
+    PENDING, SUCCEEDED, FAILED = 'pending', 'succeeded', 'failed'
+    STATUS_CHOICES = [(s, s) for s in (PENDING, SUCCEEDED, FAILED)]
+
+    trip = models.ForeignKey('ride.Trip', on_delete=models.PROTECT, related_name='tips')
+    rider = models.ForeignKey(User, on_delete=models.PROTECT, related_name='tips_given')
+    driver = models.ForeignKey('driver.Driver', on_delete=models.PROTECT, related_name='tips_received')
+    amount_minor = models.BigIntegerField()
+    currency = models.CharField(max_length=3)
+    #: The preset chosen (15, 18, 20), or NULL for a custom amount.
+    percent = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    intent_id = models.CharField(max_length=128, blank=True, default='')
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=PENDING, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['trip'], condition=models.Q(status='succeeded'),
+                                               name='one_succeeded_tip_per_trip')]

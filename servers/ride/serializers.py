@@ -44,11 +44,16 @@ class TripListSerializer(serializers.ModelSerializer):
     cancellation_message = serializers.SerializerMethodField()
     estimated_fare = MoneyField(read_only=True, allow_null=True)
     final_fare = MoneyField(read_only=True, allow_null=True)
+    #: 15 Nov: what the rider was charged for a completed trip, the receipt's "Total charged":
+    #: the trip's total plus a tip that succeeded. None until the trip is completed.
+    total_charged = serializers.SerializerMethodField()
 
     class Meta:
         model = Trip
         fields = [
-            'id', 'pickup_address', 'destination_address',
+            'id', 'pickup_address', 'destination_address', 'total_charged',
+            # 13 Nov: "Charminar, Ghansi Bazaar" for lists and cards; the full address above.
+            'pickup_label', 'destination_label',
             'pickup_lat', 'pickup_long', 'destination_lat', 'destination_long',
             # THE CURRENCY OF THESE FARES. It is stamped on the trip at
             # write time; without it every client renders a bare number and
@@ -76,6 +81,18 @@ class TripListSerializer(serializers.ModelSerializer):
             from servers.ride.tasks import NO_DRIVER_MESSAGE
             return NO_DRIVER_MESSAGE
         return None
+
+    def get_total_charged(self, obj):
+        from base.money import from_minor
+        from servers.ride.receipts import _total_fare
+
+        if (obj.status_id.status_code if obj.status_id else '') != 'completed':
+            return None
+        total = _total_fare(obj)
+        tip = next((t for t in obj.tips.all() if t.status == 'succeeded'), None)
+        if tip is not None:
+            total += from_minor(tip.amount_minor, tip.currency)
+        return str(total)
 
     def get_timezone(self, obj):
         from base.market_time import trip_timezone
@@ -144,6 +161,24 @@ class TripDetailSerializer(TripListSerializer):
     search_expires_at = serializers.SerializerMethodField()
     vehicle_line = serializers.SerializerMethodField()
 
+    refunds = serializers.SerializerMethodField()
+
+    def get_refunds(self, obj):
+        """Refunds on this trip for its rider (or staff): amount, where it went, sent or not."""
+        from base.money import from_minor
+        from servers.ride.models import TripMoneyAction
+
+        request = self.context.get('request') if hasattr(self, 'context') else None
+        user = getattr(request, 'user', None)
+        if user is None or not (getattr(user, 'id', None) == obj.user_id_id or getattr(user, 'is_staff', False)):
+            return []
+        rows = TripMoneyAction.objects.filter(trip=obj, kind=TripMoneyAction.REFUND).exclude(
+            status=TripMoneyAction.RECORDED).order_by('created_at', 'id')
+        return [{'amount': str(from_minor(r.amount_minor, r.currency)), 'currency': r.currency,
+                 'to': 'wallet' if r.method == TripMoneyAction.WALLET_CREDIT else 'card',
+                 'status': 'sent' if r.status == TripMoneyAction.COMPLETED else 'processing',
+                 'at': r.created_at.isoformat()} for r in rows]
+
     def get_invoice(self, obj):
         request = self.context.get('request') if hasattr(self, 'context') else None
         user = getattr(request, 'user', None)
@@ -155,11 +190,12 @@ class TripDetailSerializer(TripListSerializer):
         if receipt is None:
             return None
         from base.countries import get_country
-        return {
+        out = {
             'number': receipt.receipt_number,
             'issued_at': receipt.issued_at.isoformat() if receipt.issued_at else None,
             'rider_name': _rider_name(obj.user_id),
-            'company': company_lines(),
+            'company': company_lines(obj),
+            'title': None,
             'tax_label': get_country(getattr(obj.zone, 'country', None)).tax_label,
             'tax_amount': str(receipt.gst_amount),
             'total': str(receipt.total_fare),
@@ -169,6 +205,8 @@ class TripDetailSerializer(TripListSerializer):
             'breakdown': receipt_invoice(obj, total=receipt.total_fare, gst_amount=receipt.gst_amount,
                                          currency=receipt.currency),
         }
+        out['title'] = out['breakdown']['title']        # 'Receipt' while GST is off (13 Nov)
+        return out
 
     def get_search_expires_at(self, obj):
         if obj.driver_id_id or not obj.requested_at:
@@ -189,6 +227,11 @@ class TripDetailSerializer(TripListSerializer):
             'planned_route_polyline',
             'driver_photo_url', 'driver_total_trips', 'driver_earning',
             'invoice', 'search_expires_at', 'vehicle_line',
+            # 14 Nov (USA): a card held at booking (never "pay again"), the market's cash and tip
+            # rules, and the tip given.
+            'card_held', 'market_rules', 'tip', 'rider_accessibility_note',
+            # 15 Nov (USA round 5): refunds on the trip, for the receipt.
+            'refunds',
         ]
 
     def _party(self, obj):
@@ -197,6 +240,37 @@ class TripDetailSerializer(TripListSerializer):
         if uid is None or not obj.driver_id:
             return False
         return uid in (obj.user_id_id, obj.driver_id.user_id_id)
+
+    card_held = serializers.SerializerMethodField()
+    market_rules = serializers.SerializerMethodField()
+    tip = serializers.SerializerMethodField()
+
+    rider_accessibility_note = serializers.SerializerMethodField()
+
+    def get_rider_accessibility_note(self, obj):
+        # Only the trip's rider and driver read it.
+        if not self._party(obj):
+            return None
+        rider = getattr(obj.user_id, 'rider', None)
+        return (getattr(rider, 'accessibility_note', '') or None) if rider is not None else None
+
+    def get_card_held(self, obj):
+        hold = getattr(obj, 'card_hold', None) if hasattr(obj, 'card_hold') else None
+        return {'status': hold.status} if hold is not None else None
+
+    def get_market_rules(self, obj):
+        from servers.pricing.regulation import rules_for_zone
+
+        r = rules_for_zone(getattr(obj, 'zone', None))
+        return {'cash_allowed': bool(r['cash_allowed']), 'tips_enabled': bool(r['tips_enabled']),
+                'tip_presets': r['tip_presets'] if r['tips_enabled'] else [],
+                'zero_tolerance': bool(r['zero_tolerance_suspend'])}
+
+    def get_tip(self, obj):
+        from base.money import to_major_string
+
+        tip = obj.tips.filter(status='succeeded').first() if hasattr(obj, 'tips') else None
+        return {'amount': to_major_string(tip.amount_minor, tip.currency), 'currency': tip.currency} if tip else None
 
     def get_driver_photo_url(self, obj):
         # A short-lived signed URL to the driver's own photo, or None (no photo, or the store

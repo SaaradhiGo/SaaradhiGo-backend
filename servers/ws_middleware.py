@@ -37,6 +37,20 @@ def get_user_from_token(token_str):
         return AnonymousUser()
 
 
+@database_sync_to_async
+def get_user_from_ticket(ticket):
+    """14 Nov: the website's sockets open with a single-use ticket (servers/auth_user/ws_ticket.py)."""
+    from servers.auth_user.ws_ticket import user_id_for
+
+    user_id = user_id_for(ticket)
+    if not user_id:
+        return AnonymousUser()
+    try:
+        return get_user_model().objects.get(id=user_id, is_active=True)
+    except Exception:
+        return AnonymousUser()
+
+
 class JWTAuthMiddleware(BaseMiddleware):
     """
     Custom middleware for JWT authentication on WebSocket connections.
@@ -56,8 +70,11 @@ class JWTAuthMiddleware(BaseMiddleware):
         query_string = scope.get('query_string', b'').decode('utf-8')
         query_params = parse_qs(query_string)
         token_list = query_params.get('token', [])
-        # print(token_list)
-        if token_list:
+        ticket_list = query_params.get('ticket', [])
+        if ticket_list and not token_list:
+            user = await get_user_from_ticket(ticket_list[0])
+            scope['user'] = user if user and user.is_authenticated else AnonymousUser()
+        elif token_list:
             user = await get_user_from_token(token_list[0])
             if user and user.is_authenticated:
                 scope['user'] = user

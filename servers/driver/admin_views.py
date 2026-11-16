@@ -14,6 +14,7 @@ from servers.admin_access.scoping import (
     ScopeNotHeld, scoped, scoped_or_none, scoped_to_request,
 )
 from servers.driver.models import Driver, DriverSuspension, Vehicle
+from servers.driver.earnings import trip_count
 from servers.driver.serializers import (
     AdminVehicleSerializer, DriverAdminDetailSerializer,
     KYCApprovalSerializer,
@@ -133,7 +134,7 @@ def _compliance_payload(driver):
     """
     from servers.driver import compliance
 
-    vehicle = driver.active_vehicle or driver.vehicle_set.order_by('id').first()
+    vehicle = driver.active_vehicle or driver.vehicle_set.exclude(status='archived').order_by('id').first()
 
     def rows(checks):
         return [
@@ -396,7 +397,7 @@ def driver_full_detail_admin(request, driver_id):
         'status': driver.status,
         'approved': driver.approved,
         'ratings': str(driver.ratings),
-        'total_trips': driver.total_trips,
+        'total_trips': trip_count(driver),  # 12 Nov: the one count (earnings.trip_count)
         'license_expiry': driver.license_expiry.isoformat() if driver.license_expiry else None,
         'upi_id': driver.upi_id,
         'fatigue_lockout_until': driver.fatigue_lockout_until.isoformat() if driver.fatigue_lockout_until else None,

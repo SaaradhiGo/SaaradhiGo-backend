@@ -532,3 +532,21 @@ def fake_payout_settle(reference_id, gateway_ref):
     from integrations.payouts.fake import settle
 
     return settle(reference_id, gateway_ref)
+
+
+@shared_task(name='payments.capture_card_hold', bind=True, max_retries=3, default_retry_delay=60)
+def capture_card_hold(self, trip_id):
+    """14 Nov (USA): capture a completed trip's card hold. A failure marks the trip `failed`: the
+    existing unsettled-trip retry path takes it from there."""
+    from .card_hold import capture_for_trip
+
+    return capture_for_trip(trip_id)
+
+
+@shared_task(name='payments.collect_unpaid_trips')
+def collect_unpaid_trips():
+    """Hourly (15 Nov ruling): pay the driver for every completed trip whose payment failed, flag a
+    repeated rider-driver pattern, and retry US cards when due. See payments.unpaid."""
+    from .unpaid import sweep
+
+    return sweep()

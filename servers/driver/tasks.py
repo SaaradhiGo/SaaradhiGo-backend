@@ -179,6 +179,9 @@ def remind_expiring_documents(today=None):
     for _key, _label, column, on_vehicle in dated:
         path = f'active_vehicle__{column}' if on_vehicle else column
         soon |= Q(**{f'{path}__gte': today, f'{path}__lte': horizon})
+    from base.market_dates import full_date
+    from servers.driver.records import market_of
+
     queued = 0
     for driver in Driver.objects.filter(soon, approved=True).select_related('user_id', 'active_vehicle'):
         for key, label, column, on_vehicle in dated:
@@ -190,8 +193,32 @@ def remind_expiring_documents(today=None):
             window = min(w for w in REMIND_DAYS if w >= left)
             rows = dispatcher.notify(
                 DOCUMENT_EXPIRING, driver.user_id,
-                {'document': label, 'date': f'{expiry.day} {expiry:%b %Y}', 'days': str(left)},
+                {'document': label, 'date': full_date(expiry, market_of(driver)[0]), 'days': str(left)},
                 idempotency_key=f'doc_expiring:{driver.id}:{key}:{expiry.isoformat()}:{window}',
                 source=DOCUMENT_EXPIRING)
             queued += len(rows)
     return queued
+
+
+@shared_task(name='driver.kyc_review_target_sweep')
+def kyc_review_target_sweep():
+    """12 Nov: one alert per city while drivers wait past the KYC review target (review_target.py)."""
+    from .review_target import sweep
+
+    return sweep()
+
+
+@shared_task(name='auth_user.account_closure_sweep')
+def account_closure_sweep():
+    """13 Nov: close the accounts that were waiting for their last payout (auth_user/closure.py)."""
+    from servers.auth_user.closure import sweep
+
+    return sweep()
+
+
+@shared_task(name='driver.recheck_background', max_retries=0)
+def recheck_background():
+    """Daily: start the yearly (market setting) background re-checks that are due (14 Nov)."""
+    from .background import recheck_due
+
+    return recheck_due()

@@ -89,6 +89,7 @@ def driver_trip_detail(request, trip_id):
     from servers.ride.models import Trip
     from servers.rider.models import WalletTransaction
     from .earnings import SETTLEMENT_PURPOSES, _row_for
+    from .paid_out import paid_out_at
     from .services import driver_currency
 
     driver = request.user.driver
@@ -118,6 +119,7 @@ def driver_trip_detail(request, trip_id):
     return success_response({
         'id': trip.id, 'status': getattr(trip.status_id, 'status_code', ''), 'currency': cur,
         'pickup_address': trip.pickup_address or '', 'destination_address': trip.destination_address or '',
+        'pickup_label': trip.pickup_label, 'destination_label': trip.destination_label,  # 13 Nov
         'requested_at': at(trip.requested_at), 'started_at': at(trip.started_at), 'completed_at': at(trip.completed_at),
         'distance_km': s(trip.actual_distance_km if trip.actual_distance_km is not None else trip.estimated_distance_km),
         'duration_min': s(minutes if minutes is not None else trip.estimated_duration_min),
@@ -126,7 +128,24 @@ def driver_trip_detail(request, trip_id):
         # The fee net of its refund, as the Trips row shows it; the refund itself is tagged.
         'fare': s(row.gross) if row else None,
         'platform_fee': s(row.commission - refund) if row and row.commission is not None else None,
-        'platform_fee_refunded': s(refund) if refund else None, 'tips': '0.00', 'earned': s(earned),
+        'platform_fee_refunded': s(refund) if refund else None, 'tips': s(_trip_tip(trip)),
+        'earned': s(earned + _trip_tip(trip)) if earned is not None else None,
         'cash_in_hand': s(row.gross) if row is not None and row.driver_holds_cash else None,
         'rider': {'first_name': first, 'rating': s(rating)},
+        # 15 Nov (trip 219): the rider's card payment failed, so nothing is settled for it yet.
+        'payment': 'not_collected' if row is None and trip.payment_status == 'failed' else 'settled',
+        # 15 Nov (US round 4): when the money was settled, and the payout that carried it to the bank.
+        'settled_at': at(entry.created_at) if entry is not None else None,
+        'paid_out_at': at(paid_out_at(driver, entry)),
     }, status.HTTP_200_OK)
+
+
+def _trip_tip(trip):
+    """14 Nov (USA): the rider's tip on this trip, all of it the driver's."""
+    from decimal import Decimal
+
+    from base.money import from_minor
+    from servers.payments.models import Tip
+
+    tip = Tip.objects.filter(trip=trip, status='succeeded').first()
+    return from_minor(tip.amount_minor, tip.currency) if tip else Decimal('0.00')

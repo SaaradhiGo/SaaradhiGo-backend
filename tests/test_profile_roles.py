@@ -39,3 +39,26 @@ def test_roles_cannot_be_written(auth_client_rider):
     client, _ = auth_client_rider
     client.patch('/api/v1/auth/update/', {'roles': ['driver']}, format='json')
     assert _profile(client)['roles'] == ['rider']
+
+
+RIDE = '/api/v1/auth/me/ride/'
+
+
+def test_a_driver_rides_with_the_same_account(auth_client_driver):
+    """13 Nov: 'Ride with your SaaradhiGo account' adds the rider role, once, to the same user."""
+    client, user = auth_client_driver
+    first = client.post(RIDE).json()
+    first = first.get('data', first)
+    assert first == {'roles': ['rider', 'driver'], 'added': True}
+    again = client.post(RIDE).json()
+    assert again.get('data', again)['added'] is False
+    assert _profile(client)['roles'] == ['rider', 'driver']
+    assert _profile(client)['id'] == user.id
+
+
+def test_a_closing_account_cannot_add_riding(auth_client_driver):
+    from servers.auth_user.models import AccountClosure
+    client, user = auth_client_driver
+    AccountClosure.objects.create(user=user, status='waiting_payouts')
+    assert client.post(RIDE).status_code == 409
+    assert _profile(client)['roles'] == ['driver']

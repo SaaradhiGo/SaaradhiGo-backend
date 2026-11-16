@@ -74,12 +74,13 @@ def dispatch_sos(self, sos_id):
         if emergency:
             from base.utils import send_otp_via_sns, stash_sms_message
             # The task takes a reference, never the text (base.utils explains).
+            from base import sms_templates
+            values = {'name': event.user_label or 'A user', 'sos_id': event.id}
             send_otp_via_sns.delay(
                 emergency,
                 stash_sms_message(
-                    f"SaaradhiGo SOS: {event.user_label or 'A user'} has raised an "
-                    f"SOS. Please call them. SOS#{event.id}.",
-                    ttl=SOS_SMS_TTL_SECONDS,
+                    sms_templates.render('sos_emergency', **values),
+                    ttl=SOS_SMS_TTL_SECONDS, kind='sos_emergency', values=values,
                 ),
             )
             logger.warning(

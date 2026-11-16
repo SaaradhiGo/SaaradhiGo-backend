@@ -112,11 +112,20 @@ def list_vehicle_types(request):
                     zone.timezone_name
                     or zone.country_profile.default_timezone
                 ),
+                # 14 Nov: what a visitor may pay with at this pickup (Idaho: card only), the
+                # same answer a signed-in rider gets, before any account restriction.
+                'payment_methods': _visitor_methods(lat, lng),
             },
             'vehicle_types': list(seen.values()),
         },
         status.HTTP_200_OK,
     )
+
+
+def _visitor_methods(lat, lng):
+    from servers.ride.rider_booking import payment_options
+
+    return payment_options(None, lat, lng)['methods']
 
 
 def models_q_effective_to(now):

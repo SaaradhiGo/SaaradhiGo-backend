@@ -37,6 +37,7 @@ class VehicleSerializer(serializers.ModelSerializer):
             'insurance_doc','fitness_doc','puc_doc','inspection_doc',
             'insurance_expiry','permit_expiry',
             'fitness_expiry','puc_expiry','status','vehicle_type', 'vehicle_type_id_val',
+            'registration_expiry', 'doors',  # 14 Nov (USA)
             # 10 Nov: the other four photos and where the make and model came from.
             'photo_back', 'photo_left', 'photo_right', 'photo_interior', 'catalogue_entry',
             'custom_make_model',
@@ -71,6 +72,13 @@ class DriverProfileSerializer(serializers.ModelSerializer):
 
         return trip_count(obj)
 
+    # 12 Nov: how many ratings make up `ratings`, counted as the console counts them (ratings.py).
+    rating_count = serializers.SerializerMethodField()
+
+    def get_rating_count(self, obj) -> int:
+        from .ratings import summary
+        return summary(obj)['count']
+
     qa_simulated_eligibility = serializers.BooleanField(read_only=True)
 
     def get_dispatch_eligible(self, obj) -> bool:
@@ -93,7 +101,7 @@ class DriverProfileSerializer(serializers.ModelSerializer):
                   'approved', 'doc_status', 'doc_rejection_reason',
                   'doc_status_updated_at', 'uploaded_timestamp',
                   'dispatch_eligible', 'qa_simulated_eligibility',
-                  'total_trips', 'ratings']
+                  'total_trips', 'ratings', 'rating_count']
         # Defence in depth. This serializer is only ever bound to a DRIVER'S OWN
         # token, and `update_driver_profile` already builds its payload from a
         # four-field allow-list -- so `approved` was never reachable in practice.
@@ -189,6 +197,12 @@ class AdminVehicleSerializer(VehicleSerializer):
 class DriverAdminListSerializer(serializers.ModelSerializer):
     user_details = UserModelSerializer(source='user_id', read_only=True)
     license_doc = DocumentOnFileField()
+    # 12 Nov: the one trip count (earnings.trip_count), never the drifting stored counter.
+    total_trips = serializers.SerializerMethodField()
+
+    def get_total_trips(self, obj) -> int:
+        from .earnings import trip_count
+        return getattr(obj, 'trip_count', None) if hasattr(obj, 'trip_count') else trip_count(obj)
 
     class Meta:
         model = Driver
@@ -302,6 +316,11 @@ class DriverAdminDetailSerializer(serializers.ModelSerializer):
     # On-file flags, never links (AUDIT 27.78).
     license_doc = DocumentOnFileField()
     license_doc_back = DocumentOnFileField()
+    total_trips = serializers.SerializerMethodField()
+
+    def get_total_trips(self, obj) -> int:
+        from .earnings import trip_count
+        return trip_count(obj)
 
     class Meta:
         model = Driver
@@ -321,6 +340,8 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
     # Withdraw now (10 Nov): the provider fee on the driver's statement line,
     # "Withdrawn ₹200.00 · provider fee ₹4.72 · received ₹195.28"; empty for a scheduled payout.
     statement_line = serializers.SerializerMethodField()
+    # 14 Nov (owner): a rejected or failed payout says why in one line, and where the money went.
+    outcome = serializers.SerializerMethodField()
 
     class Meta:
         model = WithdrawalRequest
@@ -335,7 +356,7 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
             'currency',
             'driver_kyc_approved', 'amount', 'status', 'requested_at',
             'processed_at', 'admin_notes', 'payout_reference_id',
-            'origin', 'fee_minor', 'statement_line',
+            'origin', 'fee_minor', 'statement_line', 'outcome',
         ]
         read_only_fields = [
             'id', 'driver', 'currency', 'status', 'requested_at',
@@ -347,6 +368,27 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
             return ''
         from servers.payments.ledger import fee_line
         return fee_line(obj.amount_minor, obj.fee_minor or 0, obj.currency)['label']
+
+    def get_outcome(self, obj):
+        """{reason, money} for a rejected or failed payout, else None. `money` is read from the
+        wallet: "returned" only when the refund credit exists, "held" while it does not."""
+        if obj.status not in ('rejected', 'failed'):
+            return None
+        from servers.rider.models import WalletTransaction
+
+        raw = obj.admin_notes if obj.status == 'rejected' else (obj.failure_reason or obj.admin_notes)
+        line = ' '.join((raw or '').split())
+        if len(line) > 120:
+            line = line[:119].rstrip() + '…'
+        returned = WalletTransaction.objects.filter(
+            txn_type='credit', status='completed',
+            purpose__in=('refund_rejected_withdrawal', 'refund_failed_withdrawal'),
+            reference_id__in=[f'refund_rejected_withdrawal_{obj.id}', f'refund_withdrawal_{obj.id}'],
+        ).exists() or WalletTransaction.objects.filter(
+            txn_type='credit', status='completed', purpose='refund_failed_withdrawal',
+            reference_id__startswith=f'refund_withdrawal_{obj.id}_r',
+        ).exists()
+        return {'reason': line or None, 'money': 'returned' if returned else 'held'}
 
     def get_driver_name(self, obj):
         user = getattr(obj.driver, 'user_id', None)

@@ -46,6 +46,24 @@ FIELDS = {
     'min_driver_age': ('int', 16, 30),
     'max_vehicle_age_years': ('int', 1, 40),
     'languages': ('languages', None, None),
+    # Per-state operating rules (14 Nov, USA from day 1).
+    'cash_allowed': ('bool', None, None),
+    'tips_enabled': ('bool', None, None),
+    'tip_presets': ('int_list', 1, 50),
+    'sales_tax_enabled': ('bool', None, None),
+    'vehicle_classes': ('str_list', None, None),
+    'min_vehicle_year': ('int', 1980, 2100),
+    'vehicle_min_doors': ('int', 2, 6),
+    'trip_record_retention_days': ('int', 30, 36500),
+    'driver_record_retention_days': ('int', 30, 36500),
+    'complaint_record_retention_days': ('int', 30, 36500),
+    'background_recheck_months': ('int', 0, 60),
+    'zero_tolerance_suspend': ('bool', None, None),
+    'platform_insurance_required': ('bool', None, None),
+    'platform_insurance': ('object', None, None),
+    'fee_plan_required': ('bool', None, None),
+    'service_agent': ('object', None, None),
+    'citations': ('object', None, None),
 }
 #: The site's languages; a market offers a subset.
 LANGUAGE_CODES = ('en', 'te', 'hi', 'es')
@@ -128,6 +146,20 @@ def _parse(name, value):
             raise InvalidRequest(f'languages must include en and only {", ".join(LANGUAGE_CODES)}.',
                                  code='INVALID_VALUE', field=name)
         return list(dict.fromkeys(value))
+    if kind == 'int_list':
+        if (not isinstance(value, list) or not value
+                or any(not isinstance(v, int) or isinstance(v, bool) or not low <= v <= high for v in value)):
+            raise InvalidRequest(f'{name} must be a list of whole numbers {low} to {high}.',
+                                 code='INVALID_VALUE', field=name)
+        return sorted(set(value))
+    if kind == 'str_list':
+        if not isinstance(value, list) or not value or any(not isinstance(v, str) or not v.strip() for v in value):
+            raise InvalidRequest(f'{name} must be a list of names.', code='INVALID_VALUE', field=name)
+        return list(dict.fromkeys(v.strip().lower() for v in value))
+    if kind == 'object':
+        if not isinstance(value, dict) or any(not isinstance(k, str) for k in value):
+            raise InvalidRequest(f'{name} must be an object.', code='INVALID_VALUE', field=name)
+        return {k: (v.strip() if isinstance(v, str) else v) for k, v in value.items()}
     if kind == 'bool':
         if not isinstance(value, bool):
             raise InvalidRequest(f'{name} must be true or false.', code='INVALID_VALUE', field=name)

@@ -12,12 +12,15 @@ from .admin_riders import (
     admin_unflag_rider, admin_clear_restriction,
 )
 
+from .accessibility import accessibility_note  # noqa: E402
+
 urlpatterns=[
     path('locations/',save_favorite_locations),
     path('locations/all/',get_favorite_locations),
     path('locations/<int:location_id>/delete/',delete_favorite_location),
     # Saved places with labels and limits (2026-11-09); locations/ stays for older apps.
     path('places/', places),
+    path('accessibility/', accessibility_note),  # 14 Nov (USA)
     path('places/<int:place_id>/', place_detail),
     path('nearby/',get_nearby_drivers),
     # Notifications

@@ -121,6 +121,10 @@ class Trip(CurrencyStampedModel, models.Model):
     pickup_lat=models.DecimalField(max_digits=10,decimal_places=7)
     pickup_long=models.DecimalField(max_digits=10,decimal_places=7)
     destination_address=models.CharField(max_length=512,blank=True,null=True)
+    #: 13 Nov: the place name plus its area ("Charminar, Ghansi Bazaar"), for lists and cards;
+    #: filled from the address on save (servers/ride/places.py). The full address stays above.
+    pickup_label=models.CharField(max_length=80,blank=True,default='')
+    destination_label=models.CharField(max_length=80,blank=True,default='')
     destination_lat=models.DecimalField(max_digits=10,decimal_places=7)
     destination_long=models.DecimalField(max_digits=10,decimal_places=7)
     estimated_distance_km=models.DecimalField(max_digits=10,decimal_places=2,blank=True,null=True)
@@ -202,6 +206,22 @@ class Trip(CurrencyStampedModel, models.Model):
         'pricing.ServiceZone', on_delete=models.SET_NULL,
         null=True, blank=True, related_name='trips',
     )
+
+    def save(self, *args, **kwargs):
+        """13 Nov: the short place labels follow the addresses on every save."""
+        from .places import short_place
+        fields = kwargs.get('update_fields')
+        if fields is None or {'pickup_address', 'destination_address'} & set(fields):
+            # 14 Nov: a generic address ("Current location") never replaces a real label that the
+            # backfill (backfill_place_labels) found from the coordinates.
+            from .rider_booking import needs_street_address
+            for side in ('pickup', 'destination'):
+                label = short_place(getattr(self, f'{side}_address'))
+                if not (needs_street_address(label) and not needs_street_address(getattr(self, f'{side}_label', ''))):
+                    setattr(self, f'{side}_label', label)
+            if fields is not None:
+                kwargs['update_fields'] = set(fields) | {'pickup_label', 'destination_label'}
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         return f'Trip {self.id} - {self.user_id}'
@@ -950,6 +970,8 @@ class TripMoneyAction(models.Model):
     created_by = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    # The provider's refund id once a gateway refund is sent (Stripe re_...); blank until then.
+    gateway_refund_id = models.CharField(max_length=64, blank=True, default='')
 
     class Meta:
         constraints = [
@@ -1008,3 +1030,5 @@ class CancellationPenalty(models.Model):
 
 
 from servers.ride.maps_models import MapsBudget, MapsSkuPrice, MapsUsage  # noqa: E402,F401
+
+

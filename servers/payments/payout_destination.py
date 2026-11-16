@@ -31,11 +31,21 @@ def payout_hold_until(driver, now=None):
     return until if until > (now or timezone.now()) else None
 
 
-def held_message(until):
+def held_message(until, driver=None):
+    """In the driver's own time and market style (15 Nov): "Nov 15, 7:30 PM" in the USA."""
     from django.utils import timezone
 
+    from base.market_dates import clock, day_month
+
+    if driver is None:
+        local, country = timezone.localtime(until), ''
+    else:
+        from base.market_time import driver_timezone
+        from servers.payments.payout_config import driver_payout_country
+
+        local, country = until.astimezone(driver_timezone(driver)), driver_payout_country(driver) or ''
     return ('Your payout details changed recently. For your safety, payouts resume at '
-            f'{timezone.localtime(until):%d %b, %H:%M}.')
+            f'{day_month(local, country)}, {clock(local, country)}.')
 
 
 def has_payout_destination(driver):

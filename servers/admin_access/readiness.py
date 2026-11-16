@@ -77,6 +77,32 @@ def _city_zones(node):
     return list(ServiceZone.objects.filter(geo_node=node, is_active=True))
 
 
+def _rules(node):
+    """The market's operating rules for a city (14 Nov): its country and state rows."""
+    from servers.pricing.regulation import market_rules
+
+    country = node.country
+    state = ''
+    walk = node
+    while walk is not None:
+        if walk.kind == 'state':
+            state = walk.code.split('-', 1)[-1]
+            break
+        walk = walk.parent
+    return market_rules(country.code if country else '', state)
+
+
+def _classes(node):
+    """The vehicle classes this market offers (14 Nov: `vehicle_classes`; every class when unset)."""
+    from servers.driver.models import VehicleType
+
+    offered = _rules(node).get('vehicle_classes')
+    qs = VehicleType.objects.all()
+    if offered:
+        qs = qs.filter(type__in=offered)
+    return list(qs)
+
+
 def _commission(node):
     """A commission rule governs every vehicle class in this city (module 8)."""
     from django.utils import timezone
@@ -88,8 +114,11 @@ def _commission(node):
     if country is None:
         return {'key': 'commission', 'ok': False,
                 'detail': 'This city is not under a country, so no commission rule can apply.'}
+    if _rules(node)['fee_plan_required']:
+        return {'key': 'commission', 'ok': True,
+                'detail': 'Not used here: drivers pay the market\'s fee plan (see Driver fee plan).'}
     now = timezone.now()
-    classes = list(VehicleType.objects.all())
+    classes = _classes(node)
     missing = [vt.type for vt in classes if resolve(country.code, node.id, vt.id, now) is None]
     if not classes:
         missing = [] if resolve(country.code, node.id, None, now) else ['(any vehicle class)']
@@ -115,7 +144,7 @@ def _fare_card(node):
         return {'key': 'fare_card', 'ok': False,
                 'detail': f'{node.code} has no active service zone, so it has no fare cards.'}
     now = timezone.now()
-    classes = list(VehicleType.objects.all())
+    classes = _classes(node)
     if not classes:
         return {'key': 'fare_card', 'ok': False, 'detail': 'No vehicle classes are configured.'}
     gaps = []
@@ -248,9 +277,39 @@ def _tax(node):
                       'This does not block QA.'}
 
 
+def _fee_plan(node):
+    """Where the market requires one (US), an active driver fee plan covers this city (14 Nov)."""
+    if not _rules(node)['fee_plan_required']:
+        return {'key': 'fee_plan', 'ok': True, 'detail': 'Not required in this market.'}
+    from servers.payments.payout_scope import scope_codes_of_node
+    from servers.pricing.fee_plans import local_day, resolve
+
+    country = node.country.code if node.country else ''
+    plan = resolve(country, scope_codes_of_node(node), local_day(country))
+    if plan is None:
+        return {'key': 'fee_plan', 'ok': False,
+                'detail': 'No driver fee plan is active here. Drivers cannot go online until one is set.'}
+    return {'key': 'fee_plan', 'ok': True, 'detail': f'Fee plan v{plan.version} ({plan.plan_type}) is active.'}
+
+
+def _platform_insurance(node):
+    """Where required (Idaho Code 41-2519), the platform's TNC policy is configured (14 Nov)."""
+    from servers.pricing.regulation import platform_insurance_ready
+
+    rules = _rules(node)
+    if not rules['platform_insurance_required']:
+        return {'key': 'platform_insurance', 'ok': True, 'detail': 'Not required in this market.'}
+    if not platform_insurance_ready(rules):
+        return {'key': 'platform_insurance', 'ok': False,
+                'detail': 'The platform insurance policy (insurer, policy number, holder) is not set. '
+                          'No driver here can go online until it is.'}
+    return {'key': 'platform_insurance', 'ok': True,
+            'detail': f"Policy {rules['platform_insurance'].get('policy_number')} is configured."}
+
+
 #: Append here. Each is `callable(node) -> {key, ok, detail[, status]}`.
 ITEMS = [_safety_coverage, _commission, _fare_card, _zone, _payout_config, _approval_policies,
-         _payment_gateway, _sms_provider, _tax]
+         _payment_gateway, _sms_provider, _tax, _fee_plan, _platform_insurance]
 
 #: What the console shows for each item, and the page that fixes it.
 ITEM_META = {
@@ -263,6 +322,8 @@ ITEM_META = {
     'payment_gateway': ('Payment gateway', '/settings/integrations'),
     'sms_provider': ('SMS provider', '/settings/integrations'),
     'tax': ('Tax settings', '/pricing'),
+    'fee_plan': ('Driver fee plan', '/pricing'),
+    'platform_insurance': ('Platform insurance', '/settings'),
 }
 
 

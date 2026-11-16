@@ -29,10 +29,21 @@ from django.db import transaction
 logger = logging.getLogger(__name__)
 
 
-def _fare_lines(fare):
+def _fare_lines(fare, pickup_lat=None, pickup_lng=None):
     from servers.ride import invoice_lines
     try:
-        return invoice_lines.from_quote(fare)
+        zone = None
+        if pickup_lat is not None and pickup_lng is not None:
+            from servers.pricing.services import find_zone_for_point
+            zone = find_zone_for_point(float(pickup_lat), float(pickup_lng))
+        from base import legal_entity
+        shown = zone is None or legal_entity.tax_shown(zone)
+        if not shown:
+            # Not GST-registered (13 Nov): the same total, explained without a GST line.
+            fare = {**fare, 'tax_amount': '0', 'tax_percent': '0'}
+        lines = invoice_lines.from_quote(fare)
+        lines['tax_shown'] = shown
+        return lines
     except Exception:  # noqa: BLE001 - the quote must still answer
         logger.exception('fare lines failed')
         return None
@@ -79,6 +90,15 @@ def _rider_reason(fare):
         from servers.pricing.models import ServiceZone
         name = (ServiceZone.objects.filter(code=code).values_list('name', flat=True).first() or '').strip()
     return f'Higher demand near {name}' if name else 'Higher demand right now'
+
+def trip_not_found(trip_id):
+    """The one answer for a trip the caller may not see, the same as for a trip that does not
+    exist (13 Nov): a stranger learns nothing, not even that the trip is there."""
+    return error_response(
+        code='NOT_FOUND', message='Trip not found.', field='trip_id',
+        issue=f'No trip {trip_id}', status=status.HTTP_404_NOT_FOUND,
+    )
+
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -180,6 +200,12 @@ def estimate_fare(request):
     area_ok, area_code, area_msg = validate_service_area_detail(
         pickup_lat, pickup_long, destination_lat, destination_long,
     )
+    # A city not launched yet still shows its fares (13 Nov): riders sign up and see what a trip
+    # costs; only Book is refused, with "We're launching in <city> soon".
+    launching = None
+    if not area_ok and area_code == 'CITY_NOT_LIVE':
+        launching = {'code': area_code, 'message': area_msg}
+        area_ok = True
     if not area_ok:
         return error_response(
             code=area_code,
@@ -296,13 +322,15 @@ def estimate_fare(request):
         ],
         # 12 Nov: "How this fare is worked out" -- the lines before tax, the taxable value, the
         # tax and the total, adding up to the paisa, built as the tax invoice builds them.
-        'fare_lines': _fare_lines(fare),
+        'fare_lines': _fare_lines(fare, pickup_lat, pickup_long),
         'vehicle_type': fare['vehicle_type'],
         'pricing_source': fare['source'],
         'distance_km': distance_km,
         'duration_min': duration_min,
         'validated_km': validated_km,
         'validated_min': validated_min,
+        # 13 Nov: set when the pickup city has not launched yet (fares shown, booking refused).
+        'launching': launching,
     }, status.HTTP_200_OK)
 
 
@@ -498,7 +526,7 @@ def ride_history(request):
         user_id=request.user
     ).select_related(
         'status_id', 'driver_id', 'driver_id__user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
-    ).order_by('-requested_at')
+    ).prefetch_related('tips').order_by('-requested_at')
 
     # Optional status filter
     status_filter = request.query_params.get('status')
@@ -541,7 +569,7 @@ def driver_history(request):
         driver_id=driver
     ).select_related(
         'status_id', 'user_id', 'vehicle_id', 'vehicle_id__vehicle_type_id', 'zone'
-    ).order_by('-requested_at')
+    ).prefetch_related('tips').order_by('-requested_at')
 
     # Optional status filter
     status_filter = request.query_params.get('status')
@@ -626,13 +654,8 @@ def trip_detail(request, trip_id):
         trip.driver_id_id == request.user.driver.id
     )
     if not is_rider and not is_driver:
-        return error_response(
-            code='FORBIDDEN',
-            message='You do not have access to this trip',
-            field='trip_id',
-            issue='Only the rider or assigned driver can view this trip',
-            status=status.HTTP_403_FORBIDDEN
-        )
+        # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
+        return trip_not_found(trip_id)
 
     serializer = TripDetailSerializer(trip, context={'request': request})
     return success_response(serializer.data, status.HTTP_200_OK)
@@ -674,13 +697,8 @@ def trip_driver_details(request,trip_id):
         and auth_trip.driver_id_id == request.user.driver.id
     )
     if not (is_rider or is_driver or request.user.is_staff):
-        return error_response(
-            code='FORBIDDEN',
-            message='You do not have access to this trip',
-            field='trip_id',
-            issue='Only the rider or assigned driver can view this trip',
-            status=status.HTTP_403_FORBIDDEN
-        )
+        # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
+        return trip_not_found(trip_id)
 
     cached = get_cached_trip(trip_id)
     if cached and 'driver_id' in cached:
@@ -907,11 +925,8 @@ def receipt_pdf(request, trip_id):
             status=status.HTTP_404_NOT_FOUND,
         )
     if not (trip.user_id_id == request.user.id or request.user.is_staff):
-        return error_response(
-            code='FORBIDDEN', message='Not your trip.',
-            field='trip_id', issue='User mismatch',
-            status=status.HTTP_403_FORBIDDEN,
-        )
+        # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
+        return trip_not_found(trip_id)
     receipt = Receipt.objects.filter(trip_id=trip).order_by('-version', '-id').first()
     if not receipt or not receipt.pdf_file:
         return error_response(
@@ -1008,11 +1023,8 @@ def trip_chat_history(request, trip_id):
     is_rider = trip.user_id_id == request.user.id
     is_driver = trip.driver_id and trip.driver_id.user_id_id == request.user.id
     if not (is_rider or is_driver or request.user.is_staff):
-        return error_response(
-            code='FORBIDDEN', message='Not a participant.',
-            field='trip_id', issue='User mismatch',
-            status=status.HTTP_403_FORBIDDEN,
-        )
+        # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
+        return trip_not_found(trip_id)
 
     qs = ChatMessage.objects.filter(trip=trip).order_by('created_at')
     paginator = PageNumberPagination()
@@ -1060,11 +1072,8 @@ def resend_receipt(request, trip_id):
         )
 
     if not (trip.user_id_id == request.user.id or request.user.is_staff):
-        return error_response(
-            code='FORBIDDEN', message='Only the rider or an admin may resend.',
-            field='trip_id', issue='User mismatch',
-            status=status.HTTP_403_FORBIDDEN,
-        )
+        # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
+        return trip_not_found(trip_id)
 
     if not trip.status_id or trip.status_id.status_code != 'completed':
         return error_response(
@@ -1139,6 +1148,10 @@ def driver_cancel_trip(request, trip_id):
     from servers.driver.fatigue import apply_cancellation_penalty
     from servers.rider.models import Notification
 
+    # 13 Nov: a trip that is not this driver's is "not found", before anything about the body.
+    if not Trip.objects.filter(id=trip_id, driver_id__user_id=request.user).exists():
+        return trip_not_found(trip_id)
+
     reason = (request.data.get('reason') or '').strip()
     note = (request.data.get('note') or '').strip()
     valid_reasons = {'no_show', 'vehicle_issue', 'safety', 'personal', 'other'}
@@ -1158,13 +1171,7 @@ def driver_cancel_trip(request, trip_id):
             ).get(id=trip_id)
 
             if not trip.driver_id or trip.driver_id.user_id_id != request.user.id:
-                return error_response(
-                    code='FORBIDDEN',
-                    message='Only the assigned driver can cancel this trip.',
-                    field='trip_id',
-                    issue='Driver mismatch',
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+                return trip_not_found(trip_id)
 
             current_state = (trip.status_id.status_code if trip.status_id else '').lower()
             if current_state not in ('accepted', 'reached'):
@@ -1300,13 +1307,7 @@ def rider_cancel_trip(request, trip_id):
 
             # 1. Authorization: only the trip's rider
             if trip.user_id_id != request.user.id:
-                return error_response(
-                    code='FORBIDDEN',
-                    message='Only the rider who booked this trip can cancel it.',
-                    field='trip_id',
-                    issue='Rider mismatch',
-                    status=status.HTTP_403_FORBIDDEN,
-                )
+                return trip_not_found(trip_id)  # 13 Nov: not yours reads as not there
 
             # Before a driver is assigned there is no driver to be late or at the wrong point (11 Nov).
             if reason in DRIVER_ONLY_CANCEL_REASONS and not trip.driver_id_id:
@@ -1582,24 +1583,42 @@ def _maps_error_response():
         status=status.HTTP_502_BAD_GATEWAY,
     )
 
-def _rider_search_scope(user):
-    """(cache tag, bounds, country) for a search with no location: the last trip's city zone,
-    else the market country (the number's country, else the deployment's default)."""
-    if not getattr(user, 'is_authenticated', False):
-        return '', None, None
+def operating_countries():
+    """The countries with an active service zone (14 Nov: IN and US), sorted."""
+    from servers.pricing.models import ServiceZone
+
+    return sorted({str(c).upper() for c in ServiceZone.objects.filter(is_active=True)
+                   .exclude(country='').values_list('country', flat=True) if c})
+
+
+def _country_centre(country):
+    """`"lat,lng"` of a country's first active city zone (its launch city), or None."""
+    from servers.pricing.models import ServiceZone
     from servers.ride.maps_utils import zone_bounds
-    last = (Trip.objects.filter(user_id=user, zone__isnull=False).select_related('zone')
-            .order_by('-requested_at').first())
-    if last is not None:
-        zone = last.zone
-        while zone.parent_id and zone.zone_type not in ('city', 'state', 'country'):
-            zone = zone.parent
-        return zone.code, zone_bounds(zone.polygon_geojson), zone.country
-    from base.countries import country_of_phone
-    from servers.platform_ops.markets import default_phone_country
-    found = country_of_phone(getattr(user, 'phone_number', None))
-    country = (found.code if found else None) or default_phone_country()
-    return (f'country-{country}' if country else ''), None, country
+
+    zones = ServiceZone.objects.filter(is_active=True, country=country).order_by('id')
+    for zone in sorted(zones, key=lambda z: z.zone_type != 'city'):
+        box = zone_bounds(zone.polygon_geojson)
+        if box:
+            south, west, north, east = box
+            return f'{(south + north) / 2:.5f},{(west + east) / 2:.5f}'
+    return None
+
+
+def _search_bias(request, countries):
+    """Where to rank suggestions from, with no location (14 Nov, owner): the country chosen in
+    the header (`market`), else the signed-in account's market (its phone number's country)."""
+    chosen = str(request.data.get('market') or '').strip().upper()
+    if chosen in countries:
+        return _country_centre(chosen), chosen
+    user = request.user
+    if getattr(user, 'is_authenticated', False):
+        from base.countries import country_of_phone
+
+        found = country_of_phone(getattr(user, 'phone_number', None))
+        if found is not None and found.code in countries:
+            return _country_centre(found.code), found.code
+    return None, ''
 
 
 # Place SEARCH is open to guests so the public homepage can offer a real
@@ -1646,13 +1665,20 @@ def proxy_geocode(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # No location and no zone (11 Nov): "Charminar" typed with location off listed two California
-    # restaurants first. A signed-in rider's search keeps to the city of their last trip, else
-    # their market's country.
-    if not location and not bounds:
-        scope_code, bounds, country = _rider_search_scope(request.user)
-        if bounds or country:
-            zone_code = scope_code
+    # The pickup point decides the market (owner, 14 Nov). With no zone, suggestions come from
+    # EVERY operating country (IN, US), ranked nearest the visitor: their location, else the
+    # country chosen in the header, else their account's market. "Boise State University"
+    # typed by an India visitor in Hyderabad still finds Boise.
+    if not bounds:
+        countries = operating_countries()
+        country = countries or None
+        if not location:
+            location, chosen = _search_bias(request, countries)
+            zone_code = f'near-{chosen}' if chosen else ''
+        else:
+            zone_code = ''
+        if countries:
+            zone_code = f"{zone_code}:{'-'.join(countries)}"
 
     # v2: entries cached before predictions carried `structured_formatting`
     # would serve blank rows for 30 days.

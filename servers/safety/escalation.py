@@ -1,4 +1,5 @@
-"""The escalation sweep: an alarm nobody took raises its voice. Once.
+"""The escalation sweep: an alarm nobody took raises its voice, and (12 Nov) keeps phoning
+people on call until somebody takes it (oncall.py).
 
 Two rules, each driven by the country's `SafetyCountryConfig`:
 
@@ -180,6 +181,20 @@ def sweep(now=None):
             if escalate_sos(event, config, now):
                 summary['sos_escalated'] += 1
 
+        # 12 Nov: the chain. Every still-open SOS past its interval pages the next person on call
+        # (oncall.py), round after round, until somebody acknowledges it.
+        from . import oncall
+        pending = []
+        for event in (SOSEvent.objects.filter(status='open', created_at__lte=cutoff)
+                      .select_related('anchor_node', 'anchor_node__parent', 'user', 'trip', 'trip__zone',
+                                      'trip__zone__geo_node', 'incident')
+                      .order_by('created_at')[:BATCH]):
+            country = services.country_for(event.anchor_node, trip=event.trip, user=event.user)
+            config = configs.get(country)
+            if config is not None and config.sos_ack_minutes:
+                pending.append((event, config.sos_ack_minutes))
+        summary['sos_paged'] = oncall.sweep(pending, now)
+
     shortest = _shortest(configs, 'incident_assign_minutes')
     if shortest:
         cutoff = now - timedelta(minutes=shortest)
@@ -197,6 +212,7 @@ def sweep(now=None):
             if escalate_incident(incident, config, now):
                 summary['incidents_escalated'] += 1
 
-    if summary['sos_escalated'] or summary['incidents_escalated'] or summary['backfilled']:
+    if (summary['sos_escalated'] or summary['incidents_escalated'] or summary['backfilled']
+            or summary.get('sos_paged')):
         logger.warning('safety escalation sweep: %s', summary)
     return summary

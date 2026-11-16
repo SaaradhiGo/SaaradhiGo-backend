@@ -97,16 +97,61 @@ class TestEndOfDay:
         rows = WalletTransaction.objects.filter(purpose='platform_fee')
         assert rows.count() == (1 if fee else 0) and sum(r.amount_minor for r in rows) == fee
         if n == 12:
-            assert row.explanation == 'Today: 12 trips × ₹10.00 = ₹120.00 (cap ₹149.00)'
+            assert row.explanation == '20 Nov: 12 trips × ₹10.00 = ₹120.00 (cap ₹149.00)'
         if n == 3:
-            assert row.explanation == 'No fee today: earnings under ₹1,000.00.'
+            assert row.explanation == 'No fee on 20 Nov: earnings under ₹1,000.00.'
 
     def test_the_hourly_job_charges_yesterday_once(self, india):
         trips_on(india, DAY, 12)
         now = datetime(2026, 11, 21, 3, 0, tzinfo=dt_tz.utc)              # 08:30 IST next day
-        assert fee_plans.charge_yesterday(now)['IN'] == {'day': '2026-11-20', 'drivers': 1}
+        assert fee_plans.charge_yesterday(now)['IN'] == {'drivers': 1, 'days': {'Asia/Kolkata': '2026-11-20'}}
         fee_plans.charge_yesterday(now)
         assert WalletTransaction.objects.filter(purpose='platform_fee').count() == 1
+
+    def test_a_plan_retired_before_the_day_charges_nothing(self, india):
+        # 15 Nov (QA, US test driver): trips booked under a plan keep it, but if that plan was
+        # retired before the day (or never in force), the day is not charged.
+        trips_on(india, DAY, 12)
+        india.plan.status = 'archived'
+        india.plan.effective_to = DAY
+        india.plan.save()
+        row = fee_plans.charge_day(india.driver, 'IN', DAY)
+        assert (row.fee_minor, row.reason) == (0, 'not_in_force')
+        assert not WalletTransaction.objects.filter(purpose='platform_fee').exists()
+        assert fee_plans.charge_day(india.driver, 'IN', DAY) == row
+
+    def test_a_days_fee_is_refunded_once_and_shows_on_the_statement_and_earnings(self, india):
+        # 15 Nov (QA driver 30): Nov 14's fee under a plan never approved goes back as a
+        # platform_fee_refund credit against the day; a second run writes nothing.
+        from servers.driver.earnings_history import _fee_rows
+        from servers.payments.ledger import build_statement, entry_dicts
+
+        trips_on(india, DAY, 12)
+        row = fee_plans.charge_day(india.driver, 'IN', DAY)
+        wallet = Wallet.objects.get(user_id=india.driver.user_id, scope='driver')
+        before = wallet.balance_minor
+        assert fee_plans.refund_day(india.driver, DAY) == (row.fee_minor, row.fee_minor, False)
+        assert fee_plans.refund_day(india.driver, DAY, apply=True) == (row.fee_minor, row.fee_minor, True)
+        assert fee_plans.refund_day(india.driver, DAY, apply=True)[2] is True
+        refunds = WalletTransaction.objects.filter(purpose='platform_fee_refund', reference_id=f'DAY_{DAY:%Y%m%d}')
+        assert refunds.count() == 1 and refunds.get().amount_minor == row.fee_minor
+        wallet.refresh_from_db()
+        assert wallet.balance_minor == before + row.fee_minor
+        assert sum(r.amount_minor if r.txn_type == 'debit' else -r.amount_minor
+                   for r in _fee_rows(india.driver)) == 0
+        from datetime import timedelta
+
+        from django.utils import timezone
+        today = timezone.now().date()
+        from datetime import datetime, time
+
+        st = build_statement(india.driver, datetime.combine(today - timedelta(days=400), time.min, dt_tz.utc),
+                             datetime.combine(today + timedelta(days=1), time.min, dt_tz.utc))
+        entries = entry_dicts(india.driver, st['rows'], st['opening_minor'], 0, 50)
+        assert 'Platform fee refunded' in str(entries)
+        from servers.driver.earnings_history import _fee_note
+        refund_row = WalletTransaction.objects.get(purpose='platform_fee_refund')
+        assert _fee_note(refund_row, {}) == 'Platform fee refunded for 20 Nov'
 
     def test_cash_driver_owes_it_from_the_next_earnings(self, india):
         trips_on(india, DAY, 12, method='cash')

@@ -89,6 +89,7 @@ WRITING_COMMANDS = [
     'seed_safety_config',
     'seed_support_sla',
     'seed_us_test_city',
+    'seed_us_idaho_qa',
     'set_operator_password',
 ]
 
@@ -332,6 +333,13 @@ def _fp_us_seed():
             User.objects.count(), Driver.objects.count(), Trip.objects.count())
 
 
+def _fp_idaho_seed():
+    from servers.pricing.models import RateCard
+
+    return (User.objects.count(), Driver.objects.count(),
+            RateCard.objects.filter(zone__code='US-ID-TV').count())
+
+
 def _prepare_seed_policies(settings, monkeypatch):
     return [], {}
 
@@ -534,6 +542,8 @@ CASES = [
          _prepare_us_seed, _fp_us_seed, needs_operator_to_prepare=True),
     Case('seed_us_test_city --remove', 'seed_us_test_city',
          _prepare_us_seed_remove, _fp_us_seed, needs_operator_to_prepare=True),
+    Case('seed_us_idaho_qa', 'seed_us_idaho_qa',
+         _prepare_us_seed, _fp_idaho_seed, needs_operator_to_prepare=True),
     Case('bootstrap_qa_operator', 'bootstrap_qa_operator',
          _prepare_bootstrap_operator, _fp_users, unattended=True, genesis=True),
     Case('bootstrap_qa_accounts', 'bootstrap_qa_accounts',

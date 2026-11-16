@@ -82,6 +82,20 @@ def _rider_fee_line(trip):
     return None
 
 
+def _tip_rows_html(trip, currency):
+    """14 Nov (USA): the rider's tip, 100% to the driver, on its own line."""
+    from base.money import from_minor
+
+    try:
+        tip = trip.tips.filter(status='succeeded').first()
+    except Exception:  # noqa: BLE001 - a receipt never fails for want of a tip
+        tip = None
+    if tip is None:
+        return ''
+    return (f'<tr><td>Tip (100% to your driver)</td><td style="text-align:right;">'
+            f'+{format_money(from_minor(tip.amount_minor, tip.currency), currency)}</td></tr>')
+
+
 def _due_rows_html(trip, currency):
     fee = _rider_fee_line(trip)
     head = (f'<tr><td>{escape(fee[0])}</td><td style="text-align:right;">'
@@ -118,24 +132,39 @@ def _brand():
     return getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo')
 
 
-def _legal_entity():
-    """The registered entity, which is not the same thing as the brand.
-
-    Appears on the GST receipt beside the MVA-2020 aggregator statement. The name
-    itself is unchanged from what was already shipping -- only the "(operating
-    VahanGo)" parenthetical was removed. Whether this is the correct registered name,
-    and whether a GSTIN and registered address must also appear, is a question for the
-    business and its accountants.
-    """
-    return (getattr(settings, 'PLATFORM_LEGAL_ENTITY', '') or '').strip()
+def _entity(trip=None):
+    from base import legal_entity
+    return legal_entity.entity_for_trip(trip) if trip is not None else legal_entity.entity()
 
 
-def aggregator_line():
-    """The MVAG 2025 statement, naming the registered entity only when it is configured."""
-    who = _legal_entity()
+def _legal_entity(trip=None):
+    """The entity operating the trip's market (base/legal_entity.py, 13 Nov), not the brand."""
+    return _entity(trip).get('legal_name', '')
+
+
+def aggregator_line(trip=None):
+    """The issuer statement. India: the MVAG 2025 aggregator statement. Elsewhere: who arranged it."""
+    e = _entity(trip)
+    who = e.get('legal_name', '')
+    if e['country'] != 'IN':
+        return f'This trip was arranged by {who}.' if who else ''
     return (f'{who} is an aggregator' if who else 'This trip was arranged by an aggregator') + (
         ' under the Motor Vehicles Aggregator Guidelines 2025 issued by the Ministry of Road '
         'Transport & Highways, Government of India.')
+
+
+def tax_shown_for(trip, gst_amount=None):
+    """Does this rider document carry tax lines? Yes when the market's entity is GST-registered
+    (or the tax is additive), and for a receipt already issued with tax (it stays what it was)."""
+    from base import legal_entity
+    if gst_amount not in (None, '') and Decimal(str(gst_amount)) != 0:
+        return True
+    return legal_entity.tax_shown(getattr(trip, 'zone', None))
+
+
+def document_title(invoice):
+    """'Tax invoice' with GST; 'Receipt' without (13 Nov)."""
+    return 'Tax invoice' if invoice.get('tax_shown', True) else 'Receipt'
 
 
 def receipt_invoice(trip, *, total, gst_amount, currency, fare_pricing=None, tax_percent=None):
@@ -145,12 +174,84 @@ def receipt_invoice(trip, *, total, gst_amount, currency, fare_pricing=None, tax
     if fare_pricing is None:
         from servers.ride.models import FarePricing
         fare_pricing = FarePricing.objects.filter(trip_id=trip).order_by('-id').first()
-    if tax_percent is None:
+    shown = tax_shown_for(trip, gst_amount)
+    if not shown:
+        tax_percent, gst_amount = Decimal('0'), Decimal('0')
+    elif tax_percent is None:
         tax_percent = _resolve_tax_rate(trip)
     label = get_country(getattr(getattr(trip, 'zone', None), 'country', None)).tax_label
-    return invoice_lines.from_receipt(
+    invoice = invoice_lines.from_receipt(
         trip, SimpleNamespace(total_fare=total, gst_amount=gst_amount, currency=currency),
         fare_pricing, tax_percent, label)
+    invoice['tax_shown'] = shown
+    invoice['title'] = document_title(invoice)
+    if (getattr(getattr(trip, 'zone', None), 'country', '') or '').upper() == 'US':
+        invoice = us_receipt(trip, invoice)
+    return with_refunds(trip, invoice)
+
+
+def with_refunds(trip, invoice):
+    """15 Nov: each refund sent on the trip, then what the rider was charged net of them."""
+    from base.market_dates import full_date
+    from base.market_time import trip_timezone
+    from base.money import from_minor
+    from servers.ride.models import TripMoneyAction
+
+    try:
+        rows = list(TripMoneyAction.objects.filter(trip=trip, kind=TripMoneyAction.REFUND,
+                                                   status=TripMoneyAction.COMPLETED).order_by('created_at', 'id'))
+    except Exception:  # noqa: BLE001 - a receipt never fails for want of its refunds
+        logger.exception('refunds for receipt failed trip=%s', getattr(trip, 'pk', None))
+        rows = []
+    if not rows:
+        return invoice
+    country = (getattr(getattr(trip, 'zone', None), 'country', '') or 'IN').upper()
+    tz = trip_timezone(trip)
+    refunds = [{'label': 'Refunded to your wallet' if r.method == TripMoneyAction.WALLET_CREDIT
+                else 'Refunded to your card',
+                'amount': str(from_minor(r.amount_minor, r.currency)),
+                'date': full_date(r.created_at.astimezone(tz), country)} for r in rows]
+    charged = Decimal(invoice.get('total_charged') or invoice['total'])
+    net = charged - sum((Decimal(x['amount']) for x in refunds), Decimal('0'))
+    return {**invoice, 'refunds': refunds, 'net_charged': str(max(net, Decimal('0')))}
+
+
+def _refund_rows_html(invoice, currency):
+    if not invoice.get('refunds'):
+        return ''
+    rows = ''.join(f'<tr><td>{escape(x["label"])} · {escape(x["date"])}</td><td style="text-align:right;">'
+                   f'-{format_money(Decimal(x["amount"]), currency)}</td></tr>' for x in invoice['refunds'])
+    return rows + ('<tr style="background: #f9fafb;"><td><b>Net charged</b></td><td style="text-align:right;"><b>'
+                   f'{format_money(Decimal(invoice["net_charged"]), currency)}</b></td></tr>')
+
+
+def us_receipt(trip, invoice):
+    """A US rider's receipt (Srini's ruling, 14 Nov; text only, no amount changes): titled
+    "Receipt", no taxable value, and the lines Fare, Booking fee, Tip, Total charged. A sales tax
+    line appears only if a tax was charged. India keeps its receipt or tax invoice rules."""
+    total = Decimal(invoice['total'])
+    fee = sum((Decimal(x['amount']) for x in invoice['extras'] if x['code'] == 'per_trip_fee'), Decimal('0'))
+    others = [dict(x) for x in invoice['extras'] if x['code'] != 'per_trip_fee']
+    tax = Decimal(invoice['tax']['amount'] or '0')
+    fare = total - fee - tax - sum((Decimal(x['amount']) for x in others), Decimal('0'))
+    tip = Decimal('0')
+    try:
+        t = trip.tips.filter(status='succeeded').first()
+        if t is not None:
+            from base.money import from_minor
+            tip = from_minor(t.amount_minor, t.currency)
+    except Exception:  # noqa: BLE001 - a receipt never fails for want of a tip
+        logger.exception('tip lookup for receipt failed trip=%s', getattr(trip, 'pk', None))
+    extras = others + ([{'code': 'per_trip_fee', 'label': 'Booking fee', 'amount': str(fee)}] if fee else [])
+    return {**invoice,
+            'title': 'Receipt',
+            'lines': [{'code': 'fare', 'label': 'Fare', 'amount': str(fare)}],
+            'taxable': None,
+            'tax_shown': tax != 0,
+            'extras': extras,
+            'tip': str(tip) if tip else None,
+            'total_charged': str(total + tip),
+            'market': 'US'}
 
 
 def invoice_tax_label(invoice):
@@ -169,10 +270,20 @@ def vehicle_line(v):
     return ' · '.join(x for x in (car, display_plate(getattr(v, 'vehicle_number', ''))) if x)
 
 
-def company_lines():
-    """The issuer on the tax invoice: name always; address and GSTIN when configured."""
-    return {'name': _legal_entity(), 'address': getattr(settings, 'PLATFORM_LEGAL_ADDRESS', ''),
-            'gstin': getattr(settings, 'PLATFORM_GSTIN', '')}
+def _issuer_html_line(trip):
+    c = company_lines(trip)
+    return ' · '.join(x for x in (c['name'], c['address'], f"CIN {c['cin']}" if c['cin'] else '',
+                                  f"GSTIN {c['gstin']}" if c['gstin'] else '') if x)
+
+
+def company_lines(trip=None):
+    """The issuer: the trip market's entity. Address, CIN and GSTIN only when configured; no GSTIN
+    while the entity is not GST-registered."""
+    e = _entity(trip)
+    return {'name': e.get('legal_name', ''), 'address': e.get('registered_address', ''),
+            'gstin': e.get('gstin', '') if e.get('gst_registered') else '',
+            'cin': e.get('cin', ''), 'support_email': e.get('support_email', ''),
+            'support_phone': e.get('support_phone', '')}
 
 
 def _rider_name(rider):
@@ -226,6 +337,8 @@ _RECEIPT_TEMPLATE = """\
 <html>
 <body style="font-family: Arial, sans-serif; color: #1f2937; max-width: 640px;">
   <h2 style="color: #EEBD2B;">{brand}</h2>
+  <p style="margin: 0 0 4px;"><b>{title}</b></p>
+  <p style="margin: 0 0 12px; color: #6b7280; font-size: 12px;">{issuer}</p>
   <p>Hi {rider_name},</p>
   <p>Thank you for riding with {brand}. Here is your receipt.</p>
 
@@ -244,7 +357,7 @@ _RECEIPT_TEMPLATE = """\
   <table cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; border: 1px solid #e5e7eb;">
     {fare_rows}
     {note_row}
-    <tr style="background: #f9fafb;"><td><b>Total fare</b></td><td style="text-align:right;"><b>{total_fare}</b></td></tr>
+    <tr style="background: #f9fafb;"><td><b>{total_label}</b></td><td style="text-align:right;"><b>{total_fare}</b></td></tr>
     {promo_rows}
   </table>
 
@@ -335,6 +448,15 @@ def format_distance(km, unit='km'):
     return f'{value.quantize(Decimal("0.01"))} km'
 
 
+def _receipt_when(trip, when):
+    """The trip's time where it happened, in the market's style (15 Nov): "Nov 14, 2026, 7:30 PM"
+    in the USA, "14 Nov 2026, 19:30" in India. It printed UTC before."""
+    from base.market_dates import date_time
+    from base.market_time import trip_timezone
+
+    return date_time(when.astimezone(trip_timezone(trip)), getattr(getattr(trip, 'zone', None), 'country', None))
+
+
 def _format_distance(trip):
     """The distance line on a receipt, in the trip's zone's unit."""
     km = trip.actual_distance_km or trip.estimated_distance_km
@@ -368,24 +490,31 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
         vehicle = vehicle_line(trip.vehicle_id)
 
     total = _total_fare(trip)
-    date_str = (trip.completed_at or timezone.now()).strftime('%d %b %Y, %H:%M')
+    date_str = _receipt_when(trip, trip.completed_at or timezone.now())
     invoice = receipt_invoice(trip, total=total, gst_amount=gst_amount, currency=currency,
                               fare_pricing=fare_pricing, tax_percent=gst_rate)
     _row = '<tr><td>{}</td><td style="text-align:right;">{}</td></tr>'
     fare_rows = ''.join(_row.format(escape(x['label']), format_money(Decimal(x['amount']), currency))
                         for x in invoice['lines'])
-    fare_rows += ('<tr><td><b>Taxable value</b></td><td style="text-align:right;"><b>'
-                  f"{format_money(Decimal(invoice['taxable']), currency)}</b></td></tr>")
-    fare_rows += _row.format(escape(invoice_tax_label(invoice)),
-                             format_money(Decimal(invoice['tax']['amount']), currency))
+    if invoice['tax_shown']:
+        if invoice.get('taxable') is not None:
+            fare_rows += ('<tr><td><b>Taxable value</b></td><td style="text-align:right;"><b>'
+                          f"{format_money(Decimal(invoice['taxable']), currency)}</b></td></tr>")
+        fare_rows += _row.format(escape(invoice_tax_label(invoice)),
+                                 format_money(Decimal(invoice['tax']['amount']), currency))
     fare_rows += ''.join(_row.format(escape(x['label']), format_money(Decimal(x['amount']), currency))
                          for x in invoice['extras'])
+    us = invoice.get('market') == 'US'
+    if us and invoice.get('tip'):
+        fare_rows += _row.format('Tip (100% to your driver)', format_money(Decimal(invoice['tip']), currency))
 
     return _RECEIPT_TEMPLATE.format(
         # Read from settings, never hardcoded: this document used to name two
         # different brands in the same page.
         brand=escape(str(getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo'))),
-        aggregator_line=escape(aggregator_line()),
+        aggregator_line=escape(aggregator_line(trip)),
+        title=escape(invoice['title']),
+        issuer=escape(_issuer_html_line(trip)),
         rider_name=escape(str(rider_name)),
         receipt_number=escape(receipt_number),
         trip_id=trip.id,
@@ -396,7 +525,8 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
         driver_name=escape(str(driver_name)),
         vehicle=escape(str(vehicle or '—')),
         fare_rows=fare_rows,
-        total_fare=format_money(total, currency),
+        total_label='Total charged' if us else 'Total fare',
+        total_fare=format_money(Decimal(invoice['total_charged']) if us else total, currency),
         note_row=(f'<tr><td colspan="2"><b>{escape(operator_end_note(trip))}</b></td></tr>'
                   if operator_end_note(trip) else ''),
         promo_rows=_due_rows_html(trip, currency) + ''.join(
@@ -404,7 +534,8 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
             f'-{format_money(discount, currency)}</td></tr>'
             f'<tr style="background: #f9fafb;"><td><b>Amount charged</b></td>'
             f'<td style="text-align:right;"><b>{format_money(charged, currency)}</b></td></tr>'
-            for label, discount, charged in promo_lines(trip)),
+            for label, discount, charged in promo_lines(trip)) + ('' if us else _tip_rows_html(trip, currency))
+        + _refund_rows_html(invoice, currency),
         payment_method=escape(str(trip.payment_method or '—')),
         payment_status=escape(str(trip.payment_status or '—')),
     )
@@ -436,7 +567,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         leftMargin=18 * mm, rightMargin=18 * mm,
         topMargin=18 * mm, bottomMargin=18 * mm,
         title=f'{_brand()} receipt {receipt.receipt_number}',
-        author=_legal_entity() or _brand(),
+        author=_legal_entity(receipt.trip_id) or _brand(),
     )
     styles = getSampleStyleSheet()
     h1 = ParagraphStyle('h1', parent=styles['Heading1'], textColor=colors.HexColor('#C59A1D'))
@@ -453,24 +584,28 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         driver_name = trip.driver_id.user_id.full_name or ''
     if trip.vehicle_id:
         vehicle = vehicle_line(trip.vehicle_id)
-    company = company_lines()
+    company = company_lines(trip)
 
     story = []
     story.append(Paragraph(escape(' / '.join(x for x in (_brand(), company['name']) if x)), h1))
-    story.append(Paragraph('Tax invoice / Trip receipt', h2))
-    for line in (company['address'], f"GSTIN {company['gstin']}" if company['gstin'] else ''):
+    _shown = tax_shown_for(trip, receipt.gst_amount)
+    _us = (getattr(getattr(trip, 'zone', None), 'country', '') or '').upper() == 'US'
+    # 14 Nov (Srini): a US rider's document is a Receipt, never a tax invoice.
+    story.append(Paragraph('Receipt' if _us else ('Tax invoice / Trip receipt' if _shown else 'Receipt'), h2))
+    for line in (company['address'], f"CIN {company['cin']}" if company['cin'] else '',
+                 f"GSTIN {company['gstin']}" if company['gstin'] else ''):
         if line:
             story.append(Paragraph(escape(line), body))
     story.append(Spacer(1, 6))
 
     meta_rows = [
-        ['Invoice number', receipt.receipt_number],
+        ['Invoice number' if _shown else 'Receipt number', receipt.receipt_number],
         ['Issued to', rider_name],
         ['Trip ID', f'#{trip.id}'],
-        ['Date', (trip.completed_at or receipt.issued_at).strftime('%d %b %Y, %H:%M')],
+        ['Date', _receipt_when(trip, trip.completed_at or receipt.issued_at)],
         ['Pickup', Paragraph(escape(trip.pickup_address or '—'), body)],
         ['Drop', Paragraph(escape(trip.destination_address or '—'), body)],
-        ['Distance', f"{trip.actual_distance_km or trip.estimated_distance_km or '—'} km"],
+        ['Distance', _format_distance(trip)],
         ['Driver', driver_name or '—'],
         ['Vehicle', vehicle or '—'],
     ]
@@ -504,15 +639,19 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     fare_rows = [
         ['Description', f'Amount ({_currency})'],
         *[[x['label'], _m(x['amount'])] for x in invoice['lines']],
-        ['Taxable value', _m(invoice['taxable'])],
-        [invoice_tax_label(invoice), _m(invoice['tax']['amount'])],
+        *([['Taxable value', _m(invoice['taxable'])]] if invoice['tax_shown'] and invoice.get('taxable') is not None else []),
+        *([[invoice_tax_label(invoice), _m(invoice['tax']['amount'])]] if invoice['tax_shown'] else []),
         *[[x['label'], _m(x['amount'])] for x in invoice['extras']],
+        *([['Tip (100% to your driver)', _m(invoice['tip'])]] if invoice.get('market') == 'US' and invoice.get('tip') else []),
         *([[operator_end_note(trip), '']] if operator_end_note(trip) else []),
-        ['Total fare', format_money(receipt.total_fare, _currency, with_symbol=False)],
+        (['Total charged', _m(invoice['total_charged'])] if invoice.get('market') == 'US'
+         else ['Total fare', format_money(receipt.total_fare, _currency, with_symbol=False)]),
         *_due_rows_pdf(trip, _currency),
         *[row for label, discount, charged in promo_lines(trip) for row in (
             [label, '-' + format_money(discount, _currency, with_symbol=False)],
             ['Amount charged', format_money(charged, _currency, with_symbol=False)])],
+        *[[f"{x['label']} · {x['date']}", '-' + _m(x['amount'])] for x in invoice.get('refunds') or []],
+        *([['Net charged', _m(invoice['net_charged'])]] if invoice.get('refunds') else []),
     ]
     fare_table = Table(fare_rows, colWidths=[110 * mm, 55 * mm])
     fare_table.setStyle(TableStyle([
@@ -538,7 +677,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     ))
     story.append(Spacer(1, 16))
     story.append(Paragraph(
-        escape(aggregator_line()) + ' For any dispute '
+        escape(aggregator_line(trip)) + ' For any dispute '
         'about this fare, please contact support within 30 days quoting the '
         'Receipt number above.',
         small,
@@ -621,12 +760,39 @@ def _send_receipt_email(receipt):
         body=f'Your {_brand()} trip receipt is enclosed (HTML + PDF).',
         html=receipt.html_body,
         attachments=attachments,
+        country=getattr(getattr(getattr(receipt, 'trip_id', None), 'zone', None), 'country', None),
     )
     if not sent:
         logger.warning(
             'receipt email not sent for receipt=%s: %s', receipt.id, reason,
         )
+    _log_receipt_email(receipt, to_addr, sent, reason)
     return sent, reason[:512]
+
+
+def _log_receipt_email(receipt, to_addr, sent, reason):
+    """14 Nov: every receipt email, sent or not, is a row in the console's message log, with the
+    address masked. QA cannot send email, so there the row says why."""
+    try:
+        from servers.notifications.models import FAILED, SENT, NotificationMessage
+
+        local, _, domain = (to_addr or '').partition('@')
+        masked = f'{local[:2]}***@{domain}' if domain else '***'
+        trip = getattr(receipt, 'trip_id', None)
+        n = NotificationMessage.objects.filter(template_key='trip_receipt',
+                                               idempotency_key__startswith=f'receipt:{receipt.id}:').count()
+        NotificationMessage.objects.create(
+            template_key='trip_receipt', channel='email', category='transactional',
+            country=getattr(getattr(trip, 'zone', None), 'country', '') or '',
+            recipient_user_id=getattr(receipt, 'user_id_id', 0) or 0, recipient_masked=masked,
+            provider='ses', status=SENT if sent else FAILED, attempts=1,
+            last_error='' if sent else str(reason or '')[:500], source=f'receipt {receipt.receipt_number}',
+            idempotency_key=f'receipt:{receipt.id}:{n + 1}',
+            subject=f'Your {_brand()} receipt {receipt.receipt_number}'[:200],
+            body=f'Receipt {receipt.receipt_number} for trip {getattr(trip, "id", "")}',
+            sent_at=timezone.now() if sent else None)
+    except Exception:  # noqa: BLE001 - the log never stops a receipt
+        logger.exception('receipt email log failed receipt=%s', getattr(receipt, 'id', None))
 
 
 def _resolve_tax_rate(trip):
@@ -702,6 +868,10 @@ def _receipt_tax(trip, total, rate):
     zone = getattr(trip, 'zone', None)
     mode = (getattr(zone, 'tax_mode', '') or 'inclusive')
     rate = Decimal(str(rate or '0'))
+    from base import legal_entity
+    if not legal_entity.tax_shown(zone):
+        # Not GST-registered (13 Nov): no tax is stated; the total the rider pays is unchanged.
+        rate = Decimal('0')
     total = Decimal(str(total))
     currency = currency_for_trip(trip)
 

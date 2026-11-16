@@ -8,16 +8,17 @@ unit test with a positive and a negative case, and nothing else: thresholds are 
 
 from . import (  # noqa: F401
     cancellation_abuse, collusion, gps_anomaly, incentive_farming, multi_accounting,
-    payment_abuse, referral_abuse,
+    payment_abuse, referral_abuse, unpaid_pair,
 )
 
 RULES = {
     module.RULE.key: module.RULE
     for module in (referral_abuse, multi_accounting, collusion, incentive_farming, gps_anomaly,
-                   cancellation_abuse, payment_abuse)
+                   cancellation_abuse, payment_abuse, unpaid_pair)
 }
 
-#: Rules the beat task evaluates (referral_abuse is raised by the reward check instead).
+#: Rules the beat task evaluates (referral_abuse is raised by the reward check and unpaid_pair by
+#: the payment path instead).
 SCHEDULED = tuple(key for key, rule in RULES.items() if rule.params)
 
 

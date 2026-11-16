@@ -19,6 +19,8 @@ class Rider(models.Model):
     rider disputes a low score.
     """
     user_id=models.OneToOneField(User,on_delete=models.CASCADE,related_name='rider')
+    #: 14 Nov (USA; Idaho 49-3713): "I use a folding wheelchair". The trip's driver sees it.
+    accessibility_note=models.CharField(max_length=200,blank=True,default='')
     created_at=models.DateTimeField(auto_now_add=True)
     rating=models.DecimalField(decimal_places=2,max_digits=3,default=5.00)
     rating_count=models.PositiveIntegerField(default=0)
@@ -99,6 +101,31 @@ class Wallet(models.Model):
         return f'{self.user_id} [{self.scope}] - {self.balance}'
 
 
+def new_wallet_currency(user, scope):
+    """The currency a NEW wallet is opened in: the market's, never the platform default.
+
+    14 Nov (QA, USA): a US driver's first settlement opened a driver wallet with the model default
+    (INR), so dollars were held and shown as rupees. A driver wallet takes the driver's payout
+    country (home city, then phone number); a rider wallet the account's phone number.
+    """
+    from base.countries import currency_for
+
+    try:
+        if scope == Wallet.SCOPE_DRIVER:
+            from servers.driver.models import Driver
+            from servers.payments.payout_config import driver_payout_country
+
+            driver = Driver.objects.filter(user_id=user).select_related('home_city').first()
+            country = driver_payout_country(driver) if driver is not None else None
+        else:
+            from base.countries import country_of_phone
+
+            country = country_of_phone(getattr(user, 'phone_number', '') or '')
+        return currency_for(country) if country else 'INR'
+    except Exception:  # noqa: BLE001 - opening a wallet must never fail on this
+        return 'INR'
+
+
 def get_wallet(user, scope=Wallet.SCOPE_RIDER, lock=False):
     """Fetch (or create) the wallet for a user in a given role.
 
@@ -107,7 +134,10 @@ def get_wallet(user, scope=Wallet.SCOPE_RIDER, lock=False):
     for every balance mutation.
     """
     qs = Wallet.objects.select_for_update() if lock else Wallet.objects
-    wallet, _ = qs.get_or_create(user_id=user, scope=scope)
+    wallet = qs.filter(user_id=user, scope=scope).first()
+    if wallet is None:
+        wallet, _ = qs.get_or_create(user_id=user, scope=scope,
+                                     defaults={'currency': new_wallet_currency(user, scope)})
     if wallet.balance is None:
         wallet.balance = Decimal('0.00')
     return wallet

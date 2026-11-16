@@ -33,6 +33,12 @@ def _check(inv):
     assert invoice_lines.adds_up(inv), inv
     for x in inv['lines'] + inv['extras']:
         assert D(x['amount']) == D(x['amount']).quantize(D('0.01')), x
+    if inv.get('market') == 'US':
+        # 14 Nov (Srini): a US receipt is Fare, Booking fee, Tip, Total charged; no taxable value.
+        assert inv['title'] == 'Receipt' and inv['taxable'] is None
+        assert [x['label'] for x in inv['lines']] == ['Fare']
+        assert all(x['label'] == 'Booking fee' for x in inv['extras'] if x['code'] == 'per_trip_fee')
+        return
     assert _sum(inv['lines']) == D(inv['taxable'])
 
 
@@ -119,7 +125,8 @@ def test_every_issued_receipt_adds_up_on_the_pdf_and_the_screen(market, settings
     from servers.ride.receipts import _build_receipt_pdf, receipt_invoice
     from servers.ride.serializers import TripDetailSerializer
 
-    settings.PLATFORM_LEGAL_ENTITY = ''
+    # GST on (13 Nov: off by default): this checks the tax lines add up.
+    settings.LEGAL_ENTITIES_JSON = '{"IN": {"gst_registered": true}}'
     rider, driver = _people()
     specs = [('in-day', 'IN', '3.2', '11', '1.00', False, 'cash', None),
              ('in-demand', 'IN', '18.7', '44', '1.40', False, 'cash', None),
@@ -147,22 +154,24 @@ def test_every_issued_receipt_adds_up_on_the_pdf_and_the_screen(market, settings
         # The PDF builds, and names no company that is not configured.
         pdf = _build_receipt_pdf(receipt)
         assert pdf and b'SaaradhiGo Mobility' not in pdf
-        # The email lists the taxable value and the included tax.
+        # The email lists the taxable value and the included tax (India); a US receipt has none.
         if receipt.currency == 'INR':
             assert 'Taxable value' in receipt.html_body and '(included)' in receipt.html_body
+        else:
+            assert 'Taxable value' not in receipt.html_body and 'Tax invoice' not in receipt.html_body
+            assert 'Minimum fare adjustment' not in receipt.html_body and 'Total charged' in receipt.html_body
         assert 'SaaradhiGo Mobility' not in receipt.html_body
 
 
 @pytest.mark.django_db
 def test_the_company_name_comes_from_config(settings):
+    """13 Nov: the entity per market (base/legal_entity.py); Srini's rulings name both."""
     from servers.ride.receipts import aggregator_line, company_lines
 
-    settings.PLATFORM_LEGAL_ENTITY = ''
-    assert company_lines()['name'] == ''
-    assert 'aggregator' in aggregator_line() and 'Mobility' not in aggregator_line()
-    settings.PLATFORM_LEGAL_ENTITY = 'Registered Name Pvt Ltd'
-    assert company_lines()['name'] == 'Registered Name Pvt Ltd'
-    assert aggregator_line().startswith('Registered Name Pvt Ltd is an aggregator')
+    settings.LEGAL_ENTITIES_JSON = ''
+    assert company_lines()['name'] == 'DeepTrics Software Solutions Pvt Ltd'
+    assert aggregator_line().startswith('DeepTrics Software Solutions Pvt Ltd is an aggregator')
+    assert 'Mobility' not in aggregator_line()
 
 
 # --- Confirm your email (12 Nov) ---------------------------------------------------------------

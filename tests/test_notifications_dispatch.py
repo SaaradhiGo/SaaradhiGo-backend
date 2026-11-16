@@ -567,4 +567,6 @@ class TestSweepAndGuards:
 
         from base import utils
         source = inspect.getsource(utils.send_otp_via_sns)
-        assert 'notifications' not in source and 'get_sns_client' in source
+        # 13 Nov: the code may go out through MSG91 / Twilio directly (integrations.sms.direct),
+        # never through the notifications dispatcher (quiet hours, preferences, campaigns).
+        assert 'dispatcher' not in source and 'get_sns_client' in source

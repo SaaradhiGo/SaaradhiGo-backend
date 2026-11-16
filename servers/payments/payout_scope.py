@@ -177,6 +177,17 @@ def provider_label(config):
 # ---------------------------------------------------------------------------
 
 def zone_of(config):
+    """The schedule's clock: a city's (or state's) own schedule runs on that place's time zone,
+    the country's on the country's (US: Mountain, where its cities are; India: IST)."""
+    scope = getattr(config, 'schedule_scope', '') or ''
+    if scope:
+        from django.db.models import Q
+
+        from servers.pricing.models import ServiceZone
+        name = (ServiceZone.objects.filter(Q(geo_node__code=scope) | Q(geo_node__parent__code=scope))
+                .exclude(timezone_name='').order_by('id').values_list('timezone_name', flat=True).first())
+        if name:
+            return ZoneInfo(name)
     return ZoneInfo(get_country(config.country).default_timezone)
 
 
@@ -321,5 +332,7 @@ def instant_limit(driver, config, amount_minor, now=None):
         return None
     when = next_payout_at(config, now)
     if when is not None:
-        message += f' Your next scheduled payout is {when.strftime("%d %b")}.'
+        from base.market_dates import day_month
+
+        message += f' Your next scheduled payout is {day_month(when, getattr(config, "country", ""))}.'
     return {'code': code, 'message': message, 'used_count': count, 'used_amount_minor': total}

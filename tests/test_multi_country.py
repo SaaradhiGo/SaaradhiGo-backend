@@ -452,8 +452,9 @@ def test_reporting_indias_inclusive_tax_does_not_add_it(india_zone, vehicle_type
 
 def test_us_tax_is_added_on_top(us_zone, vehicle_type):
     _card(us_zone, vehicle_type, '2.50', '1.75', '0.35', '8.00', '8.625')
+    # 14 Nov: a zone in miles is priced per MILE; 16.09344 km is 10 miles.
     q = quote_fare(pickup_lat=SF[0], pickup_lon=SF[1],
-                   distance_km=Decimal('10'), duration_min=Decimal('20'),
+                   distance_km=Decimal('16.09344'), duration_min=Decimal('20'),
                    vehicle_type='sedan', record_demand=False)
     assert q['tax_mode'] == 'additive'
     assert q['tax_amount'] > Decimal('0.00')
@@ -469,7 +470,7 @@ def test_a_flat_per_trip_fee_is_charged_and_named(us_zone, vehicle_type):
     _card(us_zone, vehicle_type, '2.50', '1.75', '0.35', '8.00', '8.625')
 
     q = quote_fare(pickup_lat=SF[0], pickup_lon=SF[1],
-                   distance_km=Decimal('10'), duration_min=Decimal('20'),
+                   distance_km=Decimal('16.09344'), duration_min=Decimal('20'),
                    vehicle_type='sedan', record_demand=False)
 
     fee = next(a for a in q['fare_adjustments'] if a['code'] == 'per_trip_fee')
@@ -561,8 +562,10 @@ def test_a_missing_rate_card_does_not_tax_a_us_trip_at_indias_rate(
     ('us_zone', 'US', '$', '₹', 'Sales tax', 'mi'),
 ])
 def test_the_receipt_speaks_the_markets_language(
-    request, zone_fixture, country, symbol, wrong, label, unit, vehicle_type,
+    request, zone_fixture, country, symbol, wrong, label, unit, vehicle_type, settings,
 ):
+    # The tax label shows only with GST on (13 Nov: off by default, tested elsewhere).
+    settings.LEGAL_ENTITIES_JSON = '{"IN": {"gst_registered": true}}'
     from unittest import mock
 
     from servers.ride.receipts import issue_receipt
@@ -927,8 +930,8 @@ def test_the_minimum_is_no_longer_what_blocks_a_us_driver(vehicle_type):
     assert '$' in msg and '₹' not in msg
 
 
-def test_an_indian_driver_still_has_a_500_rupee_minimum(vehicle_type):
-    """India's threshold must not have moved."""
+def test_an_indian_driver_has_the_rulings_100_rupee_minimum(vehicle_type):
+    """India's threshold is the owner's 2026-11-09 ruling: 100.00 INR."""
     _configure_payouts('IN')
     from servers.driver.services import (
         minimum_withdrawal_for, validate_withdrawal_amount,
@@ -938,10 +941,10 @@ def test_an_indian_driver_still_has_a_500_rupee_minimum(vehicle_type):
     Wallet.objects.create(user_id=d.user_id, balance=Decimal('1000.00'),
                           currency='INR')
 
-    assert minimum_withdrawal_for(d) == Decimal('500')
-    ok, msg = validate_withdrawal_amount(d, Decimal('100'))
+    assert minimum_withdrawal_for(d) == Decimal('100')
+    ok, msg = validate_withdrawal_amount(d, Decimal('50'))
     assert ok is False
-    assert '₹500.00' in msg, f'message was {msg!r}'
+    assert '₹100.00' in msg, f'message was {msg!r}'
 
 
 def test_an_insufficient_balance_message_uses_the_right_symbol(vehicle_type):
@@ -1039,3 +1042,12 @@ def test_every_console_template_still_compiles():
             broken.append(f'{path.name}: {exc}')
 
     assert not broken, f'templates failed to compile: {broken}'
+
+
+def test_a_miles_zone_is_priced_per_mile(us_zone, vehicle_type):
+    """14 Nov (USA): the card's per-distance rate is per MILE in a miles zone."""
+    _card(us_zone, vehicle_type, '2.00', '1.50', '0.00', '1.00', '0')
+    q = quote_fare(pickup_lat=SF[0], pickup_lon=SF[1], distance_km=Decimal('16.09344'),
+                   duration_min=Decimal('0'), vehicle_type='sedan', record_demand=False)
+    assert q['distance_unit'] == 'mi'
+    assert q['distance_fare'] == Decimal('15.00')      # 10 miles x $1.50

@@ -17,7 +17,7 @@ import logging
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
-from django.db.models import BigIntegerField, Sum, Value
+from django.db.models import BigIntegerField, Q, Sum, Value
 from django.db.models.functions import Coalesce
 
 logger = logging.getLogger(__name__)
@@ -116,11 +116,14 @@ def _bucket_keys(unit, first, last):
 
 def _fee_rows(driver, since=None, until=None):
     from servers.payments.ledger import counted
-    from servers.pricing.fee_plans import PURPOSE
+    from servers.pricing.fee_plans import PURPOSE, REFUND_PURPOSE
     from servers.rider.models import WalletTransaction
 
-    # A refund for a trip is on that trip's row (`settlement_rows`), on the trip's day; not here.
-    qs = counted(WalletTransaction.objects.filter(user_id=driver.user_id_id, purpose=PURPOSE))
+    # A refund for a trip is on that trip's row (`settlement_rows`), on the trip's day; not here. A
+    # refund of a whole day's fee (`DAY_<yyyymmdd>`, 15 Nov) is a fee line with the sign turned.
+    qs = counted(WalletTransaction.objects.filter(
+        Q(purpose=PURPOSE) | Q(purpose=REFUND_PURPOSE, reference_id__startswith='DAY_'),
+        user_id=driver.user_id_id))
     if since is not None:
         qs = qs.filter(created_at__gte=since)
     if until is not None:
@@ -137,6 +140,22 @@ def _payout_rows(driver, since=None, until=None):
     if until is not None:
         qs = qs.filter(created_at__lt=until)
     return list(qs.order_by('created_at', 'id'))
+
+
+def _fee_note(row, notes):
+    """The day's explanation for a fee line; a refund of a day's fee (15 Nov) says so."""
+    from servers.pricing.fee_plans import REFUND_PURPOSE
+
+    if row.purpose == REFUND_PURPOSE:
+        from datetime import date
+
+        from base.market_dates import day_month
+
+        ref = row.reference_id or ''
+        day = (day_month(date(int(ref[4:8]), int(ref[8:10]), int(ref[10:12])), 'US' if row.currency == 'USD' else 'IN')
+               if ref.startswith('DAY_') and len(ref) == 12 else '')
+        return f'Platform fee refunded{f" for {day}" if day else ""}'
+    return notes.get(row.reference_id, '')
 
 
 def _fee_amount(row):
@@ -190,6 +209,68 @@ def summarise_period(trips, fees, payouts, tz):
     }
 
 
+def _tips_enabled(driver):
+    """14 Nov: tips are a market rule (USA on, India off)."""
+    from servers.pricing.regulation import market_rules
+
+    from .records import market_of
+
+    country, state = market_of(driver)
+    return bool(market_rules(country or 'IN', state)['tips_enabled'])
+
+
+def cash_allowed_for(driver):
+    """14 Nov: cash is a market rule (Idaho 49-3712 bans it); the driver pages hide cash wording."""
+    from servers.pricing.regulation import market_rules
+
+    from .records import market_of
+
+    country, state = market_of(driver)
+    return bool(market_rules(country or 'IN', state)['cash_allowed'])
+
+
+def _with_tips(driver, summary, first, last, tz):
+    """Add the period's tips (100% the driver's) to the summary and to what they earned."""
+    from datetime import datetime, time, timedelta
+
+    from base.money import from_minor
+    from servers.payments.models import Tip
+
+    start = datetime.combine(first, time.min, tz)
+    end = datetime.combine(last + timedelta(days=1), time.min, tz)
+    tips = list(Tip.objects.filter(driver=driver, status='succeeded', created_at__gte=start, created_at__lt=end)
+                .values_list('amount_minor', 'currency'))
+    if not tips:
+        return summary
+    total = sum((from_minor(m, c) for m, c in tips), ZERO)
+    return {**summary, 'tips': total, 'tip_riders': len(tips), 'earned': summary['earned'] + total}
+
+
+def tips_by_trip(driver, trip_ids):
+    """15 Nov: each trip's tip (100% the driver's), so every per-trip row adds up to the cards."""
+    from base.money import from_minor
+    from servers.payments.models import Tip
+
+    ids = [i for i in trip_ids if i]
+    if not ids:
+        return {}
+    return {t: from_minor(m, c) for t, m, c in Tip.objects.filter(driver=driver, status='succeeded', trip_id__in=ids)
+            .values_list('trip_id', 'amount_minor', 'currency')}
+
+
+def tips_between(driver, since, until):
+    """[(created_at, amount)] of the driver's tips in `[since, until)`, as `_with_tips` counts them."""
+    from base.money import from_minor
+    from servers.payments.models import Tip
+
+    qs = Tip.objects.filter(driver=driver, status='succeeded')
+    if since is not None:
+        qs = qs.filter(created_at__gte=since)
+    if until is not None:
+        qs = qs.filter(created_at__lt=until)
+    return [(at, from_minor(m, c)) for at, m, c in qs.values_list('created_at', 'amount_minor', 'currency')]
+
+
 def _strings(summary):
     return {k: (str(v) if isinstance(v, Decimal) else v) for k, v in summary.items()}
 
@@ -239,7 +320,7 @@ def history(driver, period, anchor=None, start=None, end=None):
 
     unit = chart_unit(period, first, last)
     # Each bar carries its breakdown (11 Nov), for the chart's tap or hover: fares, platform fee, earned.
-    bars = {k: {'key': k, 'earned': ZERO, 'trips': 0, 'fares': ZERO, 'platform_fee': ZERO}
+    bars = {k: {'key': k, 'earned': ZERO, 'trips': 0, 'fares': ZERO, 'platform_fee': ZERO, 'tips': ZERO}
             for k in _bucket_keys(unit, first, last)}
     for r in data.trips:
         if r.created_at is None:
@@ -256,6 +337,13 @@ def history(driver, period, anchor=None, start=None, end=None):
             b['earned'] -= _fee_amount(f)
             b['platform_fee'] += _fee_amount(f)
 
+    # 15 Nov: each bar's tips, so the bars add up to the cards (which count tips).
+    for at, amount in tips_between(driver, _start(tz, first), _start(tz, last + timedelta(days=1))):
+        b = bars.get(_bucket(unit, at.astimezone(tz)))
+        if b is not None:
+            b['tips'] += amount
+            b['earned'] += amount
+
     joined = joined_on(driver, tz)
     return {
         'period': period, 'start': first.isoformat(), 'end': last.isoformat(),
@@ -264,9 +352,11 @@ def history(driver, period, anchor=None, start=None, end=None):
         'has_prev': joined is not None and first > joined,
         'has_next': last < today,
         'prev': shift(period, first, last, -1).isoformat(), 'next': shift(period, first, last, 1).isoformat(),
-        'summary': {**_strings(summary), 'fee_note': fee_note(driver), 'tips_enabled': False},
+        'summary': {**_strings(_with_tips(driver, summary, first, last, tz)), 'fee_note': fee_note(driver),
+                    'tips_enabled': _tips_enabled(driver), 'cash_allowed': cash_allowed_for(driver)},
         'chart': {'unit': unit, 'bars': [{**b, 'earned': str(b['earned']), 'fares': str(b['fares']),
-                                          'platform_fee': str(b['platform_fee'])} for b in bars.values()]},
+                                          'platform_fee': str(b['platform_fee']), 'tips': str(b['tips'])}
+                                         for b in bars.values()]},
     }
 
 
@@ -290,6 +380,8 @@ def months(driver):
         s = summarise_period([r for r in data.trips if r.created_at and month_of(r.created_at) == key],
                              [f for f in data.fees if month_of(f.created_at) == key],
                              [p for p in data.payouts if month_of(p.created_at) == key], tz)
+        # 14 Nov: the month's tips too, as the history and the dashboard count them.
+        s = _with_tips(driver, s, m, _month_end(m), tz)
         out.append({'month': key, 'so_far': m == today.replace(day=1), **_strings(s)})
         m = (m - timedelta(days=1)).replace(day=1)
     return {'currency': driver_currency(driver), 'joined': joined.strftime('%Y-%m'), 'months': out}
@@ -307,7 +399,8 @@ def statement(driver, year, month):
     last = _month_end(first)
     since, until = _start(tz, first), _start(tz, last + timedelta(days=1))
     data = _Data(driver, since, until)
-    summary = summarise_period(data.trips, data.fees, data.payouts, tz)
+    # 14 Nov: the statement counts the month's tips, as the screen does.
+    summary = _with_tips(driver, summarise_period(data.trips, data.fees, data.payouts, tz), first, last, tz)
     ledger = build_statement(driver, since, until)
     country = req.for_driver(driver)['country']
     from base.encrypted import mask
@@ -317,18 +410,21 @@ def statement(driver, year, month):
     from servers.admin_access.masking import mask_phone
     from servers.pricing.fee_plan_models import DriverDailyFee
 
-    notes = {f'DAY_{r.day:%Y%m%d}': r.explanation for r in DriverDailyFee.objects.filter(
+    from servers.pricing.fee_plans import dated_explanation
+
+    notes = {f'DAY_{r.day:%Y%m%d}': dated_explanation(r, country) for r in DriverDailyFee.objects.filter(
         driver=driver, day__gte=first - timedelta(days=1), day__lte=last)}
     today = datetime.now(tz).date()
     produced = datetime.now(tz)
     home = getattr(driver, 'home_city', None)
+    tips = tips_by_trip(driver, [r.trip_id for r in data.trips])
     return {
         'driver': driver.user_id.full_name or '', 'pan_masked': pan, 'country': country,
         # Who and from whom (11 Nov): a statement a bank or the tax office can read on its own.
         'phone_masked': mask_phone(driver.user_id.phone_number) or '',
         'city': getattr(home, 'name', '') or '',
-        'company': {'name': settings.PLATFORM_LEGAL_ENTITY, 'address': settings.PLATFORM_LEGAL_ADDRESS,
-                    'gstin': settings.PLATFORM_GSTIN},
+        # The entity operating the driver's market (13 Nov, base/legal_entity.py).
+        'company': _company(country),
         'number': f'SG-{first:%Y%m}-{driver.id:06d}', 'produced_on': produced.date().isoformat(),
         'fee_note': fee_note(driver),
         'month': first.strftime('%Y-%m'), 'start': first.isoformat(), 'end': last.isoformat(),
@@ -338,9 +434,11 @@ def statement(driver, year, month):
         'closing': ledger and str(_minor(ledger['closing_minor'], ledger['currency'])),
         'trips': [{'at': r.created_at.astimezone(tz).isoformat() if r.created_at else None,
                    'trip_id': r.trip_id, 'method': r.method, 'fare': _s(r.gross), 'fee': _s(r.commission),
-                   'earned': _s(r.net)} for r in data.trips],
+                   # 15 Nov: the trip's tip, and what it earned with it, as the cards count it.
+                   'tip': _s(tips.get(r.trip_id, ZERO)),
+                   'earned': _s(None if r.net is None else r.net + tips.get(r.trip_id, ZERO))} for r in data.trips],
         'fees': [{'at': f.created_at.astimezone(tz).isoformat(), 'amount': str(_fee_amount(f)),
-                  'note': notes.get(f.reference_id, '')} for f in data.fees],
+                  'note': _fee_note(f, notes)} for f in data.fees],
         'payouts': [{'at': p.created_at.astimezone(tz).isoformat(), 'amount': str(_payout_amount(p)),
                      'method': p.method, 'withdrawal_id': p.withdrawal_request_id} for p in data.payouts],
     }
@@ -384,14 +482,30 @@ def _month_label(st):
 
 
 def _day(st, iso):
-    """A date in the market's order (11 Nov): dd/mm/yyyy in India, mm/dd/yyyy in the USA."""
+    """A date in the market's order: "Nov 14, 2026" in the USA (15 Nov), dd/mm/yyyy in India."""
+    from base.market_dates import full_date, is_us
+
     d = date.fromisoformat(iso[:10])
-    return d.strftime('%m/%d/%Y' if st['country'] == 'US' else '%d/%m/%Y')
+    return full_date(d, 'US') if is_us(st['country']) else d.strftime('%d/%m/%Y')
 
 
 def _when(st, iso):
-    """A local date and time as the files print it: "02/11/2026 09:10"."""
-    return f'{_day(st, iso)} {iso[11:16]}' if iso else ''
+    """A local date and time as the files print it: "Nov 14, 2026, 7:30 PM" or "02/11/2026 09:10"."""
+    from base.market_dates import clock, is_us
+
+    if not iso:
+        return ''
+    if is_us(st['country']):
+        return f"{_day(st, iso)}, {clock(datetime.fromisoformat(iso), 'US')}"
+    return f'{_day(st, iso)} {iso[11:16]}'
+
+
+def _company(country):
+    from base import legal_entity
+
+    e = legal_entity.entity(country)
+    return {'name': e.get('legal_name', ''), 'address': e.get('registered_address', ''),
+            'cin': e.get('cin', ''), 'gstin': e.get('gstin', '') if e.get('gst_registered') else ''}
 
 
 def _identity_rows(st):
@@ -401,6 +515,8 @@ def _identity_rows(st):
     rows = [['Issued by', c['name']]] if c['name'] else []
     if c['address']:
         rows.append(['Registered address', c['address']])
+    if c.get('cin'):
+        rows.append(['CIN', c['cin']])
     if c['gstin']:
         rows.append(['GSTIN', c['gstin']])
     rows += [['Statement number', st['number']], ['Produced on', _day(st, st['produced_on'])], ['Driver', st['driver'] or '-'],
@@ -429,9 +545,10 @@ def statement_csv(st):
     w.writerow(['Closing balance', st['closing'] or ''])
     w.writerow([])
     w.writerow(['Trips'])
-    w.writerow(['Date and time', 'Trip', 'Paid by', 'Fare', 'Fee', 'You earned'])
+    w.writerow(['Date and time', 'Trip', 'Paid by', 'Fare', 'Fee', 'Tip', 'You earned'])
     for t in st['trips']:
-        w.writerow([_when(st, t['at']), t['trip_id'] or '', t['method'], t['fare'] or '', t['fee'] or '', t['earned'] or ''])
+        w.writerow([_when(st, t['at']), t['trip_id'] or '', t['method'], t['fare'] or '', t['fee'] or '',
+                    t.get('tip') or '', t['earned'] or ''])
     w.writerow([])
     w.writerow(['Daily platform fees'])
     w.writerow(['Date and time', 'Amount', 'Note'])
@@ -490,11 +607,12 @@ def statement_pdf(st):
     story += [Paragraph('Summary', h2),
               Table(rows, colWidths=[60 * mm, 50 * mm], style=[('FONTSIZE', (0, 0), (-1, -1), 9.5),
                                                                ('ALIGN', (1, 0), (1, -1), 'RIGHT')])]
-    trips = [['Date and time', 'Trip', 'Paid by', 'Fare', 'Fee', 'You earned']]
+    trips = [['Date and time', 'Trip', 'Paid by', 'Fare', 'Fee', 'Tip', 'You earned']]
     trips += [[_when(st, t['at']), f"#{t['trip_id']}" if t['trip_id'] else '', t['method'],
-               m(t['fare']), m(t['fee']), m(t['earned'])] for t in st['trips']]
+               m(t['fare']), m(t['fee']), m(t.get('tip')), m(t['earned'])] for t in st['trips']]
     story += [Paragraph(f"Trips ({len(st['trips'])})", h2),
-              Table(trips, colWidths=[32 * mm, 18 * mm, 22 * mm, 34 * mm, 30 * mm, 36 * mm], style=grid, repeatRows=1)]
+              Table(trips, colWidths=[38 * mm, 14 * mm, 18 * mm, 27 * mm, 24 * mm, 24 * mm, 27 * mm], style=grid,
+                    repeatRows=1)]
     if st['fees']:
         fees = [['Date and time', 'Amount', 'Note']] + [[_when(st, f['at']), m(f['amount']), f['note'][:70]]
                                                         for f in st['fees']]

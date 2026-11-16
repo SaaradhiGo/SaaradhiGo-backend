@@ -28,7 +28,14 @@ it, and anything further left is unverified client input and is ignored.
     hop of its own (the guest maps throttle once saw one that changed per
     request, commit 7b7f45d).
   * No header, or nothing usable left: `REMOTE_ADDR`.
+  * 14 Nov: the website's own server now makes the signed-in calls (login keys are HttpOnly
+    cookies there), so to us they all come from its address. It sends the visitor's address in
+    `X-SG-Client-IP` with `X-SG-Client-IP-Key` = `BFF_CLIENT_IP_SECRET`, a secret only the web
+    and backend services hold. Only with that key is the header believed; without it, it is
+    ignored like any other client-written header.
 """
+
+import hmac
 
 import ipaddress
 
@@ -65,6 +72,15 @@ def _is_internal(ip):
     return any(ip.version == net.version and ip in net for net in _INTERNAL)
 
 
+def _vouched(meta):
+    """The visitor's address as the website's server vouches for it, or None."""
+    secret = getattr(settings, 'BFF_CLIENT_IP_SECRET', '') or ''
+    key = meta.get('HTTP_X_SG_CLIENT_IP_KEY') or ''
+    if len(secret) < 32 or not key or not hmac.compare_digest(str(key), secret):
+        return None
+    return _parse(meta.get('HTTP_X_SG_CLIENT_IP'))
+
+
 def client_ip(request_or_meta, default=None):
     """The client address as a string, or `default` when there is none.
 
@@ -73,6 +89,9 @@ def client_ip(request_or_meta, default=None):
     """
     meta = request_or_meta if isinstance(request_or_meta, dict) else getattr(
         request_or_meta, 'META', None) or {}
+    vouched = _vouched(meta)
+    if vouched is not None:
+        return str(vouched)
     remote = _parse(meta.get('REMOTE_ADDR'))
     forwarded = meta.get('HTTP_X_FORWARDED_FOR') or ''
     hops = [_parse(part) for part in forwarded.split(',')] if forwarded.strip() else []

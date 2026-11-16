@@ -73,6 +73,8 @@ def may_operate(driver) -> bool:
     """
     if driver is None:
         return False
+    if getattr(driver, 'account_closing', False):
+        return False  # 13 Nov: closing their account; never back online (no extra query)
     if getattr(driver, 'approved', False):
         return True
     return is_qa_test_driver(driver) and qa_simulation_allowed()
@@ -84,11 +86,13 @@ def requirements_unmet(driver) -> list:
     offline until it is fixed. A QA-simulated driver skips it only where the QA setting allows."""
     if driver is None:
         return []
-    if not getattr(driver, 'approved', False) and requirements_bypass_allowed():
-        return []
     from . import requirements
 
-    return requirements.blocking_unmet(driver)
+    # 14 Nov: the market's own gates (fee plan, platform insurance) hold for everyone, QA too.
+    market = requirements.market_gates_unmet(driver)
+    if not getattr(driver, 'approved', False) and requirements_bypass_allowed():
+        return market
+    return requirements.blocking_unmet(driver) + market
 
 
 def requirements_bypass_allowed() -> bool:

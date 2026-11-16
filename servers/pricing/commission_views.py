@@ -30,7 +30,9 @@ from base.countries import COUNTRIES
 from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission
 from servers.admin_access.models import GeoNode
-from servers.admin_access.scoping import scoped, scoped_or_none
+from servers.admin_access.scoping import (
+    ScopeNotHeld, market_country_code, market_node, scoped, scoped_or_none, scoped_to_request,
+)
 from servers.approvals.scope import may_act
 from servers.approvals.service import ApprovalError
 from servers.driver.models import VehicleType
@@ -53,6 +55,12 @@ WRITE = ScopedPermission('pricing.write')
 def _not_found(what='rule', field='id'):
     return error_response(code='NOT_FOUND', message=f'No such {what}', field=field,
                           issue=f'No such {what}', status=status.HTTP_404_NOT_FOUND)
+
+
+def _scope_refused(exc):
+    return error_response(code='SCOPE_NOT_HELD', message=str(exc), field='scope',
+                          issue='Requested scope is outside your assignments',
+                          status=status.HTTP_403_FORBIDDEN)
 
 
 def _rule_or_none(user, pk):
@@ -86,8 +94,17 @@ def commission_matrix(request):
     """Effective rate and its source for every country x city x vehicle class in the
     caller's scope. `?country=` narrows it."""
     wanted = (request.query_params.get('country') or '').upper().strip()
+    try:
+        node = market_node(request)
+    except ScopeNotHeld as exc:
+        return _scope_refused(exc)
     cities = list(scoped(request.user, GeoNode.objects.filter(kind='city'))
                   .select_related('parent').order_by('path'))
+    market = market_country_code(node)
+    if node is not None:
+        # The console's market switch: that country's defaults, and only the cities
+        # inside the selected place.
+        cities = [c for c in cities if c.path.startswith(node.path)]
     # A country is in scope if its node is, OR any of its cities is: a city-scoped
     # operator sees the country's rate and its settings for the cities they run.
     codes = {n.code for n in scoped(request.user, GeoNode.objects.filter(kind='country'))}
@@ -97,7 +114,8 @@ def commission_matrix(request):
         if c is not None:
             codes.add(c.code)
             by_country.setdefault(c.code, []).append(city)
-    countries = sorted(c for c in codes if c in COUNTRIES and (not wanted or c == wanted))
+    countries = sorted(c for c in codes if c in COUNTRIES and (not wanted or c == wanted)
+                       and (not market or c == market))
     vehicle_types = list(VehicleType.objects.order_by('type'))
     rows = resolver.matrix(countries, by_country, vehicle_types)
     configs = {c.country: c for c in CommissionCountryConfig.objects.filter(country__in=countries)}
@@ -127,7 +145,10 @@ def commission_matrix(request):
 def rules(request):
     if request.method == 'POST':
         return _create_rule(request)
-    qs = scoped(request.user, CommissionRule.objects.select_related('geo_node', 'vehicle_type'))
+    try:
+        qs = scoped_to_request(request, CommissionRule.objects.select_related('geo_node', 'vehicle_type'))
+    except ScopeNotHeld as exc:
+        return _scope_refused(exc)
     params = request.query_params
     if params.get('country'):
         qs = qs.filter(country=params['country'].upper())

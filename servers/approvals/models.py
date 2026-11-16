@@ -77,6 +77,12 @@ class ApprovalPolicy(models.Model):
     #: `currency` for money, a record count for count. NULL means there is
     #: no amount at which a maker acts alone: always a checker.
     maker_limit = models.BigIntegerField(null=True, blank=True)
+    #: Money only (15 Nov, US refunds): what one maker may do alone in a local day, summed over
+    #: their within-limit requests for this action. NULL = no daily cap.
+    maker_daily_limit = models.BigIntegerField(null=True, blank=True)
+    #: Money only: `maker_limit` is per target in total (every within-limit request on the same
+    #: trip counts), not per request, so a refund cannot be split to stay under it.
+    cumulative_per_target = models.BooleanField(default=False)
 
     is_active = models.BooleanField(default=True)
     version = models.PositiveIntegerField(default=1)
@@ -159,6 +165,8 @@ class ApprovalPolicy(models.Model):
             'limit_kind': self.limit_kind,
             'currency': self.currency,
             'maker_limit': self.maker_limit,
+            'maker_daily_limit': self.maker_daily_limit,
+            'cumulative_per_target': self.cumulative_per_target,
             'always_checker': self.always_checker,
             'is_active': self.is_active,
             'version': self.version,
@@ -375,3 +383,29 @@ class ApprovalRequest(models.Model):
             'error': self.error,
             'idempotency_key': self.idempotency_key,
         }
+
+
+class SelfApprovalGrant(models.Model):
+    """The sole Super Admin may check their own requests for a while (12 Nov, console QA).
+
+    In production this row is the ONLY way to turn self-approval on (the environment setting is
+    refused at start): a Super Admin sets it in the console with a reason and an expiry at most 7
+    days away, and the banner names who and when. It ends by itself at `expires_at`."""
+    MAX_DAYS = 7
+
+    granted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    granted_by_label = models.CharField(max_length=255, blank=True, default='')
+    reason = models.TextField()
+    granted_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                   on_delete=models.SET_NULL, related_name='+')
+
+    class Meta:
+        ordering = ['-granted_at']
+
+    @classmethod
+    def active(cls, now=None):
+        now = now or timezone.now()
+        return cls.objects.filter(revoked_at__isnull=True, expires_at__gt=now).order_by('-granted_at').first()

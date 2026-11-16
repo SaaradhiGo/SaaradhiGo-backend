@@ -158,7 +158,8 @@ class TestCancellingSomebodyElsesTrip:
         # The refusal must be about WHO is asking. A 400 for a malformed
         # field would pass the status check while leaving the boundary open
         # to a well-formed request.
-        assert response.json()['error']['code'] == 'FORBIDDEN', response.content
+        # 13 Nov: answered as if the trip did not exist (NOT_FOUND), never a body-validation error.
+        assert response.json()['error']['code'] == 'NOT_FOUND', response.content
         world['trip'].refresh_from_db()
         assert world['trip'].status_id.status_code == 'in_progress'
 

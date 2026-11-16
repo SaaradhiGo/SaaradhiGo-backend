@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.urls import path
+from .ws_ticket import ws_ticket
 from .views import (
     request_otp,
     verify_phone,
@@ -26,6 +27,7 @@ from .password_views import (
 
 from .phone_change_views import change_phone
 from .registration_views import register_with_email
+from .role_views import me_ride
 
 urlpatterns = [
     path('otp/', request_otp),
@@ -34,6 +36,7 @@ urlpatterns = [
     path('login/', token),
     path('refresh/', refresh),
     path('logout/', logout),
+    path('ws-ticket/', ws_ticket, name='ride_ws_ticket'),
     path('update/', update_user),
     path('profile/', get_user_profile),
     # The sign-in number changes only with a proof from otp/verify/ for the new one.
@@ -44,6 +47,8 @@ urlpatterns = [
     # DPDP Act 2023 data-subject endpoints.
     path('me/export/', me_export),
     path('me/delete/', me_delete),
+    # 13 Nov: a driver books with the account they have; adds the rider role.
+    path('me/ride/', me_ride),
 
     # Email + password. Additive: every path above is unchanged, and
     # phone+OTP remains the primary route for riders and drivers.

@@ -135,14 +135,26 @@ class Driver(models.Model):
     POLICE_CHOICES=[('not_submitted','Not submitted'),('pending','Pending'),('verified','Verified'),('failed','Failed')]
     police_verification_status=models.CharField(max_length=16,choices=POLICE_CHOICES,default='not_submitted')
     #: US: filled by the background-check provider later; nothing is collected here.
-    BACKGROUND_CHOICES=[('not_started','Not started'),('pending','Pending'),('clear','Clear'),('consider','Consider'),('failed','Failed')]
+    BACKGROUND_CHOICES=[('not_started','Not started'),('pending','Pending'),('clear','Clear'),('consider','Consider'),('failed','Failed'),('suspended','Suspended')]
     background_check_status=models.CharField(max_length=16,choices=BACKGROUND_CHOICES,default='not_started')
+    # 14 Nov (USA): the background check through a provider (servers.driver.background). The SSN is
+    # never stored here: the driver enters it in the provider's own form.
+    background_check_provider=models.CharField(max_length=32,blank=True,default='')
+    background_check_ref=models.CharField(max_length=128,blank=True,default='')
+    background_checked_at=models.DateTimeField(null=True,blank=True)
+    #: FCRA: the disclosure was shown on its own page, then the driver authorised the check.
+    background_disclosure_at=models.DateTimeField(null=True,blank=True)
+    background_consent_at=models.DateTimeField(null=True,blank=True)
+    #: Non-discrimination and accessibility (Idaho 49-3713): acknowledged at sign-up.
+    accessibility_ack_at=models.DateTimeField(null=True,blank=True)
     address_proof_doc=models.FileField(blank=True, max_length=512, null=True, storage=private_document_storage,
         upload_to=PrefixedUUIDPath('address_proof_docs'), validators=[validate_document_file, validate_file_size])
     #: Bank or UPI changed: payouts wait 24 hours from here.
     payout_details_changed_at=models.DateTimeField(null=True,blank=True)
     #: US payouts: Stripe Connect Express. Bank details never touch SaaradhiGo.
     stripe_account_id=models.CharField(max_length=64,blank=True,default='')
+    # 13 Nov: the driver asked to close the account and waits for the last payout (auth_user/closure.py).
+    account_closing = models.BooleanField(default=False)
     STRIPE_CHOICES=[('not_started','Not started'),('in_progress','In progress'),('ready','Ready')]
     stripe_onboarding_status=models.CharField(max_length=16,choices=STRIPE_CHOICES,default='not_started')
     #: When each file column last changed, `{column: iso}` (10 Nov v2): "Uploaded 10 Nov" on its tile.
@@ -346,7 +358,9 @@ class Vehicle(models.Model):
         choices=[
             ('active', 'Active'),
             ('inactive', 'Inactive'),
-            ('under_maintenance', 'Under Maintenance')
+            ('under_maintenance', 'Under Maintenance'),
+            # 12 Nov: replaced by a newer vehicle; kept for history, never on the road again.
+            ('archived', 'Archived'),
         ],
         default='active'
     )
@@ -355,6 +369,9 @@ class Vehicle(models.Model):
         blank=True,
         null=True
     )
+    #: 14 Nov (USA): the state registration's expiry, and the number of doors (Idaho: 4 doors).
+    registration_expiry = models.DateField(blank=True, null=True)
+    doors = models.PositiveSmallIntegerField(blank=True, null=True)
 
     permit_expiry = models.DateField(
         blank=True,
@@ -386,6 +403,14 @@ class Vehicle(models.Model):
             # PostgreSQL it carries `text_pattern_ops` so the prefix match
             # uses it too; see `base.db_indexes`.
             PatternPrefixIndex(normalised_plate_expression(), name='vehicle_plate_norm_idx'),
+        ]
+        constraints = [
+            # 12 Nov (console QA, D-18 had two active TS09QT0059): one active vehicle per driver,
+            # and a plate belongs to one active vehicle anywhere, however it was typed.
+            models.UniqueConstraint(fields=['driver_id'], condition=models.Q(status='active'),
+                                    name='vehicle_one_active_per_driver'),
+            models.UniqueConstraint(normalised_plate_expression(), condition=models.Q(status='active'),
+                                    name='vehicle_active_plate_unique'),
         ]
 
     def __str__(self) -> str:
@@ -696,6 +721,9 @@ class DriverSuspension(models.Model):
         ('rider_complaints', 'Repeated rider complaints'),
         ('other', 'Other (note required)'),
         ('deactivated', 'Permanently deactivated'),
+        # 14 Nov (USA): a rider's impairment report (Idaho 49-3709) and a background check result.
+        ('zero_tolerance', 'Zero tolerance report (drugs or alcohol)'),
+        ('background_check', 'Background check'),
     ]
 
     driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='suspensions')
@@ -799,3 +827,24 @@ class VehicleCatalogueEntry(models.Model):
 
     def __str__(self):
         return f'{self.country} {self.vehicle_type} {self.make} {self.model}'
+
+
+
+class DocumentVerification(models.Model):
+    """One automated check of a driver's papers (12 Nov): licence (Sarathi/Parivahan), RC (VAHAN),
+    Aadhaar (DigiLocker), name on document, face match, police verification. Insert-only; the
+    console shows the latest per check. detail holds outcomes, never the document or personal data."""
+    CHECKS = ('name_match', 'licence', 'rc', 'aadhaar', 'face_match', 'police')
+
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='verifications')
+    vehicle = models.ForeignKey(Vehicle, null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    kind = models.CharField(max_length=16)
+    status = models.CharField(max_length=16)
+    provider = models.CharField(max_length=32)
+    detail = models.JSONField(default=dict, blank=True)
+    checked_by = models.ForeignKey(User, null=True, blank=True,
+                                   on_delete=models.SET_NULL, related_name='+')
+    checked_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['driver', 'kind', '-checked_at'], name='docverif_latest_idx')]

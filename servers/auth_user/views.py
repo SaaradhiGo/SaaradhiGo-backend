@@ -176,10 +176,10 @@ def request_otp(request):
                 # Send OTP via SNS (async task). The text, which contains the
                 # OTP, is stashed and only its reference is enqueued: task
                 # arguments reach the broker, worker logs and Sentry.
+                from base import sms_templates
                 message_ref = stash_sms_message(
-                    f"Your OTP for {settings.PLATFORM_BRAND_NAME} is {otp}. "
-                    f"It will expire in 10 minutes.",
-                    ttl=OTP_EXPIRY,
+                    sms_templates.render('otp', otp=otp), ttl=OTP_EXPIRY,
+                    kind='otp', values={'otp': otp},
                 )
                 task_id = send_otp_via_sns.delay(phone_number, message_ref)
                 logger.info(f"OTP sent to {phone_number[:5]}***, task_id: {task_id}")

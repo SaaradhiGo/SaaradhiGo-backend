@@ -329,6 +329,13 @@ def process_refund_on_cancel(trip):
     from servers.payments.payment_gateways.factory import get_payment_gateway
     from servers.rider.models import Notification
 
+    # 14 Nov (USA): a card held at booking and never captured is simply released.
+    from servers.payments.card_hold import release_for_trip
+    try:
+        release_for_trip(trip)
+    except Exception:  # noqa: BLE001 - a cancel never fails because the processor is down
+        logger.exception('card hold release failed trip=%s', trip.id)
+
     payment = Payment.objects.filter(
         trip_id=trip, method='online', status='completed'
     ).first()
@@ -474,6 +481,7 @@ def create_payment_on_complete(trip):
         # Cashfree with no local row.
         from servers.payments.payment_gateways.factory import country_for_trip, provider_name_for
 
+        hold = getattr(trip, 'card_hold', None) if hasattr(trip, 'card_hold') else None
         Payment.objects.create(
             trip_id=trip,
             user_id=trip.user_id,
@@ -481,6 +489,14 @@ def create_payment_on_complete(trip):
             method='online',
             status='pending',
             payment_gateway=provider_name_for('payments', country_for_trip(trip)) or '',
+            # 14 Nov (USA): a card held at booking is captured after this transaction commits.
+            gateway_order_id=hold.intent_id if hold is not None else None,
         )
         trip.payment_status = 'pending'
         trip.save(update_fields=['payment_status'])
+        if hold is not None:
+            from django.db import transaction as _tx
+
+            from servers.payments.tasks import capture_card_hold
+            trip_pk = trip.id
+            _tx.on_commit(lambda: capture_card_hold.delay(trip_pk))

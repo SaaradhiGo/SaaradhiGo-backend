@@ -259,6 +259,11 @@ def create_order(request):
     if gateway.get_name() == PaymentGateway.RAZORPAY:
         response_data['order_id'] = order.get('order_id')
         response_data['key_id'] = order.get('key_id')
+    # Stripe (13 Nov, US card): the PaymentIntent the browser confirms with Stripe.js.
+    if gateway.get_name() == 'stripe':
+        response_data['order_id'] = order.get('order_id')
+        response_data['client_secret'] = order.get('client_secret')
+        response_data['publishable_key'] = order.get('publishable_key')
 
     return success_response(response_data, status.HTTP_201_CREATED)
 

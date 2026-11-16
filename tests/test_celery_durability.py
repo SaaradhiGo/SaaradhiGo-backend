@@ -222,6 +222,10 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # their timeline lines and Command Centre alerts only; no trip, fare, money, account
         # status or notification. No retry needed: the next run is the retry.
         'fraud.run_rules',
+        # 12 Nov: every 15 min (beat). Idempotent: one alert per city while drivers wait past the
+        # KYC review target, cleared when none do; no retry needed, the next run converges.
+        'driver.kyc_review_target_sweep',
+        'auth_user.account_closure_sweep',
         # Fraud money actions (AUDIT 27.56). Beat, hourly: releases reward holds whose time is up
         # and lapses payout holds past their maximum duration (with a Command Centre alert). Each
         # step is a conditional status change under a row lock, so a redelivered or doubled run
@@ -298,9 +302,22 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # Daily data integrity scan (10 Nov): reads only and raises one alert keyed on the day, so a
         # redelivered run returns the open alert. It never writes money rows or fixes anything.
         'platform_ops.integrity_scan',
+        # Scheduler heartbeat (15 Nov): overwrites one timestamp and raises or clears one alert keyed
+        # on 'beat', so a redelivered run changes nothing.
+        'platform_ops.scheduler_heartbeat',
+        # Card refunds (15 Nov): Stripe's idempotency key is the money action, and the row is locked
+        # and moved off pending_gateway on success, so a redelivered run refunds nothing twice.
+        'ride.send_pending_gateway_refunds',
+        # A refund's new receipt (15 Nov): guarded once per money action by a cache key, so a
+        # redelivery sends no second email.
+        'ride.reissue_receipt_after_refund',
         # Driver fee plans (9 Nov). acks_late is safe: one DriverDailyFee per (driver, day) and a
         # ledger idempotency key, so a redelivered run writes nothing twice.
         'pricing.charge_driver_fees',
+        # 14 Nov (USA): capture a completed trip's card hold (idempotent per trip; a failure leaves
+        # the trip failed for the existing retry path); the daily background re-check sweep.
+        'payments.capture_card_hold',
+        'driver.recheck_background',
         # QA only (PAYOUT_FAKE_ALLOWED): the fake provider's 'processed' event goes through the
         # real, idempotent payout webhook handler.
         'payments.fake_payout_settle',
@@ -322,6 +339,11 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # Writes CityRollup rows only; no trip, money or status.
         'command_centre.refresh_city_rollups',
         'command_centre.backfill_city_rollups',
+        # Unpaid trips (hourly, beat, 15 Nov ruling). acks_late is safe: the driver's settlement is
+        # one per trip, checked under the wallet lock; a card retry counts the attempt before it
+        # charges, is at most one per 6 hours, and Stripe's idempotency key is per trip and attempt,
+        # so a doubled run charges once. No retry: the next hour is the retry.
+        'payments.collect_unpaid_trips',
     }
     actual = set(tasks)
     added = actual - expected

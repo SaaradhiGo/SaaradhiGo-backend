@@ -23,6 +23,9 @@ pytestmark = pytest.mark.django_db
 @pytest.fixture(autouse=True)
 def _fresh_cache():
     cache.clear()
+    # The maps cache is Redis, which outlives a test run locally: never read it here.
+    with mock.patch('servers.ride.views.get_cached_map_data', return_value=None):
+        yield
 
 
 @override_settings(GOOGLE_MAPS_API_KEY=KEY, GOOGLE_PLACES_API_VERSION='new')

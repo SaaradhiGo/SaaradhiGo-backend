@@ -103,9 +103,11 @@ U_OPENED, U_NOTE, U_STATUS, U_ASSIGNED, U_LINK, U_UNLINK = (
     'opened', 'note', 'status', 'assigned', 'link', 'unlink')
 U_ACTION, U_SOS, U_SIGNAL, U_ESCALATED, U_POLICE, U_CLOSED = (
     'action', 'sos', 'signal', 'escalated', 'police_referral', 'closed')
+#: 12 Nov: one page of the on-call chain (oncall.py): who was phoned or sent an SMS.
+U_PAGED = 'paged'
 UPDATE_KINDS = [(k, k) for k in (
     U_OPENED, U_NOTE, U_STATUS, U_ASSIGNED, U_LINK, U_UNLINK, U_ACTION, U_SOS,
-    U_SIGNAL, U_ESCALATED, U_POLICE, U_CLOSED)]
+    U_SIGNAL, U_ESCALATED, U_POLICE, U_CLOSED, U_PAGED)]
 
 # --- signals ----------------------------------------------------------------
 
@@ -419,3 +421,48 @@ class SafetySignal(models.Model):
     @property
     def is_dismissed(self):
         return self.dismissed_at is not None
+
+
+class OnCallRota(models.Model):
+    """Who is on call for SOS in one city (12 Nov): the primary, the backup, and the city head.
+
+    The escalation chain (`oncall.py`) phones them in that order, round after round, until somebody
+    acknowledges the SOS. Edited in the console by safety.config holders; every change is audited.
+    """
+    ROLES = ('primary', 'backup', 'head')
+
+    city = models.OneToOneField('admin_access.GeoNode', on_delete=models.PROTECT, related_name='oncall_rota')
+    primary_name = models.CharField(max_length=120, blank=True, default='')
+    primary_phone = models.CharField(max_length=20, blank=True, default='')
+    backup_name = models.CharField(max_length=120, blank=True, default='')
+    backup_phone = models.CharField(max_length=20, blank=True, default='')
+    head_name = models.CharField(max_length=120, blank=True, default='')
+    head_phone = models.CharField(max_length=20, blank=True, default='')
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                   on_delete=models.SET_NULL, related_name='+')
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def contact(self, role):
+        return getattr(self, f'{role}_name', ''), getattr(self, f'{role}_phone', '')
+
+
+class SOSPage(models.Model):
+    """One step of the escalation chain for one SOS: who was phoned, how, and what happened.
+
+    Insert-only. The whole number is never stored here: the rota holds it, this keeps the last
+    four digits so the timeline can say which phone rang."""
+    sos = models.ForeignKey('sos.SOSEvent', on_delete=models.CASCADE, related_name='pages')
+    step = models.PositiveSmallIntegerField()
+    target = models.CharField(max_length=10)
+    name = models.CharField(max_length=120, blank=True, default='')
+    phone_last4 = models.CharField(max_length=4, blank=True, default='')
+    channel = models.CharField(max_length=8)
+    outcome = models.CharField(max_length=16)
+    provider = models.CharField(max_length=32, blank=True, default='')
+    ref = models.CharField(max_length=64, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['sos', 'step']
+        constraints = [models.UniqueConstraint(fields=['sos', 'step'], name='sos_page_one_per_step')]

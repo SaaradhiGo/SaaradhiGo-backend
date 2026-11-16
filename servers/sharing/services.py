@@ -146,9 +146,11 @@ def on_trip_started(trip_id):
         return 0
     share, _ = start_share(trip, source='auto')
     name = first_name(trip.user_id.full_name, 'Your contact')
-    brand = settings.PLATFORM_BRAND_NAME
-    text = f'{name} is on a {brand} trip. Follow it live: {share_url(share)}'
-    return sum(1 for c in contacts if sms.send(trip.user_id, c, 'trip_share', text, trip_id=trip.id))
+    from base import sms_templates
+    values = {'name': name, 'url': share_url(share)}
+    text = sms_templates.render('trip_share', **values)
+    return sum(1 for c in contacts if sms.send(trip.user_id, c, 'trip_share', text, trip_id=trip.id,
+                                                template=('trip_share', values)))
 
 
 def on_sos(trip, user):
@@ -162,10 +164,11 @@ def on_sos(trip, user):
         return 0
     share, _ = start_share(trip, source='sos')
     name = first_name(user.full_name, 'Your contact')
-    brand = settings.PLATFORM_BRAND_NAME
-    text = (f'{name} pressed SOS during a {brand} trip. Track the trip: {share_url(share)}. '
-            f'If you think they are in danger, call the local emergency number.')
-    return sum(1 for c in contacts if sms.send(user, c, 'sos', text, trip_id=trip.id))
+    from base import sms_templates
+    values = {'name': name, 'url': share_url(share)}
+    text = sms_templates.render('sos_contact', **values)
+    return sum(1 for c in contacts if sms.send(user, c, 'sos', text, trip_id=trip.id,
+                                                template=('sos_contact', values)))
 
 
 def public_trip(share):

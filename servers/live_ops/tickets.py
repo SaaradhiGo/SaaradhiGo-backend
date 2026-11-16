@@ -30,8 +30,8 @@ class TicketStoreUnavailable(Exception):
     """Redis could not store or read a ticket. Refuse; never fall back."""
 
 
-def _key(ticket):
-    return TICKET_KEY_PREFIX + hashlib.sha256(ticket.encode('utf-8')).hexdigest()
+def _key(ticket, prefix=TICKET_KEY_PREFIX):
+    return prefix + hashlib.sha256(ticket.encode('utf-8')).hexdigest()
 
 
 def _client():
@@ -42,11 +42,11 @@ def _client():
     return redis_client
 
 
-def issue_ticket(user_id):
+def issue_ticket(user_id, prefix=TICKET_KEY_PREFIX):
     """A fresh ticket for `user_id`. Only its hash is stored."""
     ticket = secrets.token_urlsafe(32)
     try:
-        stored = _client().set(_key(ticket), str(int(user_id)), ex=TICKET_TTL_SECONDS, nx=True)
+        stored = _client().set(_key(ticket, prefix), str(int(user_id)), ex=TICKET_TTL_SECONDS, nx=True)
     except TicketStoreUnavailable:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -56,7 +56,7 @@ def issue_ticket(user_id):
     return ticket
 
 
-def consume_ticket(ticket):
+def consume_ticket(ticket, prefix=TICKET_KEY_PREFIX):
     """The user id the ticket was issued to, or None. GETDEL: it works once.
 
     Raises `TicketStoreUnavailable` when Redis cannot answer, which is
@@ -65,7 +65,7 @@ def consume_ticket(ticket):
     if not ticket or len(ticket) > 200:
         return None
     try:
-        value = _client().getdel(_key(ticket))
+        value = _client().getdel(_key(ticket, prefix))
     except TicketStoreUnavailable:
         raise
     except Exception as exc:  # noqa: BLE001

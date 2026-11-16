@@ -33,6 +33,7 @@ from .bridge import ScopedPermission, granted
 from .masking import mask_phone
 from .models import GLOBAL, AdminAssignment, AdminRole, GeoNode
 from .roles import MIN_SUPER_ADMINS, PERMISSIONS, SUPER_ADMIN
+from .scoping import ScopeNotHeld, market_node
 from .services import (
     WouldLeaveTooFewSuperAdmins,
     active_super_admin_ids,
@@ -127,7 +128,22 @@ def staff_list(request):
     refused = _gate(request)
     if refused:
         return refused
+    try:
+        node = market_node(request)
+    except ScopeNotHeld as exc:
+        return _refuse('SCOPE_NOT_HELD', str(exc), status.HTTP_403_FORBIDDEN, 'scope')
     qs = _operators()
+    if node is not None:
+        # The console's market switch: the people who work in this market. That is
+        # an active role held at the place or inside it, plus whoever holds a role
+        # at Global (and Django superusers), because they act here too. A role held
+        # only in another market keeps the person off the list.
+        qs = qs.filter(
+            Q(admin_assignments__is_active=True,
+              admin_assignments__scope__path__startswith=node.path)
+            | Q(admin_assignments__is_active=True, admin_assignments__scope__kind=GLOBAL)
+            | Q(is_superuser=True)
+        ).distinct()
     state = request.query_params.get('status', 'active')
     if state == 'active':
         qs = qs.filter(is_active=True)

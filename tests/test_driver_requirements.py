@@ -205,6 +205,22 @@ class TestPayouts:
         assert client.put(API + 'payout-method/', {'method': 'upi', 'upi_id': 'x@y'},
                           format='json').json()['error']['code'] == 'USE_STRIPE'
 
+    def test_us_stripe_refusal_is_a_plain_503(self, world, settings, monkeypatch):  # noqa: F811
+        # 15 Nov: Stripe refused to create the account (platform settings); not a 500.
+        import requests
+        from integrations.payouts import driver_onboarding as vendor
+        settings.STRIPE_SECRET_KEY = 'sk_test_x'
+
+        def refuse(_id):
+            resp = requests.Response()
+            resp.status_code, resp._content = 400, b'{"error": {"message": "accounts v1 not enabled"}}'
+            raise requests.HTTPError(response=resp)
+        monkeypatch.setattr(vendor, 'stripe_express_account', refuse)
+        driver = new_driver(world, calling='1', node='US-TX-AUS')
+        r = client_for(driver.user_id).post(API + 'payout-method/stripe/', {}, format='json')
+        assert r.status_code == 503 and r.json()['error']['code'] == 'STRIPE_UNAVAILABLE'
+        assert 'v1' not in r.json()['error']['message']
+
 
 class TestGate:
     def complete(self, driver):

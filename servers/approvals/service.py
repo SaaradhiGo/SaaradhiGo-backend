@@ -241,6 +241,56 @@ def decide(action_key, country, amount=None, currency=None):
     return amount > policy.maker_limit, policy
 
 
+def has_room_limits(policy):
+    return bool(policy is not None and policy.limit_kind == MONEY and policy.maker_limit is not None
+                and (policy.maker_daily_limit is not None or policy.cumulative_per_target))
+
+
+def maker_room(policy, *, maker_id, target_type='', target_id='', now=None):
+    """What was already done alone under `policy`: on this target (by anyone) and by this maker
+    today (the country's local day). Within-limit requests only; a checked one is not "alone"."""
+    from zoneinfo import ZoneInfo
+
+    from django.db.models import Sum
+
+    now = now or timezone.now()
+    tz = ZoneInfo(get_country(policy.country).default_timezone)
+    start = now.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    alone = ApprovalRequest.objects.filter(
+        action_key=policy.action_key, country=policy.country, currency=policy.currency,
+        status__in=(APPROVED, EXECUTED), checker_id__isnull=True, decision_reason='within maker limit')
+
+    def total(qs):
+        return int(qs.aggregate(t=Sum('amount'))['t'] or 0)
+    return {
+        'on_target_minor': total(alone.filter(target_type=target_type, target_id=str(target_id)))
+        if target_id else 0,
+        'today_minor': total(alone.filter(maker_id=maker_id, requested_at__gte=start)) if maker_id else 0,
+    }
+
+
+def over_room(policy, amount, *, maker_id, target_type='', target_id='', now=None):
+    """True when this amount, added to what was done alone, passes the per-target or daily cap."""
+    if not has_room_limits(policy) or amount is None:
+        return False
+    room = maker_room(policy, maker_id=maker_id, target_type=target_type, target_id=target_id, now=now)
+    if policy.cumulative_per_target and target_id and room['on_target_minor'] + amount > policy.maker_limit:
+        return True
+    return policy.maker_daily_limit is not None and room['today_minor'] + amount > policy.maker_daily_limit
+
+
+def _lock_maker(action_key, maker_id):
+    """Serialise one maker's within-limit decisions for an action (Postgres), so two refunds at
+    once cannot both fit under the daily cap."""
+    import zlib
+
+    from django.db import connection
+    if connection.vendor == 'postgresql':
+        with connection.cursor() as cur:
+            cur.execute('SELECT pg_advisory_xact_lock(%s, %s)',
+                        [zlib.crc32(action_key.encode()) & 0x7FFFFFFF, int(maker_id) & 0x7FFFFFFF])
+
+
 # ---------------------------------------------------------------------------
 # Audit
 # ---------------------------------------------------------------------------
@@ -391,6 +441,12 @@ def require_approval_or_execute(
 
     try:
         with transaction.atomic():
+            if not needs_checker and not system_maker and has_room_limits(policy):
+                _lock_maker(action_key, actor.pk)
+                if over_room(policy, row.amount, maker_id=actor.pk, target_type=row.target_type,
+                             target_id=row.target_id):
+                    needs_checker = True
+                    row.status, row.decided_at, row.decision_reason = REQUESTED, None, ''
             row.save()
     except IntegrityError:
         # Lost the race to another request with the same key: that one is
@@ -537,6 +593,27 @@ def _possible_checkers(row):
         yield user
 
 
+def self_approval_switch(now=None):
+    """Is self-approval on, and who turned it on (12 Nov)?
+
+    Production: only an active `SelfApprovalGrant` (a Super Admin, a reason, at most 7 days);
+    the APPROVALS_SOLO_SUPER_ADMIN setting is refused at start there. Elsewhere the setting also
+    turns it on, and says so."""
+    from .models import SelfApprovalGrant
+
+    grant = SelfApprovalGrant.active(now)
+    if grant is not None:
+        return {'on': True, 'source': 'grant', 'by': grant.granted_by_label,
+                'at': grant.granted_at.isoformat(), 'expires_at': grant.expires_at.isoformat(),
+                'reason': grant.reason, 'grant_id': grant.id}
+    if getattr(settings, 'APPROVALS_SOLO_SUPER_ADMIN', False) and not getattr(settings, 'IS_PRODUCTION', True):
+        return {'on': True, 'source': 'setting', 'by': 'Deployment setting APPROVALS_SOLO_SUPER_ADMIN',
+                'at': None, 'expires_at': None, 'reason': 'QA: one person checks everything until launch.',
+                'grant_id': None}
+    return {'on': False, 'source': None, 'by': None, 'at': None, 'expires_at': None, 'reason': None,
+            'grant_id': None}
+
+
 def self_approval_allowed(row, user):
     """May `user` decide a request they raised themselves? (owner, 2026-11-03)
 
@@ -546,7 +623,7 @@ def self_approval_allowed(row, user):
     a second real checker is assigned. Everything else a checker is asked
     (`approval.check`, scope, the action's capability) still applies.
     """
-    if not getattr(settings, 'APPROVALS_SOLO_SUPER_ADMIN', False):
+    if not self_approval_switch()['on']:
         return False
     if user is None or user.pk != row.maker_id:
         return False
@@ -761,6 +838,15 @@ def expire_stale(now=None):
 # Policies
 # ---------------------------------------------------------------------------
 
+def _validate_room_fields(limit_kind, maker_daily_limit, cumulative_per_target):
+    if limit_kind != MONEY and (maker_daily_limit is not None or cumulative_per_target):
+        raise InvalidRequest('A daily or per-target limit applies to a money threshold only.',
+                             code='LIMIT_NOT_ALLOWED', field='maker_daily_limit')
+    if maker_daily_limit is not None:
+        _check_amount(maker_daily_limit)
+    return maker_daily_limit, bool(cumulative_per_target)
+
+
 def _validate_policy_fields(country, action_key, limit_kind, currency, maker_limit):
     country = _check_country(country)
     try:
@@ -800,7 +886,7 @@ def _validate_policy_fields(country, action_key, limit_kind, currency, maker_lim
 
 def write_policy_version(*, country, action_key, limit_kind, currency, maker_limit,
                          created_by=None, created_by_snapshot=None, reason='',
-                         changed_via=None):
+                         changed_via=None, maker_daily_limit=None, cumulative_per_target=False):
     """Close the active row for (country, action) and open the next version.
 
     The one writer of policy rows: the seed command (first version, no
@@ -811,6 +897,8 @@ def write_policy_version(*, country, action_key, limit_kind, currency, maker_lim
     """
     country, currency, maker_limit = _validate_policy_fields(
         country, action_key, limit_kind, currency, maker_limit)
+    maker_daily_limit, cumulative_per_target = _validate_room_fields(
+        limit_kind, maker_daily_limit, cumulative_per_target)
     now = timezone.now()
     with transaction.atomic():
         current = (
@@ -829,6 +917,7 @@ def write_policy_version(*, country, action_key, limit_kind, currency, maker_lim
         policy = ApprovalPolicy(
             country=country, action_key=action_key, limit_kind=limit_kind,
             currency=currency, maker_limit=maker_limit, version=latest + 1,
+            maker_daily_limit=maker_daily_limit, cumulative_per_target=cumulative_per_target,
             valid_from=now, reason=(reason or '')[:10000], changed_via=changed_via,
         )
         if created_by_snapshot is not None:
@@ -840,7 +929,8 @@ def write_policy_version(*, country, action_key, limit_kind, currency, maker_lim
 
 
 def propose_policy_change(actor, *, country, action_key, limit_kind, currency=None,
-                          maker_limit=None, reason='', http_request=None):
+                          maker_limit=None, reason='', http_request=None,
+                          maker_daily_limit=None, cumulative_per_target=False, system_label=''):
     """Raise the maker-checker request that, once approved, writes a policy.
 
     Needs `platform.settings` over the country; out of the caller's scope
@@ -850,22 +940,27 @@ def propose_policy_change(actor, *, country, action_key, limit_kind, currency=No
     """
     country, currency, maker_limit = _validate_policy_fields(
         country, action_key, limit_kind, currency, maker_limit)
+    maker_daily_limit, cumulative_per_target = _validate_room_fields(
+        limit_kind, maker_daily_limit, cumulative_per_target)
     if not (reason or '').strip():
         raise InvalidRequest('A reason is required to change a threshold.',
                              code='REASON_REQUIRED', field='reason')
     node = country_node(country)
-    if not may_act(actor, 'platform.settings', node):
+    # A system maker (an owner ruling entered by command) only opens the request; a checker decides.
+    if not system_label and not may_act(actor, 'platform.settings', node):
         raise NotPermitted(f'You do not hold platform.settings over {country}.',
                            code='SCOPE_NOT_HELD', field='country')
     payload = {
         'country': country, 'action_key': action_key, 'limit_kind': limit_kind,
         'currency': currency, 'maker_limit': maker_limit,
+        'maker_daily_limit': maker_daily_limit, 'cumulative_per_target': cumulative_per_target,
     }
     key = (f'policy_change:{country}:{action_key}:{limit_kind}:'
-           f'{currency or "-"}:{maker_limit if maker_limit is not None else "none"}')
+           f'{currency or "-"}:{maker_limit if maker_limit is not None else "none"}'
+           f':{maker_daily_limit if maker_daily_limit is not None else "none"}:{int(cumulative_per_target)}')
     return require_approval_or_execute(
-        POLICY_CHANGE, actor=actor, country=country, scope_node=node,
+        POLICY_CHANGE, actor=None if system_label else actor, country=country, scope_node=node,
         target_type='approval_policy', target_id=f'{country}:{action_key}',
         payload=payload, idempotency_key=key, reason=reason,
-        http_request=http_request,
+        http_request=http_request, system_label=system_label,
     )

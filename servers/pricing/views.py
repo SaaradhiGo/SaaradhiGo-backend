@@ -22,13 +22,16 @@ import logging
 
 from django.db.models import Max
 from rest_framework import status, viewsets
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import SAFE_METHODS, AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from base.utils import error_response, success_response
 from servers.admin_access.bridge import ScopedPermission
-from servers.admin_access.scoping import scoped, scoped_or_none
+from servers.admin_access.scoping import (
+    ScopeNotHeld, market_node, scoped, scoped_or_none, scoped_to_request,
+)
 from servers.admin_audit.services import record_admin_action
 from servers.approvals import scope as approval_scope
 from servers.approvals.models import REQUESTED, ApprovalRequest
@@ -147,6 +150,13 @@ class _ScopedPricingMixin:
         return [IsAuthenticated(), gate]
 
     def get_queryset(self):
+        if getattr(self, 'action', None) == 'list':
+            # The list follows the console's market switch (`?scope=`); a detail
+            # lookup does not, so a link to a zone opens whatever is selected.
+            try:
+                return scoped_to_request(self.request, super().get_queryset())
+            except ScopeNotHeld as exc:
+                raise PermissionDenied(str(exc)) from exc
         return scoped(self.request.user, super().get_queryset())
 
 
@@ -293,7 +303,14 @@ class ServiceZoneViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.Mod
     @action(detail=False, methods=['get'], url_path='pending')
     def pending(self, request):
         rows = approval_scope.visible(request.user, ApprovalRequest.objects.filter(
-            action_key='zone.change', status=REQUESTED)).order_by('-requested_at')[:100]
+            action_key='zone.change', status=REQUESTED))
+        try:
+            node = market_node(request)
+        except ScopeNotHeld as exc:
+            raise PermissionDenied(str(exc)) from exc
+        if node is not None:
+            rows = rows.filter(scope_node__path__startswith=node.path)
+        rows = rows.order_by('-requested_at')[:100]
         return success_response({'results': [r.as_dict() for r in rows]}, status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], url_path='cities')
@@ -538,6 +555,12 @@ class RateCardViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.ModelV
         return Response(RateCardSerializer(card).data)
 
 
+def _launch_fields(zone):
+    from servers.platform_ops.markets import city_status_for_zone
+    state, city_name = city_status_for_zone(zone)
+    return {'city_status': state, 'city_name': city_name}
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def list_active_zones(request):
@@ -570,6 +593,9 @@ def list_active_zones(request):
             'distance_unit': z.distance_unit or z.country_profile.distance_unit,
             'tax_mode': z.tax_mode or z.country_profile.tax_mode,
             'tax_label': z.tax_label,
+            # 13 Nov: `live`, `soon` (fares shown, Book says "We're launching in <city> soon") or
+            # `paused`. A client shows the launch notice before the rider tries to book.
+            **_launch_fields(z),
         }
         for z in zones
     ]

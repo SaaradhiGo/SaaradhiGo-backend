@@ -70,13 +70,21 @@ def resolve(country, scope_codes=(), day=None):
     return None
 
 
-def local_day(country, when=None):
+def in_force(plan, day):
+    """The plan governed `day`: active or archived, started on or before it, not ended by it."""
+    return (plan.status in (ACTIVE, ARCHIVED) and plan.effective_from is not None
+            and plan.effective_from <= day and not (plan.effective_to and plan.effective_to <= day))
+
+
+def local_day(country, when=None, zone=None):
+    """The local date; in the zone's own time zone when a zone is given (14 Nov: Boise)."""
     from zoneinfo import ZoneInfo
 
     from base.countries import get_country
 
     when = when or timezone.now()
-    return when.astimezone(ZoneInfo(get_country(country or None).default_timezone)).date()
+    tz = (getattr(zone, 'timezone_name', '') or get_country(country or None).default_timezone)
+    return when.astimezone(ZoneInfo(tz)).date()
 
 
 def plan_for_zone(zone, when=None):
@@ -85,7 +93,7 @@ def plan_for_zone(zone, when=None):
     if zone is None:
         return None
     country = country_code_of_zone(zone)
-    return resolve(country, scope_codes_of_zone(zone), local_day(country, when))
+    return resolve(country, scope_codes_of_zone(zone), local_day(country, when, zone))
 
 
 def snapshot_for_booking(zone, vehicle_type=None, when=None):
@@ -138,8 +146,11 @@ def _money(minor, currency):
     return format_money(from_minor(int(minor), currency), currency)
 
 
-def day_fee(plan, vehicle_type, fares_minor, *, day=None, first_trip_day=None, state_code=''):
-    """The fee for one driver-day under `plan`. `fares_minor` is the day's completed trip fares."""
+def day_fee(plan, vehicle_type, fares_minor, *, day=None, first_trip_day=None, state_code='', label='Today'):
+    """The fee for one driver-day under `plan`. `fares_minor` is the day's completed trip fares;
+    `label` starts the explanation ("Today" live, the date once the day is charged)."""
+    from base.market_dates import day_month
+
     cur = plan.currency or 'INR'
     n, total = len(fares_minor), sum(int(f) for f in fares_minor)
     if plan.plan_type == PERCENT_COMMISSION:
@@ -147,14 +158,15 @@ def day_fee(plan, vehicle_type, fares_minor, *, day=None, first_trip_day=None, s
     if n == 0:
         return DayFee(0, 'no_trips', 'No trips, no fee.', 0, 0)
     if plan.waiver_until and day and day < plan.waiver_until:
-        return DayFee(0, 'waiver', f'No fee: launch waiver until {plan.waiver_until:%d %b}.', n, total)
+        return DayFee(0, 'waiver', f'No fee: launch waiver until {day_month(plan.waiver_until, plan.country)}.', n, total)
     if plan.waiver_first_days and day and first_trip_day and \
             day < first_trip_day + timedelta(days=plan.waiver_first_days):
         until = first_trip_day + timedelta(days=plan.waiver_first_days)
         return DayFee(0, 'waiver', f'No fee: your first {plan.waiver_first_days} days are free '
-                                   f'(until {until:%d %b}).', n, total)
+                                   f'(until {day_month(until, plan.country)}).', n, total)
     if plan.earnings_floor_minor and total < plan.earnings_floor_minor:
-        return DayFee(0, 'under_floor', f'No fee today: earnings under {_money(plan.earnings_floor_minor, cur)}.',
+        when = 'today' if label == 'Today' else f'on {label}'
+        return DayFee(0, 'under_floor', f'No fee {when}: earnings under {_money(plan.earnings_floor_minor, cur)}.',
                       n, total)
     a = plan.amounts_for(vehicle_type)
     cap_pct = legal_cap_percent(plan.country, state_code)
@@ -164,7 +176,7 @@ def day_fee(plan, vehicle_type, fares_minor, *, day=None, first_trip_day=None, s
         allowed = sum(legal)
         fee, per_trip = min(raw, allowed), []
         reduced = raw if fee < raw else None
-        text = f'Today: daily pass {_money(fee, cur)}'
+        text = f'{label}: daily pass {_money(fee, cur)}'
     else:
         unit = int(a.get('per_trip_fee_minor') or 0)
         free_after = a.get('fee_free_after_trips')
@@ -178,7 +190,7 @@ def day_fee(plan, vehicle_type, fares_minor, *, day=None, first_trip_day=None, s
         fee = sum(per_trip)
         reduced = raw_sum if reduced_any else None
         charged_trips = sum(1 for x in per_trip if x)
-        text = f'Today: {charged_trips} trips × {_money(unit, cur)} = {_money(fee, cur)}'
+        text = f'{label}: {charged_trips} trips × {_money(unit, cur)} = {_money(fee, cur)}'
     if plan.daily_cap_minor is not None and fee > plan.daily_cap_minor:
         fee = plan.daily_cap_minor
         text = f'{text} (cap {_money(plan.daily_cap_minor, cur)})'
@@ -191,14 +203,31 @@ def day_fee(plan, vehicle_type, fares_minor, *, day=None, first_trip_day=None, s
 # The end-of-day charge
 # ---------------------------------------------------------------------------
 
-def _day_bounds(country, day):
+def driver_timezone(driver, country):
+    """The IANA zone of the driver's city (its service zone), else the country's: a driver's day
+    closes at midnight where they drive (15 Nov: Treasure Valley on Mountain time)."""
+    from base.countries import get_country
+    from servers.pricing.models import ServiceZone
+
+    home = getattr(driver, 'home_city_id', None)
+    name = ''
+    if home:
+        name = (ServiceZone.objects.filter(geo_node_id=home).exclude(timezone_name='')
+                .order_by('id').values_list('timezone_name', flat=True).first() or '')
+    return name or get_country(country or None).default_timezone
+
+
+def _day_bounds(country, day, tz_name=None):
+    """[start, end) of a local day. Built from the date at midnight, so a 23- or 25-hour day
+    (daylight saving) is exactly that long."""
     from zoneinfo import ZoneInfo
 
     from base.countries import get_country
 
-    tz = ZoneInfo(get_country(country or None).default_timezone)
+    tz = ZoneInfo(tz_name or get_country(country or None).default_timezone)
     start = datetime(day.year, day.month, day.day, tzinfo=tz)
-    return start, start + timedelta(days=1)
+    nxt = day + timedelta(days=1)
+    return start, datetime(nxt.year, nxt.month, nxt.day, tzinfo=tz)
 
 
 def _state_code(zone):
@@ -223,7 +252,7 @@ def trip_class(trip):
 def day_trips(driver, country, day):
     from servers.ride.models import Trip
 
-    start, end = _day_bounds(country, day)
+    start, end = _day_bounds(country, day, driver_timezone(driver, country))
     return list(Trip.objects.filter(driver_id=driver, status_id__status_code='completed',
                                     completed_at__gte=start, completed_at__lt=end,
                                     fee_plan_type__in=NON_COMMISSION)
@@ -235,7 +264,10 @@ def first_trip_day(driver, country):
 
     first = (Trip.objects.filter(driver_id=driver, status_id__status_code='completed')
              .order_by('completed_at').values_list('completed_at', flat=True).first())
-    return local_day(country, first) if first else None
+    if not first:
+        return None
+    from zoneinfo import ZoneInfo
+    return first.astimezone(ZoneInfo(driver_timezone(driver, country))).date()
 
 
 def charge_day(driver, country, day):
@@ -249,11 +281,23 @@ def charge_day(driver, country, day):
     if not trips:
         return None
     plan = DriverFeePlan.objects.get(pk=trips[0].fee_plan_id)
+    if not in_force(plan, day):
+        # 15 Nov: a trip keeps the plan it was booked under, but a plan retired (or never in force)
+        # for this day charges nothing. Recorded as a zero row so the day is not looked at again.
+        try:
+            with transaction.atomic():
+                return DriverDailyFee.objects.create(
+                    driver=driver, day=day, plan=plan, plan_version=plan.version, currency=plan.currency,
+                    trips=len(trips), fares_minor=0, fee_minor=0, reason='not_in_force',
+                    explanation='No fee: the plan was not in force on this day.', trip_ids=[t.id for t in trips])
+        except IntegrityError:
+            return DriverDailyFee.objects.filter(driver=driver, day=day).first()
     vt = trip_class(trips[0])
     fares = [t.final_fare_minor if t.final_fare_minor is not None else (t.estimated_fare_minor or 0)
              for t in trips]
+    from base.market_dates import day_month
     result = day_fee(plan, vt, fares, day=day, first_trip_day=first_trip_day(driver, country),
-                     state_code=_state_code(trips[0].zone))
+                     state_code=_state_code(trips[0].zone), label=day_month(day, country))
     if result.reduced_from_minor is not None:
         logger.warning('platform_fee_legal_guard', extra={
             'event': 'platform_fee_legal_guard', 'driver_id': driver.id, 'day': str(day),
@@ -281,33 +325,40 @@ def charge_day(driver, country, day):
 
 
 def charge_yesterday(now=None):
-    """Hourly: every country's drivers, for the local day that has just ended. Idempotent."""
+    """Hourly: each driver's local day that has just ended, in their city's own time zone (a day
+    closes at midnight there, 23 or 25 hours long across a clock change). Idempotent."""
+    from zoneinfo import ZoneInfo
+
     from base.countries import COUNTRIES
     from servers.driver.models import Driver
     from servers.ride.models import Trip
 
+    now = now or timezone.now()
     out = {}
     for code in COUNTRIES:
-        day = local_day(code, now) - timedelta(days=1)
-        start, end = _day_bounds(code, day)
-        drivers = (Trip.objects.filter(status_id__status_code='completed', completed_at__gte=start,
-                                       completed_at__lt=end, fee_plan_type__in=NON_COMMISSION,
+        # Every driver with a plan trip in the last two days; each is charged for their own yesterday.
+        drivers = (Trip.objects.filter(status_id__status_code='completed', completed_at__gte=now - timedelta(hours=50),
+                                       completed_at__lt=now, fee_plan_type__in=NON_COMMISSION,
                                        zone__country=code)
                    .values_list('driver_id', flat=True).distinct())
-        n = 0
+        n, days = 0, {}
         for driver in Driver.objects.filter(pk__in=list(drivers)).select_related('user_id'):
+            tz = driver_timezone(driver, code)
+            day = now.astimezone(ZoneInfo(tz)).date() - timedelta(days=1)
+            days[tz] = str(day)
             try:
                 if charge_day(driver, code, day) is not None:
                     n += 1
             except Exception:  # noqa: BLE001 - one driver never stops the others
                 logger.exception('platform fee failed driver=%s day=%s', driver.id, day)
-        out[code] = {'day': str(day), 'drivers': n}
+        out[code] = {'drivers': n, 'days': days}
     return out
 
 
 def today_so_far(driver, country, now=None):
     """The driver's fee for today's completed trips, as the end-of-day job will work it out."""
-    day = local_day(country, now)
+    from zoneinfo import ZoneInfo
+    day = (now or timezone.now()).astimezone(ZoneInfo(driver_timezone(driver, country))).date()
     trips = day_trips(driver, country, day)
     if not trips:
         return None
@@ -358,7 +409,7 @@ def overcharged(driver, country):
     for t in trips:
         if commission.get(t.id, 0) <= 0 or t.zone is None:
             continue
-        day = local_day(country, t.completed_at)
+        day = local_day(country, t.completed_at, t.zone)
         # A driver never pays for configuration written late (owner ruling, 11 Nov): a day before any
         # plan existed is judged by the plan in force now, waiver included.
         plan = resolve(country, scope_codes_of_zone(t.zone), day)
@@ -433,6 +484,30 @@ def refund_overcharged(driver, country, *, apply=False):
     return report
 
 
+def refund_day(driver, day, *, apply=False):
+    """Return a day's plan fee (15 Nov: Nov 14's $3.00 under a plan never approved). The same
+    append-only `platform_fee_refund` credit as a trip refund, against `DAY_<yyyymmdd>`, idempotent
+    per driver and day. Returns `(charged_minor, refund_minor, written)`; nothing for a day with no fee."""
+    from servers.rider.models import Wallet, WalletTransaction, get_wallet
+
+    fee = DriverDailyFee.objects.filter(driver=driver, day=day).first()
+    if fee is None or not fee.fee_minor:
+        return 0, 0, False
+    key = f'PLATFORM_FEE_REFUND_DAY_{driver.id}_{day:%Y%m%d}'
+    if WalletTransaction.objects.filter(idempotency_key=key).exists():
+        return fee.fee_minor, fee.fee_minor, True
+    if not apply:
+        return fee.fee_minor, fee.fee_minor, False
+    with transaction.atomic():
+        wallet = get_wallet(driver.user_id, Wallet.SCOPE_DRIVER, lock=True)
+        WalletTransaction.objects.create(
+            user_id=driver.user_id, currency=fee.currency, amount_minor=fee.fee_minor, txn_type='credit',
+            status='completed', purpose=REFUND_PURPOSE, reference_id=f'DAY_{day:%Y%m%d}', idempotency_key=key)
+        wallet.balance_minor += fee.fee_minor
+        wallet.save(update_fields=['balance_minor'])
+    return fee.fee_minor, fee.fee_minor, True
+
+
 # ---------------------------------------------------------------------------
 # The words on the driver's screens (11 Nov): always from the plan in force
 # ---------------------------------------------------------------------------
@@ -449,6 +524,10 @@ def fee_words(driver, today=None):
     plan = resolve(country, scope_codes_of_node(home) if home else [], today)
     vehicle = getattr(driver, 'active_vehicle', None)
     vt = getattr(getattr(vehicle, 'vehicle_type_id', None), 'type', '') if vehicle is not None else ''
+    if plan is None and _fee_plan_market(driver):
+        # 15 Nov: a market that charges by fee plan (USA) with no plan in force charges nothing,
+        # and says so; it never shows a rate the owner has not approved.
+        return 'No platform fee'
     if plan is None or plan.plan_type == PERCENT_COMMISSION or not plan.amounts_for(vt):
         return 'A commission on each trip, shown on every trip'
     cur, a = plan.currency, plan.amounts_for(vt)
@@ -465,8 +544,22 @@ def fee_words(driver, today=None):
     if plan.waiver_first_days and today < first + timedelta(days=plan.waiver_first_days):
         until = max(until or today, first + timedelta(days=plan.waiver_first_days))
     if until:
-        return f'No fee until {until.day} {until:%b}, then {text}'
+        from base.market_dates import day_month
+
+        return f'No fee until {day_month(until, country)}, then {text}'
     return text[0].upper() + text[1:]
+
+
+def _fee_plan_market(driver):
+    """Whether drivers here pay a fee plan instead of a commission (`fee_plan_required`, USA)."""
+    from servers.driver.records import market_of
+    from servers.pricing.regulation import market_rules
+
+    try:
+        country, state = market_of(driver)
+        return bool(market_rules(country or 'IN', state)['fee_plan_required'])
+    except Exception:  # noqa: BLE001 - the words fall back to the commission wording
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -529,3 +622,11 @@ def breaks_legal_share_on_normal_trip(plan):
             bad.append(vt)
     return bad
 
+
+
+def dated_explanation(fee, country):
+    """A charged day's explanation with its date, also for rows written as "Today: ..." before 15 Nov."""
+    from base.market_dates import day_month
+
+    text = fee.explanation or ''
+    return f'{day_month(fee.day, country)}:{text[6:]}' if text.startswith('Today:') else text

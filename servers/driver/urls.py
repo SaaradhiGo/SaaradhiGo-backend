@@ -10,12 +10,15 @@ from .onboarding_views import driver_onboarding
 from .admin_drivers import (
     admin_approve_driver, admin_bulk_drivers, admin_kyc_queue, admin_note_driver,
     admin_document_view, admin_driver_records, admin_reinstate_driver, admin_review_document, admin_suspend_driver, admin_vehicle_status,
+    admin_run_verification,
 )
 from .admin_views import (
     list_drivers_admin, retrieve_driver_admin, driver_full_detail_admin,
     update_kyc_status_admin, delete_driver_admin, get_vehicle_details,
     list_withdrawals_admin, approve_withdrawal_admin, reject_withdrawal_admin, bulk_action_withdrawal_admin
 )
+
+from . import background_views  # noqa: E402
 
 urlpatterns = [
     # path('add/', add_driver),
@@ -79,7 +82,14 @@ urlpatterns = [
     # One document, on demand, audited (AUDIT 27.78).
     path('admin/<int:driver_id>/documents/<str:key>/view/', admin_document_view),
     path('admin/<int:driver_id>/approve/', admin_approve_driver),
+    path('admin/<int:driver_id>/verify/', admin_run_verification),
     path('admin/<int:driver_id>/suspend/', admin_suspend_driver),
+    # 14 Nov (USA): background checks and the accessibility acknowledgement.
+    path('admin/<int:driver_id>/background/', background_views.admin_background_decision),
+    path('background/disclosure/', background_views.background_disclosure),
+    path('background/authorise/', background_views.background_authorise),
+    path('accessibility/acknowledge/', background_views.accessibility_acknowledge),
+    path('webhooks/background/<str:provider>/', background_views.background_webhook),
     path('admin/<int:driver_id>/reinstate/', admin_reinstate_driver),
     path('admin/<int:driver_id>/records/', admin_driver_records),
     path('admin/<int:driver_id>/note/', admin_note_driver),

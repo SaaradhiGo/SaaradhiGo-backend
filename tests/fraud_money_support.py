@@ -28,6 +28,7 @@ APPROVALS = '/api/v1/approvals/admin/requests'
 def seed_money():
     """Approval policies (India and US) and the payout rules of both countries."""
     call_command('seed_approval_policies', actor_email=seed_actor().email, stdout=StringIO())
+    call_command('seed_payout_config', actor_email=seed_actor().email, stdout=StringIO())
     call_command('apply_payout_ruling', actor_email=seed_actor().email, stdout=StringIO())
 
 

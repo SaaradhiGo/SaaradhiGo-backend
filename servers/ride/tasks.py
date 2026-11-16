@@ -518,3 +518,27 @@ def check_maps_budgets():
     from servers.ride.maps_budget import check_budgets
 
     return check_budgets()
+
+
+@shared_task(name='ride.send_pending_gateway_refunds', acks_late=True)
+def send_pending_gateway_refunds():
+    """Hourly: send approved card refunds still waiting for the provider (gateway_refunds)."""
+    from servers.ride.gateway_refunds import send_pending
+    return send_pending()
+
+
+@shared_task(name='ride.reissue_receipt_after_refund', acks_late=True)
+def reissue_receipt_after_refund(trip_id, money_action_id):
+    """A new receipt version (PDF and email) showing a refund that went through. Once per refund."""
+    from django.core.cache import cache
+
+    from servers.ride.models import Trip
+    from servers.ride.receipts import reissue_receipt
+
+    if not cache.add(f'receipt-after-refund:{money_action_id}', 1, 86400 * 7):
+        return 'already'
+    trip = Trip.objects.filter(pk=trip_id).select_related('user_id', 'zone').first()
+    if trip is None:
+        return 'no_trip'
+    receipt = reissue_receipt(trip)
+    return receipt.receipt_number if receipt else 'no_rider'

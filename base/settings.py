@@ -140,6 +140,9 @@ ROOT_URLCONF = 'base.urls'
 # past this many trusted hops; the left end is client-written and ignored.
 # Railway's edge is one proxy, hence 1. Put a CDN in front and this is 2.
 TRUSTED_PROXY_COUNT = int(os.environ.get('TRUSTED_PROXY_COUNT', '1'))
+# 14 Nov: the website's session server vouches for the visitor's address with this secret
+# (base/client_ip.py). Unset, or shorter than 32 characters, and no header is believed.
+BFF_CLIENT_IP_SECRET = os.environ.get('BFF_CLIENT_IP_SECRET', '')
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
@@ -325,6 +328,15 @@ PLATFORM_LEGAL_ENTITY = os.environ.get('PLATFORM_LEGAL_ENTITY', '').strip()
 # statement leaves a line out rather than print an invented one (docs/config-required.md).
 PLATFORM_LEGAL_ADDRESS = os.environ.get('PLATFORM_LEGAL_ADDRESS', '')
 PLATFORM_GSTIN = os.environ.get('PLATFORM_GSTIN', '')
+# The operating entity per market (13 Nov). Names are Srini's rulings (base/legal_entity.py); address,
+# company number, contacts, grievance officer and GST registration come from this JSON keyed "IN",
+# "US" or a state ("IN-TG"). Unset values are left off every page and document.
+LEGAL_ENTITIES_JSON = os.environ.get('LEGAL_ENTITIES_JSON', '')
+# From-address per market (13 Nov), JSON {"IN": "...", "US": "..."}; else DEFAULT_FROM_EMAIL.
+try:
+    EMAIL_FROM_BY_COUNTRY = json.loads(os.environ.get('EMAIL_FROM_BY_COUNTRY', '') or '{}')
+except ValueError:
+    EMAIL_FROM_BY_COUNTRY = {}
 
 # Domain used to build the operational contact addresses shown to drivers.
 #
@@ -444,10 +456,32 @@ MIGRATION_WAIT_TIMEOUT = int(os.environ.get('MIGRATION_WAIT_TIMEOUT', '300'))
 # (or adopt django-celery-beat for a DB-backed schedule lock).
 from celery.schedules import crontab as _crontab
 CELERY_BEAT_SCHEDULE = {
+    'driver-recheck-background-daily': {
+        # 14 Nov (USA): background checks repeat on the market's schedule (Idaho: yearly).
+        'task': 'driver.recheck_background',
+        'schedule': _crontab(hour=4, minute=25),
+    },
     'pricing-charge-driver-fees-hourly': {
         # Driver fee plans (9 Nov): one platform_fee row per driver for the local day just ended.
         'task': 'pricing.charge_driver_fees',
         'schedule': _crontab(minute=17),
+    },
+    'payments-collect-unpaid-trips-hourly': {
+        # 15 Nov (Srini's ruling): a completed trip pays the driver even if the payment failed;
+        # the card is retried and repeated rider-driver failures are flagged for fraud review.
+        'task': 'payments.collect_unpaid_trips',
+        'schedule': _crontab(minute=29),
+    },
+    'ride-send-pending-gateway-refunds-hourly': {
+        # 15 Nov: approved card refunds a send missed (provider down) are retried hourly.
+        'task': 'ride.send_pending_gateway_refunds',
+        'schedule': _crontab(minute=11),
+    },
+    'platform-scheduler-heartbeat': {
+        # Proves beat and a worker are alive (15 Nov); the console alerts Super Admin when the
+        # last stamp is over two hours old (platform_ops.scheduler_watch).
+        'task': 'platform_ops.scheduler_heartbeat',
+        'schedule': 300.0,
     },
     'platform-integrity-scan-daily': {
         # Roles without profiles, drivers without wallets, trips and payouts without ledger rows
@@ -508,6 +542,17 @@ CELERY_BEAT_SCHEDULE = {
         # reservations held by cancelled trips and retries unpaid qualified referrals.
         'task': 'promotions.sweep',
         'schedule': _crontab(minute='*/5'),
+    },
+    'kyc-review-target-every-15-min': {
+        # 12 Nov: drivers waiting for document review past their city's target raise one alert
+        # per city, cleared when the queue is back within it (driver/review_target.py).
+        'task': 'driver.kyc_review_target_sweep',
+        'schedule': _crontab(minute='*/15'),
+    },
+    'account-closure-sweep-hourly': {
+        # 13 Nov: accounts closing after their last payout are anonymised once nothing is owed.
+        'task': 'auth_user.account_closure_sweep',
+        'schedule': _crontab(minute=43),
     },
     'fraud-run-rules-every-15-min': {
         # Fraud & Risk (module 13): evaluates the enabled detection rules over their bounded recent
@@ -725,7 +770,10 @@ TRIP_STALE_AFTER_SECONDS = int(os.environ.get('TRIP_STALE_AFTER_SECONDS', '600')
 TRIP_OPERATOR_ATTENTION_AFTER_SECONDS = int(os.environ.get(
     'TRIP_OPERATOR_ATTENTION_AFTER_SECONDS', '1800'))
 
+# Every crontab above is in India time: minute=29 fires at :59 UTC, and hour=3 is 21:30 UTC the day
+# before. Country jobs (payouts, fees) work out their own local day inside the task.
 CELERY_TIMEZONE = 'Asia/Kolkata'
+SCHEDULER_SILENT_HOURS = 2
 
 # Let Django's LOGGING own worker output.
 #
@@ -937,6 +985,15 @@ QA_BOOTSTRAP_ACTOR_EMAIL = (os.environ.get('QA_BOOTSTRAP_ACTOR_EMAIL') or '').st
 
 # QA only (11 Nov): a QA-simulated test driver (not approved) may go online without the market's
 # requirements. Off unless set; production refuses to boot with it on (below).
+# 12 Nov (console QA): a driver is "Low rating" when the average riders gave is below this, from at
+# least this many ratings. A driver with fewer (or none) is never low.
+# 12 Nov: automated document checks (servers/driver/verification.py). Blank: the fake outside
+# production, not connected in production. A real provider is added once signed (config-required.md).
+DOC_VERIFICATION_PROVIDER = os.environ.get('DOC_VERIFICATION_PROVIDER', '').strip().lower()
+# 12 Nov: working days a driver's documents may wait for review where the city sets none.
+KYC_REVIEW_TARGET_WORKING_DAYS = int(os.environ.get('KYC_REVIEW_TARGET_WORKING_DAYS', '1'))
+DRIVER_LOW_RATING_BELOW = os.environ.get('DRIVER_LOW_RATING_BELOW', '4.5')
+DRIVER_LOW_RATING_MIN_RATINGS = int(os.environ.get('DRIVER_LOW_RATING_MIN_RATINGS', '10'))
 QA_SIM_DRIVERS_SKIP_REQUIREMENTS = os.environ.get('QA_SIM_DRIVERS_SKIP_REQUIREMENTS', '').strip().lower() in ('1', 'true', 'yes')
 
 if IS_PRODUCTION:
@@ -965,6 +1022,11 @@ if IS_PRODUCTION:
             'skips SMS delivery and throttling -- an authentication bypass.'
         )
 
+    if APPROVALS_SOLO_SUPER_ADMIN:
+        _production_faults.append(
+            'APPROVALS_SOLO_SUPER_ADMIN is on. In production self-approval is never a setting: a '
+            'Super Admin turns it on in the console (Approvals) with a reason and an expiry of at '
+            'most 7 days, and the banner names them (12 Nov).')
     if QA_SIM_DRIVERS_SKIP_REQUIREMENTS:
         _production_faults.append(
             'QA_SIM_DRIVERS_SKIP_REQUIREMENTS is on. It lets an unapproved test driver go online '
@@ -1201,6 +1263,10 @@ RAZORPAYX_WEBHOOK_SECRET=os.environ.get("RAZORPAYX_WEBHOOK_SECRET", "")
 # US driver payouts through Stripe Connect Express (10 Nov). Unset: QA's fake provider, else
 # "US payouts are not set up yet".
 STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
+# 13 Nov: US rider card payments (PaymentIntents) and Connect transfers. Test keys outside production.
+STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', '')
+STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
+STRIPE_CONNECT_WEBHOOK_SECRET = os.environ.get('STRIPE_CONNECT_WEBHOOK_SECRET', '')
 # Fernet key for PAN and bank account numbers at rest (base/encrypted.py). Unset: derived from
 # SECRET_KEY, so rotating SECRET_KEY would need these re-encrypted; set it before production.
 FIELD_ENCRYPTION_KEY = os.environ.get('FIELD_ENCRYPTION_KEY', '')
@@ -1381,6 +1447,28 @@ TRIP_SHARE_BASE_URL = os.environ.get('TRIP_SHARE_BASE_URL', '')
 CALL_BRIDGE_PROVIDER = os.environ.get('CALL_BRIDGE_PROVIDER', 'fake').strip().lower()
 CALL_BRIDGE_REAL_ENABLED = os.environ.get('CALL_BRIDGE_REAL_ENABLED', 'false').strip().lower() in {'1', 'true', 'yes'}
 CALL_BRIDGE_FAKE_NUMBER = os.environ.get('CALL_BRIDGE_FAKE_NUMBER', '+914000000000')
+# 13 Nov: the provider per market, JSON {"US": "twilio"}; a market not listed uses CALL_BRIDGE_PROVIDER.
+# India: no voice provider chosen yet (fake). Twilio Voice needs TWILIO_VOICE_NUMBER.
+try:
+    CALL_BRIDGE_PROVIDERS = json.loads(os.environ.get('CALL_BRIDGE_PROVIDERS', '') or '{}')
+except ValueError:
+    CALL_BRIDGE_PROVIDERS = {}
+TWILIO_VOICE_NUMBER = os.environ.get('TWILIO_VOICE_NUMBER', '')
+# 13 Nov: direct SMS (sign-in codes, shares, SOS, pages) per market, JSON {"IN": "msg91", "US":
+# "twilio"}. A market not listed keeps AWS SNS. MSG91 needs, per kind in base/sms_templates.py, a
+# flow id and a DLT template id (JSON objects keyed by kind), plus the sender id and DLT entity id.
+def _json_env(name):
+    try:
+        return json.loads(os.environ.get(name, '') or '{}')
+    except ValueError:
+        return {}
+
+
+SMS_DIRECT_PROVIDERS = _json_env('SMS_DIRECT_PROVIDERS')
+MSG91_FLOW_IDS = _json_env('MSG91_FLOW_IDS')
+MSG91_DLT_TEMPLATE_IDS = _json_env('MSG91_DLT_TEMPLATE_IDS')
+MSG91_SENDER_ID = os.environ.get('MSG91_SENDER_ID', '')
+MSG91_DLT_ENTITY_ID = os.environ.get('MSG91_DLT_ENTITY_ID', '')
 ETA_ROAD_FACTOR = float(os.environ.get('ETA_ROAD_FACTOR', '1.3'))
 ETA_MARKET_KMH = {'IN': 18.0, 'US': 35.0}
 if os.environ.get('ETA_MARKET_KMH_JSON', '').strip():
@@ -1794,3 +1882,18 @@ SNS_PLATFORM_APPLICATION_ARN_FCM = os.environ.get('SNS_PLATFORM_APPLICATION_ARN_
 SNS_PLATFORM_APPLICATION_ARN_APNS = os.environ.get('SNS_PLATFORM_APPLICATION_ARN_APNS', '')
 # The public base URL Twilio signs against (the URL it was configured with).
 NOTIFY_WEBHOOK_BASE_URL = os.environ.get('NOTIFY_WEBHOOK_BASE_URL', '')
+
+
+# ---------------------------------------------------------------------------
+# Background checks (14 Nov, USA from day 1): servers.driver.background
+# ---------------------------------------------------------------------------
+# {"US": "fake"} on QA. The real provider is the owner's choice (Checkr recommended); the fake
+# never runs in production whatever is set. The webhook secret signs provider callbacks.
+try:
+    BACKGROUND_CHECK_PROVIDERS = json.loads(os.environ.get('BACKGROUND_CHECK_PROVIDERS_JSON', '') or '{}')
+except ValueError:
+    BACKGROUND_CHECK_PROVIDERS = {}
+BACKGROUND_CHECK_WEBHOOK_SECRET = os.environ.get('BACKGROUND_CHECK_WEBHOOK_SECRET', '')
+
+# 14 Nov (USA): the QA fake card processor (integrations/payments/fake_card.py). Never in production.
+CARD_FAKE_ALLOWED = os.environ.get('CARD_FAKE_ALLOWED', '').strip().lower() in ('1', 'true', 'yes')

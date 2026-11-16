@@ -27,4 +27,6 @@ urlpatterns = [
     path('admin/maps/budget/<str:country>/', maps_views.maps_budget_update,
          name='platform_maps_budget'),
     path('admin/options/', views.options, name='platform_options'),
+    # Rider-facing (13 Nov): "Tell me when we launch".
+    path('launch-interest/', views.launch_interest, name='platform_launch_interest'),
 ]

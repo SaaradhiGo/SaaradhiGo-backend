@@ -192,6 +192,8 @@ def execute_policy_change(request):
         country=p['country'], action_key=p['action_key'],
         limit_kind=p['limit_kind'], currency=p.get('currency') or '',
         maker_limit=p.get('maker_limit'),
+        maker_daily_limit=p.get('maker_daily_limit'),
+        cumulative_per_target=bool(p.get('cumulative_per_target')),
         created_by_snapshot={
             'actor_id': request.maker_id, 'actor_label': request.maker_label,
             'actor_email': request.maker_email, 'actor_role': request.maker_role,

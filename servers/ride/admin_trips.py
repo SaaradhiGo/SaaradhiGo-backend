@@ -633,7 +633,30 @@ def allowed_actions(user, trip, refundable=None):
         'cancellable_statuses': list(CANCELLABLE_STATUSES),
         'cancel_reasons': CANCEL_REASONS,
         'flag_reasons': FLAG_REASONS,
+        'refund_limits': refund_limits(user, trip) if may_refund else None,
     }
+
+
+def refund_limits(user, trip):
+    """What this person may refund alone on this trip right now, for the refund form (15 Nov):
+    the per-trip and daily limits, what is used and what is left. None when no policy applies."""
+    from servers.approvals.service import active_policy, has_room_limits, maker_room
+
+    key = FINANCE_REFUND if granted(user, 'finance.read', node_of(trip))[0] else SUPPORT_REFUND
+    country = (getattr(trip.zone, 'country', '') or '').upper() if trip.zone_id else ''
+    policy = active_policy(country, key) if country else None
+    if policy is None or policy.limit_kind != 'money' or policy.maker_limit is None:
+        return None
+    room = maker_room(policy, maker_id=user.pk, target_type=TARGET, target_id=trip.id) \
+        if has_room_limits(policy) else {'on_target_minor': 0, 'today_minor': 0}
+    per_trip_left = max(0, policy.maker_limit - (room['on_target_minor'] if policy.cumulative_per_target else 0))
+    out = {'action_key': key, 'currency': policy.currency, 'per_trip_minor': policy.maker_limit,
+           'per_trip_left_minor': per_trip_left, 'per_day_minor': policy.maker_daily_limit,
+           'used_today_minor': room['today_minor'], 'per_day_left_minor': None}
+    if policy.maker_daily_limit is not None:
+        out['per_day_left_minor'] = max(0, policy.maker_daily_limit - room['today_minor'])
+    out['alone_up_to_minor'] = min(x for x in (per_trip_left, out['per_day_left_minor']) if x is not None)
+    return out
 
 
 def _stale_detail(trip, reason):
@@ -1155,13 +1178,19 @@ def _locked_trip(request_row):
     return trip
 
 
+def _send_quietly(send, row_id):
+    try:
+        send(row_id)
+    except Exception:  # noqa: BLE001 - the hourly sweep retries; the refund stays recorded
+        logger.exception('gateway refund send failed money_action=%s', row_id)
+
+
 def execute_refund(request_row):
     """Carry out an approved (or within-limit) trip refund; writes the ledger row.
 
     Cash and wallet trips: a wallet credit through `rider.credits`
-    (idempotent on the request id). Online trips: TODO(integration) -- the
-    gateway refund is RECORDED as pending_gateway and no provider is called;
-    finance completes it out of band until the provider call is tested.
+    (idempotent on the request id). Online trips: recorded as pending_gateway, then sent to
+    the provider after commit (`gateway_refunds`; Stripe only so far).
     """
     from servers.rider.credits import issue_refund_credit
 
@@ -1190,9 +1219,8 @@ def execute_refund(request_row):
             wallet_txn = result.transaction_id
             state = TripMoneyAction.COMPLETED
         else:
-            # TODO(integration): send this refund to the payment provider once
-            # the provider call is tested end to end. Until then it is
-            # recorded as owed and finance completes it manually.
+            # Sent to the provider after commit (gateway_refunds); providers not yet tested
+            # stay pending for Finance, and the hourly sweep retries a failed send.
             state = TripMoneyAction.PENDING_GATEWAY
         row = TripMoneyAction.objects.create(
             trip=trip, kind=TripMoneyAction.REFUND, amount_minor=amount,
@@ -1208,6 +1236,13 @@ def execute_refund(request_row):
                    'action_key': request_row.action_key},
             reason=request_row.request_reason or '',
         )
+        if state == TripMoneyAction.COMPLETED:
+            from .gateway_refunds import _reissue_on_commit
+            _reissue_on_commit(row)
+        if state == TripMoneyAction.PENDING_GATEWAY:
+            from .gateway_refunds import send as send_refund
+            row_id = row.id
+            transaction.on_commit(lambda: _send_quietly(send_refund, row_id))
     ticket_id = payload.get('ticket_id')
     if ticket_id:
         from servers.support.service import post_system_message

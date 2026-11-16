@@ -19,7 +19,15 @@ from .admin_finance import (
     finance_settlements,
 )
 
+from . import card_hold  # noqa: E402
+
 urlpatterns = [
+    # 14 Nov (USA): the card hold at booking.
+    path('card/hold/', card_hold.hold_view),
+    path('card/hold/<int:hold_id>/', card_hold.hold_status_view),
+    # 15 Nov: a rider's unpaid last trip (shown before booking) and paying it.
+    path('unpaid/', card_hold.unpaid_view),
+    path('unpaid/pay/', card_hold.pay_unpaid_view),
     path('create-order/', create_order),
     path('verify/', verify_payment),
     path('webhook/', payment_webhook),

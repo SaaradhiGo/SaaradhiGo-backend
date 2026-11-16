@@ -1,0 +1,33 @@
+#!/bin/bash
+# Boot one SaaradhiGo ${role} instance: Docker, the image for this deploy, its configuration from
+# SSM Parameter Store, then the container. Logs go to CloudWatch (awslogs driver). Nothing here
+# is edited on a running host: a change is a new launch template and an instance refresh.
+set -euo pipefail
+dnf install -y docker jq
+systemctl enable --now docker
+
+aws ecr get-login-password --region ${region} | docker login --username AWS --password-stdin ${registry}
+
+ENV_FILE=/etc/saaradhigo.env
+umask 077
+aws ssm get-parameters-by-path --region ${region} --path "${param_path}" --with-decryption --recursive \
+  --query 'Parameters[*].[Name,Value]' --output text \
+  | while IFS=$'\t' read -r name value; do echo "$${name##*/}=$value"; done > "$ENV_FILE"
+
+if [ -n "${db_secret}" ]; then
+  aws secretsmanager get-secret-value --region ${region} --secret-id "${db_secret}" \
+    --query SecretString --output text | jq -r '"DB_PASSWORD=" + .password' >> "$ENV_FILE"
+fi
+
+TAG="${image_tag}"
+if [ -z "$TAG" ]; then
+  TAG=$(aws ssm get-parameter --region ${region} --name /saaradhigo/production/deploy/web_image_tag     --query Parameter.Value --output text)
+fi
+IMAGE="${image_repo}:$TAG"
+docker pull "$IMAGE"
+PORTS=""
+if [ "${port}" != "0" ]; then PORTS="-p ${port}:${port}"; fi
+docker run -d --name saaradhigo-${role} --restart unless-stopped --env-file "$ENV_FILE" $PORTS \
+  --log-driver awslogs --log-opt awslogs-region=${region} \
+  --log-opt awslogs-group=/saaradhigo/production/${role} --log-opt awslogs-create-group=true \
+  "$IMAGE" ${command}

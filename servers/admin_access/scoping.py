@@ -270,7 +270,7 @@ def scoped_to_request(request, queryset):
     it, so the parameter cannot be used to reach outside an assignment.
     """
     base = scoped(request.user, queryset)
-    node = requested_node(request)
+    node = market_node(request)
     if node is None:
         return base
     path_field = scope_path_for(queryset.model)
@@ -286,3 +286,29 @@ def scoped_to_request(request, queryset):
     if also is not None:
         narrowed |= also
     return base.filter(narrowed)
+
+
+def market_node(request):
+    """`requested_node`, except that the Global node answers None.
+
+    The console's market switch offers Global / India / United States.
+    Global means "every market", which is what no `?scope=` already means;
+    narrowing to `path__startswith='GLOBAL/'` instead would drop every row
+    that has no place at all (an unanchored SOS, a driver with no home
+    city), which a Global holder must see. The hold check still runs first,
+    so a narrower holder sending GLOBAL is refused as before.
+    """
+    from .models import GLOBAL
+
+    node = requested_node(request)
+    if node is not None and node.kind == GLOBAL:
+        return None
+    return node
+
+
+def market_country_code(node):
+    """The ISO country code a scope node belongs to, or None (no node, or Global)."""
+    if node is None:
+        return None
+    country = node.country
+    return country.code if country is not None else None

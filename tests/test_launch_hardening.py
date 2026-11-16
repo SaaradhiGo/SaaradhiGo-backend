@@ -328,8 +328,8 @@ def test_trip_driver_details_rejects_unrelated_user(completed_trip, api_client):
     api_client.credentials(HTTP_AUTHORIZATION=f'Bearer {AccessToken.for_user(stranger)}')
 
     resp = api_client.get(f'/api/v1/ride/trip/{trip.id}/details/')
-    assert resp.status_code == 403, resp.content
-    assert b'phone' not in resp.content.lower() or resp.status_code == 403
+    assert resp.status_code == 404, resp.content  # 13 Nov: not yours reads as not there
+    assert b'phone' not in resp.content.lower()
 
 
 @pytest.mark.django_db

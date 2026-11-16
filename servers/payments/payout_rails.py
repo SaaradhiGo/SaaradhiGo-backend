@@ -43,7 +43,19 @@ NO_RAIL_NOTE = ('No payout rail for {currency} yet: approved payouts wait here; 
 
 
 def has_rail(currency):
-    return str(currency or '').upper() in RAILS
+    code = str(currency or '').upper()
+    if code in RAILS:
+        return True
+    if code == 'USD':
+        # 13 Nov: Stripe Connect is the US rail, but only once it is configured; until then USD
+        # payouts stay held (never dispatched to a provider that cannot pay, never refunded).
+        # Read from configuration only: no adapter is built just to ask.
+        from django.conf import settings
+
+        from integrations import stripe_http
+        provider = ((getattr(settings, 'PAYOUT_PROVIDERS', None) or {}).get('US') or '').lower()
+        return provider in ('stripe_connect', 'stripe-connect') and             stripe_http.key_refusal(stripe_http.secret_key()) is None
+    return False
 
 
 def rail_note(currency):

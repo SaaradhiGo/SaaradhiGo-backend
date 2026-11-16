@@ -37,6 +37,7 @@ from .models import (
 )
 from .permissions import IsDriver
 from servers.payments.payout_destination import payout_hold_until
+from .review_target import target_days as review_target_days
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,9 @@ def driver_requirements(request):
     return success_response({
         'config': config,
         'checklist': req.checklist(driver),
+        # 12 Nov: "We usually review within N working days" reads the city's KYC review target.
+        'review_target_working_days': __import__('servers.driver.review_target', fromlist=['x']).target_days(
+            driver.home_city),
         'personal': personal_dict(driver),
         'identity': identity_dict(driver),
         'payout_method': payout_method_dict(driver, country),
@@ -126,7 +130,34 @@ def driver_requirements(request):
         'vehicle_types': [vt.type for vt in VehicleType.objects.order_by('id')],
         'vehicle_years': list(range(newest, oldest - 1, -1)),
         'upload_kinds': UPLOAD_KIND,
+        # 14 Nov (owner): a paused driver is told so, why, and how to reach support.
+        'paused': paused_dict(driver),
     }, status.HTTP_200_OK)
+
+
+#: What a driver reads about their own pause, by reason (never the operator's note).
+PAUSE_REASON = {
+    'zero_tolerance': 'A rider reported a zero tolerance concern (drugs or alcohol) on a trip. Your account is paused while our safety team investigates.',
+    'safety': 'A safety concern was raised. Your account is paused while our safety team looks into it.',
+    'documents': 'There is a problem with one of your documents. Your account is paused until it is fixed.',
+    'background_check': 'Your background check needs review. Your account is paused until it is complete.',
+    'fraud': 'Your account is paused while we review recent activity.',
+    'conduct': 'Your account is paused while we review complaints about trips.',
+    'rider_complaints': 'Your account is paused while we review complaints about trips.',
+    'deactivated': 'Your account has been closed.',
+    'other': 'Your account is paused while we review it.',
+}
+
+
+def paused_dict(driver):
+    """`{reason_code, reason, since, permanent}` while a suspension is in force, else None."""
+    from servers.driver.models import DriverSuspension
+
+    s = DriverSuspension.objects.filter(driver=driver, lifted_at__isnull=True).order_by('-created_at').first()
+    if s is None:
+        return None
+    return {'reason_code': s.reason_code, 'reason': PAUSE_REASON.get(s.reason_code, PAUSE_REASON['other']),
+            'since': s.created_at.isoformat(), 'permanent': s.reason_code == 'deactivated'}
 
 
 def _address_from(data, country, field):
@@ -317,7 +348,9 @@ def driver_identity(request):
 def payout_method_dict(driver, country):
     hold = payout_hold_until(driver)
     if country == 'US':
-        return {'kind': 'stripe', 'stripe_status': driver.stripe_onboarding_status, 'held_until': None}
+        # 15 Nov: what Stripe says now (cached a few minutes), never a stored "ready" alone.
+        from . import stripe_connect
+        return {'kind': 'stripe', 'stripe_status': stripe_connect.confirmed_status(driver), 'held_until': None}
     bank = DriverBankAccount.objects.filter(driver=driver).first()
     return {
         'kind': 'bank' if bank else ('upi' if (driver.upi_id or '').strip() else None),
@@ -455,6 +488,14 @@ def driver_stripe_onboarding(request):
         return error_response(code='STRIPE_NOT_CONFIGURED', message='US payouts are not set up yet.',
                               field='general', issue='STRIPE_SECRET_KEY missing',
                               status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    except stripe_connect.StripeRefused as exc:
+        # 15 Nov: Stripe said no (e.g. the platform's Connect settings); the driver gets a plain
+        # answer, and the reason goes to the log for us, never to the driver.
+        logger.error('stripe_onboarding_refused', extra={'event': 'stripe_onboarding_refused',
+                                                         'driver_id': driver.pk, 'stripe_error': str(exc)[:300]})
+        return error_response(code='STRIPE_UNAVAILABLE',
+                              message='Payout setup with Stripe is not available right now. Please try again later.',
+                              field='general', issue='stripe_refused', status=status.HTTP_503_SERVICE_UNAVAILABLE)
     return success_response({'url': url, 'stripe_status': driver.stripe_onboarding_status}, status.HTTP_200_OK)
 
 

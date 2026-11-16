@@ -213,11 +213,19 @@ def country_for_location(location) -> str | None:
     return code or None
 
 
-def _resolve_country(country, location) -> str | None:
+def _resolve_country(country, location):
+    """A code, a list of codes (14 Nov: every operating country), or None (no filter)."""
+    if isinstance(country, (list, tuple)):
+        codes = [str(c).strip().upper() for c in country if str(c).strip()]
+        return codes or None
     if country:
         code = str(country).strip().upper()
         return code or None
     return country_for_location(location)
+
+
+def _codes(country):
+    return list(country) if isinstance(country, (list, tuple)) else [country]
 
 
 # --------------------------------------------------------------------------
@@ -275,7 +283,7 @@ def _autocomplete_legacy(search_text, location, radius, country, session_token, 
     # Only restrict when we actually know the market. The previous
     # unconditional 'country:in' is the defect this replaces.
     if country:
-        params['components'] = f'country:{country.lower()}'
+        params['components'] = '|'.join(f'country:{c.lower()}' for c in _codes(country))
     if location:
         params['location'] = location if isinstance(location, str) else \
             f'{location[0]},{location[1]}'
@@ -311,7 +319,7 @@ def _autocomplete_new(search_text, location, radius, country, session_token, bou
     """
     body = {'input': search_text}
     if country:
-        body['includedRegionCodes'] = [country]
+        body['includedRegionCodes'] = _codes(country)
     point = _parse_location(location)
     if bounds:
         # Restricted, not biased: nothing outside the service area comes back.

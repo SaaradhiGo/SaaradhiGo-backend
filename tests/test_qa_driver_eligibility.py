@@ -48,7 +48,7 @@ def _driver(phone='+917770001003', with_vehicle=True, **kw):
         # NB: this repo names its FKs with an `_id` suffix -- the field is
         # `vehicle_type_id` and it holds the VehicleType instance, not a pk.
         vehicle = Vehicle.objects.create(
-            driver_id=driver, vehicle_type_id=vtype, vehicle_number='AP16QA0001',
+            driver_id=driver, vehicle_type_id=vtype, vehicle_number=f'AP16QA{phone[-4:]}',  # unique per driver
         )
         driver.active_vehicle = vehicle
         driver.save(update_fields=['active_vehicle'])

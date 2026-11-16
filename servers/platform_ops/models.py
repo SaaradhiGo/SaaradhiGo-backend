@@ -23,6 +23,7 @@ pause (`readiness.set_city_status`), never a notice.
 
 import re
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
@@ -166,3 +167,36 @@ class MaintenanceNotice(models.Model):
             return 'ended'
         return 'active'
 
+
+
+class LaunchInterest(models.Model):
+    """"Tell me when we launch" (13 Nov): a signed-in rider asking to hear when a city that has not
+    launched yet opens for booking. One row per rider and city; `notified_at` is set when the launch
+    message goes out."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name='launch_interests')
+    city = models.ForeignKey('admin_access.GeoNode', on_delete=models.CASCADE,
+                             related_name='launch_interests')
+    created_at = models.DateTimeField(default=timezone.now)
+    notified_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['user', 'city'],
+                                               name='launch_interest_one_per_user_city')]
+
+    def __str__(self):
+        return f'launch interest user={self.user_id} city={self.city_id}'
+
+
+class SchedulerHeartbeat(models.Model):
+    """When the scheduled jobs last ran (15 Nov). The `platform_ops.scheduler_heartbeat` task, sent
+    by Celery beat and run by a worker, stamps the `beat` row every few minutes; a stamp older than
+    two hours means beat or every worker is down (`scheduler_watch`). In the database, not Redis,
+    so a Redis flush cannot fake an outage or hide one."""
+
+    name = models.CharField(max_length=40, primary_key=True)
+    last_run_at = models.DateTimeField()
+
+    def __str__(self):
+        return f'{self.name} last ran {self.last_run_at:%Y-%m-%d %H:%M}'

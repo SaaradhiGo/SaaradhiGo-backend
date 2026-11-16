@@ -88,6 +88,10 @@ GEO = [
     (COUNTRY, 'US', 'United States', 'GLOBAL', PAUSED),
     (STATE, 'US-TX', 'Texas', 'US', PAUSED),
     (CITY, 'US-TX-AUS', 'Austin', 'US-TX', DRAFT),
+    # 14 Nov (USA from day 1): Idaho, operated by DeepTrics LLC. The Treasure Valley (Boise,
+    # Meridian, Nampa, Kuna) is one launch unit, closed until its launch gate is green.
+    (STATE, 'US-ID', 'Idaho', 'US', ACTIVE),
+    (CITY, 'US-ID-TV', 'Treasure Valley', 'US-ID', DRAFT),
 ]
 
 #: One test login per seeded role. QA only — see `_refuse_in_production`.

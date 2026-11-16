@@ -48,6 +48,11 @@ CITY_PAUSED_MESSAGE = 'SaaradhiGo is not taking new bookings in this area right 
 CITY_NOT_LIVE_MESSAGE = 'SaaradhiGo is not available in this area yet.'
 
 
+def launching_soon_message(city_name):
+    """A city not launched yet (13 Nov): fares are visible and Book says this."""
+    return f"We're launching in {city_name} soon." if city_name else CITY_NOT_LIVE_MESSAGE
+
+
 def label_of(status):
     return STATUS_LABEL.get(status, status)
 
@@ -174,7 +179,15 @@ def booking_gate_for_zone(zone):
         return True, '', ''
     if city.status == PAUSED:
         return False, CITY_PAUSED, CITY_PAUSED_MESSAGE
-    return False, CITY_NOT_LIVE, CITY_NOT_LIVE_MESSAGE
+    return False, CITY_NOT_LIVE, launching_soon_message(city.name)
+
+
+def city_status_for_zone(zone):
+    """`live`, `paused` or `soon` for the public zone list (13 Nov); `live` for an unlinked zone."""
+    city = city_of_zone(zone)
+    if city is None or city.status == ACTIVE:
+        return 'live', getattr(city, 'name', '') or getattr(zone, 'city', '') or ''
+    return ('paused' if city.status == PAUSED else 'soon'), city.name
 
 
 # ---------------------------------------------------------------------------
@@ -238,10 +251,15 @@ def city_row(node, user, pending=None, with_items=False):
     }
 
 
-def overview(user):
-    """Countries, each with its cities, scoped to what the operator may read."""
-    nodes = list(_covered(user, GeoNode.objects.filter(kind__in=[COUNTRY, STATE, CITY])
-                          .select_related('parent__parent')).order_by('path'))
+def overview(user, within=None):
+    """Countries, each with its cities, scoped to what the operator may read.
+
+    `within` is the node of the console's market switch: only the places under it."""
+    covered = _covered(user, GeoNode.objects.filter(kind__in=[COUNTRY, STATE, CITY])
+                       .select_related('parent__parent'))
+    if within is not None:
+        covered = covered.filter(path__startswith=within.path)
+    nodes = list(covered.order_by('path'))
     pending = pending_requests()
     countries = {}
     for node in nodes:

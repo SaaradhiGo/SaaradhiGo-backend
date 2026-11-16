@@ -995,7 +995,8 @@ class TestReadiness:
                                     per_min_fare=2, min_fare=50, effective_from=LONG_AGO)
 
     def test_every_vehicle_class_needs_a_card_in_the_citys_zone(self, world):
-        classes = list(VehicleType.objects.order_by('type'))
+        # 14 Nov: the classes the market offers (India: auto, hatchback, sedan, suv).
+        classes = list(VehicleType.objects.filter(type__in=['auto', 'hatchback', 'sedan', 'suv']).order_by('type'))
         assert len(classes) >= 2
         self.cards_for(world, classes[:-1])
         items = self.items(world.geo['IN-TG-HYD'])

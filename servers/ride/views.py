@@ -660,6 +660,12 @@ def trip_detail(request, trip_id):
     serializer = TripDetailSerializer(trip, context={'request': request})
     return success_response(serializer.data, status.HTTP_200_OK)
 
+def _ops_may(user, trip, permission='trip.read'):
+    """Console staff reach a trip only inside their city scope, never by is_staff alone."""
+    from servers.admin_access.bridge import granted, node_of
+    return granted(user, permission, node_of(trip))[0]
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def trip_driver_details(request,trip_id):
@@ -696,7 +702,7 @@ def trip_driver_details(request,trip_id):
         and getattr(request.user, 'driver', None) is not None
         and auth_trip.driver_id_id == request.user.driver.id
     )
-    if not (is_rider or is_driver or request.user.is_staff):
+    if not (is_rider or is_driver or _ops_may(request.user, auth_trip)):
         # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
         return trip_not_found(trip_id)
 
@@ -924,7 +930,7 @@ def receipt_pdf(request, trip_id):
             field='trip_id', issue=f'No trip {trip_id}',
             status=status.HTTP_404_NOT_FOUND,
         )
-    if not (trip.user_id_id == request.user.id or request.user.is_staff):
+    if not (trip.user_id_id == request.user.id or _ops_may(request.user, trip)):
         # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
         return trip_not_found(trip_id)
     receipt = Receipt.objects.filter(trip_id=trip).order_by('-version', '-id').first()
@@ -1022,7 +1028,7 @@ def trip_chat_history(request, trip_id):
         )
     is_rider = trip.user_id_id == request.user.id
     is_driver = trip.driver_id and trip.driver_id.user_id_id == request.user.id
-    if not (is_rider or is_driver or request.user.is_staff):
+    if not (is_rider or is_driver or _ops_may(request.user, trip)):
         # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
         return trip_not_found(trip_id)
 
@@ -1071,7 +1077,7 @@ def resend_receipt(request, trip_id):
             issue=f'No trip with id={trip_id}', status=status.HTTP_404_NOT_FOUND,
         )
 
-    if not (trip.user_id_id == request.user.id or request.user.is_staff):
+    if not (trip.user_id_id == request.user.id or _ops_may(request.user, trip, 'support.reply')):
         # 13 Nov: someone else's trip is answered exactly like a trip that does not exist.
         return trip_not_found(trip_id)
 

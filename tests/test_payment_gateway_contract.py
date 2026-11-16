@@ -66,6 +66,9 @@ class CashfreeHarness:
                     return self._resp(400, {'message': 'bad'})
                 self.orders[json['order_id']] = json
                 return self._resp(200, {'payment_session_id': 'session_fake_1', 'cf_order_id': 1})
+            if url.endswith('/refunds'):
+                self.refund_calls.append((url.rsplit('/', 2)[-2], json['refund_amount']))
+                return self._resp(200, {'refund_status': 'PENDING', 'cf_refund_id': 7})
             return self._resp(404, {})
 
         def get(url, headers=None, timeout=None, **kw):
@@ -94,12 +97,6 @@ class CashfreeHarness:
     def gateway(self):
         gateway = get_payment_gateway(self.name)
         self.refund_calls = []
-
-        def refund(version, order_id, request):
-            self.refund_calls.append((order_id, request.refund_amount))
-            return SimpleNamespace(data=SimpleNamespace(status='PENDING', cf_refund_id=7))
-
-        gateway.pg_client = SimpleNamespace(PGOrderCreateRefund=refund)
         return gateway
 
     def pay(self, gateway, order_id):

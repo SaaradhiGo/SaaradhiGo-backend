@@ -243,7 +243,7 @@
           "seats": 4,
           "cancellation_due": null,
           "rider_reason": "Higher demand near Hyderabad",
-          "quote_id": "fe65dd0b5c494c2d9a46672a2e6b8d75",
+          "quote_id": "d2fc1b7f85f44bf6ab100d9724cdb7ba",
           "quote_expires_at": "2026-01-01T00:00:00.000000+05:30",
           "currency": "INR",
           "distance_unit": "km",
@@ -333,7 +333,7 @@
         "status": "error",
         "error": {
           "code": "OUT_OF_SERVICE_AREA",
-          "message": "Pickup location is outside the SaaradhiGo service area.",
+          "message": "This place is outside our service area (Hyderabad contract capture).",
           "details": {
             "field": "pickup / destination",
             "issue": "Coordinates fall outside every active SaaradhiGo service zone"

@@ -443,6 +443,7 @@ def launch_interest(request):
     city = city_of_zone(zone) if zone is not None else None
     if city is None:
         return error_response(code='NO_CITY', message='That place is not in a city we plan to serve.',
+                              field='zone', issue='No planned city at that place.',
                               status=status.HTTP_400_BAD_REQUEST)
     if city.status == ACTIVE:
         return success_response({'city': city.name, 'already_live': True}, status.HTTP_200_OK)

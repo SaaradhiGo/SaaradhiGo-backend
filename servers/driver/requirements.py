@@ -109,6 +109,10 @@ def resolve(country, state=''):
                 break
         else:
             items[key] = {'need': OFF, 'blocks_online': False, 'source': None}
+    # Owner ruling (16 Nov): a driver may drive before setting up payouts; earnings wait in the
+    # wallet ("Waiting for payout setup") and payouts go only to a confirmed account.
+    if 'payout_method' in items:
+        items['payout_method']['blocks_online'] = False
 
     def pick(field, default=None):
         for row in rows:

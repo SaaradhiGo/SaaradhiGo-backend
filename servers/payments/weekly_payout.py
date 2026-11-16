@@ -113,10 +113,12 @@ def has_payout_handle(driver, currency=''):
         from servers.driver import stripe_connect
         return bool(driver.stripe_account_id) and stripe_connect.confirmed_status(driver) == 'ready'
 
+    # 16 Nov ruling: India pays only an account RazorpayX has confirmed: a UPI fund account it
+    # created, or a bank account it validated. A typed UPI id or an unchecked account waits.
     upi = DriverUPIContact.objects.filter(driver=driver, is_active=True).first()
-    if upi is not None and (upi.upi_id or upi.gateway_fund_account_id):
+    if upi is not None and upi.gateway_fund_account_id:
         return True
-    return DriverBankAccount.objects.filter(driver=driver).exists()
+    return DriverBankAccount.objects.filter(driver=driver, verification_status='verified').exists()
 
 
 def finance_holders(country, nodes=()):

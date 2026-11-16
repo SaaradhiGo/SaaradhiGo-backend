@@ -1212,7 +1212,8 @@ class TestWeeklyRunSkipsDriversWithNoHandle:
         driver = make_driver(world.geo, 'IN-TG-HYD', tag, currency='INR', calling='91')
         Wallet.objects.filter(user_id=driver.user_id, scope='driver').update(balance_minor=100_000)
         if handle:
-            DriverUPIContact.objects.create(driver=driver, upi_id=f'{tag.lower()}@okaxis', is_active=True)
+            DriverUPIContact.objects.create(driver=driver, upi_id=f'{tag.lower()}@okaxis', is_active=True,
+                                    gateway_fund_account_id=f'fa_{tag.lower()}')  # RazorpayX-confirmed (16 Nov)
         return driver
 
     MONDAY = datetime(2026, 11, 2, 6, 0, tzinfo=dt_timezone.utc)      # Monday morning in Hyderabad
@@ -1246,7 +1247,7 @@ class TestWeeklyRunSkipsDriversWithNoHandle:
 
         bank = self.funded(india_weekly, 'W3', handle=False)
         DriverBankAccount.objects.create(driver=bank, bank_name='HDFC', account_number='1234567890',
-                                         ifsc_code='HDFC0000001')
+                                         ifsc_code='HDFC0000001', verification_status='verified')
         inactive = self.funded(india_weekly, 'W4', handle=False)
         DriverUPIContact.objects.create(driver=inactive, upi_id='x@okaxis', is_active=False)
         assert has_payout_handle(bank) is True and has_payout_handle(inactive) is False

@@ -40,7 +40,8 @@ def india(world):
 def funded(world, tag, minor=100_000):
     driver = make_driver(world.geo, 'IN-TG-HYD', tag, currency='INR', calling='91')
     Wallet.objects.filter(user_id=driver.user_id, scope='driver').update(balance_minor=minor)
-    DriverUPIContact.objects.create(driver=driver, upi_id=f'{tag.lower()}@okaxis', is_active=True)
+    DriverUPIContact.objects.create(driver=driver, upi_id=f'{tag.lower()}@okaxis', is_active=True,
+                                    gateway_fund_account_id=f'fa_{tag.lower()}')  # RazorpayX-confirmed (16 Nov)
     return driver
 
 

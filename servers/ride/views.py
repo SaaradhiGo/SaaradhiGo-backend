@@ -1734,17 +1734,19 @@ def proxy_reverse_geocode(request):
         )
 
     # ~1.1m precision at 5dp; plenty of cache reuse when a pin is nudged.
+    from servers.ride.maps_utils import consensus_first
+
     cache_key = f"maps:revgeo:{lat},{lng}"
     cached_data = get_cached_map_data(cache_key)
     if cached_data:
-        return success_response(cached_data, status.HTTP_200_OK)
+        return success_response(consensus_first(cached_data), status.HTTP_200_OK)
 
     result = google_geocode(latlng=f'{lat},{lng}')
     if result is None:
         return _maps_error_response()
 
     cache_map_data(cache_key, result, ttl_seconds=7*24*60*60)
-    return success_response(result, status.HTTP_200_OK)
+    return success_response(consensus_first(result), status.HTTP_200_OK)
 
 
 @api_view(['GET'])

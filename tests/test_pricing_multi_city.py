@@ -72,7 +72,7 @@ def test_validate_service_area_legacy_shim_still_works():
     assert is_inside_service_area(BLR_LAT, BLR_LON) is False
     ok, msg = validate_service_area(HYD_CENTRE_LAT, HYD_CENTRE_LON, BLR_LAT, BLR_LON)
     assert ok is False
-    assert 'Drop' in msg
+    assert msg == 'This place is outside our service area (Hyderabad).'
 
 
 @pytest.mark.django_db

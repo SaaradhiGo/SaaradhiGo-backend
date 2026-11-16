@@ -653,9 +653,10 @@ def quote(request):
     pickup_zone = find_zone_for_point(p_lat, p_lon)
     drop_zone = find_zone_for_point(d_lat, d_lon)
     if not pickup_zone or not drop_zone:
+        from base.service_area import area_name_near, outside_message
         return error_response(
             code='OUT_OF_SERVICE_AREA',
-            message='Pickup or drop is outside our service area.',
+            message=outside_message(area_name_near(p_lat, p_lon)),
             field='pickup / destination',
             issue='No active ServiceZone covers the coordinate',
             status=status.HTTP_400_BAD_REQUEST,

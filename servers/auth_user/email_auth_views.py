@@ -53,6 +53,7 @@ from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 from base import ops_mfa
 from base.auth_email import verification_is_deliverable
 from base.permissions import is_operator
+from base.throttles import EmailLoginThrottle
 from base.utils import error_response, success_response
 from servers.admin_dashboard import login_guard
 
@@ -96,6 +97,7 @@ def _issue_tokens(user):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([EmailLoginThrottle])
 def email_login(request):
     """
     POST /api/v1/auth/email/login/

@@ -1,0 +1,48 @@
+name: prod uptime
+
+# 17 Nov (production round 1): every 10 minutes, is PROD up and is its scheduler running?
+# A failed run emails the GitHub account that owns this schedule (Srini). Hosts come from the
+# repository variables PROD_API_URL and PROD_WEB_URL; with neither set the job skips.
+#   - API: /healthz must answer 200 with db and cache ok.
+#   - Scheduler: /healthz `scheduler` must not be `stale` (beat or every worker silent for 2 h) and,
+#     once PROD has been up an hour, not `never`.
+#   - Web: the home page must answer 200.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    if: vars.PROD_API_URL != '' || vars.PROD_WEB_URL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      API: ${{ vars.PROD_API_URL }}
+      WEB: ${{ vars.PROD_WEB_URL }}
+    steps:
+      - name: API and scheduler
+        if: env.API != ''
+        run: |
+          set -u
+          out=$(curl -sS --max-time 20 --retry 2 --retry-delay 15 -w '\n%{http_code}' "$API/healthz") \
+            || { echo "::error title=PROD API down::$API/healthz did not answer"; exit 1; }
+          code=$(printf '%s' "$out" | tail -n1); body=$(printf '%s' "$out" | sed '$d')
+          echo "healthz $code $body"
+          [ "$code" = "200" ] || { echo "::error title=PROD API unhealthy::$API/healthz answered $code"; exit 1; }
+          sched=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("scheduler",""))')
+          if [ "$sched" = "stale" ]; then
+            echo "::error title=PROD scheduler stopped::Scheduled jobs have not run for 2 hours (beat or every worker is down)"; exit 1
+          fi
+          if [ "$sched" = "never" ] && [ "${{ vars.PROD_SCHEDULER_EXPECTED }}" = "true" ]; then
+            echo "::error title=PROD scheduler never ran::No scheduler heartbeat has ever been recorded"; exit 1
+          fi
+      - name: Web
+        if: env.WEB != ''
+        run: |
+          code=$(curl -sS -o /dev/null --max-time 30 --retry 2 --retry-delay 15 -w '%{http_code}' "$WEB/") || code=000
+          echo "web $code"
+          [ "$code" = "200" ] || { echo "::error title=PROD web down::$WEB answered $code"; exit 1; }

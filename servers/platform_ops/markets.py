@@ -21,6 +21,7 @@ when approved is refused.
 import hashlib
 import re
 
+from django.conf import settings
 from django.db.models import Q
 
 from base.countries import COUNTRIES, find_country
@@ -175,6 +176,9 @@ def booking_gate_for_zone(zone):
     gated (legacy rows; the zone itself is still required to be active). Trips already requested
     or in progress never come through here, so a pause never touches them."""
     city = city_of_zone(zone)
+    if not getattr(settings, 'BOOKING_OPEN', True):  # 17 Nov: PROD before its provider keys
+        return False, CITY_NOT_LIVE, launching_soon_message(
+            getattr(city, 'name', '') or getattr(zone, 'city', '') or '')
     if city is None or city.status == ACTIVE:
         return True, '', ''
     if city.status == PAUSED:
@@ -185,6 +189,8 @@ def booking_gate_for_zone(zone):
 def city_status_for_zone(zone):
     """`live`, `paused` or `soon` for the public zone list (13 Nov); `live` for an unlinked zone."""
     city = city_of_zone(zone)
+    if not getattr(settings, 'BOOKING_OPEN', True):
+        return 'soon', getattr(city, 'name', '') or getattr(zone, 'city', '') or ''
     if city is None or city.status == ACTIVE:
         return 'live', getattr(city, 'name', '') or getattr(zone, 'city', '') or ''
     return ('paused' if city.status == PAUSED else 'soon'), city.name

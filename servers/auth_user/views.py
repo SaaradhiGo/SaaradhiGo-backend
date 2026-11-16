@@ -144,6 +144,17 @@ def request_otp(request):
         # Empty TEST_PHONE_NUMBERS (the production default) = no bypass.
         test_otp = settings.TEST_PHONE_NUMBERS.get(phone_number)
 
+        # 17 Nov (PROD before SMS keys): production with no SMS route for this market says so,
+        # rather than answering "OTP sent" for a message that cannot leave.
+        from integrations.sms.direct import production_sms_missing
+        if not test_otp and production_sms_missing(phone_number):
+            logger.warning('otp_refused reason=sms_not_configured')
+            return error_response(
+                code='SMS_NOT_CONFIGURED',
+                message="Sign-in by text message isn't available yet. We're launching soon.",
+                field='phone_number', issue='No SMS provider is configured for this market.',
+                status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
         if test_otp:
             otp = test_otp
             task_id = 'test-phone-no-sms'

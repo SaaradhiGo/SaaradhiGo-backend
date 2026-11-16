@@ -192,6 +192,11 @@ def register_with_email(request):
          "confirm_password", "role": "rider"|"driver",
          "phone_proof": from POST /auth/otp/verify/ for this number and role}
     """
+    from base.auth_email import EMAIL_NOT_CONFIGURED_MESSAGE, production_mail_missing
+    if production_mail_missing():  # 17 Nov: PROD before SES; never a link nobody sends
+        return error_response(code='EMAIL_NOT_CONFIGURED', message=EMAIL_NOT_CONFIGURED_MESSAGE,
+                              field='email', issue='No email provider is configured.',
+                              status=status.HTTP_503_SERVICE_UNAVAILABLE)
     data = request.data
     raw_email = data.get('email')
     raw_phone = data.get('phone_number')

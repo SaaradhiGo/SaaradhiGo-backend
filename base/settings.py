@@ -215,6 +215,8 @@ REST_FRAMEWORK = {
         # thirty such trips from one address per hour -- far above honest
         # use, far below a bill worth worrying about.
         'guest_fare': '120/hour',
+        'driver_application': '5/hour',
+        'driver_application_global': '300/hour',
         # One route per trip, cached for five minutes server-side; a
         # visitor who re-centres the map does not buy another.
         'guest_route': '120/hour',
@@ -845,6 +847,8 @@ if not DEBUG:
     # operator opts in with DJANGO_SECURE_SSL_REDIRECT=True after confirming
     # nginx sets `proxy_set_header X-Forwarded-Proto $scheme;`.
     SECURE_SSL_REDIRECT = os.environ.get('DJANGO_SECURE_SSL_REDIRECT', 'False') == 'True'
+    # 17 Nov: Railway's health probe speaks plain HTTP inside the platform, with no forwarded proto.
+    SECURE_REDIRECT_EXEMPT = [r'^healthz/?$', r'^version/?$']
 
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
@@ -994,6 +998,9 @@ DOC_VERIFICATION_PROVIDER = os.environ.get('DOC_VERIFICATION_PROVIDER', '').stri
 KYC_REVIEW_TARGET_WORKING_DAYS = int(os.environ.get('KYC_REVIEW_TARGET_WORKING_DAYS', '1'))
 DRIVER_LOW_RATING_BELOW = os.environ.get('DRIVER_LOW_RATING_BELOW', '4.5')
 DRIVER_LOW_RATING_MIN_RATINGS = int(os.environ.get('DRIVER_LOW_RATING_MIN_RATINGS', '10'))
+# 17 Nov (PROD before payment, SMS and call keys): with BOOKING_OPEN off every city answers as not
+# launched yet: fares show, Book says "We're launching in <city> soon". Default on (QA, tests).
+BOOKING_OPEN = os.environ.get('BOOKING_OPEN', 'true').strip().lower() not in ('0', 'false', 'no', 'off')
 QA_SIM_DRIVERS_SKIP_REQUIREMENTS = os.environ.get('QA_SIM_DRIVERS_SKIP_REQUIREMENTS', '').strip().lower() in ('1', 'true', 'yes')
 
 if IS_PRODUCTION:
@@ -1048,32 +1055,10 @@ if IS_PRODUCTION:
                 'and in production it is a back door into payout approval and KYC.'
             )
 
-    # A PRODUCTION THAT CANNOT SEND MAIL CANNOT COMPLETE A SIGN-UP.
-    #
-    # `email_login` refuses an unverified address and verification happens by
-    # clicking a link in an email. Without a mail backend those two make a
-    # lock with no key: the account is created, the screen says "check your
-    # email", nothing is sent, and the person can never sign in. QA hit
-    # exactly that.
-    #
-    # Registration compensates off production by marking the address
-    # verified instead. This guard is what keeps that branch unreachable
-    # here: production either delivers mail or refuses to start, so it can
-    # never be the deployment that accepts a password for an address nobody
-    # proved they own.
-    _mail_ok, _mail_why = (True, '')
-    try:
-        from base.auth_email import delivery_is_configured as _delivery_check
-
-        _mail_ok, _mail_why = _delivery_check()
-    except Exception as _exc:  # pragma: no cover - import-time safety only
-        _mail_ok, _mail_why = False, f'could not be checked ({_exc})'
-    if not _mail_ok:
-        _production_faults.append(
-            f'Email delivery is not configured ({_mail_why}). Verification '
-            'links cannot be sent, so nobody could finish signing up, and '
-            'password reset would be silently dead.'
-        )
+    # MAIL (17 Nov, PROD before SES): production may start without a mail backend. Every flow that
+    # needs an email then refuses with EMAIL_NOT_CONFIGURED (registration, password reset, operator
+    # invites; `base.auth_email.production_mail_missing`), so no account is ever created that
+    # could only be finished by a link nobody sends, and nothing claims a message went out.
 
     # A production deployment still pointing at QA infrastructure writes real
     # customer data into a test system, or reads test data as if it were real.

@@ -2,6 +2,7 @@
 with a single-use ticket; credentials in a URL never reach the logs."""
 import asyncio
 import logging
+from unittest import mock
 
 import pytest
 from rest_framework_simplejwt.tokens import AccessToken
@@ -87,3 +88,20 @@ def test_a_card_trip_with_no_hold_is_unpaid_and_pay_now_uses_the_saved_card(worl
     trip.refresh_from_db()
     assert trip.payment_status == 'completed'
     assert unpaid_trip_for(world['rider']) is None
+
+
+@FAKE
+def test_after_a_release_the_same_quote_gets_a_fresh_hold(world):  # noqa: F811
+    """16 Nov, emulator: rebooking a locked quote after its hold was released got Stripe's cancelled
+    intent back (same idempotency key) and the card sheet failed silently."""
+    from servers.payments.card_hold import create_hold
+
+    q = _quote(world['rider'])
+    with mock.patch('integrations.payments.fake_card.FakeCardGateway.create_hold',
+                    side_effect=lambda *a, **k: {'id': f"pi_{k['reference']}", 'client_secret': 's'}) as ch:
+        first, _ = create_hold(world['rider'], q)
+        first.status = CardHold.RELEASED
+        first.save(update_fields=['status'])
+        second, _ = create_hold(world['rider'], q)
+    refs = [c.kwargs['reference'] for c in ch.call_args_list]
+    assert refs[0] != refs[1] and second.id != first.id

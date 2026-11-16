@@ -87,8 +87,12 @@ def create_hold(user, quote_id):
     customer = _customer_for(user, gateway)
     if not customer:
         return None, ('CARD_UNAVAILABLE', 'We could not reach the card processor. Try again.')
+    # One Stripe key per attempt: after a release (no driver, a closed sheet) the same locked quote
+    # must get a fresh intent, not Stripe's cancelled one again (16 Nov, emulator).
+    ended = CardHold.objects.filter(user=user, quote_id=quote_id,
+                                    status__in=(CardHold.RELEASED, CardHold.FAILED)).count()
     intent = gateway.create_hold(amount_minor, currency=currency, customer_id=customer,
-                                 reference=f'hold_{user.id}_{quote_id}',
+                                 reference=f'hold_{user.id}_{quote_id}' + (f'_{ended}' if ended else ''),
                                  metadata={'quote_id': quote_id, 'rider_id': user.id})
     if not intent:
         return None, ('CARD_UNAVAILABLE', 'We could not reach the card processor. Try again.')

@@ -85,12 +85,12 @@ class StripeGateway(BasePaymentGateway):
         return data.get('id') if code == 200 else None
 
     def create_hold(self, amount_minor, *, currency='USD', customer_id=None, reference=None, metadata=None):
-        """A PaymentIntent for exactly `amount_minor`, captured later. Cards, Apple Pay and Google Pay
-        (automatic payment methods, confirmed in the browser); saved for an off-session tip."""
+        """A PaymentIntent for exactly `amount_minor`, captured later; saved for an off-session tip.
+        Card only (16 Nov ruling): Apple Pay and Google Pay are cards; no Klarna, Cash App, bank."""
         if not self or not _positive_minor(amount_minor):
             return None
         body = {'amount': amount_minor, 'currency': str(currency).lower(), 'capture_method': 'manual',
-                'automatic_payment_methods': {'enabled': 'true'},
+                'payment_method_types': ['card'],
                 'metadata': {k: str(v) for k, v in (metadata or {}).items()}}
         if customer_id:
             body.update({'customer': customer_id, 'setup_future_usage': 'off_session'})

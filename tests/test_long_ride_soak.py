@@ -40,6 +40,7 @@ from django.contrib.auth import get_user_model
 from base.asgi import application
 from servers.driver.models import Driver, Vehicle, VehicleType
 from servers.ride.models import Trip, TripLocationPoint, TripStatus
+from tests.ws_auth import ws_q
 
 User = get_user_model()
 
@@ -210,9 +211,9 @@ async def _soak(idx, minutes, drain=True):
 
     dtok = await asyncio.to_thread(_token, driver.user_id)
     rtok = await asyncio.to_thread(_token, rider)
-    dws = await _open(f'/ws/driver/location/?token={dtok}&lat={LAT}&lng={LNG}')
-    tws = await _open(f'/ws/ride/trip/{trip.id}/?token={dtok}')
-    rws = await _open(f'/ws/ride/trip/{trip.id}/?token={rtok}')
+    dws = await _open(f'/ws/driver/location/?{ws_q(dtok)}&lat={LAT}&lng={LNG}')
+    tws = await _open(f'/ws/ride/trip/{trip.id}/?{ws_q(dtok)}')
+    rws = await _open(f'/ws/ride/trip/{trip.id}/?{ws_q(rtok)}')
 
     before = await asyncio.to_thread(_measure, trip.id)
 

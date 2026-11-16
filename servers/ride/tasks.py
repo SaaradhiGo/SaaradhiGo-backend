@@ -287,6 +287,13 @@ def auto_cancel_trip(self, trip_id):
         except Exception:  # noqa: BLE001
             nobody_nearby = False
 
+        # 16 Nov ruling: nobody accepted, so the card hold is released at once.
+        try:
+            from servers.payments.card_hold import release_for_trip
+            release_for_trip(Trip.objects.get(pk=trip_pk))
+        except Exception:  # noqa: BLE001 - the cancel stands if the processor is down
+            logger.exception('card hold release failed trip=%s', trip_pk)
+
         # After commit: dismiss candidate cards and drop the cached trip.
         # Outside the transaction so no external call is made under a lock.
         try:

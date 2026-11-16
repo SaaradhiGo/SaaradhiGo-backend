@@ -26,6 +26,7 @@ from django.contrib.auth import get_user_model
 
 from base.asgi import application
 from servers.ride.models import Trip
+from tests.ws_auth import ws_q
 
 User = get_user_model()
 
@@ -59,7 +60,7 @@ def _token(user):
 
 async def _open_rider_socket(rider):
     tok = await asyncio.to_thread(_token, rider)
-    comm = WebsocketCommunicator(application, f'/ws/ride/request/?token={tok}')
+    comm = WebsocketCommunicator(application, f'/ws/ride/request/?{ws_q(tok)}')
     connected, _ = await comm.connect(timeout=20)
     assert connected, 'rider socket must connect'
     await comm.receive_from(timeout=10)      # connection_established

@@ -21,6 +21,7 @@ from django.contrib.auth import get_user_model
 
 from base.asgi import application
 from servers.driver.models import Driver, Vehicle, VehicleType
+from tests.ws_auth import ws_q
 
 User = get_user_model()
 
@@ -51,7 +52,7 @@ def _token(user):
 async def _open_driver_socket(driver_user):
     tok = await asyncio.to_thread(_token, driver_user)
     comm = WebsocketCommunicator(
-        application, f'/ws/driver/location/?token={tok}&lat={LAT}&lng={LNG}')
+        application, f'/ws/driver/location/?{ws_q(tok)}&lat={LAT}&lng={LNG}')
     connected, code = await comm.connect(timeout=20)
     if not connected:
         return None, code

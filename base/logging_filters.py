@@ -30,6 +30,8 @@ _PII_PATTERNS = [
     # phone number, or the digits after a "+") is skipped over: phones are the
     # phone pattern's job below.
     (re.compile(r'(?i)(\b(?:otp|code)\b[^\n]{0,60}?)(?<![\d+])\d{4,8}(?!\d)'), r'\1***'),
+    # Credentials in a URL query (`?token=`, `&ticket=`), whatever their shape
+    (re.compile(r'(?i)([?&](?:token|ticket|access_token|refresh_token)=)[^&\s"\x27]+'), r'\1***'),
     # Bearer tokens
     (re.compile(r'(?i)bearer\s+[A-Za-z0-9._\-]+'), 'Bearer ***'),
     # JWTs out in the open

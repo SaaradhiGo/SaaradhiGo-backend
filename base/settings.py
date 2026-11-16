@@ -1269,6 +1269,10 @@ STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
 STRIPE_CONNECT_WEBHOOK_SECRET = os.environ.get('STRIPE_CONNECT_WEBHOOK_SECRET', '')
 # A card-only payment method configuration (pmc_...) for ride holds (16 Nov ruling); not a secret.
 STRIPE_RIDE_PAYMENT_METHOD_CONFIGURATION = os.environ.get('STRIPE_RIDE_PAYMENT_METHOD_CONFIGURATION', '')
+# Connect onboarding API (round 3): v1 Express accounts (default) or v2 /core/accounts recipients.
+# Set back to v1 to undo; accounts already made keep working either way. Not secrets.
+STRIPE_ACCOUNTS_API = os.environ.get('STRIPE_ACCOUNTS_API', 'v1')
+STRIPE_V2_API_VERSION = os.environ.get('STRIPE_V2_API_VERSION', '2026-10-28.endive')
 # Fernet key for PAN and bank account numbers at rest (base/encrypted.py). Unset: derived from
 # SECRET_KEY, so rotating SECRET_KEY would need these re-encrypted; set it before production.
 FIELD_ENCRYPTION_KEY = os.environ.get('FIELD_ENCRYPTION_KEY', '')

@@ -46,10 +46,22 @@ def onboarding_link(driver, return_url=''):
         sep = '&' if '?' in back else '?'
         return f'{back}{sep}fake=1'
     import requests
+    v2 = vendor.accounts_api() == 'v2'
+    made_before = bool(driver.stripe_account_id)
     try:
         if not driver.stripe_account_id:
-            driver.stripe_account_id = vendor.stripe_express_account(driver.pk)
-        url = vendor.stripe_account_link(driver.stripe_account_id, back)
+            if v2:
+                user = getattr(driver, 'user_id', None)
+                driver.stripe_account_id = vendor.stripe_v2_recipient_account(
+                    driver.pk, email=getattr(user, 'email', '') or '',
+                    name=getattr(user, 'full_name', '') or '')
+            else:
+                driver.stripe_account_id = vendor.stripe_express_account(driver.pk)
+        # A v1 account onboards through the v1 link either way: v2 links need a v2 configuration.
+        if v2 and not (made_before and _made_with_v1(driver)):
+            url = vendor.stripe_v2_account_link(driver.stripe_account_id, back)
+        else:
+            url = vendor.stripe_account_link(driver.stripe_account_id, back)
     except requests.HTTPError as exc:
         body = getattr(exc.response, 'text', '') or ''
         raise StripeRefused(body[:300] or str(exc)) from None
@@ -83,6 +95,12 @@ def refresh_status(driver, fake_done=False):
         return driver.stripe_onboarding_status
     if not _key():
         return driver.stripe_onboarding_status
+    if vendor.accounts_api() == 'v2':
+        acct = vendor.stripe_v2_account(driver.stripe_account_id)
+        if acct is None:
+            return driver.stripe_onboarding_status
+        if acct.get('_unknown_account') or (acct.get('configuration') or {}).get('recipient'):
+            return _refresh_v2(driver, acct)
     acct = vendor.stripe_account(driver.stripe_account_id)
     if acct is None:
         return driver.stripe_onboarding_status            # Stripe did not answer: unchanged
@@ -94,6 +112,50 @@ def refresh_status(driver, fake_done=False):
     driver.stripe_onboarding_status = status_of(acct)
     driver.save(update_fields=['stripe_onboarding_status'])
     return driver.stripe_onboarding_status
+
+
+def _made_with_v1(driver):
+    """An account made before the switch (driver 30's acct_1UcCaG…) has the v1 `transfers`
+    capability and no recipient configuration: it keeps the v1 link and status."""
+    acct = vendor.stripe_v2_account(driver.stripe_account_id)
+    if not isinstance(acct, dict) or acct.get('_unknown_account'):
+        return False
+    return not ((acct.get('configuration') or {}).get('recipient'))
+
+
+def _refresh_v2(driver, acct):
+    if acct.get('_unknown_account'):
+        driver.stripe_account_id, driver.stripe_onboarding_status = '', 'not_started'
+        driver.save(update_fields=['stripe_account_id', 'stripe_onboarding_status'])
+        return driver.stripe_onboarding_status
+    status = status_of_v2(acct)
+    if status == 'ready':
+        # v2 has no payouts status for a recipient: Stripe's v1 view of the same account still
+        # says whether it can be paid out, so "ready" means exactly what it meant on v1.
+        v1 = vendor.stripe_account(driver.stripe_account_id)
+        if v1 is None:
+            return driver.stripe_onboarding_status
+        if not (isinstance(v1, dict) and v1.get('payouts_enabled')):
+            status = 'in_progress'
+    driver.stripe_onboarding_status = status
+    driver.save(update_fields=['stripe_onboarding_status'])
+    return status
+
+
+def status_of_v2(acct):
+    """From a v2 account: ready when the recipient's stripe_transfers capability is active and
+    nothing is currently due; not_started when nothing has been asked yet."""
+    rec = ((acct.get('configuration') or {}).get('recipient') or {})
+    transfers = (((rec.get('capabilities') or {}).get('stripe_balance') or {})
+                 .get('stripe_transfers') or {})
+    entries = ((acct.get('requirements') or {}).get('entries') or [])
+    due = [e for e in entries
+           if ((e.get('minimum_deadline') or {}).get('status') in ('currently_due', 'past_due'))]
+    if transfers.get('status') == 'active' and not due:
+        return 'ready'
+    if transfers.get('status') in ('rejected', 'unsupported'):
+        return 'in_progress'
+    return 'in_progress' if (transfers or entries) else 'not_started'
 
 
 def status_of(acct):

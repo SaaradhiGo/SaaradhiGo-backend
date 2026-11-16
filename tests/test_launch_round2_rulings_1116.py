@@ -64,3 +64,22 @@ def test_a_token_in_a_logged_url_is_redacted():
     PIIRedactionFilter().filter(record)
     assert 'abc.def-ghi' not in record.getMessage()
     assert '?token=***&lat=1' in record.getMessage()
+
+
+@FAKE
+def test_a_card_trip_with_no_hold_is_unpaid_and_pay_now_uses_the_saved_card(world):  # noqa: F811
+    """Trip 226 (16 Nov): booked with no hold linked, it sat 'pending' with nobody asked to pay."""
+    from servers.payments.card_hold import capture_for_trip, create_hold
+    from servers.payments.unpaid import retry_card, unpaid_trip_for
+
+    create_hold(world['rider'], _quote(world['rider']))   # the card saved by an earlier hold
+    trip = _trip(world, status='completed')
+    trip.payment_status = 'pending'
+    trip.currency = 'USD'
+    trip.save(update_fields=['payment_status', 'currency'])
+    assert capture_for_trip(trip.id) == 'failed'
+    assert unpaid_trip_for(world['rider']) == trip
+    assert retry_card(trip, by_rider=True) == 'paid'
+    trip.refresh_from_db()
+    assert trip.payment_status == 'completed'
+    assert unpaid_trip_for(world['rider']) is None

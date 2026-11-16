@@ -62,6 +62,7 @@ from django.contrib.auth import get_user_model
 from base.asgi import application
 from servers.driver.models import Driver, Vehicle, VehicleType
 from servers.ride.models import Trip, TripStatus
+from tests.ws_auth import ws_q
 
 User = get_user_model()
 
@@ -136,7 +137,7 @@ def _token(user):
 async def _open_driver_socket(driver_user):
     tok = await asyncio.to_thread(_token, driver_user)
     comm = WebsocketCommunicator(
-        application, f'/ws/driver/location/?token={tok}&lat={LAT}&lng={LNG}')
+        application, f'/ws/driver/location/?{ws_q(tok)}&lat={LAT}&lng={LNG}')
     connected, _ = await comm.connect(timeout=20)
     assert connected, 'driver location socket must connect'
     await comm.receive_from(timeout=10)          # connection_established
@@ -145,7 +146,7 @@ async def _open_driver_socket(driver_user):
 
 async def _open_trip_socket(user, trip_id):
     tok = await asyncio.to_thread(_token, user)
-    comm = WebsocketCommunicator(application, f'/ws/ride/trip/{trip_id}/?token={tok}')
+    comm = WebsocketCommunicator(application, f'/ws/ride/trip/{trip_id}/?{ws_q(tok)}')
     connected, _ = await comm.connect(timeout=20)
     assert connected, 'trip socket must connect'
     await comm.receive_from(timeout=10)          # connection_established

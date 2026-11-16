@@ -174,7 +174,7 @@ def test_a_receipt_email_is_in_the_message_log_even_when_not_sent(world):
 
 
 @override_settings(STRIPE_SECRET_KEY='sk_test_unit', IS_PRODUCTION=False)
-def test_the_stripe_hold_is_manual_capture_with_apple_and_google_pay():
+def test_the_stripe_hold_is_manual_capture_card_only():
     from integrations.payments.stripe import StripeGateway
 
     with mock.patch('integrations.stripe_http.request', return_value=(200, {'id': 'pi_1', 'client_secret': 's'})) as rq:
@@ -183,7 +183,8 @@ def test_the_stripe_hold_is_manual_capture_with_apple_and_google_pay():
     method, path, body = rq.call_args[0][:3]
     assert (method, path) == ('POST', '/payment_intents')
     assert body['capture_method'] == 'manual' and body['amount'] == 1840 and body['currency'] == 'usd'
-    assert body['automatic_payment_methods'] == {'enabled': 'true'}      # cards, Apple Pay, Google Pay
+    # 16 Nov ruling: card only (Apple Pay and Google Pay are cards); no Klarna, Cash App, bank.
+    assert body['payment_method_types'] == ['card'] and 'automatic_payment_methods' not in body
     assert body['setup_future_usage'] == 'off_session' and body['customer'] == 'cus_1'
     with mock.patch('integrations.stripe_http.request', return_value=(200, {'status': 'succeeded'})) as rq:
         StripeGateway().capture_hold('pi_1', 1800, reference='t1')

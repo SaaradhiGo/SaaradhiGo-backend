@@ -1699,6 +1699,9 @@ LOGGING = {
         'boto3': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
         's3transfer': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
         'urllib3': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        # The server's own lines (request paths) go through the same redaction (16 Nov).
+        'uvicorn.access': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'uvicorn.error': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
     },
 }
 

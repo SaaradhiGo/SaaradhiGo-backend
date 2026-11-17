@@ -7,7 +7,7 @@ cannot receive an OTP and never collide with a real number (the invite path uses
 
 import secrets
 
-PLACEHOLDER_PREFIXES = ('invite-', 'email-')
+PLACEHOLDER_PREFIXES = ('invite-', 'inv-', 'email-')  # 'inv-' since 17 Nov (fits varchar(20))
 
 
 def placeholder_phone():

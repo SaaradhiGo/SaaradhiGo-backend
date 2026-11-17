@@ -300,7 +300,7 @@ def _create_account(request, *, role, ops_role=None, home_city=None):
         # Reserved range, deliberately not dialable and not E.164-valid for
         # any country, so it cannot collide with a real number and cannot be
         # used to request an OTP.
-        phone = f'invite-{secrets.token_hex(8)}'
+        phone = f'inv-{secrets.token_hex(8)}'  # 20 chars: phone_number is varchar(20)
 
     try:
         with transaction.atomic():

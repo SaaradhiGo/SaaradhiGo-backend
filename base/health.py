@@ -173,4 +173,13 @@ def healthz(request):
     except Exception:  # noqa: BLE001 - health never raises
         status['scheduler'] = 'unknown'
 
+    # 17 Nov: the maps adapter ('fake', 'google' or 'not_configured'). Load scripts refuse a target
+    # that is not 'fake', so a load run can never bill real Maps calls.
+    try:
+        from servers.ride.maps_utils import maps_adapter_status
+
+        status['maps'] = maps_adapter_status()
+    except Exception:  # noqa: BLE001 - health never raises
+        status['maps'] = 'unknown'
+
     return JsonResponse(status, status=http_status)

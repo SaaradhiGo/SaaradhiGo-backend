@@ -58,6 +58,7 @@ import threading
 import requests
 from django.conf import settings
 
+from servers.ride import maps_fake as maps_fake_adapter
 from servers.ride import maps_meter
 
 logger = logging.getLogger(__name__)
@@ -70,9 +71,21 @@ def _api_key() -> str:
     return (getattr(settings, 'GOOGLE_MAPS_API_KEY', '') or '').strip()
 
 
+def maps_fake() -> bool:
+    """The fake adapter (servers/ride/maps_fake.py): load, e2e and CI runs, never a real call."""
+    return (getattr(settings, 'MAPS_ADAPTER', 'google') or 'google').strip().lower() == 'fake'
+
+
 def maps_configured() -> bool:
-    """Whether this deployment can talk to the provider at all."""
-    return bool(_api_key())
+    """Whether this deployment can talk to the provider at all (the fake counts)."""
+    return maps_fake() or bool(_api_key())
+
+
+def maps_adapter_status() -> str:
+    """'fake', 'google' or 'not_configured', for /healthz and the load-run preflight."""
+    if maps_fake():
+        return 'fake'
+    return 'google' if _api_key() else 'not_configured'
 
 
 def _places_api_version() -> str:
@@ -241,6 +254,8 @@ def google_places_autocomplete(search_text, location=None, radius=None,
     the rider app and the website already read.
     """
     MapsFailure.clear()
+    if maps_fake() and search_text:
+        return maps_fake_adapter.autocomplete(search_text, location, bounds)
     if not maps_configured():
         return _fail(NOT_CONFIGURED, 'GOOGLE_MAPS_API_KEY is not set')
     if not search_text:
@@ -405,6 +420,8 @@ def google_place_details(place_id, session_token=None):
     that the website reads.
     """
     MapsFailure.clear()
+    if maps_fake() and place_id:
+        return maps_fake_adapter.place_details(place_id)
     if not maps_configured():
         return _fail(NOT_CONFIGURED, 'GOOGLE_MAPS_API_KEY is not set')
     if not place_id:
@@ -506,6 +523,10 @@ def google_geocode(address=None, latlng=None, country=None):
     lookup needs no bias because the coordinates already name the place.
     """
     MapsFailure.clear()
+    if maps_fake():
+        if not (address or latlng):
+            return _fail(INVALID_REQUEST, 'neither address nor latlng given')
+        return maps_fake_adapter.geocode(address, latlng)
     if not maps_configured():
         return _fail(NOT_CONFIGURED, 'GOOGLE_MAPS_API_KEY is not set')
 
@@ -539,6 +560,8 @@ def google_directions(origin_lat, origin_lng, dest_lat, dest_lng,
     """Route call. Preference sets the SKU: TRAFFIC_UNAWARE bills Routes Essentials,
     TRAFFIC_AWARE (and _OPTIMAL) bill Routes Pro. Quotes need traffic; plain map lines do not."""
     MapsFailure.clear()
+    if maps_fake():
+        return maps_fake_adapter.directions(origin_lat, origin_lng, dest_lat, dest_lng)
     if not maps_configured():
         return _fail(NOT_CONFIGURED, 'GOOGLE_MAPS_API_KEY is not set')
 

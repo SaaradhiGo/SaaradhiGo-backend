@@ -647,6 +647,8 @@ def main():
               f'This harness generates synthetic rides and settlements and must '
               f'never point at QA or production.')
         return 2
+    from maps_guard import require_fake_maps
+    require_fake_maps(BASE)
 
     print('=' * 78)
     print(f'LOAD RUN  rides={args.rides}  concurrency={concurrency}  '

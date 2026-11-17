@@ -84,6 +84,8 @@ services:
       JWT_SIGNING_KEY: load-harness-not-a-real-jwt-key
       ALLOWED_HOSTS: "*"
       ENVIRONMENT: load
+      # 17 Nov: never real Google Maps in a load run (ENVIRONMENT=load also defaults to it, and refuses a key).
+      MAPS_ADAPTER: fake
       CASHFREE_WEBHOOK_SECRET: load-harness-not-a-real-secret
       DB_HOST: loaddb
       DB_PORT: "5432"

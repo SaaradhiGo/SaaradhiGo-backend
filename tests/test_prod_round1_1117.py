@@ -137,3 +137,19 @@ def test_prod_first_setup_seeds_invites_the_owner_and_leaves_no_other_operator(s
     assert len(mail.outbox) == 1
     with pytest.raises(CommandError):
         call_command('prod_first_setup', owner_email='x@example.com', stdout=StringIO())
+
+
+@pytest.mark.django_db
+def test_an_operator_reveals_an_applicants_number_and_it_is_logged(auth_client_admin):
+    from servers.admin_audit.models import AdminAuditLog
+    seed_admin_access()
+    a = DriverApplication.objects.create(full_name='A B', phone_number='+919812345670', vehicle_type='car',
+                                         city=GeoNode.objects.get(kind=CITY, code='IN-TG-HYD'))
+    client, user = auth_client_admin
+    grant_legacy_equivalent(user, 'super')
+    before = AdminAuditLog.objects.count()
+    r = client.post('/api/v1/admin-access/reveal/', {'target_type': 'driver_application', 'target_id': a.id,
+                                                    'fields': ['phone_number']}, format='json')
+    assert r.status_code == 200, r.content
+    assert '+919812345670' in r.content.decode()
+    assert AdminAuditLog.objects.count() > before

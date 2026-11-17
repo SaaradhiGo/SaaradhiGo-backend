@@ -78,6 +78,8 @@ REVEALABLE_FIELDS = {
     'support_ticket': ('requester_name', 'requester_phone', 'requester_email', 'thread'),
     'withdrawal': ('driver_name', 'driver_phone', 'driver_email', 'upi_id', 'bank_account'),
     'payment': ('payer_name', 'payer_phone', 'payer_email'),
+    # 17 Nov: a pre-launch driver application, so the city team can call the applicant.
+    'driver_application': ('phone_number', 'email'),
 }
 
 #: Target types that exist but are revealed elsewhere, with the door.
@@ -318,6 +320,24 @@ def _resolve_payment(request, target_id):
     return payment, node, _prefixed('payer', payment.user_id)
 
 
+def _resolve_application(request, target_id):
+    """A pre-launch driver application (17 Nov) sits in its city; out of scope reads as not found."""
+    from servers.platform_ops.models import DriverApplication
+
+    from .access import scope_paths
+
+    application = DriverApplication.objects.select_related('city').filter(id=target_id).first()
+    if application is None:
+        return None, None, None
+    paths = scope_paths(request.user)
+    if paths is not None and not any(application.city.path.startswith(p) for p in paths):
+        return None, None, None
+    return application, application.city, {
+        'phone_number': lambda: application.phone_number,
+        'email': lambda: application.email or None,
+    }
+
+
 RESOLVERS = {
     'driver': _resolve_driver,
     'user': _resolve_user,
@@ -326,6 +346,7 @@ RESOLVERS = {
     'support_ticket': _resolve_ticket,
     'withdrawal': _resolve_withdrawal,
     'payment': _resolve_payment,
+    'driver_application': _resolve_application,
 }
 
 if set(RESOLVERS) != set(REVEALABLE_FIELDS):  # pragma: no cover - import-time guard

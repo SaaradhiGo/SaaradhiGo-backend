@@ -146,6 +146,15 @@ def delivery_is_configured():
     return True, ''
 
 
+def production_mail_missing():
+    """Production with no working mail backend (17 Nov: PROD runs before SES). Registration, password
+    reset and operator invites then answer EMAIL_NOT_CONFIGURED instead of pretending to send."""
+    return bool(getattr(settings, 'IS_PRODUCTION', False)) and not delivery_is_configured()[0]
+
+
+EMAIL_NOT_CONFIGURED_MESSAGE = "Email isn't set up yet. We're launching soon."
+
+
 def verification_is_deliverable():
     """Can this deployment actually deliver an email verification link?
 

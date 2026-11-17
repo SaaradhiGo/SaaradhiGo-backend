@@ -158,4 +158,19 @@ def healthz(request):
         status['cache_error'] = type(e).__name__
         http_status = 503
 
+    # 17 Nov: the scheduler, for the PROD uptime check. Reported only; it never fails the check,
+    # so a stopped beat cannot make Railway restart a healthy web process.
+    try:
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from servers.platform_ops.models import SchedulerHeartbeat
+
+        beat = SchedulerHeartbeat.objects.filter(name='beat').values_list('last_run_at', flat=True).first()
+        status['scheduler'] = ('never' if beat is None else
+                               'ok' if timezone.now() - beat < timedelta(hours=2) else 'stale')
+    except Exception:  # noqa: BLE001 - health never raises
+        status['scheduler'] = 'unknown'
+
     return JsonResponse(status, status=http_status)

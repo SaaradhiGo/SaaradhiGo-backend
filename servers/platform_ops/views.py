@@ -450,3 +450,84 @@ def launch_interest(request):
     row, created = LaunchInterest.objects.get_or_create(user=request.user, city=city)
     return success_response({'city': city.name, 'already_live': False, 'saved': True,
                              'created': created}, status.HTTP_200_OK)
+
+
+def _application_row(a):
+    from servers.admin_access.masking import mask_email, mask_phone
+
+    # Masked like every operator list (PII sweep); the number is revealed per applicant later.
+    return {'id': a.id, 'full_name': a.full_name, 'phone_number': mask_phone(a.phone_number),
+            'email': mask_email(a.email) if a.email else '',
+            'city': a.city.name, 'city_code': a.city.code, 'vehicle_type': a.vehicle_type,
+            'created_at': a.created_at.isoformat()}
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def driver_application(request):
+    """POST /api/v1/platform/driver-applications/ (17 Nov, anonymous): apply to drive while sign-up
+    is closed. {"full_name", "phone_number", "city": "<city code>", "vehicle_type", "email"?}.
+    Same answer for a new and a repeated application, so it tells nobody who has applied."""
+    from base.countries import normalize_phone
+    from base.throttles import DriverApplicationGlobalThrottle, DriverApplicationThrottle
+    from servers.auth_user.identity import InvalidEmail, normalize_email
+
+    from .models import DriverApplication
+
+    for throttle in (DriverApplicationThrottle(), DriverApplicationGlobalThrottle()):
+        if not throttle.allow_request(request, None):
+            return error_response(code='TOO_MANY_REQUESTS', message='Too many applications. Try again later.',
+                                  field='general', issue='Rate limited.',
+                                  status=status.HTTP_429_TOO_MANY_REQUESTS)
+    d = request.data
+    errors = {}
+    name = str(d.get('full_name') or '').strip()
+    if not 2 <= len(name) <= 100:
+        errors['full_name'] = 'Enter your full name.'
+    city = GeoNode.objects.filter(kind=CITY, code=str(d.get('city') or '').strip()).first()
+    if city is None:
+        errors['city'] = 'Choose a city.'
+    phone = ''
+    try:
+        phone = normalize_phone(str(d.get('phone_number') or ''), (market_country_code(city) if city else None) or 'IN') or ''
+    except Exception:  # noqa: BLE001 - any parse failure is the same answer
+        phone = ''
+    if not phone:
+        errors['phone_number'] = 'Enter a valid mobile number.'
+    vehicle = str(d.get('vehicle_type') or '').strip().lower()
+    if vehicle not in dict(DriverApplication.VEHICLES):
+        errors['vehicle_type'] = 'Choose a vehicle.'
+    email = ''
+    if str(d.get('email') or '').strip():
+        try:
+            email = normalize_email(d.get('email')) or ''
+        except InvalidEmail:
+            errors['email'] = 'Enter a valid email address, or leave it blank.'
+    if errors:
+        field, issue = next(iter(errors.items()))
+        return error_response(code='INVALID_APPLICATION', message=issue, field=field, issue=issue,
+                              status=status.HTTP_400_BAD_REQUEST)
+    DriverApplication.objects.get_or_create(phone_number=phone, city=city, defaults={
+        'full_name': name, 'email': email, 'vehicle_type': vehicle})
+    return success_response({'received': True, 'city': city.name}, status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.read')])
+def driver_applications_admin(request):
+    """GET /api/v1/platform/admin/driver-applications/ (17 Nov): pre-launch applications in the
+    caller's cities, newest first, at most 500."""
+    from servers.admin_access.access import scope_paths
+
+    from .models import DriverApplication
+
+    qs = DriverApplication.objects.select_related('city')
+    paths = scope_paths(request.user)
+    if paths is not None:
+        from django.db.models import Q
+        q = Q(pk__in=[])
+        for p in paths:
+            q |= Q(city__path__startswith=p)
+        qs = qs.filter(q)
+    rows = [_application_row(a) for a in qs[:500]]
+    return success_response({'count': qs.count(), 'results': rows}, status.HTTP_200_OK)

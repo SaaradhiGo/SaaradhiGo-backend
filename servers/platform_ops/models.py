@@ -200,3 +200,27 @@ class SchedulerHeartbeat(models.Model):
 
     def __str__(self):
         return f'{self.name} last ran {self.last_run_at:%Y-%m-%d %H:%M}'
+
+
+class DriverApplication(models.Model):
+    """A pre-launch driver application (17 Nov): while sign-up is closed (no SMS yet), "Apply to
+    drive" takes a name, a mobile number, a city and a vehicle, and operators see the list in the
+    console. One row per number and city; a repeat updates nothing and answers the same."""
+
+    VEHICLES = (('car', 'Car'), ('auto', 'Auto'), ('bike', 'Bike'))
+
+    full_name = models.CharField(max_length=100)
+    phone_number = models.CharField(max_length=20)
+    email = models.EmailField(blank=True, default='')
+    city = models.ForeignKey('admin_access.GeoNode', on_delete=models.PROTECT,
+                             related_name='driver_applications')
+    vehicle_type = models.CharField(max_length=10, choices=VEHICLES)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ('-created_at',)
+        constraints = [models.UniqueConstraint(fields=['phone_number', 'city'],
+                                               name='driver_application_one_per_phone_city')]
+
+    def __str__(self):
+        return f'driver application city={self.city_id}'

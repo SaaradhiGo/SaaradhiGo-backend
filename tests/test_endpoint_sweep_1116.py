@@ -35,6 +35,7 @@ PUBLIC = {
     'api/v1/pricing/$': 'DRF API root', 'api/v1/pricing/<drf': 'DRF API root',
     'api/v1/sharing/public/': 'share link (token)', 'api/v1/sharing/sms/inbound/': 'SMS webhook',
     'api/v1/driver/driver/documents/view/': 'signed document ticket',
+    'api/v1/platform/driver-applications/': 'pre-launch driver application (17 Nov, throttled)',
 }
 WEBHOOKS = ('webhook', 'webhooks/', 'sms/inbound')
 

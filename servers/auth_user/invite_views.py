@@ -133,6 +133,11 @@ def invite_operator(request):
     No password is ever returned. The new operator holds NO assignment: who
     may do what, where, is granted afterwards through `migrate_operators`.
     """
+    from base.auth_email import EMAIL_NOT_CONFIGURED_MESSAGE, production_mail_missing
+    if production_mail_missing():  # 17 Nov: PROD before SES; never a link nobody sends
+        return error_response(code='EMAIL_NOT_CONFIGURED', message=EMAIL_NOT_CONFIGURED_MESSAGE,
+                              field='email', issue='No email provider is configured.',
+                              status=status.HTTP_503_SERVICE_UNAVAILABLE)
     role = (request.data.get('role') or 'admin').strip().lower()
     if role != 'admin':
         return _refuse(

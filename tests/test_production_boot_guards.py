@@ -249,18 +249,13 @@ def test_all_faults_are_reported_together():
     assert 'QA_ADMIN_BOOTSTRAP_PASSWORD' in out
 
 
-def test_production_refuses_to_boot_without_a_mail_backend():
-    """Verification links are how a sign-up finishes. No mail, no sign-up.
-
-    Registration compensates for an undeliverable environment by marking the
-    address verified, which is right for QA and wrong for production: there
-    it would accept a password for an address nobody proved they own. This
-    guard is what keeps that branch unreachable in production.
-    """
+def test_production_boots_without_a_mail_backend_and_the_flows_refuse():
+    """17 Nov (PROD before SES): production starts without mail. Registration, password reset and
+    operator invites answer EMAIL_NOT_CONFIGURED (tests/test_prod_round1_1117.py), so no account is
+    created that only an unsent link could finish."""
     rc, err = _boot(EMAIL_BACKEND=None, EMAIL_HOST=None, DEFAULT_FROM_EMAIL=None)
 
-    assert rc != 0, 'production booted with no way to send a verification link'
-    assert 'Email delivery is not configured' in err, err[-600:]
+    assert rc == 0, err[-600:]
 
 
 # ---------------------------------------------------------------------------

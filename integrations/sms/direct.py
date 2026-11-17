@@ -26,6 +26,14 @@ def provider_for(phone):
     return (table.get(sms_templates.country_of_phone(phone)) or '').strip().lower()
 
 
+def production_sms_missing(phone):
+    """Production, and nothing can text this number: no direct provider for its market and AWS SNS
+    not confirmed by the owner (17 Nov). Outside production this is always False."""
+    if not getattr(settings, 'IS_PRODUCTION', False):
+        return False
+    return not provider_for(phone) and not getattr(settings, 'SNS_LIVE_CONFIRMED', False)
+
+
 def send(phone, text, kind='', values=None):
     """Send through the market's provider. Returns a message id. Raises the provider's
     PermanentProviderError (do not retry) or TransientProviderError (retry)."""

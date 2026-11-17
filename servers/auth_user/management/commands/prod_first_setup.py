@@ -42,8 +42,11 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         if User.objects.filter(is_active=True).filter(Q(is_superuser=True) | Q(role='admin', is_staff=True)).exists():
             raise CommandError('An operator already exists: this database has been set up. Nothing was changed.')
-        build = User(phone_number='invite-prod-build', username='u-prod-build', email=BUILD_EMAIL,
-                     full_name='PROD build (Claude)', role='admin', is_staff=True, is_active=True)
+        # Reused on a rerun (seeds are create-if-missing), so a run that stopped part way can finish.
+        build = User.objects.filter(email=BUILD_EMAIL).first() or User(
+            phone_number='inv-prod-build', username='u-prod-build', email=BUILD_EMAIL,
+            full_name='PROD build (Claude)', role='admin', is_staff=True)
+        build.is_active = True
         build.set_unusable_password()
         build.save()
         try:

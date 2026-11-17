@@ -888,7 +888,7 @@ class TestInvite:
 
         invited = User.objects.get(pk=response.json()['data']['user_id'])
         # Not a real number, so it can never receive an OTP.
-        assert invited.phone_number.startswith('invite-')
+        assert invited.phone_number.startswith('inv-')
         assert '+' not in invited.phone_number
 
     def test_every_invite_is_audited(self, client, auth):

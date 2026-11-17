@@ -58,7 +58,7 @@ class Command(BaseCommand):
             raise CommandError('Run migrations and seed_admin_access first (no Super Admin role or Global node).')
 
         with transaction.atomic():
-            user = User(phone_number=f'invite-{secrets.token_hex(8)}', username=f'u-{secrets.token_hex(8)}',
+            user = User(phone_number=f'inv-{secrets.token_hex(8)}', username=f'u-{secrets.token_hex(8)}',
                         email=email, full_name=(options['name'] or '').strip() or None,
                         role='admin', is_staff=True, is_superuser=False, is_active=True)
             user.set_unusable_password()

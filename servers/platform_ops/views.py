@@ -453,7 +453,11 @@ def launch_interest(request):
 
 
 def _application_row(a):
-    return {'id': a.id, 'full_name': a.full_name, 'phone_number': a.phone_number, 'email': a.email,
+    from servers.admin_access.masking import mask_email, mask_phone
+
+    # Masked like every operator list (PII sweep); the number is revealed per applicant later.
+    return {'id': a.id, 'full_name': a.full_name, 'phone_number': mask_phone(a.phone_number),
+            'email': mask_email(a.email) if a.email else '',
             'city': a.city.name, 'city_code': a.city.code, 'vehicle_type': a.vehicle_type,
             'created_at': a.created_at.isoformat()}
 

@@ -23,7 +23,7 @@ from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
-from servers.admin_audit.actor_option import any_operator_exists
+from django.db.models import Q
 
 User = get_user_model()
 
@@ -40,7 +40,7 @@ class Command(BaseCommand):
         parser.add_argument('--owner-name', default='')
 
     def handle(self, *args, **options):
-        if any_operator_exists():
+        if User.objects.filter(is_active=True).filter(Q(is_superuser=True) | Q(role='admin', is_staff=True)).exists():
             raise CommandError('An operator already exists: this database has been set up. Nothing was changed.')
         build = User(phone_number='invite-prod-build', username='u-prod-build', email=BUILD_EMAIL,
                      full_name='PROD build (Claude)', role='admin', is_staff=True, is_active=True)

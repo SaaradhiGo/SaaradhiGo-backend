@@ -647,6 +647,8 @@ INVENTORY = {
     # Maps usage and budget (9 Nov): counts, prices and budgets; no person.
     'api/v1/platform/admin/maps/': False,
     'api/v1/platform/admin/options/': False,
+    # Pre-launch driver applications (17 Nov): phone and email masked like every list.
+    'api/v1/platform/admin/driver-applications/': False,
     'api/v1/admin-audit/admin/entries/': False,
     'api/v1/admin-audit/admin/entries/export/': False,
     'api/v1/admin-audit/admin/entries/<int:entry_id>/': False,

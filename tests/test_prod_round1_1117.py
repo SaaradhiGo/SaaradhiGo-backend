@@ -62,6 +62,8 @@ def test_production_without_mail_says_so(settings, path, body):
 @pytest.mark.django_db
 def test_driver_can_apply_before_sign_up_opens_once_per_number_and_city():
     seed_admin_access()
+    from django.core.cache import cache
+    cache.clear()  # the throttle's counters, shared with other anonymous tests in one run
     body = {'full_name': 'Ravi Kumar', 'phone_number': '98123 45670', 'city': 'IN-TG-HYD', 'vehicle_type': 'auto'}
     c = APIClient()
     assert c.post('/api/v1/platform/driver-applications/', body, format='json').status_code == 201

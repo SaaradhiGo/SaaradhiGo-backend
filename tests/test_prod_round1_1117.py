@@ -14,6 +14,14 @@ from servers.platform_ops.markets import booking_gate_for_zone
 from servers.platform_ops.models import DriverApplication
 from tests.conftest import grant_legacy_equivalent, seed_admin_access
 
+@pytest.fixture(autouse=True)
+def _urlconf_loaded_as_qa():
+    """Build the URL map before a test flips IS_PRODUCTION, or the QA-only routes vanish for every
+    later test in the run (the resolver is cached)."""
+    from django.urls import get_resolver
+    assert get_resolver().url_patterns
+
+
 NO_MAIL = dict(IS_PRODUCTION=True, EMAIL_BACKEND='', DEFAULT_FROM_EMAIL='')
 
 
@@ -153,3 +161,14 @@ def test_an_operator_reveals_an_applicants_number_and_it_is_logged(auth_client_a
     assert r.status_code == 200, r.content
     assert '+919812345670' in r.content.decode()
     assert AdminAuditLog.objects.count() > before
+
+
+def test_the_invite_phone_placeholder_fits_the_column():
+    """17 Nov: `invite-<16 hex>` was 23 characters; Postgres refused it (SQLite never checks)."""
+    from django.contrib.auth import get_user_model
+    limit = get_user_model()._meta.get_field('phone_number').max_length
+    for path in ('servers/auth_user/invite_views.py',
+                 'servers/auth_user/management/commands/invite_super_admin.py'):
+        src = open(path, encoding='utf-8').read()
+        assert "f'inv-{secrets.token_hex(8)}'" in src, path
+    assert len('inv-' + 'ab' * 8) <= limit

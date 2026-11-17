@@ -1421,6 +1421,21 @@ FARE_SHADOW_LOOKBACK_HOURS = int(os.environ.get('FARE_SHADOW_LOOKBACK_HOURS', '7
 
 GOOGLE_MAPS_API_KEY=os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
+# 17 Nov (PROD round 2): load, e2e and CI runs never call real Google Maps (the 16 Nov pilot load
+# on QA made about 1,400 real Routes calls). MAPS_ADAPTER 'fake' answers every Maps call from
+# servers/ride/maps_fake.py with no network; 'google' calls Google. A load or e2e deployment
+# (ENVIRONMENT load or e2e) defaults to the fake and refuses to boot holding a real key; production
+# refuses the fake. /healthz reports the adapter, and the load scripts refuse a target that is not fake.
+_MAPS_RUN_ENVS = {'load', 'e2e'}
+_maps_run = ENVIRONMENT.strip().lower() in _MAPS_RUN_ENVS
+MAPS_ADAPTER = (os.environ.get('MAPS_ADAPTER') or ('fake' if _maps_run else 'google')).strip().lower()
+if _maps_run and GOOGLE_MAPS_API_KEY.strip():
+    from django.core.exceptions import ImproperlyConfigured as _MapsIC
+    raise _MapsIC('A load or e2e run must not hold a real GOOGLE_MAPS_API_KEY: it uses the fake maps adapter.')
+if IS_PRODUCTION and MAPS_ADAPTER == 'fake':
+    from django.core.exceptions import ImproperlyConfigured as _MapsIC
+    raise _MapsIC('MAPS_ADAPTER=fake is for load, e2e and CI runs, never production.')
+
 # Arrival estimates on an active trip (servers/ride/eta.py): straight line x road factor at the
 # market's average speed, in whole minutes. Per-market speeds in km/h; a market missing here
 # uses PICKUP_ETA_CITY_KMH (18). Override with ETA_MARKET_KMH_JSON, e.g. {"IN": 18, "US": 35}.

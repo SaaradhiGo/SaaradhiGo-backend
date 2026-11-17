@@ -58,3 +58,32 @@ def isolate_channel_layer():
         yield
     finally:
         layers.channel_layers.backends.clear()
+
+
+# 17 Nov (PROD round 2): CI never calls real Google Maps. A run holding a real key fails at once,
+# and any test that would resolve a Google Maps host fails instead of making the call (tests mock
+# requests above the socket, so they are unaffected).
+_GOOGLE_HOSTS = ('googleapis.com', 'maps.google.com')
+
+
+def pytest_sessionstart(session):
+    import os
+
+    if (os.environ.get('GOOGLE_MAPS_API_KEY') or '').strip():
+        raise pytest.UsageError('GOOGLE_MAPS_API_KEY is set: tests and CI must never hold a real Maps key.')
+
+
+@pytest.fixture(autouse=True, scope='session')
+def no_real_google_maps():
+    import socket
+
+    real = socket.getaddrinfo
+
+    def guarded(host, *args, **kwargs):
+        if isinstance(host, str) and host.endswith(_GOOGLE_HOSTS):
+            raise RuntimeError(f'Test tried to reach {host}: CI never calls real Google Maps.')
+        return real(host, *args, **kwargs)
+
+    socket.getaddrinfo = guarded
+    yield
+    socket.getaddrinfo = real

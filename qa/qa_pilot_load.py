@@ -276,4 +276,7 @@ async def main():
     print(json.dumps(summary()['counts']), flush=True)
 
 
+from maps_guard import require_fake_maps  # noqa: E402
+
+require_fake_maps(API)
 asyncio.run(main())

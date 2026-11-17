@@ -507,4 +507,6 @@ def summarise():
 
 
 if __name__ == '__main__':
+    from maps_guard import require_fake_maps
+    require_fake_maps(B)
     asyncio.run(main())

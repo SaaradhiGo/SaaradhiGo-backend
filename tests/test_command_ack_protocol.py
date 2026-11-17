@@ -44,6 +44,7 @@ from django.contrib.auth import get_user_model
 from base.asgi import application
 from servers.driver.models import Driver, Vehicle, VehicleType
 from servers.ride.models import Trip, TripStatus
+from tests.ws_auth import ws_q
 
 User = get_user_model()
 
@@ -110,7 +111,7 @@ def _token(user):
 
 async def _open_trip_socket(user, trip_id):
     tok = await asyncio.to_thread(_token, user)
-    comm = WebsocketCommunicator(application, f'/ws/ride/trip/{trip_id}/?token={tok}')
+    comm = WebsocketCommunicator(application, f'/ws/ride/trip/{trip_id}/?{ws_q(tok)}')
     connected, _ = await comm.connect(timeout=20)
     assert connected, 'trip socket must connect'
     # The greeting is always sent, so a plain read cannot time out here.

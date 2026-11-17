@@ -37,7 +37,9 @@
               "te",
               "hi"
             ],
-            "market_country": "IN"
+            "market_country": "IN",
+            "phone_verified": true,
+            "email_verified": true
           }
         },
         "meta": {
@@ -111,7 +113,9 @@
               "te",
               "hi"
             ],
-            "market_country": "IN"
+            "market_country": "IN",
+            "phone_verified": true,
+            "email_verified": false
           }
         },
         "meta": {

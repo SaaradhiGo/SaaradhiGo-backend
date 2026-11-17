@@ -26,6 +26,7 @@ from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
 from django.db import connection, connections
 from django.utils import timezone
+from tests.ws_auth import ws_q
 
 pytestmark = [pytest.mark.postgres, pytest.mark.django_db(transaction=True)]
 
@@ -212,7 +213,7 @@ async def _book(rider, promo_code):
     from base.asgi import application
 
     tok = await asyncio.to_thread(_token, rider)
-    comm = WebsocketCommunicator(application, f'/ws/ride/request/?token={tok}')
+    comm = WebsocketCommunicator(application, f'/ws/ride/request/?{ws_q(tok)}')
     connected, _ = await comm.connect(timeout=20)
     assert connected
     await comm.receive_from(timeout=10)

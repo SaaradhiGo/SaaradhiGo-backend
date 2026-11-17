@@ -34,7 +34,7 @@ def phone_required(user):
 def street_address(lat, lng):
     """The first reverse-geocode result's address for a point, or '' when there is none."""
     from servers.redis_client import cache_map_data, get_cached_map_data
-    from servers.ride.maps_utils import google_geocode
+    from servers.ride.maps_utils import consensus_first, google_geocode
     try:
         lat, lng = round(float(lat), 5), round(float(lng), 5)
     except (TypeError, ValueError):
@@ -46,7 +46,7 @@ def street_address(lat, lng):
         if data:
             cache_map_data(key, data, ttl_seconds=7 * 24 * 60 * 60)
     try:
-        return str((data or {}).get('results', [])[0].get('formatted_address') or '')[:255]
+        return str(consensus_first(data or {}).get('results', [])[0].get('formatted_address') or '')[:255]
     except (IndexError, AttributeError, TypeError):
         return ''
 

@@ -25,6 +25,7 @@ from .password_views import (
     reset_password,
 )
 
+from .logout_all_views import logout_all
 from .phone_change_views import change_phone
 from .registration_views import register_with_email
 from .role_views import me_ride
@@ -36,6 +37,7 @@ urlpatterns = [
     path('login/', token),
     path('refresh/', refresh),
     path('logout/', logout),
+    path('logout/all/', logout_all),
     path('ws-ticket/', ws_ticket, name='ride_ws_ticket'),
     path('update/', update_user),
     path('profile/', get_user_profile),

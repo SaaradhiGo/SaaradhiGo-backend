@@ -215,6 +215,8 @@ REST_FRAMEWORK = {
         # thirty such trips from one address per hour -- far above honest
         # use, far below a bill worth worrying about.
         'guest_fare': '120/hour',
+        'driver_application': '5/hour',
+        'driver_application_global': '300/hour',
         # One route per trip, cached for five minutes server-side; a
         # visitor who re-centres the map does not buy another.
         'guest_route': '120/hour',
@@ -845,6 +847,8 @@ if not DEBUG:
     # operator opts in with DJANGO_SECURE_SSL_REDIRECT=True after confirming
     # nginx sets `proxy_set_header X-Forwarded-Proto $scheme;`.
     SECURE_SSL_REDIRECT = os.environ.get('DJANGO_SECURE_SSL_REDIRECT', 'False') == 'True'
+    # 17 Nov: Railway's health probe speaks plain HTTP inside the platform, with no forwarded proto.
+    SECURE_REDIRECT_EXEMPT = [r'^healthz/?$', r'^version/?$']
 
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
@@ -994,6 +998,9 @@ DOC_VERIFICATION_PROVIDER = os.environ.get('DOC_VERIFICATION_PROVIDER', '').stri
 KYC_REVIEW_TARGET_WORKING_DAYS = int(os.environ.get('KYC_REVIEW_TARGET_WORKING_DAYS', '1'))
 DRIVER_LOW_RATING_BELOW = os.environ.get('DRIVER_LOW_RATING_BELOW', '4.5')
 DRIVER_LOW_RATING_MIN_RATINGS = int(os.environ.get('DRIVER_LOW_RATING_MIN_RATINGS', '10'))
+# 17 Nov (PROD before payment, SMS and call keys): with BOOKING_OPEN off every city answers as not
+# launched yet: fares show, Book says "We're launching in <city> soon". Default on (QA, tests).
+BOOKING_OPEN = os.environ.get('BOOKING_OPEN', 'true').strip().lower() not in ('0', 'false', 'no', 'off')
 QA_SIM_DRIVERS_SKIP_REQUIREMENTS = os.environ.get('QA_SIM_DRIVERS_SKIP_REQUIREMENTS', '').strip().lower() in ('1', 'true', 'yes')
 
 if IS_PRODUCTION:
@@ -1048,32 +1055,10 @@ if IS_PRODUCTION:
                 'and in production it is a back door into payout approval and KYC.'
             )
 
-    # A PRODUCTION THAT CANNOT SEND MAIL CANNOT COMPLETE A SIGN-UP.
-    #
-    # `email_login` refuses an unverified address and verification happens by
-    # clicking a link in an email. Without a mail backend those two make a
-    # lock with no key: the account is created, the screen says "check your
-    # email", nothing is sent, and the person can never sign in. QA hit
-    # exactly that.
-    #
-    # Registration compensates off production by marking the address
-    # verified instead. This guard is what keeps that branch unreachable
-    # here: production either delivers mail or refuses to start, so it can
-    # never be the deployment that accepts a password for an address nobody
-    # proved they own.
-    _mail_ok, _mail_why = (True, '')
-    try:
-        from base.auth_email import delivery_is_configured as _delivery_check
-
-        _mail_ok, _mail_why = _delivery_check()
-    except Exception as _exc:  # pragma: no cover - import-time safety only
-        _mail_ok, _mail_why = False, f'could not be checked ({_exc})'
-    if not _mail_ok:
-        _production_faults.append(
-            f'Email delivery is not configured ({_mail_why}). Verification '
-            'links cannot be sent, so nobody could finish signing up, and '
-            'password reset would be silently dead.'
-        )
+    # MAIL (17 Nov, PROD before SES): production may start without a mail backend. Every flow that
+    # needs an email then refuses with EMAIL_NOT_CONFIGURED (registration, password reset, operator
+    # invites; `base.auth_email.production_mail_missing`), so no account is ever created that
+    # could only be finished by a link nobody sends, and nothing claims a message went out.
 
     # A production deployment still pointing at QA infrastructure writes real
     # customer data into a test system, or reads test data as if it were real.
@@ -1267,6 +1252,12 @@ STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
 STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', '')
 STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
 STRIPE_CONNECT_WEBHOOK_SECRET = os.environ.get('STRIPE_CONNECT_WEBHOOK_SECRET', '')
+# A card-only payment method configuration (pmc_...) for ride holds (16 Nov ruling); not a secret.
+STRIPE_RIDE_PAYMENT_METHOD_CONFIGURATION = os.environ.get('STRIPE_RIDE_PAYMENT_METHOD_CONFIGURATION', '')
+# Connect onboarding API (round 3): v1 Express accounts (default) or v2 /core/accounts recipients.
+# Set back to v1 to undo; accounts already made keep working either way. Not secrets.
+STRIPE_ACCOUNTS_API = os.environ.get('STRIPE_ACCOUNTS_API', 'v1')
+STRIPE_V2_API_VERSION = os.environ.get('STRIPE_V2_API_VERSION', '2026-10-28.endive')
 # Fernet key for PAN and bank account numbers at rest (base/encrypted.py). Unset: derived from
 # SECRET_KEY, so rotating SECRET_KEY would need these re-encrypted; set it before production.
 FIELD_ENCRYPTION_KEY = os.environ.get('FIELD_ENCRYPTION_KEY', '')
@@ -1454,6 +1445,14 @@ try:
 except ValueError:
     CALL_BRIDGE_PROVIDERS = {}
 TWILIO_VOICE_NUMBER = os.environ.get('TWILIO_VOICE_NUMBER', '')
+# Exotel Voice for India (16 Nov): CALL_BRIDGE_PROVIDERS {"IN": "exotel"} once these are set.
+# EXOTEL_SUBDOMAIN is api.exotel.com (Singapore) or api.in.exotel.com (Mumbai), per account.
+EXOTEL_ACCOUNT_SID = os.environ.get('EXOTEL_ACCOUNT_SID', '')
+EXOTEL_API_KEY = os.environ.get('EXOTEL_API_KEY', '')
+EXOTEL_API_TOKEN = os.environ.get('EXOTEL_API_TOKEN', '')
+EXOTEL_CALLER_ID = os.environ.get('EXOTEL_CALLER_ID', '')
+EXOTEL_SUBDOMAIN = os.environ.get('EXOTEL_SUBDOMAIN', 'api.exotel.com')
+EXOTEL_SOS_FLOW_ID = os.environ.get('EXOTEL_SOS_FLOW_ID', '')
 # 13 Nov: direct SMS (sign-in codes, shares, SOS, pages) per market, JSON {"IN": "msg91", "US":
 # "twilio"}. A market not listed keeps AWS SNS. MSG91 needs, per kind in base/sms_templates.py, a
 # flow id and a DLT template id (JSON objects keyed by kind), plus the sender id and DLT entity id.
@@ -1699,6 +1698,9 @@ LOGGING = {
         'boto3': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
         's3transfer': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
         'urllib3': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        # The server's own lines (request paths) go through the same redaction (16 Nov).
+        'uvicorn.access': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'uvicorn.error': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
     },
 }
 

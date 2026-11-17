@@ -218,6 +218,11 @@ def forgot_password(request):
 
     Always 200 with the same message. See the module docstring.
     """
+    from base.auth_email import EMAIL_NOT_CONFIGURED_MESSAGE, production_mail_missing
+    if production_mail_missing():  # 17 Nov: PROD before SES; never a link nobody sends
+        return error_response(code='EMAIL_NOT_CONFIGURED', message=EMAIL_NOT_CONFIGURED_MESSAGE,
+                              field='email', issue='No email provider is configured.',
+                              status=status.HTTP_503_SERVICE_UNAVAILABLE)
     raw_email = request.data.get('email')
 
     def _answer():

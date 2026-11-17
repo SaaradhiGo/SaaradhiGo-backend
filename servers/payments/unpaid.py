@@ -101,9 +101,11 @@ def _hold_with_card(trip):
     from .models import CardHold
 
     hold = CardHold.objects.filter(trip=trip).first()
-    if hold is None or not hold.customer_id:
-        return None
-    return hold
+    if hold is not None and hold.customer_id:
+        return hold
+    # No hold on the trip (16 Nov, trip 226): the rider's card saved by their latest hold.
+    return (CardHold.objects.filter(user=trip.user_id).exclude(customer_id='').exclude(payment_method_id='')
+            .order_by('-created_at').first())
 
 
 def _retries(payment):

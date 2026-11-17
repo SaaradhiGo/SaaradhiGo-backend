@@ -346,13 +346,20 @@ def driver_identity(request):
 # ---------------------------------------------------------------------------
 
 def payout_method_dict(driver, country):
+    """How the driver is paid. `ready`: payouts can go out (Stripe-confirmed, or RazorpayX-confirmed);
+    until then earnings wait in the wallet and screens say "Set up payouts to get paid"."""
+    from servers.payments.weekly_payout import has_payout_handle
+
     hold = payout_hold_until(driver)
     if country == 'US':
         # 15 Nov: what Stripe says now (cached a few minutes), never a stored "ready" alone.
         from . import stripe_connect
-        return {'kind': 'stripe', 'stripe_status': stripe_connect.confirmed_status(driver), 'held_until': None}
+        status_now = stripe_connect.confirmed_status(driver)
+        return {'kind': 'stripe', 'stripe_status': status_now, 'held_until': None,
+                'ready': bool(driver.stripe_account_id) and status_now == 'ready'}
     bank = DriverBankAccount.objects.filter(driver=driver).first()
     return {
+        'ready': has_payout_handle(driver, 'INR'),
         'kind': 'bank' if bank else ('upi' if (driver.upi_id or '').strip() else None),
         'bank': ({'holder_name': bank.holder_name, 'account_masked': mask(bank.account_number),
                   'ifsc': bank.ifsc_code, 'bank_name': bank.bank_name, 'branch': bank.branch,

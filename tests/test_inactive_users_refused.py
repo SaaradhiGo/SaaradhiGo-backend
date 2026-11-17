@@ -58,14 +58,17 @@ class TestRefresh:
 
 
 class TestWebSocket:
-    def test_an_inactive_users_access_token_is_anonymous_on_the_socket(self):
-        from servers.ws_middleware import get_user_from_token
+    def test_an_inactive_user_is_anonymous_on_the_socket(self):
+        # Sockets sign in with a single-use ticket (16 Nov): one per connect.
+        from servers.ws_middleware import get_user_from_ticket
+        from tests.ws_auth import ws_q
 
         user, _ = _driver()
         access = str(AccessToken.for_user(user))
-        assert async_to_sync(get_user_from_token)(access).is_authenticated
+        ticket = lambda: ws_q(access).split('=', 1)[1]  # noqa: E731
+        assert async_to_sync(get_user_from_ticket)(ticket()).is_authenticated
         _deactivate(user)
-        assert not async_to_sync(get_user_from_token)(access).is_authenticated
+        assert not async_to_sync(get_user_from_ticket)(ticket()).is_authenticated
 
 
 class TestDeactivationRevokesRefreshTokens:

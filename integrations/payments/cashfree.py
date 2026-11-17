@@ -47,18 +47,8 @@ def _fallback_customer_email():
 
 
 
-# Cashfree PG SDK (v3.2.12)
-try:
-    import cashfree_pg
-    from cashfree_pg.api_client import Cashfree
-    from cashfree_pg.models.create_order_request import CreateOrderRequest
-    from cashfree_pg.models.customer_details import CustomerDetails
-    from cashfree_pg.models.order_meta import OrderMeta
-    
-    CASHFREE_PG_AVAILABLE = True
-except ImportError:
-    logger.warning("Cashfree PG SDK not installed. Install with: pip install cashfree-pg==3.2.12")
-    CASHFREE_PG_AVAILABLE = False
+# No Cashfree SDK: it pinned urllib3 and sentry-sdk to versions with known CVEs (16 Nov).
+# Every call below is plain HTTPS with a timeout.
 
 
 # ---------------------------------------------------------------------------
@@ -151,16 +141,8 @@ class CashfreeGateway(BasePaymentGateway):
     HTTP_TIMEOUT_SECONDS = 15
     
     def __init__(self):
-        # PG SDK Initialization
-        if CASHFREE_PG_AVAILABLE:
-            Cashfree.XClientId = settings.CASHFREE_APP_ID
-            Cashfree.XClientSecret = settings.CASHFREE_SECRET_KEY
-            Cashfree.XEnvironment = (
-                Cashfree.PRODUCTION if environment() == 'production' else Cashfree.SANDBOX
-            )
-            self.pg_client = Cashfree()
-        else:
-            self.pg_client = None
+        # Truthy when the PG credentials are present; refunds go over HTTPS like every other call.
+        self.pg_client = bool(getattr(settings, 'CASHFREE_APP_ID', '') and getattr(settings, 'CASHFREE_SECRET_KEY', ''))
 
 
     
@@ -347,26 +329,26 @@ class CashfreeGateway(BasePaymentGateway):
             )
             return None
         try:
-            from cashfree_pg.models.order_create_refund_request import OrderCreateRefundRequest
-
             refund_id = f"refund_{payment_id}_{int(time.time())}"
-
-            refund_request = OrderCreateRefundRequest(
-                refund_amount=to_gateway_major(amount_minor, currency),
-                refund_id=refund_id,
-                refund_note="Trip cancellation"
-            )
-
             # payment_id here is the Cashfree order_id (see docstring).
-            response = self.pg_client.PGOrderCreateRefund("2023-08-01", payment_id, refund_request)
-            if response and hasattr(response, 'data'):
-                return {
-                    'gateway': 'cashfree',
-                    'refund_id': refund_id,
-                    'status': getattr(response.data, 'status', 'PENDING'),
-                    'cf_refund_id': getattr(response.data, 'cf_refund_id', None),
-                }
-            return None
+            response = requests.post(
+                f"{pg_base_url()}/orders/{payment_id}/refunds",
+                headers={"X-Client-Id": settings.CASHFREE_APP_ID,
+                         "X-Client-Secret": settings.CASHFREE_SECRET_KEY,
+                         "x-api-version": "2023-08-01", "Content-Type": "application/json",
+                         "Accept": "application/json"},
+                json={"refund_amount": float(to_gateway_major(amount_minor, currency)),
+                      "refund_id": refund_id, "refund_note": "Trip cancellation"},
+                timeout=self.HTTP_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            data = response.json() or {}
+            return {
+                'gateway': 'cashfree',
+                'refund_id': refund_id,
+                'status': data.get('refund_status', 'PENDING'),
+                'cf_refund_id': data.get('cf_refund_id'),
+            }
         except Exception as e:
             logger.error(f"Refund failed: {e}")
             return None

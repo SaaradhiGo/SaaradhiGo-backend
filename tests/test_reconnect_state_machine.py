@@ -31,6 +31,7 @@ from django.contrib.auth import get_user_model
 from base.asgi import application
 from servers.driver.models import Driver, Vehicle, VehicleType
 from servers.ride.models import Trip, TripStatus
+from tests.ws_auth import ws_q
 
 User = get_user_model()
 
@@ -103,7 +104,7 @@ def _token(user):
 async def _connect(user, trip_id, expect_ok=True):
     """Open the trip socket and return its greeting (or None if refused)."""
     tok = await asyncio.to_thread(_token, user)
-    comm = WebsocketCommunicator(application, f'/ws/ride/trip/{trip_id}/?token={tok}')
+    comm = WebsocketCommunicator(application, f'/ws/ride/trip/{trip_id}/?{ws_q(tok)}')
     connected, code = await comm.connect(timeout=20)
     if not connected:
         return comm, None, code

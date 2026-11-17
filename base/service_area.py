@@ -49,6 +49,53 @@ def is_inside_service_area(lat, lon) -> bool:
     return find_zone_for_point(*point) is not None
 
 
+def area_name_near(lat, lon) -> str:
+    """The served area a rider means: the top zone holding (lat, lon), else the nearest active one.
+
+    Round 3 (16 Nov): a drop just outside Treasure Valley said "check your connection". The rider
+    now reads "This place is outside our service area (Treasure Valley)"."""
+    from servers.pricing.models import ServiceZone
+    from servers.pricing.services import find_zone_for_point
+
+    point = _parse(lat, lon)
+    if point is None:
+        return ''
+    zone = find_zone_for_point(*point)
+    if zone is None:
+        best = None
+        for z in ServiceZone.objects.filter(is_active=True, parent__isnull=True):
+            ring = _outer_ring(z.polygon_geojson)
+            if not ring:
+                continue
+            cx = sum(p[0] for p in ring) / len(ring)
+            cy = sum(p[1] for p in ring) / len(ring)
+            d = (cx - point[1]) ** 2 + (cy - point[0]) ** 2
+            if best is None or d < best[0]:
+                best = (d, z)
+        zone = best[1] if best else None
+    while zone is not None and zone.parent_id:
+        zone = zone.parent
+    return (zone.name if zone else '') or ''
+
+
+def _outer_ring(geo):
+    try:
+        coords = geo.get('coordinates') if isinstance(geo, dict) else geo
+        if geo.get('type') == 'MultiPolygon':
+            coords = coords[0]
+        ring = coords[0] if coords and isinstance(coords[0][0], (list, tuple)) else coords
+        return [(float(p[0]), float(p[1])) for p in ring]
+    except (AttributeError, TypeError, IndexError, ValueError):
+        return []
+
+
+def outside_message(area: str) -> str:
+    """What the rider reads for a pickup or drop outside every active zone."""
+    if area:
+        return f'This place is outside our service area ({area}).'
+    return 'This place is outside our service area.'
+
+
 def any_active_zone() -> bool:
     from servers.pricing.models import ServiceZone
 
@@ -82,8 +129,9 @@ def validate_service_area_detail(
     if not any_active_zone():
         return False, NO_ACTIVE_ZONE, (
             'SaaradhiGo is not serving any area right now: no service zone is active.')
-    return False, OUT_OF_SERVICE_AREA, (
-        f'{side} location is outside the SaaradhiGo service area.')
+    # Named after the pickup's area: that is where the rider is.
+    del side
+    return False, OUT_OF_SERVICE_AREA, outside_message(area_name_near(pickup_lat, pickup_lon))
 
 
 def validate_service_area(

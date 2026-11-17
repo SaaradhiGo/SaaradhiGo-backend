@@ -87,8 +87,12 @@ def create_hold(user, quote_id):
     customer = _customer_for(user, gateway)
     if not customer:
         return None, ('CARD_UNAVAILABLE', 'We could not reach the card processor. Try again.')
+    # One Stripe key per attempt: after a release (no driver, a closed sheet) the same locked quote
+    # must get a fresh intent, not Stripe's cancelled one again (16 Nov, emulator).
+    ended = CardHold.objects.filter(user=user, quote_id=quote_id,
+                                    status__in=(CardHold.RELEASED, CardHold.FAILED)).count()
     intent = gateway.create_hold(amount_minor, currency=currency, customer_id=customer,
-                                 reference=f'hold_{user.id}_{quote_id}',
+                                 reference=f'hold_{user.id}_{quote_id}' + (f'_{ended}' if ended else ''),
                                  metadata={'quote_id': quote_id, 'rider_id': user.id})
     if not intent:
         return None, ('CARD_UNAVAILABLE', 'We could not reach the card processor. Try again.')
@@ -162,7 +166,9 @@ def capture_for_trip(trip_id):
 
     trip = Trip.objects.select_related('driver_id', 'user_id').filter(pk=trip_id).first()
     hold = CardHold.objects.filter(trip_id=trip_id).first()
-    if trip is None or hold is None or hold.status == CardHold.CAPTURED:
+    if trip is not None and hold is None:
+        return _no_hold(trip)
+    if trip is None or hold.status == CardHold.CAPTURED:
         return 'nothing to do'
     gateway = _gateway()
     amount = min(_payable_minor(trip), hold.amount_minor)
@@ -208,6 +214,28 @@ def capture_for_trip(trip_id):
             from servers.driver.utils import settle_paid_by_platform
             settle_paid_by_platform(trip, payment.amount_minor)
     return 'captured'
+
+
+def _no_hold(trip):
+    """A US card trip that ended with no hold (trip 226, 16 Nov) is unpaid, not pending forever:
+    the driver is paid and the rider is asked to pay with their saved card (payments.unpaid)."""
+    from servers.ride.models import Trip
+
+    from .models import Payment
+
+    if trip.currency != 'USD' or (trip.payment_method or '').lower() != 'card':
+        return 'nothing to do'
+    with transaction.atomic():
+        trip = Trip.objects.select_for_update(of=('self',)).get(pk=trip.pk)
+        if trip.payment_status in ('completed', 'failed') or trip.status_id.status_code != 'completed':
+            return 'nothing to do'
+        Payment.objects.filter(trip_id=trip, status='pending').exclude(method='cash').update(status='failed')
+        trip.payment_status = 'failed'
+        trip.save(update_fields=['payment_status'])
+        from .unpaid import on_payment_failed
+        transaction.on_commit(lambda: on_payment_failed(trip))
+    logger.error('card trip completed with no hold trip=%s', trip.id)
+    return 'failed'
 
 
 def release_for_trip(trip):

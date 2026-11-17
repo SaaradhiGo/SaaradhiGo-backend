@@ -26,6 +26,7 @@ from base.asgi import application
 from servers.driver.admin_drivers import operator_reinstate, operator_suspend
 from servers.driver.models import Driver, DriverSuspension, Vehicle, VehicleType
 from servers.ride.models import Trip, TripStatus
+from tests.ws_auth import ws_q
 
 User = get_user_model()
 
@@ -73,7 +74,7 @@ def _clean_redis():
 async def _connect(driver):
     tok = await asyncio.to_thread(_token, driver.user_id)
     comm = WebsocketCommunicator(
-        application, f'/ws/driver/location/?token={tok}&lat={LAT}&lng={LNG}')
+        application, f'/ws/driver/location/?{ws_q(tok)}&lat={LAT}&lng={LNG}')
     connected, code = await comm.connect(timeout=20)
     assert connected, f'connect refused: {code}'
     await comm.receive_from(timeout=10)  # connection_established
@@ -168,7 +169,7 @@ async def test_a_reinstated_driver_reconnects_and_is_indexed_again():
 
     tok = await asyncio.to_thread(_token, driver.user_id)
     refused = WebsocketCommunicator(
-        application, f'/ws/driver/location/?token={tok}&lat={LAT}&lng={LNG}')
+        application, f'/ws/driver/location/?{ws_q(tok)}&lat={LAT}&lng={LNG}')
     connected, code = await refused.connect(timeout=20)
     assert not connected and code == 4004
 

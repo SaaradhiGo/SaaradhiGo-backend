@@ -36,6 +36,7 @@ from base.asgi import application
 from servers.driver.models import Driver, Vehicle, VehicleType
 from servers.ride.models import Trip, TripStatus
 from servers.sos.models import SOSEvent
+from tests.ws_auth import ws_q
 
 User = get_user_model()
 
@@ -272,7 +273,7 @@ async def test_sos_stays_responsive_under_sustained_gps_load():
 
     dtok = await asyncio.to_thread(_token, ride['driver_user'])
     dws = WebsocketCommunicator(
-        application, f'/ws/driver/location/?token={dtok}&lat={LAT}&lng={LNG}')
+        application, f'/ws/driver/location/?{ws_q(dtok)}&lat={LAT}&lng={LNG}')
     connected, _ = await dws.connect(timeout=20)
     assert connected
     await dws.receive_from(timeout=10)

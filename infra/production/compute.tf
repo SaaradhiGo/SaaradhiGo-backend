@@ -24,7 +24,7 @@ locals {
     worker = {
       image   = "backend", instance_type = var.worker_instance_type, min = 1, max = 1, desired = 1,
       port    = 0, target_groups = [],
-      command = "celery -A base worker -B -l INFO --concurrency 4"
+      command = "celery -A base worker -B -l INFO --concurrency 8"
     }
     web = {
       image   = "web", instance_type = var.web_instance_type,

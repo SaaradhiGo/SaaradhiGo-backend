@@ -60,11 +60,7 @@ jobs:
         run: bandit -r base servers integrations -ll --exclude "*/migrations/*"
 
       - name: pip-audit (known CVEs in dependencies)
-        # Non-blocking for now: cashfree-pg pins pydantic <2, which drags in
-        # transitive advisories we cannot resolve without dropping the SDK.
-        # Tracked separately — the report still surfaces on every PR so a
-        # NEW advisory is visible immediately.
-        continue-on-error: true
+        # Blocking since 16 Nov: the Cashfree SDK that pinned vulnerable versions is gone.
         run: pip-audit -r requirements.txt
 
   test:
@@ -451,3 +447,31 @@ jobs:
             --query Command.CommandId --output text)
           aws ssm wait command-executed --command-id "$CMD" --instance-id "$ID"
           aws ssm get-command-invocation --command-id "$CMD" --instance-id "$ID" --query Status --output text
+
+  deploy-railway:
+    name: deploy production (Railway PROD, Singapore)
+    needs: [test, lint, postgres-concurrency, infra-validate, secret-scan]
+    # 17 Nov (owner brief, production round 1): PROD runs on Railway. Same gate as the AWS job:
+    # only a push to main (a dev -> main release), only after every check passes, only while the
+    # repository variable PRODUCTION_DEPLOY_ENABLED is 'true', and only through the GitHub
+    # `production` environment (limited to main), which holds the PROD project token.
+    # Railway itself has no deployment trigger on PROD, so nothing else can deploy it.
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      vars.PRODUCTION_DEPLOY_ENABLED == 'true'
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    concurrency:
+      group: railway-prod-backend
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: backend (runs migrations first), then worker and beat
+        env:
+          RAILWAY_PROD_TOKEN: ${{ secrets.RAILWAY_PROD_TOKEN }}
+        run: >-
+          python .github/scripts/railway_deploy.py "$GITHUB_SHA"
+          91df0207-fd8c-4957-ab9c-08f1cc181d3e
+          77efcf7a-b19b-4949-aea2-a34e350388cd
+          f53478f4-9d55-4fa5-ad21-573eaddc4a99

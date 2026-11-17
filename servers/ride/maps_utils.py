@@ -680,3 +680,28 @@ def _directions_legacy(origin_lat, origin_lng, dest_lat, dest_lng):
         return _fail(*_classify_http(exc))
     except ValueError as exc:
         return _fail(UPSTREAM_ERROR, f'unparseable response: {exc}')
+
+
+def _locality(result):
+    for c in (result or {}).get('address_components') or []:
+        if 'locality' in (c.get('types') or []):
+            return c.get('long_name') or ''
+    return ''
+
+
+def consensus_first(data):
+    """A reverse-geocode answer with the results whose locality most of them share moved to the
+    front, order otherwise kept. Google sometimes puts first an address tagged with a town far away."""
+    from collections import Counter
+
+    results = list((data or {}).get('results') or [])
+    named = [_locality(r) for r in results]
+    counts = Counter(n for n in named if n)
+    if len(counts) < 2:
+        return data
+    top, n = counts.most_common(1)[0]
+    if n <= len(results) // 2:
+        return data
+    agree = [r for r, loc in zip(results, named, strict=True) if loc == top]
+    rest = [r for r, loc in zip(results, named, strict=True) if loc != top]
+    return {**data, 'results': agree + rest}

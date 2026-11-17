@@ -20,6 +20,7 @@ from django.utils import timezone
 from base.asgi import application
 from servers.pricing.commission_models import ACTIVE, ARCHIVED, CommissionRule
 from servers.ride.models import Trip
+from tests.ws_auth import ws_q
 
 User = get_user_model()
 
@@ -54,7 +55,7 @@ def _pending(comm):
 
 async def _book_one(rider):
     tok = await asyncio.to_thread(_token, rider)
-    comm = WebsocketCommunicator(application, f'/ws/ride/request/?token={tok}')
+    comm = WebsocketCommunicator(application, f'/ws/ride/request/?{ws_q(tok)}')
     connected, _ = await comm.connect(timeout=20)
     assert connected
     await comm.receive_from(timeout=10)

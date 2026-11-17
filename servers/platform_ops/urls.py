@@ -29,4 +29,6 @@ urlpatterns = [
     path('admin/options/', views.options, name='platform_options'),
     # Rider-facing (13 Nov): "Tell me when we launch".
     path('launch-interest/', views.launch_interest, name='platform_launch_interest'),
+    path('driver-applications/', views.driver_application, name='platform_driver_application'),
+    path('admin/driver-applications/', views.driver_applications_admin, name='platform_driver_applications_admin'),
 ]

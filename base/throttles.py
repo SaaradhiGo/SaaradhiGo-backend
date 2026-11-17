@@ -260,3 +260,21 @@ class UploadPresignThrottle(UserRateThrottle):
     """
 
     scope = 'upload_presign'
+
+
+class DriverApplicationThrottle(GuestMapsThrottle):
+    """Pre-launch driver applications (17 Nov), per client IP. Anonymous by design."""
+
+    scope = 'driver_application'
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {'scope': self.scope, 'ident': self.get_ident(request)}
+
+
+class DriverApplicationGlobalThrottle(SimpleRateThrottle):
+    """All pre-launch driver applications together, so a rotated address cannot flood the list."""
+
+    scope = 'driver_application_global'
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {'scope': self.scope, 'ident': 'all'}

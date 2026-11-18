@@ -584,10 +584,10 @@ def statement_pdf(st):
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=16 * mm, rightMargin=16 * mm, topMargin=14 * mm,
                             bottomMargin=14 * mm, title=f"SaaradhiGo statement {st['month']}", author='SaaradhiGo')
     styles = getSampleStyleSheet()
-    h1 = ParagraphStyle('h1', parent=styles['Heading1'], textColor=colors.HexColor('#8A5300'), spaceAfter=0)
+    h1 = ParagraphStyle('h1', parent=styles['Heading1'], textColor=colors.HexColor('#121212'), spaceAfter=0)
     h2 = ParagraphStyle('h2', parent=styles['Heading3'], spaceBefore=10)
     grid = TableStyle([('FONTSIZE', (0, 0), (-1, -1), 8.5), ('LINEBELOW', (0, 0), (-1, 0), 0.6, colors.grey),
-                       ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#FAF7F2')]),
+                       ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F6F6F6')]),
                        ('ALIGN', (3, 0), (-1, -1), 'RIGHT')])
     head = [Paragraph('SaaradhiGo', h1), Paragraph('Earnings statement', styles['Heading4'])]
     try:

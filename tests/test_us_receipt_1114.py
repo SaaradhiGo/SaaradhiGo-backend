@@ -63,3 +63,16 @@ def test_india_keeps_its_receipt(market, settings):  # noqa: F811
     receipt = Receipt.objects.select_related('trip_id').latest('id')
     inv = receipt_invoice(receipt.trip_id, total=receipt.total_fare, gst_amount=receipt.gst_amount, currency='INR')
     assert inv['title'] == 'Tax invoice' and inv['taxable'] is not None and 'market' not in inv
+
+
+def test_a_us_receipt_pdf_says_receipt_number_never_invoice(market, monkeypatch):  # noqa: F811
+    """18 Nov: the US PDF read "Invoice number" because sales tax is shown on it."""
+    from reportlab import rl_config
+
+    from servers.ride.receipts import _build_receipt_pdf
+
+    monkeypatch.setattr(rl_config, 'pageCompression', 0)  # so the page text is readable here
+
+    _, _, receipt = _us_trip(market)
+    pdf = _build_receipt_pdf(receipt)
+    assert b'Receipt number' in pdf and b'Invoice number' not in pdf

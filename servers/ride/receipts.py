@@ -602,7 +602,8 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     story.append(Spacer(1, 6))
 
     meta_rows = [
-        ['Invoice number' if _shown else 'Receipt number', receipt.receipt_number],
+        # 18 Nov: a US document is a receipt, so its number is a receipt number too.
+        ['Invoice number' if _shown and not _us else 'Receipt number', receipt.receipt_number],
         ['Issued to', rider_name],
         ['Trip ID', f'#{trip.id}'],
         ['Date', _receipt_when(trip, trip.completed_at or receipt.issued_at)],

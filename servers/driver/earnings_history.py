@@ -562,69 +562,53 @@ def statement_csv(st):
     return buf.getvalue()
 
 
-LOGO = __file__.rsplit('earnings_history.py', 1)[0] + 'data/logo.jpg'
 
 
 def statement_pdf(st):
     """The statement as a PDF: letterhead and logo, the driver, masked PAN (India), the period,
     the summary, every trip line and every payout line. Amounts carry the currency code, since
     the PDF's built-in font has no rupee sign."""
-    from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
-    from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table
 
     cur = st['currency']
 
     def m(v):
         return '' if v in (None, '') else f'{cur} {Decimal(v):,.2f}'
 
+    from base import pdf_style as sg
+
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=16 * mm, rightMargin=16 * mm, topMargin=14 * mm,
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=16 * mm, rightMargin=16 * mm, topMargin=sg.TOP,
                             bottomMargin=14 * mm, title=f"SaaradhiGo statement {st['month']}", author='SaaradhiGo')
-    styles = getSampleStyleSheet()
-    h1 = ParagraphStyle('h1', parent=styles['Heading1'], textColor=colors.HexColor('#121212'), spaceAfter=0)
-    h2 = ParagraphStyle('h2', parent=styles['Heading3'], spaceBefore=10)
-    grid = TableStyle([('FONTSIZE', (0, 0), (-1, -1), 8.5), ('LINEBELOW', (0, 0), (-1, 0), 0.6, colors.grey),
-                       ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F6F6F6')]),
-                       ('ALIGN', (3, 0), (-1, -1), 'RIGHT')])
-    head = [Paragraph('SaaradhiGo', h1), Paragraph('Earnings statement', styles['Heading4'])]
-    try:
-        logo = Image(LOGO, width=18 * mm, height=16 * mm)
-        story = [Table([[logo, head]], colWidths=[22 * mm, 150 * mm],
-                       style=[('VALIGN', (0, 0), (-1, -1), 'MIDDLE')])]
-    except Exception:  # noqa: BLE001 - the letterhead without the logo
-        story = head
-    cell = ParagraphStyle('cell', parent=styles['Normal'], fontSize=9.5, leading=11.5)
+    # 18 Nov (owner): the product standard (black band, one type scale, nothing under 10.5 pt).
+    ss = sg.styles()
+    h2, cell = ss['title'], ss['cell']
+    story = [Paragraph('Earnings statement', ss['heading'])]
     # The built-in font has neither the rupee sign nor the mask bullet, so "Rs" and "x" stand in.
     who = [[k, Paragraph(str(v).replace('₹', 'Rs ').replace('•', 'x'), cell)] for k, v in _identity_rows(st)]
-    story += [Spacer(1, 6), Table(who, colWidths=[40 * mm, 130 * mm], style=[('FONTSIZE', (0, 0), (-1, -1), 9.5),
-                                                                             ('VALIGN', (0, 0), (-1, -1), 'TOP')])]
+    story += [Spacer(1, 6), Table(who, colWidths=[40 * mm, 138 * mm], style=sg.facts())]
     s = st['summary']
     rows = [[label, str(s[key]) if key == 'trips' else m(s[key])] for label, key in SUMMARY_ROWS]
     rows += [['Opening balance', m(st['opening'])], ['Closing balance', m(st['closing'])]]
+    earned = [i for i, r in enumerate(rows) if r[0] == 'You earned']
     story += [Paragraph('Summary', h2),
-              Table(rows, colWidths=[60 * mm, 50 * mm], style=[('FONTSIZE', (0, 0), (-1, -1), 9.5),
-                                                               ('ALIGN', (1, 0), (1, -1), 'RIGHT')])]
+              Table(rows, colWidths=[70 * mm, 50 * mm], style=sg.table(header=False, totals=earned, right_from=1), hAlign='LEFT')]
     trips = [['Date and time', 'Trip', 'Paid by', 'Fare', 'Fee', 'Tip', 'You earned']]
     trips += [[_when(st, t['at']), f"#{t['trip_id']}" if t['trip_id'] else '', t['method'],
                m(t['fare']), m(t['fee']), m(t.get('tip')), m(t['earned'])] for t in st['trips']]
     story += [Paragraph(f"Trips ({len(st['trips'])})", h2),
-              Table(trips, colWidths=[38 * mm, 14 * mm, 18 * mm, 27 * mm, 24 * mm, 24 * mm, 27 * mm], style=grid,
-                    repeatRows=1)]
+              Table(trips, colWidths=[33 * mm, 14 * mm, 17 * mm, 29 * mm, 27 * mm, 26 * mm, 32 * mm],
+                    style=sg.table(right_from=3), repeatRows=1)]
     if st['fees']:
         fees = [['Date and time', 'Amount', 'Note']] + [[_when(st, f['at']), m(f['amount']), f['note'][:70]]
                                                         for f in st['fees']]
         story += [Paragraph('Daily platform fees', h2),
-                  Table(fees, colWidths=[32 * mm, 30 * mm, 110 * mm], repeatRows=1,
-                        style=TableStyle([('FONTSIZE', (0, 0), (-1, -1), 8.5),
-                                          ('LINEBELOW', (0, 0), (-1, 0), 0.6, colors.grey)]))]
+                  Table(fees, colWidths=[33 * mm, 30 * mm, 115 * mm], repeatRows=1, style=sg.table())]
     payouts = [['Date and time', 'Amount', 'Method']] + [[_when(st, p['at']), m(p['amount']), p['method']]
                                                          for p in st['payouts']]
     story += [Paragraph(f"Payouts ({len(st['payouts'])})", h2),
-              Table(payouts, colWidths=[32 * mm, 34 * mm, 40 * mm], repeatRows=1,
-                    style=TableStyle([('FONTSIZE', (0, 0), (-1, -1), 8.5),
-                                      ('LINEBELOW', (0, 0), (-1, 0), 0.6, colors.grey)]))]
-    doc.build(story)
+              Table(payouts, colWidths=[33 * mm, 34 * mm, 40 * mm], repeatRows=1, style=sg.table(), hAlign='LEFT')]
+    doc.build(story, onFirstPage=sg.band('Earnings statement'), onLaterPages=sg.band('Earnings statement'))
     return buf.getvalue()

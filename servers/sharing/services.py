@@ -182,6 +182,45 @@ def _target(trip, status):
     return {'lat': round(float(lat), 3), 'lng': round(float(lng), 3)}
 
 
+#: The route is cut this far short of its exact ends, so the line never points at a door.
+ROUTE_TRIM_M = 150
+ROUTE_MAX_POINTS = 120
+
+
+def _encode(points):
+    """Encoded polyline (precision 5) of `[(lat, lng), ...]`."""
+    out, plat, plng = [], 0, 0
+    for lat, lng in points:
+        for value, prev in ((round(lat * 1e5), plat), (round(lng * 1e5), plng)):
+            v = value - prev
+            v = ~(v << 1) if v < 0 else v << 1
+            while v >= 0x20:
+                out.append(chr((0x20 | (v & 0x1F)) + 63))
+                v >>= 5
+            out.append(chr(v + 63))
+        plat, plng = round(lat * 1e5), round(lng * 1e5)
+    return ''.join(out)
+
+
+def _route(trip, status):
+    """The leg the car is on (to the pickup, then to the drop), thinned and trimmed at both ends."""
+    from servers.safety.geometry import decode_polyline, distance_to_polyline_m
+
+    if status in ENDED:
+        return None
+    leg = trip.pickup_route_polyline if status in ('accepted', 'reached', 'arrived') else trip.planned_route_polyline
+    points = decode_polyline(leg)
+    if len(points) < 2:
+        return None
+    ends = [points[0], points[-1]]
+    kept = [p for p in points if all(distance_to_polyline_m(p[0], p[1], [e, e]) > ROUTE_TRIM_M for e in ends)]
+    if len(kept) < 2:
+        return None
+    step = max(1, len(kept) // ROUTE_MAX_POINTS)
+    kept = kept[::step] + ([kept[-1]] if (len(kept) - 1) % step else [])
+    return _encode([(round(a, 4), round(b, 4)) for a, b in kept])
+
+
 def public_trip(share):
     """What the public page shows. See the module docstring for what it must never show."""
     from servers.ride import eta
@@ -211,6 +250,8 @@ def public_trip(share):
         # Where the car is heading, so the map can fit the car and its goal (17 Nov: one point zoomed
         # the map to street level). Rounded to ~110 m: the page already names the area, not the door.
         'target': _target(trip, status),
+        # The road the car is on (18 Nov), trimmed 150 m short of each exact end; None without one.
+        'route': _route(trip, status),
         'arrive_at': est['arrive_at'] if est else None,
         'eta_min': (est['drop_eta_min'] if est else None),
         'expires_at': expires_at(share),

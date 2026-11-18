@@ -346,14 +346,14 @@ _RECEIPT_TEMPLATE = """\
   <p style="margin: 0 0 16px;">Thank you for riding with {brand}. Here is your receipt.</p>
 
   <table cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border: 1px solid #E4E4E4; font: 400 14px/20px Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; color: #121212;">
-    <tr><td><b>Receipt number</b></td><td>{receipt_number}</td></tr>
-    <tr><td><b>Trip ID</b></td><td>#{trip_id}</td></tr>
-    <tr><td><b>Date</b></td><td>{date_str}</td></tr>
-    <tr><td><b>Pickup</b></td><td>{pickup}</td></tr>
-    <tr><td><b>Drop</b></td><td>{drop}</td></tr>
-    <tr><td><b>Distance</b></td><td>{distance_km}</td></tr>
-    <tr><td><b>Driver</b></td><td>{driver_name}</td></tr>
-    <tr><td><b>Vehicle</b></td><td>{vehicle}</td></tr>
+    <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Receipt number</td><td>{receipt_number}</td></tr>
+    <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Trip ID</td><td>#{trip_id}</td></tr>
+    <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Date</td><td>{date_str}</td></tr>
+    <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Pickup</td><td>{pickup}</td></tr>
+    <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Drop</td><td>{drop}</td></tr>
+    <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Distance</td><td>{distance_km}</td></tr>
+    <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Driver</td><td>{driver_name}</td></tr>
+    <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Vehicle</td><td>{vehicle}</td></tr>
   </table>
 
   <h3 style="margin: 24px 0 8px; font: 600 20px/28px Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; color: #121212;">Fare breakdown</h3>
@@ -556,30 +556,26 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     """
     try:
         from io import BytesIO
-        from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import mm
-        from reportlab.platypus import (
-            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-        )
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table
     except ImportError:  # noqa: BLE001
         logger.warning('reportlab not installed; PDF skipped for receipt=%s', receipt.id)
         return None
+
+    from base import pdf_style as sg
 
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
         leftMargin=18 * mm, rightMargin=18 * mm,
-        topMargin=18 * mm, bottomMargin=18 * mm,
+        topMargin=sg.TOP, bottomMargin=18 * mm,
         title=f'{_brand()} receipt {receipt.receipt_number}',
         author=_legal_entity(receipt.trip_id) or _brand(),
     )
-    styles = getSampleStyleSheet()
-    h1 = ParagraphStyle('h1', parent=styles['Heading1'], textColor=colors.HexColor('#C59A1D'))
-    h2 = styles['Heading3']
-    body = styles['BodyText']
-    small = ParagraphStyle('small', parent=styles['BodyText'], fontSize=8, textColor=colors.grey)
+    # 18 Nov (owner): the product standard; the same layout as the web receipt.
+    st = sg.styles()
+    h1, body, small = st['heading'], st['cell'], st['note']
 
     trip = receipt.trip_id
     rider = receipt.user_id
@@ -593,15 +589,16 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     company = company_lines(trip)
 
     story = []
-    story.append(Paragraph(escape(' / '.join(x for x in (_brand(), company['name']) if x)), h1))
     _shown = tax_shown_for(trip, receipt.gst_amount)
     _us = (getattr(getattr(trip, 'zone', None), 'country', '') or '').upper() == 'US'
     # 14 Nov (Srini): a US rider's document is a Receipt, never a tax invoice.
-    story.append(Paragraph('Receipt' if _us else ('Tax invoice / Trip receipt' if _shown else 'Receipt'), h2))
+    doc_title = 'Receipt' if _us else ('Tax invoice / Trip receipt' if _shown else 'Receipt')
+    story.append(Paragraph(doc_title, h1))
+    story.append(Paragraph(escape(' / '.join(x for x in (_brand(), company['name']) if x)), small))
     for line in (company['address'], f"CIN {company['cin']}" if company['cin'] else '',
                  f"GSTIN {company['gstin']}" if company['gstin'] else ''):
         if line:
-            story.append(Paragraph(escape(line), body))
+            story.append(Paragraph(escape(line), small))
     story.append(Spacer(1, 6))
 
     meta_rows = [
@@ -615,18 +612,8 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         ['Driver', driver_name or '—'],
         ['Vehicle', vehicle or '—'],
     ]
-    meta_table = Table(meta_rows, colWidths=[55 * mm, 110 * mm])
-    meta_table.setStyle(TableStyle([
-        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
-        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#F9FAFB')),
-        ('LEFTPADDING', (0, 0), (-1, -1), 6),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-    ]))
+    meta_table = Table(meta_rows, colWidths=[45 * mm, 129 * mm])
+    meta_table.setStyle(sg.facts())
     story.append(meta_table)
     story.append(Spacer(1, 12))
 
@@ -659,21 +646,9 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         *[[f"{x['label']} · {x['date']}", '-' + _m(x['amount'])] for x in invoice.get('refunds') or []],
         *([['Net charged', _m(invoice['net_charged'])]] if invoice.get('refunds') else []),
     ]
-    fare_table = Table(fare_rows, colWidths=[110 * mm, 55 * mm])
-    fare_table.setStyle(TableStyle([
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F6F6F6')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
-        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#F9FAFB')),
-        ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
-        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 6),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-    ]))
+    fare_table = Table(fare_rows, colWidths=[119 * mm, 55 * mm])
+    totals = [i for i, r in enumerate(fare_rows) if r[0] in ('Total fare', 'Total charged', 'Amount charged', 'Net charged')]
+    fare_table.setStyle(sg.table(totals=totals or [len(fare_rows) - 1], right_from=1))
     story.append(fare_table)
     story.append(Spacer(1, 8))
     story.append(Paragraph(
@@ -690,7 +665,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     ))
 
     try:
-        doc.build(story)
+        doc.build(story, onFirstPage=sg.band(doc_title), onLaterPages=sg.band(doc_title))
     except Exception as exc:  # noqa: BLE001
         logger.exception('reportlab PDF build failed for receipt=%s: %s', receipt.id, exc)
         return None

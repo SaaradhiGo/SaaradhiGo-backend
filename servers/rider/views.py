@@ -364,21 +364,20 @@ def mark_all_notifications_read(request):
 @permission_classes([IsAuthenticated])
 def get_wallet_balance(request):
     """Get current wallet balance."""
-    from .models import Wallet
-    
-    try:
-        wallet = Wallet.objects.get(user_id=request.user, scope=Wallet.SCOPE_RIDER)
-        from servers.fraud.money import pending_review_lines
+    from servers.fraud.money import pending_review_lines
 
-        # Additive: a reward pending review is in the balance but not spendable yet.
-        return success_response({'balance': str(wallet.balance),
-                                 **pending_review_lines(request.user)}, status.HTTP_200_OK)
-    except Wallet.DoesNotExist:
-        # Create wallet if not exists
-        wallet = Wallet.objects.create(
-            user_id=request.user, scope=Wallet.SCOPE_RIDER, balance=0,
-        )
-        return success_response({'balance': '0.00'}, status.HTTP_200_OK)
+    from .models import Wallet, WalletTransaction, get_wallet, new_wallet_currency
+
+    # 18 Nov (QA, USA): this view opened wallets with the model default (INR), so a US rider saw
+    # "Rs 0.00". It now opens them in the rider's currency, and corrects one that has never moved.
+    wallet = get_wallet(request.user, Wallet.SCOPE_RIDER)
+    if wallet.balance == 0 and not WalletTransaction.objects.filter(user_id=request.user).exists():
+        currency = new_wallet_currency(request.user, Wallet.SCOPE_RIDER)
+        if currency and wallet.currency != currency:
+            Wallet.objects.filter(pk=wallet.pk).update(currency=currency)
+    # Additive: a reward pending review is in the balance but not spendable yet.
+    return success_response({'balance': str(wallet.balance),
+                             **pending_review_lines(request.user)}, status.HTTP_200_OK)
 
 
 

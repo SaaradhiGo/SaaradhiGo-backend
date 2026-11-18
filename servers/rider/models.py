@@ -120,7 +120,8 @@ def new_wallet_currency(user, scope):
         else:
             from base.countries import country_of_phone
 
-            country = country_of_phone(getattr(user, 'phone_number', '') or '')
+            # country_of_phone returns a Country, not a code (18 Nov: every rider wallet fell back to INR).
+            country = getattr(country_of_phone(getattr(user, 'phone_number', '') or ''), 'code', None)
         return currency_for(country) if country else 'INR'
     except Exception:  # noqa: BLE001 - opening a wallet must never fail on this
         return 'INR'

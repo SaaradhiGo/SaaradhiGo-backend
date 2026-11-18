@@ -104,7 +104,7 @@ def _due_rows_html(trip, currency):
     rows = head + ''.join(f'<tr><td>{escape(label)}</td><td style="text-align:right;">'
                    f'+{format_money(amount, currency)}</td></tr>' for label, amount in lines)
     if charged is not None:
-        rows += ('<tr style="background: #f9fafb;"><td><b>Amount charged</b></td>'
+        rows += ('<tr style="background: #F6F6F6;"><td><b>Amount charged</b></td>'
                  f'<td style="text-align:right;"><b>{format_money(charged, currency)}</b></td></tr>')
     return rows
 
@@ -221,7 +221,7 @@ def _refund_rows_html(invoice, currency):
         return ''
     rows = ''.join(f'<tr><td>{escape(x["label"])} · {escape(x["date"])}</td><td style="text-align:right;">'
                    f'-{format_money(Decimal(x["amount"]), currency)}</td></tr>' for x in invoice['refunds'])
-    return rows + ('<tr style="background: #f9fafb;"><td><b>Net charged</b></td><td style="text-align:right;"><b>'
+    return rows + ('<tr style="background: #F6F6F6;"><td><b>Net charged</b></td><td style="text-align:right;"><b>'
                    f'{format_money(Decimal(invoice["net_charged"]), currency)}</b></td></tr>')
 
 
@@ -335,14 +335,17 @@ def operator_end_note(trip):
 
 _RECEIPT_TEMPLATE = """\
 <html>
-<body style="font-family: Arial, sans-serif; color: #1f2937; max-width: 640px;">
-  <h2 style="color: #EEBD2B;">{brand}</h2>
-  <p style="margin: 0 0 4px;"><b>{title}</b></p>
-  <p style="margin: 0 0 12px; color: #6b7280; font-size: 12px;">{issuer}</p>
-  <p>Hi {rider_name},</p>
-  <p>Thank you for riding with {brand}. Here is your receipt.</p>
+<body style="margin: 0; padding: 0; background: #F6F6F6;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: #F6F6F6;"><tr><td align="center" style="padding: 24px 12px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width: 640px; background: #FFFFFF; border: 1px solid #E4E4E4; border-radius: 16px; border-collapse: separate;">
+<tr><td style="background: #000000; padding: 16px 24px; border-radius: 16px 16px 0 0; font: 600 20px/28px Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; color: #F5C451;">{brand}</td></tr>
+<tr><td style="padding: 24px; font: 400 16px/24px Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; color: #4A4A4A;">
+  <p style="margin: 0 0 4px; color: #121212;"><b>{title}</b></p>
+  <p style="margin: 0 0 16px; color: #6B6B6B; font-size: 14px; line-height: 20px;">{issuer}</p>
+  <p style="margin: 0 0 8px;">Hi {rider_name},</p>
+  <p style="margin: 0 0 16px;">Thank you for riding with {brand}. Here is your receipt.</p>
 
-  <table cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; border: 1px solid #e5e7eb;">
+  <table cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border: 1px solid #E4E4E4; font: 400 14px/20px Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; color: #121212;">
     <tr><td><b>Receipt number</b></td><td>{receipt_number}</td></tr>
     <tr><td><b>Trip ID</b></td><td>#{trip_id}</td></tr>
     <tr><td><b>Date</b></td><td>{date_str}</td></tr>
@@ -353,21 +356,24 @@ _RECEIPT_TEMPLATE = """\
     <tr><td><b>Vehicle</b></td><td>{vehicle}</td></tr>
   </table>
 
-  <h3 style="margin-top: 24px;">Fare breakdown</h3>
-  <table cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%; border: 1px solid #e5e7eb;">
+  <h3 style="margin: 24px 0 8px; font: 600 20px/28px Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; color: #121212;">Fare breakdown</h3>
+  <table cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border: 1px solid #E4E4E4; font: 400 14px/20px Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; color: #121212;">
     {fare_rows}
     {note_row}
-    <tr style="background: #f9fafb;"><td><b>{total_label}</b></td><td style="text-align:right;"><b>{total_fare}</b></td></tr>
+    <tr style="background: #F6F6F6;"><td><b>{total_label}</b></td><td style="text-align:right;"><b>{total_fare}</b></td></tr>
     {promo_rows}
   </table>
 
-  <p style="margin-top: 16px;"><b>Payment method:</b> {payment_method} &nbsp; <b>Status:</b> {payment_status}</p>
+  <p style="margin: 16px 0 0;"><b>Payment method:</b> {payment_method} &nbsp; <b>Status:</b> {payment_status}</p>
 
-  <p style="margin-top: 24px; color: #6b7280; font-size: 12px;">
+  <p style="margin: 24px 0 0; color: #6B6B6B; font-size: 14px; line-height: 20px;">
     {aggregator_line} For any dispute
     about this fare, please contact support within 30 days quoting the
     Receipt number above.
   </p>
+<!--footer-->
+</td></tr></table>
+</td></tr></table>
 </body>
 </html>
 """
@@ -532,7 +538,7 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
         promo_rows=_due_rows_html(trip, currency) + ''.join(
             f'<tr><td>{escape(label)}</td><td style="text-align:right;">'
             f'-{format_money(discount, currency)}</td></tr>'
-            f'<tr style="background: #f9fafb;"><td><b>Amount charged</b></td>'
+            f'<tr style="background: #F6F6F6;"><td><b>Amount charged</b></td>'
             f'<td style="text-align:right;"><b>{format_money(charged, currency)}</b></td></tr>'
             for label, discount, charged in promo_lines(trip)) + ('' if us else _tip_rows_html(trip, currency))
         + _refund_rows_html(invoice, currency),
@@ -657,7 +663,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
     fare_table.setStyle(TableStyle([
         ('FONTSIZE', (0, 0), (-1, -1), 9),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#EEBD2B')),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F6F6F6')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
         ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
         ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#F9FAFB')),

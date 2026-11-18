@@ -171,6 +171,17 @@ def on_sos(trip, user):
                                                 template=('sos_contact', values)))
 
 
+def _target(trip, status):
+    """The pickup until the trip starts, then the destination; None once it has ended."""
+    if status in ENDED:
+        return None
+    lat, lng = ((trip.pickup_lat, trip.pickup_long) if status in ('accepted', 'reached', 'arrived')
+                else (trip.destination_lat, trip.destination_long))
+    if lat is None or lng is None:
+        return None
+    return {'lat': round(float(lat), 3), 'lng': round(float(lng), 3)}
+
+
 def public_trip(share):
     """What the public page shows. See the module docstring for what it must never show."""
     from servers.ride import eta
@@ -197,6 +208,9 @@ def public_trip(share):
                      'color': vehicle.color or '', 'plate': vehicle.vehicle_number or ''}
                     if vehicle else None),
         'position': {'lat': round(position[0], 5), 'lng': round(position[1], 5)} if position else None,
+        # Where the car is heading, so the map can fit the car and its goal (17 Nov: one point zoomed
+        # the map to street level). Rounded to ~110 m: the page already names the area, not the door.
+        'target': _target(trip, status),
         'arrive_at': est['arrive_at'] if est else None,
         'eta_min': (est['drop_eta_min'] if est else None),
         'expires_at': expires_at(share),

@@ -202,6 +202,8 @@ def test_public_page_shows_areas_names_vehicle_and_eta(rider, auth_client_driver
     assert page['destination_area'] == 'Banjara Hills, Hyderabad'
     assert page['position'] == {'lat': 17.42, 'lng': 78.38}
     assert page['arrive_at'] and page['eta_min'] >= 1
+    # 17 Nov: where the car is heading (the destination once the trip has started), coarse.
+    assert page['target'] == {'lat': round(float(trip.destination_lat), 3), 'lng': round(float(trip.destination_long), 3)}
 
 
 def test_public_page_never_shows_phones_fare_or_full_name(rider, auth_client_driver, api_client):

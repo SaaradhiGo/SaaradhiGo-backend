@@ -37,6 +37,7 @@ goes out with a bare token and an instruction, which is ugly but recoverable
 
 import logging
 
+from base.email_layout import action_email
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives, get_connection
 
@@ -321,8 +322,12 @@ def send_message(*, to, subject, body, html=None, attachments=None, country=None
     if html:
         from django.utils.html import escape as _esc
         foot = '<br>'.join(_esc(x) for x in footer)
-        tail = (f'<p style="margin-top:24px;color:#6b7280;font-size:12px;">{foot}</p>')
-        html = html.replace('</body>', tail + '</body>', 1) if '</body>' in html else html + tail
+        # Inside the card when the message uses the standard frame (base/email_layout.py), at 14px.
+        tail = (f'<p style="margin:24px 0 0;color:#6B6B6B;font-size:14px;line-height:20px;">{foot}</p>')
+        if '<!--footer-->' in html:
+            html = html.replace('<!--footer-->', tail, 1)
+        else:
+            html = html.replace('</body>', tail + '</body>', 1) if '</body>' in html else html + tail
 
     try:
         message = EmailMultiAlternatives(
@@ -378,10 +383,18 @@ def send_password_reset(*, user, uid, token):
         'password has not changed.',
     ]
 
+    html = action_email(
+        brand=brand, title='Reset your password',
+        lines=[f'Someone asked to reset the password for your {brand} account.'],
+        button_label='Set a new password', link=link,
+        notes=[f'The link expires in about {minutes} minutes and can be used once.',
+               'If you did not ask for this, you can ignore this email: your password has not changed.'],
+    ) if link else None
     return _send(
         to=user.email,
         subject=f'Reset your {brand} password',
         body='\n'.join(body),
+        html=html,
     )
 
 
@@ -408,10 +421,17 @@ def send_email_verification(*, user, uid, token):
         'password.',
     ]
 
+    html = action_email(
+        brand=brand, title='Confirm your email',
+        lines=[f'Confirm this email address for your {brand} account.'],
+        button_label='Confirm email', link=link,
+        notes=['Until it is confirmed, this address cannot be used to reset your password.'],
+    ) if link else None
     return _send(
         to=user.email,
         subject=f'Confirm your email for {brand}',
         body='\n'.join(body),
+        html=html,
     )
 
 
@@ -442,8 +462,15 @@ def send_account_invite(*, user, uid, token, role_label, invited_by):
         ]
     body += ['This link can be used once.']
 
+    html = action_email(
+        brand=brand, title=f'Your {brand} account',
+        lines=[f'An account has been created for you on {brand} as {role_label}.', f'Invited by: {invited_by}'],
+        button_label='Choose your password', link=link,
+        notes=['This link can be used once.'],
+    ) if link else None
     return _send(
         to=user.email,
         subject=f'Your {brand} account',
         body='\n'.join(body),
+        html=html,
     )

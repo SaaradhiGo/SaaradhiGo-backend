@@ -141,9 +141,14 @@ def legal_cap_percent(country, state_code=''):
 
 
 def _money(minor, currency):
-    from base.money import format_money, from_minor
+    """Fee text (19 Nov, owner): India in whole rupees ("₹10 a trip, at most ₹149 a day"), paise
+    only when there are any; other currencies keep their cents."""
+    from base.money import format_money, from_minor, normalize_currency
 
-    return format_money(from_minor(int(minor), currency), currency)
+    text = format_money(from_minor(int(minor), currency), currency)
+    if normalize_currency(currency) == 'INR' and int(minor) % 100 == 0 and text.endswith('.00'):
+        text = text[:-3]
+    return text
 
 
 def day_fee(plan, vehicle_type, fares_minor, *, day=None, first_trip_day=None, state_code='', label='Today'):

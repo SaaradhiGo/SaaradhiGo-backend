@@ -97,9 +97,9 @@ class TestEndOfDay:
         rows = WalletTransaction.objects.filter(purpose='platform_fee')
         assert rows.count() == (1 if fee else 0) and sum(r.amount_minor for r in rows) == fee
         if n == 12:
-            assert row.explanation == '20 Nov: 12 trips × ₹10.00 = ₹120.00 (cap ₹149.00)'
+            assert row.explanation == '20 Nov: 12 trips × ₹10 = ₹120 (cap ₹149)'
         if n == 3:
-            assert row.explanation == 'No fee on 20 Nov: earnings under ₹1,000.00.'
+            assert row.explanation == 'No fee on 20 Nov: earnings under ₹1,000.'
 
     def test_the_hourly_job_charges_yesterday_once(self, india):
         trips_on(india, DAY, 12)
@@ -279,8 +279,8 @@ class TestNewDriverAndOvercharge:
         india.plan.waiver_first_days = 60
         india.plan.save()
         trips_on(india, DAY, 1)
-        assert fee_plans.fee_words(india.driver, today=DAY) ==             'No fee until 19 Jan, then ₹10.00 a trip, at most ₹149.00 a day'
-        assert fee_plans.fee_words(india.driver, today=DAY + timedelta(days=60)) == '₹10.00 a trip, at most ₹149.00 a day'
+        assert fee_plans.fee_words(india.driver, today=DAY) ==             'No fee until 19 Jan, then ₹10 a trip, at most ₹149 a day'
+        assert fee_plans.fee_words(india.driver, today=DAY + timedelta(days=60)) == '₹10 a trip, at most ₹149 a day'
         DriverFeePlan.objects.all().delete()
         assert fee_plans.fee_words(india.driver, today=DAY) == 'A commission on each trip, shown on every trip'
 
@@ -361,3 +361,13 @@ class TestCostPerTrip:
         assert float(data['reserve_percent']) == 15
         assert data['surplus_minor'] <= max(0, data['fee_income_minor'])
         assert 'calls' in data['variable_costs']
+
+
+def test_fee_text_is_whole_rupees_but_keeps_paise_19_nov():
+    """19 Nov (owner): India's fee text reads in whole rupees; paise only when there are any."""
+    from servers.pricing.fee_plans import _money
+
+    assert _money(1000, 'INR') == '₹10'
+    assert _money(14900, 'INR') == '₹149'
+    assert _money(1050, 'INR') == '₹10.50'
+    assert _money(250, 'USD').endswith('2.50')

@@ -320,6 +320,37 @@ class TestEnrolMfa:
         # And the password was NOT changed: MFA comes before the change.
         assert User.objects.get(email=EMAIL).must_change_password is True
 
+    def test_the_first_sign_in_carries_the_qr_code_to_scan(self):
+        # 20 Nov (owner): the authenticator is added in the console at the
+        # first sign-in, not from a key handed over out of band.
+        temporary = _temporary_password(_run(enrol_mfa=True))
+
+        r = _login(password=temporary)
+
+        setup = r.json()['error']['setup']
+        assert setup['otpauth_uri'].startswith('otpauth://totp/')
+        assert 'issuer=' in setup['otpauth_uri']
+        assert setup['secret'] and setup['secret'] in setup['otpauth_uri']
+        assert setup['qr_svg'].startswith('data:image/svg+xml;base64,')
+
+    def test_a_wrong_password_never_sees_the_setup(self):
+        _run(enrol_mfa=True)
+
+        r = _login(password='Not-the-password-9931')
+
+        assert 'setup' not in (r.json().get('error') or {})
+        assert 'otpauth' not in r.content.decode()
+
+    def test_a_confirmed_authenticator_is_never_shown_again(self):
+        temporary = _temporary_password(_run(enrol_mfa=True))
+        device = self._device()
+        _login(password=temporary, new_password=NEW_PASSWORD, mfa_code=_code(device))
+
+        r = _login(password=NEW_PASSWORD)
+
+        assert 'setup' not in (r.json().get('error') or {})
+        assert 'otpauth' not in r.content.decode()
+
     def test_a_wrong_code_does_not_confirm_the_device(self):
         temporary = _temporary_password(_run(enrol_mfa=True))
 

@@ -145,6 +145,38 @@ def pending_totp_device(user):
             .order_by('-id').first())
 
 
+def setup_payload(device, user) -> dict:
+    """What the console shows to add a PENDING authenticator (20 Nov).
+
+    The base32 key, the otpauth URI and the same URI as an SVG QR code, so
+    the operator scans it at their first sign-in instead of being handed the
+    key out of band. Only ever called for an unconfirmed device, after the
+    password has been proved.
+    """
+    import base64
+    import io
+    from urllib.parse import parse_qs, urlparse
+
+    import segno
+
+    uri = device.config_url
+    if 'issuer=' not in uri:
+        uri = f"{uri}&issuer={getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo')}"
+    secret = (parse_qs(urlparse(uri).query).get('secret') or [''])[0]
+    buf = io.BytesIO()
+    segno.make(uri, error='m').save(buf, kind='svg', scale=6, border=2,
+                                     dark='#111111', light='#ffffff')
+    svg = base64.b64encode(buf.getvalue()).decode('ascii')
+    return {
+        'method': 'totp',
+        'secret': secret,
+        'otpauth_uri': uri,
+        'qr_svg': 'data:image/svg+xml;base64,' + svg,
+        'account': getattr(user, 'email', '') or '',
+        'issuer': 'SaaradhiGo',
+    }
+
+
 def mfa_required_for(user) -> bool:
     """Must THIS account present a second factor to sign in?
 
@@ -327,8 +359,9 @@ def enroll_totp(user, issuer=None):
     """Create an unconfirmed TOTP device and return (device, provisioning_uri).
 
     The URI contains the shared secret. It is a credential: it goes to the operator
-    once, and it is never logged, never stored in an audit row, and never returned
-    by an HTTP endpoint.
+    once, and it is never logged and never stored in an audit row. The one HTTP
+    answer that carries it is the sign-in's AUTH_MFA_REQUIRED while the device is
+    still unconfirmed and the password has been proved (`setup_payload`, 20 Nov).
     """
     TOTPDevice = _totp_model()
     issuer = issuer or getattr(settings, 'PLATFORM_BRAND_NAME', 'SaaradhiGo')

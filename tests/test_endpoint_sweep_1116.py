@@ -27,7 +27,7 @@ REFUSED = {401, 403, 404, 405}
 # Routes an anonymous caller may reach, each with its reason. Webhooks are separate:
 # anonymous is their normal caller, and an unsigned body must be refused.
 PUBLIC = {
-    'healthz': 'liveness', 'version': 'build id', 'api/v1/config/': 'public config',
+    '$': 'service banner at the root, GET only (20 Nov)', 'healthz': 'liveness', 'version': 'build id', 'api/v1/config/': 'public config',
     'api/v1/app-config/': 'app version gate', 'api/v1/auth/': 'sign-in and recovery',
     'api/v1/ride/estimate-fare/': 'public fare estimate', 'api/v1/ride/maps/': 'map proxy, metered',
     'api/v1/pricing/zones/': 'service areas', 'api/v1/pricing/countries/': 'markets',

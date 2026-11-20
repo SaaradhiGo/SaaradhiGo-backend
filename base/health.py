@@ -123,6 +123,23 @@ def version(request):
     return JsonResponse(_revision_payload(), status=200)
 
 
+def api_root(request):
+    """api.saaradhigo.com/ (20 Nov, owner): a plain service banner instead of a "Page not found".
+
+    No database, no cache, no authentication, nothing internal: the service name, where the API
+    and the health probe are, and the build. Every old console path stays a 404.
+    """
+    payload = _revision_payload()
+    return JsonResponse({
+        'service': 'SaaradhiGo API',
+        'status': 'ok',
+        'api': '/api/v1/',
+        'health': '/healthz',
+        'environment': payload.get('environment'),
+        'revision': payload.get('revision_short'),
+    }, status=200)
+
+
 def healthz(request):
     status = {
         'status': 'ok',

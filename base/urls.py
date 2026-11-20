@@ -1,7 +1,7 @@
 from django.urls import path, include
 
 from base.config_view import public_config
-from base.health import healthz, version
+from base.health import api_root, healthz, version
 from servers.urls import urlpatterns as api_urls
 
 handler400 = 'base.views.bad_request_view'
@@ -15,6 +15,8 @@ handler404 = 'base.views.page_not_found_view'
 # console's break-glass account (servers/admin_access) and Railway / manage.py, never a Django page.
 # tests/test_django_console_off.py pins every removed route to 404.
 urlpatterns = [
+    # The root answers with the service banner (20 Nov), never a page.
+    path('', api_root),
     # Health probe — unauthenticated, cheap, used by ALB target-group +
     # external uptime monitors. Listed before /api/ so the
     # probe never trips middleware redirects or route mismatches.

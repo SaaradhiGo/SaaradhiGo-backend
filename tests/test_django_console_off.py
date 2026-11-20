@@ -24,7 +24,7 @@ pytestmark = pytest.mark.django_db
 
 #: The session console that was mounted at the site root (old servers/admin_dashboard/urls.py).
 CONSOLE_PATHS = (
-    '/login/', '/mfa/', '/', '/driver_onboarding/', '/dispute_support/', '/payment_dashboard/',
+    '/login/', '/mfa/', '/driver_onboarding/', '/dispute_support/', '/payment_dashboard/',
     '/executive_revenue/', '/driver_loyalty/', '/ride/', '/ride/1/', '/riders/', '/promo-codes/',
     '/emergency/', '/stale-rides/', '/transactions/', '/fare_surge/', '/predictive_heatmaps/',
     '/logout/', '/search/', '/api/search/', '/driver/1/', '/notifications/',
@@ -114,7 +114,16 @@ class TestWhatIsLeftIsOnlyTheApi:
         for entry in get_resolver().url_patterns:
             pattern = str(entry.pattern)
             prefixes.add(pattern.split('/')[0] if '/' in pattern else pattern)
-        assert prefixes <= {'healthz', 'version', 'api'}, prefixes
+        assert prefixes <= {'', 'healthz', 'version', 'api'}, prefixes
+
+    def test_the_root_is_a_service_banner_not_a_page(self, client):
+        # 20 Nov (owner): api.saaradhigo.com/ says what it is, as JSON, with nothing internal.
+        response = client.get('/')
+        assert response.status_code == 200
+        assert response['Content-Type'].startswith('application/json')
+        body = response.json()
+        assert body['service'] == 'SaaradhiGo API' and body['api'] == '/api/v1/' and body['health'] == '/healthz'
+        assert set(body) == {'service', 'status', 'api', 'health', 'environment', 'revision'}
 
     def test_no_admin_namespace_exists(self):
         from django.urls import get_resolver

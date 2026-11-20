@@ -38,6 +38,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import connection
 from django.http import JsonResponse
+from django.views.decorators.http import require_GET
 
 # Checked in order. The platform-injected ones come first because they are the
 # only ones that change on their own; a hand-set variable is the least
@@ -121,6 +122,24 @@ def version(request):
     pushed, rather than treating a 200 from /healthz as proof.
     """
     return JsonResponse(_revision_payload(), status=200)
+
+
+@require_GET
+def api_root(request):
+    """api.saaradhigo.com/ (20 Nov, owner): a plain service banner instead of a "Page not found".
+
+    No database, no cache, no authentication, nothing internal: the service name, where the API
+    and the health probe are, and the build. Every old console path stays a 404.
+    """
+    payload = _revision_payload()
+    return JsonResponse({
+        'service': 'SaaradhiGo API',
+        'status': 'ok',
+        'api': '/api/v1/',
+        'health': '/healthz',
+        'environment': payload.get('environment'),
+        'revision': payload.get('revision_short'),
+    }, status=200)
 
 
 def healthz(request):

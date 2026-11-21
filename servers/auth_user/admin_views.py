@@ -301,13 +301,24 @@ def admin_login(request):
                 # reachable AFTER a correct password for a real operator. A
                 # pending authenticator can only be confirmed by its own
                 # code, so a recovery code alone is answered the same way.
-                return error_response(
+                answer = error_response(
                     code='AUTH_MFA_REQUIRED',
                     message='An authentication code is required',
                     field='mfa_code',
                     issue='Second factor required',
                     status=status.HTTP_401_UNAUTHORIZED,
                 )
+                # SET UP IN THE CONSOLE, NOT FROM A FILE (owner, 20 Nov).
+                # A new operator's authenticator is added at their first
+                # sign-in: with the password proved and the device still
+                # UNCONFIRMED, the answer carries the QR code and the key, so
+                # the operator scans it on this screen. Never for a confirmed
+                # device -- its secret is never shown again -- and never
+                # before the password is right (this point is only reachable
+                # after it). The first valid code confirms the device below.
+                if pending is not None:
+                    answer.data['error']['setup'] = ops_mfa.setup_payload(pending, user)
+                return answer
             if pending is not None:
                 if not ops_mfa.confirm_totp(pending, code):
                     login_guard.record_failure(request, identifier)

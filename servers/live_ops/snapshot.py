@@ -137,6 +137,8 @@ def city_status_rows(cities, positions, now=None):
         rows.append({
             'code': c.code,
             'name': c.name,
+            # 22 Nov: the map opens on the LIVE cities in scope, never the whole world.
+            'live': c.status == 'active',
             'network_status': network_status(online[c.id], on_trip[c.id], n_unassigned),
             'online_drivers': online[c.id],
             'on_trip_drivers': on_trip[c.id],

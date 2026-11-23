@@ -21,13 +21,11 @@ def _live_city_only(kind):
 
 
 def _city_is_live(city, kind):
-    """A city that is not live (draft or paused) raises no OPERATIONAL alerts --
-    its numbers and its safety cover -- because nothing runs there (owner,
-    2026-11-03: no "no safety cover" alerts for cities that aren't live). An SOS
-    or a money failure is real wherever it happens and always alerts. A place
-    above a city (a country, a state) and no place at all always may."""
-    if not _live_city_only(kind):
-        return True
+    """A city that is not live (draft or paused) raises NO alerts (owner, 22 Nov: "Cities that
+    are not live raise no alerts and don't colour the dashboard"; before, only its numbers and
+    safety cover were silenced). An SOS there still reaches Safety as a case -- the SOS queue is
+    built from incidents, not alerts. A place above a city (a country, a state) and no place at
+    all always may."""
     if city is None or getattr(city, 'kind', 'city') != 'city':
         return True
     from servers.admin_access.models import ACTIVE
@@ -50,6 +48,11 @@ def raise_alert(kind, *, title, severity=WARNING, payload=None,
 
     Closing is the producer's job when the cause ends (`clear_alerts`).
     """
+    if kind in PLATFORM_ALERT_KINDS:
+        # Engineering's (22 Nov): to Sentry as well as the Engineering health page.
+        logger.error('engineering_check_failed: %s', title[:200], extra={
+            'event': 'engineering_check_failed', 'kind': kind, 'source_type': source_type,
+            'source_id': str(source_id)})
     if not _city_is_live(city, kind):
         logger.info('operator_alert_skipped_city_not_live', extra={
             'event': 'operator_alert_skipped_city_not_live', 'kind': kind,

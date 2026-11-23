@@ -166,9 +166,11 @@ class TestAlerts:
         paused.save()
         assert raise_alert('safety_coverage_gap', title='x', source_type='safety_coverage',
                            source_id='US-TX-AUS', city=paused) is None
+        # 22 Nov (owner): a city that is not live raises NO alerts. An SOS there still reaches
+        # Safety as a case: the SOS queue is built from incidents, not alerts.
         sos = raise_alert('safety_sos_escalated', title='y', severity='critical',
                           source_type='safety_incident', source_id='99', city=paused)
-        assert sos is not None, 'an SOS alerts wherever it happens'
+        assert sos is None
 
 
 # ---------------------------------------------------------------------------

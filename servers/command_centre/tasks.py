@@ -57,3 +57,14 @@ def backfill_city_rollups(days=1):
     from .rollups import backfill
 
     return backfill(int(days))
+
+
+@shared_task(name='command_centre.sweep_alerts')
+def sweep_alerts():
+    """Close alerts whose cause is gone; escalate stale ones (22 Nov, alert_policy)."""
+    from .alert_policy import sweep
+
+    counts = sweep()
+    if any(counts.values()):
+        logger.info('command_centre alert sweep: %s', counts)
+    return counts

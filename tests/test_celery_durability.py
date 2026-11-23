@@ -146,6 +146,11 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # redelivered run converges on the same alerts. Writes alerts and
         # audit rows only; no trip, money or driver status.
         'command_centre.evaluate_alert_thresholds',
+        # Alert sweep (22 Nov, every 15 min): closes alerts whose cause is gone and escalates
+        # stale ones. acks_late is safe: a close is acknowledge() (a no-op on a closed row) and
+        # escalation only moves severity up and sets payload keys once, so a redelivered run
+        # converges. Writes alerts and audit rows only; no money.
+        'command_centre.sweep_alerts',
         # Support waiting-on-user sweep (hourly): one reminder, then auto-close,
         # per SupportCountryConfig. acks_late is safe: a reminder is guarded by
         # reminder_sent_at and a system-message key, an auto-close by a row lock

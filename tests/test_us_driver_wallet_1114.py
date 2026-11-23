@@ -55,13 +55,16 @@ def test_the_repair_relabels_only_a_wallet_whose_entries_are_all_in_the_market_c
     from servers.platform_ops.integrity import _wrong_currency_wallets
 
     clean = _us_driver()
-    w = Wallet.objects.create(user_id=clean.user_id, scope=Wallet.SCOPE_DRIVER, currency='INR')
+    # A wallet opened in INR before 22 Nov (drivers now get theirs, in their currency, on creation).
+    w = Wallet.objects.get(user_id=clean.user_id, scope=Wallet.SCOPE_DRIVER)
+    Wallet.objects.filter(pk=w.pk).update(currency='INR')
     WalletTransaction.objects.create(user_id=clean.user_id, amount_minor=2808, currency='USD', txn_type='credit',
                                      status='completed', purpose='trip')
     from django.contrib.auth import get_user_model
     u = get_user_model().objects.create_user(phone_number='+12085550198', role='driver')
     mixed = Driver.objects.create(user_id=u, approved=True)
-    m = Wallet.objects.create(user_id=u, scope=Wallet.SCOPE_DRIVER, currency='INR')
+    m = Wallet.objects.get(user_id=u, scope=Wallet.SCOPE_DRIVER)
+    Wallet.objects.filter(pk=m.pk).update(currency='INR')
     for cur in ('USD', 'INR'):
         WalletTransaction.objects.create(user_id=u, amount_minor=100, currency=cur, txn_type='credit',
                                          status='completed', purpose='trip')

@@ -73,6 +73,7 @@ WRITING_COMMANDS = [
     'bootstrap_qa_operator',
     'create_operator',
     'enroll_operator_mfa',
+    'mark_test_accounts',
     'migrate_operators',
     'qa_simulate_driver_eligibility',
     'record_retroactive_access_audit',
@@ -285,6 +286,18 @@ def _prepare_retro(settings, monkeypatch):
 
 def _fp_audit():
     return AdminAuditLog.objects.count()
+
+
+TEST_ACCOUNT = 'qa.rider.flag@saaradhigo.test'
+
+
+def _prepare_mark_test(settings, monkeypatch):
+    User.objects.create_user(phone_number='+917770001099', email=TEST_ACCOUNT, role='rider')
+    return ['--emails', TEST_ACCOUNT, '--confirm'], {}
+
+
+def _fp_test_accounts():
+    return tuple(User.objects.filter(is_test_account=True).values_list('pk', flat=True))
 
 
 def _prepare_seal(settings, monkeypatch):
@@ -526,6 +539,8 @@ CASES = [
          needs_operator_to_prepare=True),
     Case('seal_audit_chain_forks --confirm', 'seal_audit_chain_forks',
          _prepare_seal, _fp_audit, dry_run=([], {})),
+    Case('mark_test_accounts --confirm', 'mark_test_accounts',
+         _prepare_mark_test, _fp_test_accounts, dry_run=(['--emails', TEST_ACCOUNT], {})),
     Case('set_operator_password', 'set_operator_password',
          _prepare_set_password, _fp_passwords, needs_operator_to_prepare=True),
     Case('record_retroactive_access_audit', 'record_retroactive_access_audit',

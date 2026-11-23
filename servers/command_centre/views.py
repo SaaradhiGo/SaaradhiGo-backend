@@ -549,3 +549,16 @@ def admin_engineering_health(request):
         'audit_chain': {'rows': chain['checked'], 'problems': len(chain['problems']), 'by_issue': issues,
                         'verifies': not chain['problems']},
     }, status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, ScopedPermission('report.read')])
+def admin_today(request):
+    """GET admin/today/?scope=  Per country and per live city, what needs action today (22 Nov)."""
+    from .today import today
+
+    try:
+        cities, _node = _cities_for(request)
+    except ScopeNotHeld as exc:
+        return _scope_refused(exc)
+    return success_response(today(request.user, cities), status.HTTP_200_OK)

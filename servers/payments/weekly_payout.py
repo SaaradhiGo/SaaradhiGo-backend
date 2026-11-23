@@ -171,7 +171,7 @@ def _notify_skipped(run, config, skipped, drivers):
     """One inbox item per finance holder in scope: who was skipped and why."""
     from servers.support.models import OperatorNotification
 
-    text = (f'Weekly payout run {config.country} (week of {run.week_start}): '
+    text = (f'Weekly payout run {config.country} (week of {run.week_start:%d %b %Y}): '
             f'{len(skipped)} driver(s) skipped because they have no payout handle '
             f'(no UPI or bank account). Driver ids: '
             f'{", ".join(str(s["driver_id"]) for s in skipped[:20])}'

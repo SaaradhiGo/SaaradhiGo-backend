@@ -332,13 +332,31 @@ def clear_alert(alert, value, now):
     return True
 
 
+def age_words(minutes):
+    """An age as a person says it (owner, 24 Nov): "45 min", "3 hours 20 min", "8 days"."""
+    total = max(0, int(minutes))
+    if total < 60:
+        return f'{total} min'
+    hours, rest = divmod(total, 60)
+    if hours < 24:
+        return f'{hours} hour{"s" * (hours != 1)}' + (f' {rest} min' if rest else '')
+    days = hours // 24
+    return f'{days} day{"s" * (days != 1)}'
+
+
 def _title(city, metric, value, line, level):
-    unit = {'percent': '%', 'minutes': ' min', 'hours': ' h', 'count': ''}[metric.unit]
-    shown = 'n/a' if value is None else f'{value:g}{unit}'
+    if metric.unit in ('minutes', 'hours'):
+        per = 60 if metric.unit == 'hours' else 1
+        shown = 'n/a' if value is None else age_words(float(value) * per)
+        limit = age_words(float(line) * per) if line is not None else ''
+    else:
+        unit = {'percent': '%', 'count': ''}[metric.unit]
+        shown = 'n/a' if value is None else f'{value:g}{unit}'
+        limit = f'{plain_number(line)}{unit}'
     if level is None:
         return f'{city.name}: {metric.label} {shown}'
     verb = 'above' if metric.direction == 'above' else 'below'
-    return f'{city.name}: {metric.label} {shown} ({verb} {plain_number(line)}{unit}, {level})'
+    return f'{city.name}: {metric.label} {shown} ({verb} {limit}, {level})'
 
 
 def evaluate_city(city, thresholds, now=None):

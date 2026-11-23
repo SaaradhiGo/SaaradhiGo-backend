@@ -490,3 +490,21 @@ class TestNothingWrites:
         client, _ = operator('super_admin', geo)
         for method in ('post', 'put', 'patch', 'delete'):
             assert getattr(client, method)(f'{BASE}/trips/', {}).status_code == 405
+
+
+class TestCountryTiles1124:
+    """Owner, 24 Nov: at Global a report is one tile per country, never one combined total."""
+
+    def test_two_countries_come_back_as_two_tiles(self, geo, world):
+        client, _ = operator('super_admin', geo)
+        body = data(get(client, 'trips'))
+        tiles = {c['code']: c for c in body['countries']}
+        assert set(tiles) == {'IN', 'US'}
+        assert tiles['IN']['currency'] == 'INR' and tiles['US']['currency'] == 'USD'
+        india = data(get(client, 'trips', city='IN'))
+        assert india['countries'] == []
+        assert tiles['IN']['totals'][0]['trips_completed'] == india['totals'][0]['trips_completed']
+
+    def test_one_city_has_no_tiles(self, geo, world):
+        client, _ = operator('city_ops_manager', geo, 'IN-TG-HYD')
+        assert data(get(client, 'trips'))['countries'] == []

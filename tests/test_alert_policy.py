@@ -109,7 +109,7 @@ class TestWhatTheConsoleShows:
 
         items = [i for i in sa.get(NEEDS).json()['data']['items'] if i['kind'] == 'alert']
 
-        assert items and items[0]['owner']['label'] == 'Finance'
+        assert items and items[0]['team'] == 'Finance' and items[0]['owner'] is None
         assert 'withdrawal' in items[0]['detail']
         assert items[0]['link'].startswith('/withdrawals')
 

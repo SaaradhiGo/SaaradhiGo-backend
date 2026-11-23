@@ -37,7 +37,7 @@ from django.db import transaction
 
 from servers.admin_audit.context import audit_context
 
-from .models import ACTIVE, CITY, PAUSED, GeoNode
+from .models import ACTIVE, CITY, DRAFT, PAUSED, GeoNode
 
 CITY_NOT_READY = 'CITY_NOT_READY'
 
@@ -114,9 +114,9 @@ def _commission(node):
     if country is None:
         return {'key': 'commission', 'ok': False,
                 'detail': 'This city is not under a country, so no commission rule can apply.'}
-    if _rules(node)['fee_plan_required']:
+    if _rules(node)['fee_plan_required'] or _active_fee_plan(node) is not None:
         return {'key': 'commission', 'ok': True,
-                'detail': 'Not used here: drivers pay the market\'s fee plan (see Driver fee plan).'}
+                'detail': 'Not used here: drivers pay the fee plan, not a commission (see Driver fee plan).'}
     now = timezone.now()
     classes = _classes(node)
     missing = [vt.type for vt in classes if resolve(country.code, node.id, vt.id, now) is None]
@@ -226,6 +226,18 @@ def _approval_policies(node):
             'detail': f'{code} has a maker-checker policy for every action.'}
 
 
+def _cash_allowed(node):
+    """Does the market let riders here pay in cash (`regulation.cash_allowed`)?"""
+    try:
+        from servers.pricing.models import ServiceZone
+        from servers.ride.rider_booking import cash_allowed_in
+
+        zones = list(ServiceZone.objects.filter(geo_node=node, is_active=True)[:5])
+        return bool(zones) and all(cash_allowed_in(z) for z in zones)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _payment_gateway(node):
     from servers.platform_ops.integrations import payment_gateway_status
 
@@ -239,6 +251,14 @@ def _payment_gateway(node):
             item['status'] = 'warning'
             item['detail'] += f" {state['warning']}"
         return item
+    if _cash_allowed(node):
+        # 22 Nov: riders here can pay the driver in cash, and online payment is simply not
+        # offered until a gateway is set up (`rider_booking.payment_options`). A warning that
+        # says so and who fixes it, not a blocker on a city that runs.
+        return {'key': 'payment_gateway', 'ok': True, 'status': 'warning',
+                'detail': f"Cash only for now: no online payment gateway is configured for "
+                          f"{state['currency'] or code}, so riders pay the driver in cash. Online "
+                          f"payment turns on when one is configured."}
     blocker = f" (go-live blocker #{state['blocker']})" if state.get('blocker') else ''
     return {'key': 'payment_gateway', 'ok': False,
             'detail': f"No payment gateway is configured for {state['currency'] or code}"
@@ -275,6 +295,18 @@ def _tax(node):
             'detail': 'Tax is not configured: settlements show it as "not configured". '
                       "Go-live blocker #15 (owner's CA for India, US accountant for the US). "
                       'This does not block QA.'}
+
+
+def _active_fee_plan(node):
+    """The driver fee plan in force for this city today, or None."""
+    try:
+        from servers.payments.payout_scope import scope_codes_of_node
+        from servers.pricing.fee_plans import local_day, resolve
+
+        country = node.country.code if node.country else ''
+        return resolve(country, scope_codes_of_node(node), local_day(country)) if country else None
+    except Exception:  # noqa: BLE001 - a readiness check never raises
+        return None
 
 
 def _fee_plan(node):
@@ -327,11 +359,21 @@ ITEM_META = {
 }
 
 
+#: Who fixes each item (22 Nov: a blocker shows "what it is and who fixes it").
+ITEM_OWNER = {
+    'zone': 'City Ops', 'fare_card': 'City Ops', 'commission': 'Finance', 'safety_coverage': 'Safety',
+    'payout_config': 'Finance', 'approval_policies': 'Super Admin', 'payment_gateway': 'Engineering',
+    'sms_provider': 'Engineering', 'tax': 'Finance', 'fee_plan': 'Finance',
+    'platform_insurance': 'Super Admin',
+}
+
+
 def _decorate(raw):
     ok = bool(raw['ok'])
     status = raw.get('status') or ('ok' if ok else 'missing')
     label, href = ITEM_META.get(raw['key'], (raw['key'], ''))
-    return {**raw, 'ok': ok, 'status': status, 'blocking': not ok, 'label': label, 'href': href}
+    return {**raw, 'ok': ok, 'status': status, 'blocking': not ok, 'label': label, 'href': href,
+            'owner': ITEM_OWNER.get(raw['key'], 'Super Admin')}
 
 
 def city_readiness(node):
@@ -351,8 +393,8 @@ def set_city_status(node, status, actor, reason, request=None):
     a node that is not a city and `ValueError` for an unknown status, a missing reason, or
     pausing a city that is not live.
     """
-    if status not in (ACTIVE, PAUSED):
-        raise ValueError(f'status must be {ACTIVE!r} or {PAUSED!r}')
+    if status not in (ACTIVE, PAUSED, DRAFT):
+        raise ValueError(f'status must be {ACTIVE!r}, {PAUSED!r} or {DRAFT!r}')
     reason = (reason or '').strip()
     if not reason:
         raise ValueError('reason is required')
@@ -363,6 +405,15 @@ def set_city_status(node, status, actor, reason, request=None):
             raise NotACity(f'{locked.code} is a {locked.kind}, not a city')
         if locked.status == status:
             return locked, False
+        if status == DRAFT:
+            # 22 Nov: back to "not launched" -- only for a city that never ran a trip (QA's
+            # Vijayawada, Visakhapatnam and Warangal were opened by a seed). A city that ran is
+            # paused, never un-launched: its history stays a live city's history.
+            from servers.ride.models import Trip
+
+            if Trip.objects.filter(zone__geo_node=locked, is_seed=False,
+                                   status_id__status_code='completed').exists():
+                raise ValueError(f'{locked.code} has completed trips: pause it instead')
         if status == PAUSED and locked.status != ACTIVE:
             raise ValueError(f'{locked.code} is {locked.status}, not live: only a live city '
                              f'can be paused')

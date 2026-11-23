@@ -54,6 +54,21 @@ def launching_soon_message(city_name):
     return f"We're launching in {city_name} soon." if city_name else CITY_NOT_LIVE_MESSAGE
 
 
+def launch_state(node):
+    """`{'launch_state', 'launch_label'}` for a city. Live only through the launch gate (ACTIVE).
+    A draft city is "Coming soon" when riders can already see it -- it has an active service zone,
+    so the site quotes fares and says it is launching soon -- and "Not launched" otherwise."""
+    if node.status == ACTIVE:
+        return {'launch_state': 'live', 'launch_label': 'Live'}
+    if node.status == PAUSED:
+        return {'launch_state': 'paused', 'launch_label': 'Paused'}
+    from servers.pricing.models import ServiceZone
+
+    if ServiceZone.objects.filter(geo_node=node, is_active=True).exists():
+        return {'launch_state': 'coming_soon', 'launch_label': 'Coming soon'}
+    return {'launch_state': 'not_launched', 'launch_label': 'Not launched'}
+
+
 def label_of(status):
     return STATUS_LABEL.get(status, status)
 
@@ -246,6 +261,8 @@ def city_row(node, user, pending=None, with_items=False):
     pause_ok = granted(user, 'platform.settings', node)[0] or granted(user, 'platform.city_pause', node)[0]
     return {
         'code': node.code, 'name': node.name, 'status': label_of(node.status),
+        # 22 Nov: Live / Coming soon / Not launched / Paused, the words the console shows.
+        **launch_state(node),
         'country': country.code if country else None,
         'state': {'code': state.code, 'name': state.name} if state else None,
         'blocking_count': len(blocking), 'warning_count': len(warnings),

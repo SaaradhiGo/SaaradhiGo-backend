@@ -298,9 +298,11 @@ def evaluate_threshold(threshold, row, now=None):
         })
         return 'escalated'
 
-    # Same level: refresh the measured value so the panel shows a live number.
+    # Same level: refresh the measured value AND the title, so the console shows the live
+    # number (22 Nov: "Oldest pending withdrawal 48.1 h" was still the title 5 days later).
     existing.payload = payload
-    existing.save(update_fields=['payload'])
+    existing.title = title[:200]
+    existing.save(update_fields=['payload', 'title'])
     return 'kept'
 
 

@@ -675,6 +675,12 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'reports.rebuild_week',
         'schedule': _crontab(hour=3, minute=10),
     },
+    'command-centre-alert-sweep-every-15-minutes': {
+        # 22 Nov: close alerts whose cause is gone (city not live, case closed, superseded scan)
+        # and escalate stale ones (24 h -> critical, 72 h -> Super Admin). command_centre/alert_policy.py
+        'task': 'command_centre.sweep_alerts',
+        'schedule': 900.0,
+    },
     'command-centre-threshold-sweep-every-minute': {
         # Command Centre: measure every city against its active alert
         # thresholds and raise / escalate / clear OperatorAlerts. Idempotent

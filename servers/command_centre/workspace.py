@@ -518,9 +518,15 @@ def needs_action(request, limit=50, now=None):
                                count=len(rows),
                                link='/dashboard?alerts=1' + (f'&scope={city.code}' if city else '')))
             continue
+        from .alert_policy import describe
+
         for a in rows:
+            d = describe(a, now)
             items.append(_item('alert', sev.get(a.severity, WAITING), a.title, where=_place(a.city),
-                               at=a.created_at, now=now, link=_alert_link(a),
+                               at=a.created_at, now=now, link=d['next_step']['link'],
+                               owner={'id': None, 'label': d['owner']},
+                               detail=' · '.join(x for x in (d['next_step']['text'], d['escalated_to'] and
+                                                            f"Escalated to {d['escalated_to']}") if x),
                                actions=['acknowledge']))
 
     items.sort(key=lambda i: (SEVERITY_RANK[i['severity']], KIND_RANK.get(i['kind'], 9),

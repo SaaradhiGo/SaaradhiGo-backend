@@ -9,3 +9,4 @@ class DriverConfig(AppConfig):
         # the approvals registry on import; a checker's approve finds them.
         from . import admin_drivers  # noqa: F401
         from . import file_times  # noqa: F401
+        from . import wallet_on_create  # noqa: F401

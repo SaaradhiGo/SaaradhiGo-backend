@@ -886,11 +886,12 @@ class TestProviderFailingAlert:
                 idempotency_key=f'h:{provider}:{channel}:{failed}:{sent}:{i}')
 
     def alerts(self, client):
-        response = client.get('/api/v1/command-centre/admin/alerts/?kind=notify.provider_failing')
-        if response.status_code == 403:         # no report.read: no alerts page at all
+        # 22 Nov: provider health is Engineering's, on the Engineering health page (Super Admin).
+        response = client.get('/api/v1/command-centre/admin/engineering/')
+        if response.status_code == 403:         # not platform.settings: no Engineering page
             return []
         assert response.status_code == 200
-        return response.json()['data']['results']
+        return [a for a in response.json()['data']['alerts'] if a['kind'] == 'notify.provider_failing']
 
     def test_a_high_failure_rate_raises_one_warning_visible_to_super_admin_only(self, world):
         from servers.command_centre.models import OperatorAlert

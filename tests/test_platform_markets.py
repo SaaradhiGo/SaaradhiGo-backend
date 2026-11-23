@@ -75,7 +75,9 @@ class TestReadinessItems:
 
     def test_payment_gateway_ok_for_inr_and_missing_for_usd_with_blocker_17(self, geo, settings):
         settings.CASHFREE_APP_ID = settings.CASHFREE_SECRET_KEY = ''
-        assert items(geo[WGL])['payment_gateway']['status'] == 'missing'
+        # 22 Nov: a cash city without a gateway is a warning (cash only), not a blocker.
+        item = items(geo[WGL])['payment_gateway']
+        assert item['status'] == 'warning' and item['blocking'] is False and 'Cash only' in item['detail']
         settings.CASHFREE_APP_ID, settings.CASHFREE_SECRET_KEY = 'a-test', 'b-test'
         assert items(geo[WGL])['payment_gateway']['status'] == 'ok'
         us = items(geo['US-TX-AUS'])['payment_gateway']

@@ -422,6 +422,16 @@ class Command(BaseCommand):
         with attributed(actor, COMMAND, reason=reason):
             with transaction.atomic():
                 if any(found.values()):
+                    # 22 Nov: every driver gets an empty wallet with the Driver row
+                    # (driver/wallet_on_create.py). An EMPTY driver wallet of a seed user is the
+                    # seed's own; one with entries is not, and still refuses the removal.
+                    from servers.rider.models import Wallet, WalletTransaction
+
+                    seed_users = [u.pk for u in rows['users']]
+                    used = set(WalletTransaction.objects.filter(user_id__in=seed_users)
+                               .values_list('user_id', flat=True))
+                    Wallet.objects.filter(user_id__in=seed_users, scope=Wallet.SCOPE_DRIVER).exclude(
+                        user_id__in=used).delete()
                     strangers = foreign_references(rows)
                     if strangers:
                         raise CommandError(

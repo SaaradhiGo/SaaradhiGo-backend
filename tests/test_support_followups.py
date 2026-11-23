@@ -615,7 +615,7 @@ class TestDashboard:
         assert hyd['high']['opened'] == 0 and hyd['high']['currently_breaching'] == 1
         assert lead.get(BASE + 'sla/dashboard/?date_from=2026-01-02&date_to=2026-01-01'
                         ).status_code == 400
-        assert lead.get(BASE + 'sla/dashboard/?date_from=2025-01-01&date_to=2026-01-01'
+        assert lead.get(BASE + 'sla/dashboard/?date_from=2024-01-01&date_to=2026-01-01'
                         ).status_code == 400
         assert lead.get(BASE + 'sla/dashboard/?date_from=nope').status_code == 400
 

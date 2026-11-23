@@ -27,7 +27,7 @@ from base.money import from_minor
 from servers.admin_access.masking import BULLET
 
 #: The longest date range any finance endpoint will aggregate in one request.
-MAX_RANGE_DAYS = 92
+MAX_RANGE_DAYS = 366  # 23 Nov: the "12 months" date preset on every page
 
 
 class FinancePagination(PageNumberPagination):

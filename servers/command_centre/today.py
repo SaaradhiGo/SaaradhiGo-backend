@@ -54,11 +54,13 @@ def _link(path, code):
     return f"{path}{'&' if '?' in path else '?'}scope={code}"
 
 
-def today(user, cities, now=None):
+def today(user, cities, now=None, date_range=None):
+    """`date_range`: (first, last) local days (23 Nov date presets); None means today."""
     now = now or timezone.now()
     money = granted(user, 'finance.read')[0]
     contexts = city_contexts(cities)
-    rows = measure(contexts, 'today', now, previous=False) if cities else {}
+    window = ('range', *date_range) if date_range else 'today'
+    rows = measure(contexts, window, now, previous=False) if cities else {}
     live = live_counts(cities, user) if cities else {}
     approvals = _approvals_by_city(user, cities)
 
@@ -114,6 +116,7 @@ def today(user, cities, now=None):
     out_cities.sort(key=lambda c: (-c['waiting'], c['name']))
     return {
         'generated_at': now.isoformat(),
+        'range': ({'from': date_range[0].isoformat(), 'to': date_range[1].isoformat()} if date_range else None),
         'refresh': REFRESH_WORDS,
         'countries': sorted(countries.values(), key=lambda c: (-c['live_cities'], c['name'])),
         'cities': out_cities,

@@ -144,6 +144,7 @@ def report_detail(request, report_key):
         return refusal
     body = service.build(report, cities, params)
     stamp = service.as_of(cities, params)
+    countries = _by_country(report, cities, params)
     currencies = sorted({r['currency'] for r in body['rows'] if r.get('currency')}
                         | {t['currency'] for t in body['totals'] if t.get('currency')})
     return success_response({
@@ -153,7 +154,27 @@ def report_detail(request, report_key):
         'currencies': currencies,
         'as_of': stamp.isoformat() if stamp else None,
         **body,
+        # 24 Nov (owner): more than one country is never one total. Each country is its own tile,
+        # in its own currency and its cities' own days; the page shows these instead of `totals`.
+        'countries': countries,
     }, status.HTTP_200_OK)
+
+
+def _by_country(report, cities, params):
+    """[{code, name, currency, timezone, totals}] when `cities` span two or more countries, else []."""
+    groups = {}
+    for c in cities:
+        groups.setdefault(c.code.split('-')[0], []).append(c)
+    if len(groups) < 2 or report.key == 'rider_retention':
+        return []
+    names = dict(GeoNode.objects.filter(code__in=list(groups)).values_list('code', 'name'))
+    out = []
+    for code, members in sorted(groups.items()):
+        rows = _city_rows(members)
+        out.append({'code': code, 'name': names.get(code, code), 'currency': rows[0]['currency'],
+                    'timezone': rows[0]['timezone'], 'cities': rows,
+                    'totals': service.build(report, members, params)['totals']})
+    return out
 
 
 # ---------------------------------------------------------------------------

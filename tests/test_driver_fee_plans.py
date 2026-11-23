@@ -371,3 +371,26 @@ def test_fee_text_is_whole_rupees_but_keeps_paise_19_nov():
     assert _money(14900, 'INR') == '₹149'
     assert _money(1050, 'INR') == '₹10.50'
     assert _money(250, 'USD').endswith('2.50')
+
+
+class TestClassOfferedOnlyWithADriverFee:
+    """22 Nov (owner): a class whose driver fee is "to be decided" is not offered to riders."""
+
+    def test_a_class_with_a_fee_is_offered(self, india):
+        assert fee_plans.class_offered(india.hyd, 'sedan') is True
+
+    def test_a_class_the_plan_leaves_undecided_is_not(self, india):
+        DriverFeePlan.objects.filter(pk=india.plan.pk).update(
+            amounts={'sedan': CARS, 'auto': {'per_trip_fee_minor': None}})
+        assert fee_plans.class_offered(india.hyd, 'auto') is False
+
+    def test_a_class_the_plan_does_not_name_is_not(self, india):
+        assert fee_plans.class_offered(india.hyd, 'bike') is False
+
+    def test_a_plan_for_every_class_offers_them_all(self, india):
+        DriverFeePlan.objects.filter(pk=india.plan.pk).update(amounts={'*': CARS})
+        assert fee_plans.class_offered(india.hyd, 'bike') is True
+
+    def test_no_fee_plan_means_the_commission_market_offers_everything(self, india):
+        DriverFeePlan.objects.all().delete()
+        assert fee_plans.class_offered(india.hyd, 'auto') is True

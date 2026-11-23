@@ -55,6 +55,24 @@ def scope_codes_of_zone(zone):
     return out
 
 
+def class_offered(zone, vehicle_type):
+    """May riders be offered `vehicle_type` in `zone`? (owner, 22 Nov: "don't offer a class to riders
+    until its driver fee is approved"). False when an active driver fee plan covers the zone and sets
+    no driver fee for the class ("to be decided"); True where no fee plan applies (a commission
+    market) or the plan sets one. Never raises: an unreadable plan offers the class as before."""
+    try:
+        from servers.pricing.commission import country_code_of_zone
+
+        country = country_code_of_zone(zone) or getattr(zone, 'country', '')
+        plan = resolve(country, scope_codes_of_zone(zone), local_day(country, zone=zone))
+    except Exception:  # noqa: BLE001
+        logger.exception('class_offered: fee plan lookup failed')
+        return True
+    if plan is None or plan.plan_type == 'percent_commission':
+        return True
+    return any(v is not None for v in plan.amounts_for(vehicle_type).values())
+
+
 def resolve(country, scope_codes=(), day=None):
     """The plan governing `day` in the most specific scope that has one, or None."""
     day = day or timezone.localdate()

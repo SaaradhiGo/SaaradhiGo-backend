@@ -215,6 +215,21 @@ def estimate_fare(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    # 22 Nov (owner): a class whose driver fee is not approved is not offered to riders.
+    if vehicle_type:
+        from servers.pricing.fee_plans import class_offered
+        from servers.pricing.services import find_zone_for_point
+
+        quote_zone = find_zone_for_point(pickup_lat, pickup_long)
+        if quote_zone is not None and not class_offered(quote_zone, vehicle_type):
+            return error_response(
+                code='CLASS_NOT_OFFERED',
+                message='This ride type is not available here yet.',
+                field='vehicle_type',
+                issue='No driver fee is approved for this class in this city',
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     # Server-side distance + duration (authoritative for fare).
     is_valid, validated_km, validated_min, msg = validate_distance(
         distance_km, duration_min, pickup_lat, pickup_long, destination_lat, destination_long

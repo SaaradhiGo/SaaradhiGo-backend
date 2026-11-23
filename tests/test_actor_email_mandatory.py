@@ -80,6 +80,8 @@ WRITING_COMMANDS = [
     'record_retroactive_linking_audit',
     'recompute_driver_trip_counts',
     'reset_operator_mfa',
+    # 22 Nov: every account's theme back to light; one audit row.
+    'reset_themes_to_light',
     # Seals audit-chain forks from before the 22 Nov lock fix: one audit row, named actor.
     'seal_audit_chain_forks',
     'send_queued_notices',
@@ -294,6 +296,20 @@ TEST_ACCOUNT = 'qa.rider.flag@saaradhigo.test'
 def _prepare_mark_test(settings, monkeypatch):
     User.objects.create_user(phone_number='+917770001099', email=TEST_ACCOUNT, role='rider')
     return ['--emails', TEST_ACCOUNT, '--confirm'], {}
+
+
+def _prepare_dark_theme(settings, monkeypatch):
+    from servers.auth_user.models import UserPreference
+
+    u = User.objects.create_user(phone_number='+917770001098', role='rider')
+    UserPreference.objects.create(user=u, preferred_theme='dark')
+    return ['--confirm'], {}
+
+
+def _fp_themes():
+    from servers.auth_user.models import UserPreference
+
+    return tuple(UserPreference.objects.values_list('user_id', 'preferred_theme').order_by('user_id'))
 
 
 def _fp_test_accounts():
@@ -543,6 +559,8 @@ CASES = [
          _prepare_seal, _fp_audit, dry_run=([], {})),
     Case('mark_test_accounts --confirm', 'mark_test_accounts',
          _prepare_mark_test, _fp_test_accounts, dry_run=(['--emails', TEST_ACCOUNT], {})),
+    Case('reset_themes_to_light --confirm', 'reset_themes_to_light',
+         _prepare_dark_theme, _fp_themes, dry_run=([], {})),
     Case('set_operator_password', 'set_operator_password',
          _prepare_set_password, _fp_passwords, needs_operator_to_prepare=True),
     Case('record_retroactive_access_audit', 'record_retroactive_access_audit',

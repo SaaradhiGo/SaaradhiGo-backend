@@ -134,6 +134,42 @@ ANCHOR_ACTION = 'chain_anchor'
 ANCHOR_TARGET_TYPE = 'audit_chain'
 
 
+#: A row that seals forks written before the 22 Nov locking fix. See
+#: `write_fork_seal` and "FORKS SEALED" in `inspect_chain`.
+SEAL_ACTION = 'chain_forks_sealed'
+
+#: The key of the one advisory lock every chain writer takes (any constant
+#: that nothing else uses; 'SGAUDIT' in ASCII).
+CHAIN_LOCK_KEY = 0x5347415544495400 >> 8
+
+
+def chain_write_lock():
+    """Hold the chain for this transaction (PostgreSQL), so the tail a writer
+    reads is still the tail when its row commits. Released at COMMIT or
+    ROLLBACK. SQLite (the default test run) serialises writers itself."""
+    from django.db import connection
+
+    if connection.vendor == 'postgresql':
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT pg_advisory_xact_lock(%s)', [CHAIN_LOCK_KEY])
+
+
+def is_seal(entry):
+    return entry.action == SEAL_ACTION and entry.target_type == ANCHOR_TARGET_TYPE
+
+
+def sealed_digest(rows):
+    """SHA-256 over (content hash, canonical content) of `rows` in id order:
+    an edit, a removal or an insertion among sealed rows changes it."""
+    digest = hashlib.sha256()
+    for row in rows:
+        digest.update((row.content_hash or '').encode('utf-8'))
+        digest.update(b' ')
+        digest.update(canonical_content(row).encode('utf-8'))
+        digest.update(b'\n')
+    return digest.hexdigest()
+
+
 class ChainStateError(RuntimeError):
     """The table is not in a state an anchor can honestly describe."""
 
@@ -264,6 +300,57 @@ def write_anchor(Model, *, label):
     return row
 
 
+def write_fork_seal(Model, *, label, reason, actor=None):
+    """Seal forks written before the locking fix (22 Nov). Refuses unless
+    every problem in the log is a broken link whose stored previous_hash is
+    the hash of an EARLIER row (a fork) and no row's content is altered --
+    i.e. unless the damage is provably concurrency, not tampering. Writes one
+    row naming the fork ids and a digest of every row up to the last one."""
+    from django.db import transaction
+    from django.utils import timezone
+
+    report = inspect_chain(Model.objects.all())
+    problems = report['problems']
+    if not problems:
+        raise ChainStateError('The chain verifies; there is nothing to seal.')
+    hashes, forks, other = {GENESIS}, [], []
+    by_id = {p['id']: p for p in problems}
+    for row in Model.objects.order_by('id').iterator():
+        p = by_id.get(row.pk)
+        if p is not None:
+            if p['issue'] == 'broken link' and row.previous_hash in hashes:
+                forks.append(row.pk)
+            else:
+                other.append(p)
+        if row.content_hash:
+            hashes.add(row.content_hash)
+    other += [p for p in problems if p['issue'] != 'broken link' and p not in other]
+    if other:
+        raise ChainStateError(
+            f'{len(other)} problem(s) are not concurrent forks (first: row {other[0]["id"]}, '
+            f'{other[0]["issue"]}). Not sealing; investigate those as possible tampering.')
+    with transaction.atomic():
+        chain_write_lock()
+        rows = list(Model.objects.order_by('id'))
+        first, last = rows[0].pk, rows[-1].pk
+        row = Model(
+            actor=actor, actor_label=label, action=SEAL_ACTION, target_type=ANCHOR_TARGET_TYPE, target_id='',
+            before={},
+            after={
+                'fork_ids': forks, 'forks': len(forks),
+                'sealed_first_id': first, 'sealed_max_id': last, 'sealed_rows': len(rows),
+                'sealed_digest': sealed_digest(rows),
+                'cause': 'concurrent writers linked to the same predecessor before the 22 Nov lock fix',
+            },
+            reason=reason, created_at=timezone.now(),
+        )
+        tail = rows[-1].content_hash or GENESIS
+        row.previous_hash = tail
+        row.content_hash = compute_hash(tail, row)
+        row.save(force_insert=True)
+    return row
+
+
 def inspect_chain(queryset, *, limit=None):
     """Walk the log oldest-first and report every break.
 
@@ -281,6 +368,18 @@ def inspect_chain(queryset, *, limit=None):
     problems = []
     checked = 0
     expected_previous = GENESIS
+
+    # FORKS SEALED (22 Nov). Rows a seal names as forks may link to ANY
+    # earlier row rather than the one just before: they were written
+    # concurrently before the locking fix. Only those ids, and only to a
+    # hash that really occurs earlier; their own content is still checked,
+    # and the seal's digest catches an edit, removal or insertion among
+    # every row it covers.
+    seals = list(queryset.filter(action=SEAL_ACTION, target_type=ANCHOR_TARGET_TYPE).order_by('id'))
+    forgiven = set()
+    for seal in seals:
+        forgiven.update(int(i) for i in (seal.after or {}).get('fork_ids', []))
+    seen_hashes = {GENESIS}
 
     # The leading run of rows written before the chain existed.
     pre_count = 0
@@ -318,7 +417,8 @@ def inspect_chain(queryset, *, limit=None):
             pre_digest.update(b'\n')
             continue
 
-        if entry.previous_hash != expected_previous:
+        if (entry.previous_hash != expected_previous
+                and not (entry.pk in forgiven and entry.previous_hash in seen_hashes)):
             _problem(entry, 'broken link', (
                 f'stored previous_hash {entry.previous_hash[:12]}… does '
                 f'not match the hash of the preceding row '
@@ -333,6 +433,19 @@ def inspect_chain(queryset, *, limit=None):
                 f'{entry.content_hash[:12]}…. The row was edited after '
                 f'it was written.'
             ))
+
+        if is_seal(entry):
+            stored = entry.after or {}
+            first, last = stored.get('sealed_first_id'), stored.get('sealed_max_id')
+            covered = list(queryset.filter(id__gte=first, id__lte=last).order_by('id')) if first and last else []
+            if (len(covered) != stored.get('sealed_rows')
+                    or sealed_digest(covered) != stored.get('sealed_digest')):
+                _problem(entry, 'seal mismatch', (
+                    f'the seal covers {stored.get("sealed_rows")} row(s), ids '
+                    f'{first}-{last}, with digest {str(stored.get("sealed_digest"))[:12]}…; the '
+                    f'table now holds {len(covered)} there with digest '
+                    f'{sealed_digest(covered)[:12]}…. A sealed row was edited, removed or added.'
+                ))
 
         if is_anchor(entry):
             if anchor is not None:
@@ -363,6 +476,7 @@ def inspect_chain(queryset, *, limit=None):
                     ))
 
         chain_started = True
+        seen_hashes.add(entry.content_hash)
         # Continue from what the row ACTUALLY stores, not from what it
         # should have stored: otherwise one bad row makes every later row
         # look broken and the report hides where the damage really is.

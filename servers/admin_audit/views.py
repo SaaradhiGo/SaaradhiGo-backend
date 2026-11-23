@@ -58,7 +58,8 @@ def entry_list(request):
     paginator.page_size_query_param = 'page_size'
     paginator.max_page_size = viewer.MAX_PAGE_SIZE
     page = paginator.paginate_queryset(qs, request)
-    body = paginator.get_paginated_response([viewer.entry_row(e) for e in page]).data
+    names = viewer.names_for(page)
+    body = paginator.get_paginated_response([viewer.entry_row(e, names) for e in page]).data
     # The chain is verified over the filtered date window. It is a verdict and ids only.
     body['chain'] = viewer.verify_range(qs) if request.query_params.get('verify', '1') != '0' \
         else None

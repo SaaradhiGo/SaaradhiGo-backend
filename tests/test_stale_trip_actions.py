@@ -520,8 +520,11 @@ class TestDetailPayload:
         body = self.detail(client, trip)
         text = json.dumps({'a': body['stale_actions'], 'd': body['stale_detail']})
         for secret in (HYD_PHONE, HYD_PHONE[3:], '+919876511102', '9876511102', 'Lakshmi',
-                       'Kiran', '17.4', '78.4', 'Banjara'):
+                       'Kiran', 'Banjara'):
             assert secret not in text, secret
+        # Coordinates, not timestamps: '07:18:17.412' once tripped a bare '17.4' check.
+        import re
+        assert not re.search(r'(?<![\d:])(17|78)\.4', text), text
 
     def test_a_reviewed_trip_shows_who_and_when(self, geo, world):
         trip = world['ghost']()

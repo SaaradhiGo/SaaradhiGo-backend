@@ -59,6 +59,12 @@ def geo(db):
 def world(geo):
     from types import SimpleNamespace
 
+    from servers.admin_access.models import GeoNode
+
+    # 22 Nov: a city that is not live raises no alerts at all; Austin is live here.
+    GeoNode.objects.filter(code='US-TX-AUS').update(status='active')
+    geo['US-TX-AUS'].refresh_from_db()
+
     hyd = zone('IN-TG-HYD', geo['IN-TG-HYD'], country='IN')
     aus = zone('US-TX-AUS', geo['US-TX-AUS'], country='US', state_code='TX',
                timezone_name='America/Chicago')

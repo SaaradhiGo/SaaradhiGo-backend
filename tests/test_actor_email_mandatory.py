@@ -73,12 +73,17 @@ WRITING_COMMANDS = [
     'bootstrap_qa_operator',
     'create_operator',
     'enroll_operator_mfa',
+    'mark_test_accounts',
     'migrate_operators',
     'qa_simulate_driver_eligibility',
     'record_retroactive_access_audit',
     'record_retroactive_linking_audit',
     'recompute_driver_trip_counts',
     'reset_operator_mfa',
+    # 22 Nov: every account's theme back to light; one audit row.
+    'reset_themes_to_light',
+    # Seals audit-chain forks from before the 22 Nov lock fix: one audit row, named actor.
+    'seal_audit_chain_forks',
     'send_queued_notices',
     'seed_admin_access',
     'seed_alert_thresholds',
@@ -283,6 +288,53 @@ def _prepare_retro(settings, monkeypatch):
 
 def _fp_audit():
     return AdminAuditLog.objects.count()
+
+
+TEST_ACCOUNT = 'qa.rider.flag@saaradhigo.test'
+
+
+def _prepare_mark_test(settings, monkeypatch):
+    User.objects.create_user(phone_number='+917770001099', email=TEST_ACCOUNT, role='rider')
+    return ['--emails', TEST_ACCOUNT, '--confirm'], {}
+
+
+def _prepare_dark_theme(settings, monkeypatch):
+    from servers.auth_user.models import UserPreference
+
+    u = User.objects.create_user(phone_number='+917770001098', role='rider')
+    UserPreference.objects.create(user=u, preferred_theme='dark')
+    return ['--confirm'], {}
+
+
+def _fp_themes():
+    from servers.auth_user.models import UserPreference
+
+    return tuple(UserPreference.objects.values_list('user_id', 'preferred_theme').order_by('user_id'))
+
+
+def _fp_test_accounts():
+    from servers.auth_user.models import TestAccount
+
+    return tuple(TestAccount.objects.values_list('user_id', flat=True))
+
+
+def _prepare_seal(settings, monkeypatch):
+    """A log with one fork, as concurrent writers made them before 22 Nov."""
+    from django.utils import timezone
+
+    from servers.admin_audit.hashchain import compute_hash
+
+    def write(n):
+        return AdminAuditLog.objects.create(actor_label='ops@saaradhigo.com', action='kyc_update',
+                                            target_type='driver', target_id=str(n), reason='x')
+    first = write(1)
+    write(2)
+    fork = AdminAuditLog(actor_label='ops@saaradhigo.com', action='kyc_update', target_type='driver',
+                         target_id='3', reason='y', created_at=timezone.now())
+    fork.previous_hash = first.content_hash
+    fork.content_hash = compute_hash(fork.previous_hash, fork)
+    fork.save(force_insert=True)
+    return ['--confirm', '--reason', 'Forks from concurrent writes before the lock fix'], {}
 
 
 def _prepare_retro_linking(settings, monkeypatch):
@@ -503,6 +555,12 @@ CASES = [
     Case('reset_operator_mfa --confirm', 'reset_operator_mfa',
          _prepare_reset, _fp_mfa, dry_run=(['--phone', MFA_PHONE], {}),
          needs_operator_to_prepare=True),
+    Case('seal_audit_chain_forks --confirm', 'seal_audit_chain_forks',
+         _prepare_seal, _fp_audit, dry_run=([], {})),
+    Case('mark_test_accounts --confirm', 'mark_test_accounts',
+         _prepare_mark_test, _fp_test_accounts, dry_run=(['--emails', TEST_ACCOUNT], {})),
+    Case('reset_themes_to_light --confirm', 'reset_themes_to_light',
+         _prepare_dark_theme, _fp_themes, dry_run=([], {})),
     Case('set_operator_password', 'set_operator_password',
          _prepare_set_password, _fp_passwords, needs_operator_to_prepare=True),
     Case('record_retroactive_access_audit', 'record_retroactive_access_audit',

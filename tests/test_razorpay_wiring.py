@@ -168,7 +168,9 @@ class TestReadiness:
         settings.PAYMENT_PROVIDERS = {'IN': 'razorpay', 'US': None}
         settings.RAZORPAY_KEY_ID = settings.RAZORPAY_KEY_SECRET = ''
         item = next(i for i in readiness.city_readiness(geo['IN-TG-WGL']) if i['key'] == 'payment_gateway')
-        assert item['status'] == 'missing'
+        # 22 Nov: a cash city is not blocked by a missing online gateway; it is a warning.
+        assert item['status'] in ('missing', 'warning')
+        assert item['blocking'] is (item['status'] == 'missing')
         settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET = rz.KEY_ID, rz.KEY_SECRET
         settings.RAZORPAY_WEBHOOK_SECRET = rz.WEBHOOK_SECRET
         item = next(i for i in readiness.city_readiness(geo['IN-TG-WGL']) if i['key'] == 'payment_gateway')

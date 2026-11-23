@@ -35,6 +35,7 @@ from base.utils import error_response, success_response
 from .models import RateCard
 from base.money import round_fare
 
+from .fee_plans import class_offered
 from .services import find_zone_for_point
 
 
@@ -83,6 +84,8 @@ def list_vehicle_types(request):
         vt = card.vehicle_type
         if vt is None or vt.type in seen:
             continue
+        if not class_offered(zone, vt.type):
+            continue  # 22 Nov: no driver fee approved for this class yet
         seen[vt.type] = {
             'type': vt.type,
             'description': vt.description or '',

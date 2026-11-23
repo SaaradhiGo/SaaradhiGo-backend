@@ -236,6 +236,18 @@ class UserPreference(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
 
+class TestAccount(models.Model):
+    """A QA or demo account (owner, 22 Nov): its trips never count in any figure (base/test_data.py).
+
+    Its own table, like UserPreference, so the user table -- which the migration tests rebuild at
+    old states -- is untouched. A row means "test account"; no row means a real one.
+    """
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, primary_key=True,
+                                related_name='test_account')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class AccountClosure(models.Model):
     """A person's request to close their account (13 Nov, servers/auth_user/closure.py).
     `waiting_payouts` while a driver is still owed earnings; `closed` once anonymised."""

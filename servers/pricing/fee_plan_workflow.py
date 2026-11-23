@@ -36,7 +36,14 @@ def plan_dict(p):
             'effective_from': p.effective_from.isoformat() if p.effective_from else None,
             'effective_to': p.effective_to.isoformat() if p.effective_to else None,
             'note': p.note, 'reason': p.reason, 'approval_request_id': p.approval_request_id,
-            'created_by': p.created_by_label}
+            'created_by': p.created_by_label,
+            # 22 Nov review: the place by name ("Treasure Valley", not "US-ID-TV").
+            'scope_name': _scope_name(p)}
+
+
+def _scope_name(p):
+    node = _node(p.country, p.scope_code)
+    return node.name if node is not None else (p.scope_code or p.country)
 
 
 def _node(country, scope_code):
@@ -122,6 +129,13 @@ def submit(actor, plan, *, reason='', http_request=None):
     if bad:
         raise InvalidRequest(f'This plan takes more than the legal share of a normal trip for: {", ".join(bad)}.',
                              code='BREAKS_LEGAL_SHARE', field='amounts')
+    if plan.plan_type == fee_plans.PERCENT_COMMISSION:
+        cap = fee_plans.legal_cap_percent(plan.country)
+        over = [c for c, a in (plan.amounts or {}).items()
+                if a.get('commission_percent') is not None and fee_plans.Decimal(str(a['commission_percent'])) > cap]
+        if over:
+            raise InvalidRequest(f'A commission cannot be above {cap}% ({", ".join(over)}).',
+                                 code='ABOVE_COMMISSION_CAP', field='amounts')
     outcome = require_approval_or_execute(
         PRICING_CHANGE, actor=actor, country=plan.country, scope_node=_node(plan.country, plan.scope_code),
         target_type=KIND, target_id=str(plan.id), payload={'kind': KIND, 'plan_id': plan.id},
@@ -143,7 +157,13 @@ def execute(request_row):
         bad = fee_plans.breaks_legal_share_on_normal_trip(plan)
         if bad:
             raise registry.ExecutionRefused('BREAKS_LEGAL_SHARE', f'Breaks the legal share for {", ".join(bad)}.')
-        start = fee_plans.local_day(plan.country) + timedelta(days=1)
+        today = fee_plans.local_day(plan.country)
+        start = today + timedelta(days=1)
+        if fee_plans.raises_fee(plan, today):
+            # An increase: drivers get the notice period first (22 Nov, the existing 7-day rule).
+            from servers.pricing.commission import notice_days
+
+            start = max(start, today + timedelta(days=notice_days(plan.country)))
         for old in DriverFeePlan.objects.select_for_update().filter(
                 country=plan.country, scope_code=plan.scope_code, status=ACTIVE):
             old.status, old.effective_to = ARCHIVED, start

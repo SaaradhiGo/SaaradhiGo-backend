@@ -257,8 +257,9 @@ def _driver_client(vt, calling_code='91', currency='INR', balance='50.00'):
                                      vehicle_number=f'AC{i:05d}')
     driver.active_vehicle = vehicle
     driver.save(update_fields=['active_vehicle'])
-    Wallet.objects.create(user_id=user, scope=Wallet.SCOPE_DRIVER,
-                          balance=Decimal(balance), currency=currency)
+    # The wallet opened with the Driver row (22 Nov), given this test's balance.
+    Wallet.objects.update_or_create(user_id=user, scope=Wallet.SCOPE_DRIVER,
+                                    defaults={'balance': Decimal(balance), 'currency': currency})
     client = APIClient()
     client.credentials(HTTP_AUTHORIZATION=f'Bearer {AccessToken.for_user(user)}')
     return client, driver

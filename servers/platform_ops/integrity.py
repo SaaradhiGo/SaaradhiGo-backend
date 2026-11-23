@@ -127,11 +127,15 @@ def _alert(result):
     from servers.command_centre.models import DATA_INTEGRITY
     from servers.command_centre.services import raise_alert
 
+    from servers.command_centre.services import clear_alerts
+
     left = result['total_found'] - result['total_fixed']
     if left <= 0:
+        # Clean: the standing alert closes itself (22 Nov; one alert, not one a day).
+        clear_alerts('integrity_scan', 'integrity_scan', note='closed: the integrity scan is clean')
         return None
     parts = [f"{k.replace('_', ' ')}: {v['found'] - v['fixed']}" for k, v in result.items()
              if isinstance(v, dict) and v['found'] - v['fixed'] > 0]
     return raise_alert(DATA_INTEGRITY, title=f'Data integrity: {left} to check ({"; ".join(parts)})'[:200],
                        payload={k: v for k, v in result.items() if isinstance(v, dict)},
-                       source_type='integrity_scan', source_id=timezone.localdate().isoformat())
+                       source_type='integrity_scan', source_id='integrity_scan')

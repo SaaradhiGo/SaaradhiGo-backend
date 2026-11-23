@@ -58,6 +58,8 @@ from .overview import build_overview, has_data
 from .services import acknowledge
 from .thresholds import active_thresholds, propose_threshold_change
 
+from .alert_policy import describe as describe_alert  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 STATUSES = ('open', 'acknowledged', 'all')
@@ -83,6 +85,8 @@ def _serialize(alert):
         'acknowledged_by': alert.acknowledged_by_id,
         'acknowledged_note': alert.acknowledged_note,
         'ack_permission': ACK_PERMISSION.get(alert.kind),
+        # 22 Nov (owner): who owns it, how old it is in words, and what to do next.
+        **describe_alert(alert),
     }
 
 
@@ -197,9 +201,9 @@ def _visible_alerts(user):
     from servers.admin_access.bridge import is_migrated, strict_mode
 
     everything = OperatorAlert.objects.select_related('city')
-    qs = everything.exclude(kind__in=FINANCE_ALERT_KINDS | FRAUD_ALERT_KINDS)
-    if not granted(user, 'platform.settings')[0]:
-        qs = qs.exclude(kind__in=PLATFORM_ALERT_KINDS)
+    # System checks are Engineering's (22 Nov): never in ops lists, the live map or the
+    # dashboard, for anyone. They are on `admin/engineering/` and in Sentry.
+    qs = everything.exclude(kind__in=FINANCE_ALERT_KINDS | FRAUD_ALERT_KINDS | PLATFORM_ALERT_KINDS)
     if not sees_live_sos(user):
         qs = qs.exclude(kind__in=SOS_ALERT_KINDS)
     finance = _visible_finance_alerts(user, everything) | _visible_fraud_alerts(user, everything)
@@ -333,6 +337,9 @@ def acknowledge_alert(request, alert_id):
     answers 404, like every out-of-scope object.
     """
     alert = _visible_alerts(request.user).filter(id=alert_id).first()
+    if alert is None and granted(request.user, 'platform.settings')[0]:
+        # System checks are off the ops lists (22 Nov) but Engineering still takes them.
+        alert = OperatorAlert.objects.filter(id=alert_id, kind__in=PLATFORM_ALERT_KINDS).first()
     if alert is None:
         return error_response(
             code='NOT_FOUND', message='Alert not found', field='alert_id',
@@ -521,3 +528,37 @@ def admin_viewing(request):
     mark_viewing(path, request.user)
     return success_response({'path': path, 'others': viewing_now([path], request.user).get(path, [])},
                             status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, ScopedPermission('platform.settings')])
+def admin_engineering_health(request):
+    """GET admin/engineering/  System checks, for Engineering (22 Nov): open platform alerts with
+    owner, age and next step; the latest integrity scan; whether the audit chain verifies."""
+    from servers.admin_audit.hashchain import inspect_chain
+    from servers.admin_audit.models import AdminAuditLog
+
+    rows = (OperatorAlert.objects.filter(kind__in=PLATFORM_ALERT_KINDS, acknowledged_at__isnull=True)
+            .select_related('city').order_by('-created_at')[:100])
+    chain = inspect_chain(AdminAuditLog.objects.all())
+    issues = {}
+    for p in chain['problems']:
+        issues[p['issue']] = issues.get(p['issue'], 0) + 1
+    return success_response({
+        'alerts': [_serialize(a) for a in rows],
+        'audit_chain': {'rows': chain['checked'], 'problems': len(chain['problems']), 'by_issue': issues,
+                        'verifies': not chain['problems']},
+    }, status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, ScopedPermission('report.read')])
+def admin_today(request):
+    """GET admin/today/?scope=  Per country and per live city, what needs action today (22 Nov)."""
+    from .today import today
+
+    try:
+        cities, _node = _cities_for(request)
+    except ScopeNotHeld as exc:
+        return _scope_refused(exc)
+    return success_response(today(request.user, cities), status.HTTP_200_OK)

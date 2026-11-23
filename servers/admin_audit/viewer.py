@@ -142,6 +142,17 @@ def filtered(user, params):
         value = (params.get(field) or '').strip()
         if value:
             qs = qs.filter(**{field: value[:100]})
+    # 22 Nov (owner): page views and session events are hidden unless asked for (`views=1`), or
+    # unless the caller filters on one by name.
+    if (params.get('views') or '') not in ('1', 'true') and not (params.get('action') or '').strip():
+        from .words import NOISE_PREFIXES, NOISE_SUFFIXES
+
+        noise = Q(pk__in=[])
+        for p in NOISE_PREFIXES:
+            noise |= Q(action__startswith=p)
+        for s in NOISE_SUFFIXES:
+            noise |= Q(action__endswith=s)
+        qs = qs.exclude(noise)
     start, end = _when(params.get('from'), 'from'), _when(params.get('to'), 'to', end=True)
     if start:
         qs = qs.filter(created_at__gte=start)
@@ -197,18 +208,37 @@ def _mask_ip(ip):
     return '.'.join(parts[:3] + ['x']) if len(parts) == 4 else None
 
 
-def entry_row(entry):
+def names_for(entries):
+    """{code: name} for the places and geonode targets a page of entries mentions."""
+    codes = {place_of(e) for e in entries} | {e.target_id for e in entries if e.target_type == 'geonode'}
+    codes.discard(None)
+    return dict(GeoNode.objects.filter(code__in=list(codes)).values_list('code', 'name'))
+
+
+def entry_row(entry, names=None):
+    from .words import summary, target_words
+
+    names = names if names is not None else names_for([entry])
+    place = place_of(entry)
     return {
         'id': entry.id, 'created_at': entry.created_at.isoformat(),
         'actor': {'id': entry.actor_id, 'label': _actor_label(entry), 'role': entry.actor_role},
         'action': entry.action, 'target_type': entry.target_type, 'target_id': entry.target_id,
-        'place': place_of(entry), 'reason': (entry.reason or '')[:200],
+        'place': place, 'reason': (entry.reason or '')[:200],
+        # 22 Nov (owner): the entry in words, the target and the place by name.
+        'summary': scrub(summary(entry, names)),
+        'target_label': target_words(entry, names),
+        'place_name': names.get(place or '', None),
     }
 
 
 def entry_detail(entry):
+    from .words import changes as word_changes
+
     return {
         **entry_row(entry), 'reason': scrub(entry.reason or ''),
+        'changes': [{'field': f, 'from': scrub(a), 'to': scrub(b)}
+                    for f, a, b in word_changes(entry.before, entry.after)],
         'before': scrub(entry.before or {}), 'after': scrub(entry.after or {}),
         'ip': _mask_ip(entry.ip_address), 'user_agent': (entry.user_agent or '')[:120],
         'hash': {'previous': (entry.previous_hash or '')[:8],

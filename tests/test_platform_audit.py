@@ -141,7 +141,7 @@ class TestListAndFilters:
         client, _ = operator('super_admin', geo)
         row = data(client.get(LIST + '?action=zone_changed'))['results'][0]
         assert set(row) == {'id', 'created_at', 'actor', 'action', 'target_type', 'target_id',
-                            'place', 'reason'}
+                            'place', 'reason', 'summary', 'target_label', 'place_name'}
         assert row['place'] in ('IN-TG-HYD', 'US-TX-AUS')
 
 

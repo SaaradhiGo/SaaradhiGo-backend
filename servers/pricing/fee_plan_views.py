@@ -328,9 +328,16 @@ def resolved_rows(country, day=None):
         for vt in classes:
             plan, source = fee_plans.resolve_with_source(country, chain, day, vt)
             src_code = source if source else (country if plan is not None else None)
+            if plan is not None:
+                words = fee_plans.plan_words(plan, vt)
+            elif fee_plans.resolve(country, chain, day) is not None:
+                # A fee-plan place with nothing set for this class: riders are not offered it.
+                words = 'Not offered to riders: no driver fee set'
+            else:
+                words = 'Commission (see Commission)'
             rows.append({
                 'kind': kind, 'code': code, 'name': name, 'vehicle_type': vt,
-                'words': fee_plans.plan_words(plan, vt) if plan is not None else 'No platform fee plan',
+                'words': words,
                 'plan_id': getattr(plan, 'id', None), 'plan_type': getattr(plan, 'plan_type', None),
                 'from_code': src_code,
                 'from_name': (nodes[src_code].name if src_code in nodes else src_code) if src_code else None,

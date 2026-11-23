@@ -157,3 +157,21 @@ class TestSimulator:
         for x in rows:
             assert x['driver_takes_home_day_minor'] == x['fares_per_day_minor'] - x['driver_pays_day_minor']
         assert DriverFeePlan.objects.filter(status='active').count() == 1  # nothing activated
+
+
+class TestReviewWords:
+    def test_a_zero_fee_reads_as_no_platform_fee(self):
+        p = DriverFeePlan(country='US', currency='USD', plan_type='fair_share', amounts={'*': {'per_trip_fee_minor': 0}})
+        assert fee_plans.plan_words(p, 'standard') == 'No platform fee'
+        assert fee_plans._line_words(p, 'standard') == 'No platform fee'
+
+    def test_a_class_without_a_fee_says_it_is_not_offered(self, india):
+        rows = resolved_rows('IN', DAY)['rows']
+        auto = [r for r in rows if r['vehicle_type'] == 'auto']
+        if not auto:
+            pytest.skip('no auto rate card in this test database')
+        assert auto[0]['words'] == 'Not offered to riders: no driver fee set'
+
+    def test_a_plan_carries_its_place_by_name(self, india):
+        from servers.pricing.fee_plan_workflow import plan_dict
+        assert plan_dict(india.plan)['scope_name'] == 'India'

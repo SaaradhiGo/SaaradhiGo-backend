@@ -70,12 +70,19 @@ def exemption(trip, now):
     return None
 
 
-def amount_for(policy, fare_minor):
+def amount_for(policy, fare_minor, currency=None):
+    """The penalty in minor units. INR is whole rupees, half up (owner, 23 Nov), the cap floored to
+    a whole rupee so it is never passed; USD keeps cents."""
+    from decimal import ROUND_FLOOR
+
+    from base.money import DEFAULT_CURRENCY, round_minor
+
+    currency = currency or DEFAULT_CURRENCY
     raw = (Decimal(int(fare_minor)) * policy.percent / Decimal('100')).quantize(
         Decimal('1'), rounding=ROUND_HALF_UP)
-    amount = int(raw)
+    amount = round_minor(int(raw), currency)
     if policy.cap_minor is not None:
-        amount = min(amount, int(policy.cap_minor))
+        amount = min(amount, round_minor(int(policy.cap_minor), currency, ROUND_FLOOR))
     return max(amount, 0)
 
 
@@ -102,12 +109,12 @@ def assess(trip, now=None):
     if (now - trip.accepted_at).total_seconds() < policy.free_seconds:
         return None
     fare_minor = trip.estimated_fare_minor or 0
-    amount = amount_for(policy, fare_minor)
-    if amount <= 0:
-        return None
     from base.money import currency_for_trip
 
     currency = currency_for_trip(trip)
+    amount = amount_for(policy, fare_minor, currency)
+    if amount <= 0:
+        return None
     party = trip.cancelled_by
     with transaction.atomic():
         try:
@@ -269,6 +276,6 @@ def preview(trip, now=None):
     until = trip.accepted_at + timedelta(seconds=policy.free_seconds)
     if now < until:
         return {**free, 'free_until': until.isoformat()}
-    amount = amount_for(policy, trip.estimated_fare_minor or 0)
+    amount = amount_for(policy, trip.estimated_fare_minor or 0, currency)
     return {'free': amount <= 0, 'free_until': None, 'fee': str(from_minor(amount, currency)),
             'fee_minor': amount, 'currency': currency}

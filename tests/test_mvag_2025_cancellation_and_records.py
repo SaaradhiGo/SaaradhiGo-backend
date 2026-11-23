@@ -1,6 +1,6 @@
 """MVAG 2025 (owner brief, 2026-11-09): the cancellation penalty and the driver records gate.
 
-Fixed example trips: a 437.00 INR fare (10% = 43.70) and a 1,500.00 INR fare (10% = 150.00, held
+Fixed example trips: a 437.00 INR fare (10% = 43.70, whole rupees: 44.00) and a 1,500.00 INR fare (10% = 150.00, held
 to the 100.00 cap). India's values come from the seed (pricing 0020): 10%, 100.00, 5 minutes.
 """
 from datetime import date, timedelta
@@ -58,9 +58,9 @@ def balance(driver):
 class TestTheRule:
     def test_rider_after_the_window_owes_ten_percent(self, market):
         trip, row = cancelled(market, by='rider')
-        assert (row.party, row.status, row.amount_minor) == ('rider', 'due', 4370)
+        assert (row.party, row.status, row.amount_minor) == ('rider', 'due', 4400)
         trip.refresh_from_db()
-        assert trip.cancellation_fee_minor == 4370
+        assert trip.cancellation_fee_minor == 4400
         assert balance(market.driver) == 0          # nothing moves until the next trip settles
 
     def test_the_cap_holds_both_sides(self, market):
@@ -70,13 +70,13 @@ class TestTheRule:
 
     def test_driver_pays_a_ledger_debit_at_once(self, market):
         trip, row = cancelled(market, by='driver', reason='personal')
-        assert (row.party, row.status, row.amount_minor) == ('driver', 'charged', 4370)
-        assert balance(market.driver) == -4370
+        assert (row.party, row.status, row.amount_minor) == ('driver', 'charged', 4400)
+        assert balance(market.driver) == -4400
         txn = WalletTransaction.objects.get(user_id=market.driver.user_id,
                                             purpose='cancellation_penalty')
         assert txn.txn_type == 'debit' and ledger.ENTRY_LABELS[txn.purpose].startswith(
             'Cancellation fee')
-        assert cp.assess(trip) == row and balance(market.driver) == -4370   # idempotent
+        assert cp.assess(trip) == row and balance(market.driver) == -4400   # idempotent
 
     @pytest.mark.parametrize('by,reason,reached,after_min', [
         ('rider', 'other', False, 4),        # inside the 5-minute free window
@@ -93,7 +93,7 @@ class TestTheRule:
 
     def test_a_rider_claiming_no_show_after_the_driver_reached_still_pays(self, market):
         _, row = cancelled(market, by='rider', reason='no_show', reached=True)
-        assert row is not None and row.amount_minor == 4370
+        assert row is not None and row.amount_minor == 4400
 
     def test_nothing_when_the_flag_is_off(self, market):
         FeatureFlagOverride.objects.filter(flag__key=cp.FLAG).update(enabled=False)
@@ -109,29 +109,29 @@ class TestTheRule:
         MarketRegulation.objects.filter(country='IN', state_code='TG').update(
             cancel_penalty_percent=Decimal('5.00'))
         _, row = cancelled(market, by='rider')
-        assert row.amount_minor == 2185
+        assert row.amount_minor == 2200
 
 
 class TestTheNextBooking:
     def test_shown_before_booking_carried_and_paid_to_the_driver_let_down(self, market):
         old, row = cancelled(market, by='rider')
         due = cp.due_for_rider(market.rider)
-        assert due['amount_minor'] == 4370 and due['trip_ids'] == [old.id]
+        assert due['amount_minor'] == 4400 and due['trip_ids'] == [old.id]
         other = make_driver(market.geo, 'IN-TG-HYD', 'n', currency='INR', calling='91')
         nxt = make_trip(market.hyd, market.rider, other, fare='200', method='online')
-        assert cp.attach_to_trip(nxt) == 4370
-        assert payable_minor(nxt) == 20000 + 4370
+        assert cp.attach_to_trip(nxt) == 4400
+        assert payable_minor(nxt) == 20000 + 4400
         assert cp.due_for_rider(market.rider) is None
         settle(nxt)
         row.refresh_from_db()
         assert row.status == 'collected' and row.collected_on_trip_id == nxt.id
         comp = WalletTransaction.objects.get(purpose='cancellation_compensation')
-        assert comp.user_id_id == market.driver.user_id_id and comp.amount_minor == 4370
-        assert balance(market.driver) == 4370
+        assert comp.user_id_id == market.driver.user_id_id and comp.amount_minor == 4400
+        assert balance(market.driver) == 4400
         # The statement counts it and names it.
         start = timezone.now() - timedelta(days=1)
         stmt = ledger.build_statement(market.driver, start, timezone.now() + timedelta(minutes=1))
-        assert stmt['credits_minor'] == 4370
+        assert stmt['credits_minor'] == 4400
         assert ledger.ENTRY_LABELS['cancellation_compensation'] == (
             'Cancellation fee paid by the rider (to you)')
         settle(nxt)                                   # a second settlement pays nothing twice
@@ -144,8 +144,8 @@ class TestTheNextBooking:
         cp.attach_to_trip(nxt)
         settle(nxt)
         held = WalletTransaction.objects.get(purpose='cancellation_fee_collected')
-        assert held.user_id_id == other.user_id_id and held.amount_minor == 4370
-        assert balance(market.driver) == 4370
+        assert held.user_id_id == other.user_id_id and held.amount_minor == 4400
+        assert balance(market.driver) == 4400
 
     def test_a_due_carried_by_a_cancelled_trip_is_free_again(self, market):
         cancelled(market, by='rider')
@@ -153,7 +153,7 @@ class TestTheNextBooking:
         cp.attach_to_trip(nxt)
         nxt.status_id, _ = TripStatus.objects.get_or_create(status_code='cancelled')
         nxt.save(update_fields=['status_id'])
-        assert cp.due_for_rider(market.rider)['amount_minor'] == 4370
+        assert cp.due_for_rider(market.rider)['amount_minor'] == 4400
 
     def test_the_receipt_shows_the_line(self, market):
         from servers.ride.receipts import _due_rows_pdf
@@ -162,8 +162,8 @@ class TestTheNextBooking:
         nxt = make_trip(market.hyd, market.rider, market.driver, fare='200')
         cp.attach_to_trip(nxt)
         rows = _due_rows_pdf(nxt, 'INR')
-        assert rows[0][0] == f'Cancellation fee (trip {old.id})' and rows[0][1] == '+43.70'
-        assert rows[-1] == ['Amount charged', '243.70']
+        assert rows[0][0] == f'Cancellation fee (trip {old.id})' and rows[0][1] == '+44.00'
+        assert rows[-1] == ['Amount charged', '244.00']
 
 
 class TestDriverRecordsGate:

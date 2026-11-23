@@ -305,10 +305,10 @@ class TestIndiaIsUnchanged:
         trip = started(world, card, km=2, method='cash')
         data = release(client, trip, 'other').json()['data']
         assert data['capped_fare_minor'] == data['rider_pays_minor'] == 4_900
-        assert data['commission_minor'] == 980 and data['driver_earnings_minor'] == 3_920
+        assert data['commission_minor'] == 1_000 and data['driver_earnings_minor'] == 3_900  # whole rupees
         assert data['driver_earnings_base_minor'] is None
         s = TripSettlement.objects.get(trip=trip)
-        assert (s.gross_fare_minor, s.driver_net_minor, s.tax_collected_minor) == (4_900, 3_920, None)
+        assert (s.gross_fare_minor, s.driver_net_minor, s.tax_collected_minor) == (4_900, 3_900, None)
 
 
 # ---------------------------------------------------------------------------

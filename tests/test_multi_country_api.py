@@ -232,10 +232,12 @@ def test_india_quotes_over_http_exactly_what_it_quoted_before(
     minutes = Decimal(str(payload['validated_min']))
     fb = payload['fare_breakdown']
     assert fb['base_fare'] == '30.00'
-    assert Decimal(fb['distance_fare']) == (km * Decimal('12')).quantize(
-        Decimal('0.01'))
-    assert Decimal(fb['time_fare']) == (minutes * Decimal('2')).quantize(
-        Decimal('0.01'))
+    # Whole rupees (owner, 23 Nov): each line is the step between rounded running totals.
+    from base.money import round_fare
+    upto_distance = round_fare(Decimal('30') + km * Decimal('12'), 'INR')
+    assert Decimal(fb['distance_fare']) == upto_distance - Decimal('30')
+    assert Decimal(fb['time_fare']) == round_fare(
+        Decimal('30') + km * Decimal('12') + minutes * Decimal('2'), 'INR') - upto_distance
 
     codes = {a['code'] for a in payload['fare_adjustments']}
     assert 'tax' not in codes, 'India gained an additive tax line over HTTP'

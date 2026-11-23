@@ -138,6 +138,7 @@ def settle_paid_by_platform(trip, amount_minor, currency=None):
 TRIP_LEDGER_PURPOSES = (
     'trip_earnings', 'trip_commission', PURPOSE_TAX_COLLECTED, PURPOSE_FEE_COLLECTED,
     'promo_discount_platform_funded', PURPOSE_FARE_COLLECTED_BY_PLATFORM, 'platform_funded_trip_end',
+    'whole_rupee_correction',
 )
 #: The rider was refunded the whole trip: what the driver's balance gained from it is taken back.
 PURPOSE_TRIP_REFUND_REVERSAL = 'trip_refund_reversal'
@@ -267,8 +268,14 @@ def settlement_amounts(trip):
     # and the per-city commission on each RateCard was never applied.
     commission_rate = commission_percent_for_trip(trip)
 
-    commission_minor = to_minor(
-        from_minor(gross_minor, currency) * commission_rate / Decimal('100'), currency)
+    # India is whole rupees end to end (owner, 23 Nov): the gross (a whole-rupee fare; a legacy
+    # fare with paise is rounded) and the commission are whole rupees, half up, so the driver's
+    # net -- gross minus commission -- is whole too. USD keeps cents (`round_money` is `quantize`).
+    from base.money import round_minor, round_money
+
+    gross_minor = round_minor(gross_minor, currency)
+    commission_minor = to_minor(round_money(
+        from_minor(gross_minor, currency) * commission_rate / Decimal('100'), currency), currency)
     net_minor = gross_minor - commission_minor
     return {'gross_minor': gross_minor, 'tax_minor': tax_minor, 'fee_minor': fee_minor,
             'commission_rate': commission_rate, 'commission_minor': commission_minor,

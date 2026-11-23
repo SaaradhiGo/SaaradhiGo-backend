@@ -1,5 +1,5 @@
 from django.conf import settings
-from .console_prefs import console_preferences
+from .console_prefs import console_preferences, my_theme
 from django.urls import path
 from .ws_ticket import ws_ticket
 from .views import (
@@ -81,6 +81,8 @@ urlpatterns = [
     # tests/test_admin_namespace_is_gated.py.
     path('admin/mfa/status/', mfa_status),
     path('console-preferences/', console_preferences),
+    # Any signed-in account's own Light/Dark choice (23 Nov), the same stored value.
+    path('theme/', my_theme),
     path('admin/mfa/recovery-codes/regenerate/', regenerate_recovery_codes),
 ]
 

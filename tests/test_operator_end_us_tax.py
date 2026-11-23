@@ -247,7 +247,8 @@ class TestIndiaIsUnchanged:
         client, _ = operator('city_ops_manager', geo)
         trip = started(world, card, km=2)
         data = release(client, trip, 'platform_fault').json()['data']
-        assert data['rider_pays_minor'] == 0 and data['driver_earnings_minor'] == 3_920
+        # Rs 49 less a whole-rupee commission: 20% = 9.80, rounded to Rs 10 (owner, 23 Nov).
+        assert data['rider_pays_minor'] == 0 and data['driver_earnings_minor'] == 3_900
         assert not PlatformExpense.objects.exists()
         assert (row(trip).tax_minor, row(trip).per_trip_fee_minor) == (None, None)
 

@@ -22,7 +22,7 @@ A cash driver's fee is owed and comes off the next earnings like cash-trip commi
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from decimal import Decimal, ROUND_FLOOR
+from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Optional
 
 from django.db import IntegrityError, transaction
@@ -249,15 +249,20 @@ def day_fee(plan, vehicle_type, fares_minor, *, day=None, first_trip_day=None, s
                       n, total)
     a = plan.amounts_for(vehicle_type)
     cap_pct = legal_cap_percent(plan.country, state_code)
-    legal = [int((Decimal(int(f)) * cap_pct / 100).to_integral_value(ROUND_FLOOR)) for f in fares_minor]
+    # India money is whole rupees end to end (owner, 23 Nov): each trip's legal ceiling is floored to
+    # a whole rupee (never above the cap) and the configured amounts are whole rupees, half up, so
+    # the day's fee is whole. USD keeps cents (`round_minor` changes nothing there).
+    from base.money import round_minor
+    legal = [round_minor(int((Decimal(int(f)) * cap_pct / 100).to_integral_value(ROUND_FLOOR)), cur, ROUND_FLOOR)
+             for f in fares_minor]
     if plan.plan_type == DAILY_PASS:
-        raw = int(a.get('daily_pass_minor') or 0)
+        raw = round_minor(int(a.get('daily_pass_minor') or 0), cur)
         allowed = sum(legal)
         fee, per_trip = min(raw, allowed), []
         reduced = raw if fee < raw else None
         text = f'{label}: daily pass {_money(fee, cur)}'
     else:
-        unit = int(a.get('per_trip_fee_minor') or 0)
+        unit = round_minor(int(a.get('per_trip_fee_minor') or 0), cur)
         free_after = a.get('fee_free_after_trips')
         per_trip, reduced_any, raw_sum = [], False, 0
         for i, cap in enumerate(legal):
@@ -271,7 +276,7 @@ def day_fee(plan, vehicle_type, fares_minor, *, day=None, first_trip_day=None, s
         charged_trips = sum(1 for x in per_trip if x)
         text = f'{label}: {charged_trips} trips × {_money(unit, cur)} = {_money(fee, cur)}'
     if plan.daily_cap_minor is not None and fee > plan.daily_cap_minor:
-        fee = plan.daily_cap_minor
+        fee = round_minor(plan.daily_cap_minor, cur, ROUND_FLOOR)
         text = f'{text} (cap {_money(plan.daily_cap_minor, cur)})'
     elif plan.daily_cap_minor is not None:
         text = f'{text} (cap {_money(plan.daily_cap_minor, cur)})'
@@ -724,7 +729,10 @@ def simulate(plan, vehicle_type, trips_per_day, average_fare_minor, *, cost_per_
     if plan.plan_type == PERCENT_COMMISSION:
         pct = Decimal(str(commission_percent if commission_percent is not None
                           else plan.amounts_for(vehicle_type).get('commission_percent') or 0))
-        fee = sum(int((Decimal(f) * pct / 100).quantize(Decimal('1'))) for f in fares)
+        from base.money import round_minor
+        cur = plan.currency or 'INR'
+        fee = sum(round_minor(int((Decimal(f) * pct / 100).quantize(Decimal('1'), rounding=ROUND_HALF_UP)), cur)
+                  for f in fares)
         legal_ok = pct <= legal_cap_percent(plan.country, state_code)
     else:
         result = day_fee(plan, vehicle_type, fares, state_code=state_code)

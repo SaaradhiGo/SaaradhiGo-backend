@@ -202,8 +202,9 @@ def metered_fare(trip, distance_km, minutes):
         fee = quantize(Decimal(str(getattr(zone, 'per_trip_fee', None) or '0')), currency)
         total = total + quantize(total * tax_percent / Decimal('100'), currency) + fee
     return {
-        'base': quantize(base, currency), 'distance_fare': quantize(distance_fare, currency),
-        'time_fare': quantize(time_fare, currency), 'surge_multiplier': surge,
+        # Whole rupees for INR lines (owner, 23 Nov); cents for USD.
+        'base': round_fare(base, currency), 'distance_fare': round_fare(distance_fare, currency),
+        'time_fare': round_fare(time_fare, currency), 'surge_multiplier': surge,
         'min_fare_applied': min_applied, 'total': total, 'card': card,
         'pretax': pretax, 'additive': additive, 'tax_percent': tax_percent, 'fee': fee,
     }
@@ -403,7 +404,9 @@ def build_plan(trip, reason_code):
     base = charged_full if earnings_base is None else earnings_base
     try:
         percent = commission_percent_for_trip(trip)
-        commission = to_minor(from_minor(base, currency) * percent / Decimal('100'), currency)
+        # Whole rupees for INR (owner, 23 Nov), as `settlement_amounts`; cents for USD.
+        commission = to_minor(round_fare(from_minor(base, currency) * percent / Decimal('100'),
+                                         currency), currency)
     except CommissionNotConfigured:
         percent = commission = None
     if rule == PLATFORM_FUNDED and commission is None:

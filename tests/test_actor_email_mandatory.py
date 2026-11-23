@@ -79,6 +79,8 @@ WRITING_COMMANDS = [
     'record_retroactive_linking_audit',
     'recompute_driver_trip_counts',
     'reset_operator_mfa',
+    # Seals audit-chain forks from before the 22 Nov lock fix: one audit row, named actor.
+    'seal_audit_chain_forks',
     'send_queued_notices',
     'seed_admin_access',
     'seed_alert_thresholds',
@@ -283,6 +285,25 @@ def _prepare_retro(settings, monkeypatch):
 
 def _fp_audit():
     return AdminAuditLog.objects.count()
+
+
+def _prepare_seal(settings, monkeypatch):
+    """A log with one fork, as concurrent writers made them before 22 Nov."""
+    from django.utils import timezone
+
+    from servers.admin_audit.hashchain import compute_hash
+
+    def write(n):
+        return AdminAuditLog.objects.create(actor_label='ops@saaradhigo.com', action='kyc_update',
+                                            target_type='driver', target_id=str(n), reason='x')
+    first = write(1)
+    write(2)
+    fork = AdminAuditLog(actor_label='ops@saaradhigo.com', action='kyc_update', target_type='driver',
+                         target_id='3', reason='y', created_at=timezone.now())
+    fork.previous_hash = first.content_hash
+    fork.content_hash = compute_hash(fork.previous_hash, fork)
+    fork.save(force_insert=True)
+    return ['--confirm', '--reason', 'Forks from concurrent writes before the lock fix'], {}
 
 
 def _prepare_retro_linking(settings, monkeypatch):
@@ -503,6 +524,8 @@ CASES = [
     Case('reset_operator_mfa --confirm', 'reset_operator_mfa',
          _prepare_reset, _fp_mfa, dry_run=(['--phone', MFA_PHONE], {}),
          needs_operator_to_prepare=True),
+    Case('seal_audit_chain_forks --confirm', 'seal_audit_chain_forks',
+         _prepare_seal, _fp_audit, dry_run=([], {})),
     Case('set_operator_password', 'set_operator_password',
          _prepare_set_password, _fp_passwords, needs_operator_to_prepare=True),
     Case('record_retroactive_access_audit', 'record_retroactive_access_audit',

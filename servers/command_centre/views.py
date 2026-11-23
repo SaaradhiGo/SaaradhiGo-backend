@@ -554,11 +554,26 @@ def admin_engineering_health(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, ScopedPermission('report.read')])
 def admin_today(request):
-    """GET admin/today/?scope=  Per country and per live city, what needs action today (22 Nov)."""
+    """GET admin/today/?scope=&date_from=&date_to=  Per country and per live city, what needs
+    action (22 Nov); the counts cover today, or the chosen local days (23 Nov, at most 366)."""
+    from datetime import date as _date
+
     from .today import today
 
     try:
         cities, _node = _cities_for(request)
     except ScopeNotHeld as exc:
         return _scope_refused(exc)
-    return success_response(today(request.user, cities), status.HTTP_200_OK)
+    raw_from, raw_to = request.query_params.get('date_from'), request.query_params.get('date_to')
+    date_range = None
+    if raw_from or raw_to:
+        try:
+            first, last = _date.fromisoformat(raw_from or ''), _date.fromisoformat(raw_to or '')
+        except ValueError:
+            return error_response(code='INVALID_RANGE', message='Give date_from and date_to as YYYY-MM-DD.',
+                                  status_code=status.HTTP_400_BAD_REQUEST)
+        if last < first or (last - first).days + 1 > 366:
+            return error_response(code='INVALID_RANGE', message='The range is ordered and at most 12 months.',
+                                  status_code=status.HTTP_400_BAD_REQUEST)
+        date_range = (first, last)
+    return success_response(today(request.user, cities, date_range=date_range), status.HTTP_200_OK)

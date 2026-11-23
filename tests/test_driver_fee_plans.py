@@ -237,21 +237,21 @@ class TestNewDriverAndOvercharge:
         from servers.driver import earnings_history as eh
 
         DriverFeePlan.objects.all().delete()
-        early = trips_on(india, DAY, 3)                          # no plan yet: 15% of Rs 150 each
+        early = trips_on(india, DAY, 3)                          # no plan yet: 15% of Rs 150 each = Rs 22.50, whole rupees: Rs 23
         assert all(t.fee_plan_type == '' for t in early)
         later = plan(waiver_first_days=60)
         later.effective_from = DAY
         later.save()
         wallet = Wallet.objects.get(user_id=india.driver.user_id, scope='driver')
         report = fee_plans.refund_overcharged(india.driver, 'IN')
-        assert [(r[2], r[3], r[4]) for r in report] == [(2250, 2250, False)] * 3
+        assert [(r[2], r[3], r[4]) for r in report] == [(2300, 2300, False)] * 3
         assert not WalletTransaction.objects.filter(purpose='platform_fee_refund').exists()
         fee_plans.refund_overcharged(india.driver, 'IN', apply=True)
         fee_plans.refund_overcharged(india.driver, 'IN', apply=True)
         rows = WalletTransaction.objects.filter(purpose='platform_fee_refund')
         assert rows.count() == 3 and {r.txn_type for r in rows} == {'credit'}
-        assert sum(r.amount_minor for r in rows) == 6750
-        assert Wallet.objects.get(pk=wallet.pk).balance_minor == wallet.balance_minor + 6750
+        assert sum(r.amount_minor for r in rows) == 6900
+        assert Wallet.objects.get(pk=wallet.pk).balance_minor == wallet.balance_minor + 6900
         month = eh.statement(india.driver, DAY.year, DAY.month)['summary']
         assert Decimal(month['platform_fee']) == 0
 
@@ -264,7 +264,7 @@ class TestNewDriverAndOvercharge:
         later = plan(waiver_first_days=60)
         later.effective_from = DAY
         later.save()
-        assert [r[3] for r in fee_plans.refund_overcharged(india.driver, 'IN')] == [2250, 2250]
+        assert [r[3] for r in fee_plans.refund_overcharged(india.driver, 'IN')] == [2300, 2300]
 
     def test_after_the_waiver_the_refund_keeps_the_plan_fee(self, india):
         DriverFeePlan.objects.all().delete()
@@ -273,8 +273,8 @@ class TestNewDriverAndOvercharge:
         later.effective_from = DAY
         later.save()
         report = fee_plans.refund_overcharged(india.driver, 'IN')
-        assert sum(r[2] for r in report) == 12 * 2250
-        assert sum(r[3] for r in report) == 12 * 2250 - 12000      # the plan's Rs 120 that day stays
+        assert sum(r[2] for r in report) == 12 * 2300
+        assert sum(r[3] for r in report) == 12 * 2300 - 12000      # the plan's Rs 120 that day stays
 
     def test_the_words_come_from_the_plan(self, india):
         india.plan.waiver_first_days = 60
@@ -297,7 +297,7 @@ class TestLateConfigurationAndClass:
         later = plan(waiver_first_days=60)
         later.effective_from = date(2026, 10, 5)                     # in force now, written late
         later.save()
-        assert [r[3] for r in fee_plans.refund_overcharged(india.driver, 'IN')] == [2250, 2250]
+        assert [r[3] for r in fee_plans.refund_overcharged(india.driver, 'IN')] == [2300, 2300]
         # It must never happen quietly (11 Nov): one console alert for the driver and day.
         from servers.command_centre.models import OperatorAlert
         got = OperatorAlert.objects.filter(source_type='fee_plan_missing_for_day')
@@ -312,7 +312,7 @@ class TestLateConfigurationAndClass:
         later = plan(waiver_first_days=60)
         later.effective_from = DAY
         later.save()
-        assert [r[3] for r in fee_plans.refund_overcharged(india.driver, 'IN')] == [2250]
+        assert [r[3] for r in fee_plans.refund_overcharged(india.driver, 'IN')] == [2300]
 
 
 class TestSimulator:

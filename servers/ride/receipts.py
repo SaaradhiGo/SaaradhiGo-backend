@@ -866,7 +866,9 @@ def _receipt_tax(trip, total, rate):
         pre_tax = (taxable / divisor) if divisor else taxable
         amount = quantize(pre_tax * rate / Decimal('100'), currency)
     else:
-        amount = quantize(total * rate / (Decimal('100.00') + rate), currency)
+        # Inclusive GST (India) is whole rupees, half up (owner, 23 Nov), as `quote_fare` extracts it.
+        from base.money import round_fare
+        amount = round_fare(total * rate / (Decimal('100.00') + rate), currency)
 
     return {
         'amount': amount,

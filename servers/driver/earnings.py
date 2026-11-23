@@ -58,6 +58,9 @@ logger = logging.getLogger(__name__)
 PURPOSE_ONLINE = 'trip_earnings'
 PURPOSE_CASH = 'trip_commission'
 SETTLEMENT_PURPOSES = (PURPOSE_ONLINE, PURPOSE_CASH)
+# 23 Nov: a stored INR trip taken from paise to whole rupees (`round_inr_money_to_rupees`). Append-only,
+# keyed TRIP_<id>; a credit raises the trip's net and lowers its commission, a debit the reverse.
+PURPOSE_WHOLE_RUPEE = 'whole_rupee_correction'
 
 _REFERENCE_PREFIX = 'TRIP_'
 PROMO_PAID_LABEL = 'Promo paid by SaaradhiGo'
@@ -254,6 +257,8 @@ def settlement_rows(driver, since=None, until=None, limit=None, refunds=True):
         rows.append(row)
     if refunds and trip_ids:
         _apply_refunds(driver, rows, trip_ids)
+    if trip_ids:
+        _apply_whole_rupee_corrections(driver, rows, trip_ids)
     rows = [r for r in rows if r.created_at is None
             or ((since is None or r.created_at >= since) and (until is None or r.created_at < until))]
     rows.sort(key=lambda r: (r.created_at is not None, r.created_at, r.ledger_id), reverse=True)
@@ -297,6 +302,29 @@ def _apply_refunds(driver, rows, trip_ids):
         if not got:
             continue
         row.refunded = got
+        if row.commission is not None:
+            row.commission -= got
+        if row.net is not None:
+            row.net += got
+
+
+def _apply_whole_rupee_corrections(driver, rows, trip_ids):
+    """A trip's `whole_rupee_correction` (23 Nov) on its row: the commission and net it rounded."""
+    from base.money import from_minor
+    from servers.rider.models import WalletTransaction
+
+    by_trip = {}
+    for ref, minor, cur, kind in (WalletTransaction.objects.filter(
+            user_id=driver.user_id, purpose=PURPOSE_WHOLE_RUPEE, status='completed',
+            reference_id__in=[f'{_REFERENCE_PREFIX}{t}' for t in trip_ids])
+            .values_list('reference_id', 'amount_minor', 'currency', 'txn_type')):
+        tid = _trip_id_from_reference(ref)
+        amount = from_minor(minor, cur)
+        by_trip[tid] = by_trip.get(tid, Decimal('0.00')) + (amount if kind == 'credit' else -amount)
+    for row in rows:
+        got = by_trip.pop(row.trip_id, None) if row.trip_id is not None else None
+        if not got:
+            continue
         if row.commission is not None:
             row.commission -= got
         if row.net is not None:

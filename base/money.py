@@ -242,6 +242,30 @@ def round_fare(amount, currency=DEFAULT_CURRENCY):
     return quantize(amount, currency)
 
 
+#: India money is whole rupees end to end (owner, 23 Nov): every INR amount a rider or a driver
+#: sees -- fare lines, GST, commission, platform fees, penalties, earnings, averages -- is rounded
+#: to whole units at its source, half up. `round_money` is that rule for a major-unit amount (the
+#: same rule as `round_fare`); `round_minor` for an amount already in minor units. USD keeps cents.
+round_money = round_fare
+
+
+def whole_units(currency):
+    """True when this currency's person-facing amounts are whole units (INR)."""
+    return str(currency or '').upper() in WHOLE_UNIT_FARE_CURRENCIES
+
+
+def round_minor(minor, currency, rounding=ROUNDING):
+    """A minor-unit int rounded to whole units for INR (half up unless `rounding` says otherwise,
+    e.g. ROUND_FLOOR for a legal ceiling); unchanged for USD."""
+    if minor is None:
+        return None
+    minor = int(minor)
+    if not whole_units(currency):
+        return minor
+    step = 10 ** exponent(currency)
+    return int((Decimal(minor) / step).quantize(Decimal('1'), rounding=rounding)) * step
+
+
 def to_major_string(minor, currency):
     """'135.68' -- the API's existing string shape for a money value."""
     value = from_minor(minor, currency)

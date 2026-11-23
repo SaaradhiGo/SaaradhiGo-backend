@@ -9,6 +9,13 @@ object), like the apps' language and theme, and the admin namespace's allowlist 
 
 Stored in `UserPreference.preferred_theme`, the same field the apps use, so one person has one
 choice. Unset reads as light.
+
+    GET   /api/v1/auth/theme/                        {"theme": "light" | "dark"}
+    PATCH /api/v1/auth/theme/                        {"theme": "dark"}
+
+The same setting for ANY signed-in account (23 Nov: drivers choose Light or Dark and it is saved to
+their account, like the console). Same storage and the same two values; no operator check, because
+it only ever reads or writes the caller's own row.
 """
 
 from rest_framework import status
@@ -24,11 +31,22 @@ CONSOLE_THEMES = ('light', 'dark')
 @api_view(['GET', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def console_preferences(request):
-    from .models import UserPreference
-
     if not is_operator(request.user):
         return error_response(code='NOT_AN_OPERATOR', message='This account cannot operate the platform.',
                               field='general', issue='Not an operator', status=status.HTTP_403_FORBIDDEN)
+    return _own_theme(request)
+
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def my_theme(request):
+    """The caller's own theme, for any signed-in account: rider, driver or operator."""
+    return _own_theme(request)
+
+
+def _own_theme(request):
+    from .models import UserPreference
+
     if request.method == 'PATCH':
         theme = str((request.data or {}).get('theme') or '').strip().lower()
         if theme not in CONSOLE_THEMES:

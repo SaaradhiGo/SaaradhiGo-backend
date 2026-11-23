@@ -432,7 +432,8 @@ def test_india_tax_is_inside_the_quoted_fare(india_zone, vehicle_type):
     # Reported, not added. The quote states the GST sitting inside the fare --
     # 190.00 * 5 / 105 -- so a rider is not shown "GST 0.00" beside a 5% rate,
     # and the total is byte-for-byte the pre-multi-country number.
-    assert q['tax_amount'] == Decimal('9.05')
+    # Whole rupees (owner, 23 Nov): 9.05 rounds to 9.
+    assert q['tax_amount'] == Decimal('9.00')
     assert q['total_fare'] == Decimal('190.00')
 
 

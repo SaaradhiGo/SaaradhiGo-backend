@@ -22,7 +22,7 @@ from decimal import Decimal
 import pytest
 from django.utils import timezone
 
-from base.money import to_minor
+from base.money import round_fare, to_minor
 from servers.driver.utils import credit_driver_wallet
 from servers.payments.models import PlatformExpense, TripSettlement
 from servers.pricing import promo_tax
@@ -315,7 +315,7 @@ class TestReceipt:
         trip.refresh_from_db()
         total = receipts._total_fare(trip)
         assert receipts._tax_basis(trip, total) == total
-        assert receipts._receipt_tax(trip, total, D('5.00'))['amount'] == D('9.52')
+        assert receipts._receipt_tax(trip, total, D('5.00'))['amount'] == D('10.00')   # 9.52, whole rupees (23 Nov)
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +443,7 @@ class TestPlatformPaidEnd:
         data = release(client, trip, 'platform_fault').json()['data']
         assert data['capped_fare_minor'] == 4_900
         assert data['driver_earnings_base_minor'] == 4_900       # the whole (GST-inclusive) fare
-        commission = to_minor(D('49.00') * D('20.00') / 100, 'INR')
-        assert data['driver_earnings_minor'] == 4_900 - commission == 3_920
+        commission = to_minor(round_fare(D('49.00') * D('20.00') / 100, 'INR'), 'INR')   # whole rupees (23 Nov)
+        assert data['driver_earnings_minor'] == 4_900 - commission == 3_900
         assert (data['pretax_fare_minor'], data['tax_minor']) == (None, None)
         assert data['tax_relief_minor'] == 0

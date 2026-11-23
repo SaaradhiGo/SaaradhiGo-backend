@@ -212,7 +212,8 @@ class TestSwitching:
         after = trips_on(india, DAY + timedelta(days=1), 2)
         for t in before:
             t.refresh_from_db()
-            assert t.fee_plan_type == 'percent_commission' and t.commission_percent_snapshot is None
+            # 22 Nov: a commission plan's own percentage is the trip's snapshot (capped at 20%).
+            assert t.fee_plan_type == 'percent_commission' and t.commission_percent_snapshot == Decimal('15.00')
         assert all(t.fee_plan_type == 'fair_share' and t.commission_percent_snapshot == 0 for t in after)
         assert fee_plans.charge_day(india.driver, 'IN', DAY) is None      # commission trips: no fee row
 

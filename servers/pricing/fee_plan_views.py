@@ -167,7 +167,8 @@ def fee_plan_simulate(request):
                                                       amounts={vt: {'commission_percent': float(pct)}}),
                   {'commission_percent': pct}))
     plans.append(('daily_pass', DriverFeePlan(country=country, plan_type=DAILY_PASS,
-                                              amounts={vt: {'daily_pass_minor': int(d.get('daily_pass_minor') or 19900)}}),
+                                              amounts={vt: {'daily_pass_minor': int(d.get('daily_pass_minor') or (
+                                                  2000 if vt == 'auto' else 4900))}}),
                   {}))
     if d.get('per_trip_fee_minor'):
         plans.append(('per_trip_fee', DriverFeePlan(country=country, plan_type=PER_TRIP_FEE,
@@ -295,4 +296,52 @@ def fixed_cost_update(request, country, month):
                         target_id=f'{code}-{month}', before=before, after={'amount_minor': amount},
                         reason=row.note)
     return success_response({'country': code, 'month': first.isoformat(), 'amount_minor': amount},
+                            status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# The resolved plan for every place and class (22 Nov)
+# ---------------------------------------------------------------------------
+
+def resolved_rows(country, day=None):
+    """Every place (country, its states, cities and zones) by every class the market sells: the plan
+    that applies, in words, where it comes from, and whether it is set right there (an override)."""
+    from servers.admin_access.models import GeoNode
+    from servers.payments.payout_scope import scope_codes_of_node
+    from servers.pricing.models import RateCard, ServiceZone
+
+    country = country.upper()
+    day = day or fee_plans.local_day(country)
+    classes = sorted(set(RateCard.objects.filter(zone__country=country, is_active=True)
+                         .values_list('vehicle_type__type', flat=True)) - {None})
+    nodes = {n.code: n for n in GeoNode.objects.filter(code__startswith=country)}
+    places = [('country', country, nodes[country].name if country in nodes else country, [])]
+    for n in sorted(nodes.values(), key=lambda n: (n.path, n.code)):
+        if n.kind in ('state', 'city'):
+            places.append((n.kind, n.code, n.name, scope_codes_of_node(n)))
+    for z in ServiceZone.objects.filter(country=country, is_active=True).select_related('geo_node'):
+        chain = fee_plans.scope_codes_of_zone(z)
+        if chain and chain[0] == z.code:
+            places.append(('zone', z.code, z.name, chain))
+    rows = []
+    for kind, code, name, chain in places:
+        for vt in classes:
+            plan, source = fee_plans.resolve_with_source(country, chain, day, vt)
+            src_code = source if source else (country if plan is not None else None)
+            rows.append({
+                'kind': kind, 'code': code, 'name': name, 'vehicle_type': vt,
+                'words': fee_plans.plan_words(plan, vt) if plan is not None else 'No platform fee plan',
+                'plan_id': getattr(plan, 'id', None), 'plan_type': getattr(plan, 'plan_type', None),
+                'from_code': src_code,
+                'from_name': (nodes[src_code].name if src_code in nodes else src_code) if src_code else None,
+                'override': plan is not None and (source or country) == code,
+            })
+    return {'country': country, 'day': day.isoformat(), 'classes': classes, 'rows': rows}
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, READ])
+def fee_plans_resolved(request):
+    """GET admin/fee-plans/resolved/?country=IN  What every place and class pays, in words (22 Nov)."""
+    return success_response(resolved_rows(str(request.query_params.get('country') or 'IN')),
                             status.HTTP_200_OK)

@@ -45,6 +45,7 @@ urlpatterns = [
     path('admin/regulation/', regulation_list, name='regulation'),
     path('admin/fee-plans/', fee_plan_views.fee_plans_list, name='fee-plans'),
     path('admin/fee-plans/simulate/', fee_plan_views.fee_plan_simulate, name='fee-plans-simulate'),
+    path('admin/fee-plans/resolved/', fee_plan_views.fee_plans_resolved, name='fee-plans-resolved'),
     path('admin/fee-plans/<int:plan_id>/', fee_plan_views.fee_plan_detail, name='fee-plan'),
     path('admin/fee-plans/<int:plan_id>/submit/', fee_plan_views.fee_plan_submit,
          name='fee-plan-submit'),

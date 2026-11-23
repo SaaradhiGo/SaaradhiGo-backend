@@ -46,9 +46,13 @@ NON_COMMISSION = (PER_TRIP_FEE, DAILY_PASS, FAIR_SHARE)
 # ---------------------------------------------------------------------------
 
 def scope_codes_of_zone(zone):
-    """`[city_code, state_code]` of a zone's geo node (most specific first)."""
+    """`[zone_code, city_code, state_code]`, most specific first (22 Nov: plans may be set per zone).
+    The zone's own code leads only when it differs from its city's."""
     node = getattr(zone, 'geo_node', None)
     out = []
+    code = getattr(zone, 'code', '') or ''
+    if code and code != getattr(node, 'code', None):
+        out.append(code)
     while node is not None and node.kind in ('city', 'state'):
         out.append(node.code)
         node = node.parent
@@ -64,17 +68,36 @@ def class_offered(zone, vehicle_type):
         from servers.pricing.commission import country_code_of_zone
 
         country = country_code_of_zone(zone) or getattr(zone, 'country', '')
-        plan = resolve(country, scope_codes_of_zone(zone), local_day(country, zone=zone))
+        scopes, day = scope_codes_of_zone(zone), local_day(country, zone=zone)
+        plan = resolve(country, scopes, day, vehicle_type)
+        if plan is None:
+            # No plan covers this class. In a fee-plan place (some plan applies here) the class's
+            # fee is undecided; with no fee plan at all, the commission rules charge it as before.
+            return resolve(country, scopes, day) is None
     except Exception:  # noqa: BLE001
         logger.exception('class_offered: fee plan lookup failed')
         return True
-    if plan is None or plan.plan_type == 'percent_commission':
+    if plan.plan_type == PERCENT_COMMISSION:
         return True
     return any(v is not None for v in plan.amounts_for(vehicle_type).values())
 
 
-def resolve(country, scope_codes=(), day=None):
-    """The plan governing `day` in the most specific scope that has one, or None."""
+def covers(plan, vehicle_type):
+    """Does `plan` say anything for this class (its own row, or "*" for every class)? A row left
+    blank ("to be decided") still covers it: the class is decided as undecided, not inherited."""
+    table = plan.amounts or {}
+    return str(vehicle_type or '').lower() in table or '*' in table
+
+
+def resolve(country, scope_codes=(), day=None, vehicle_type=None):
+    """The plan governing `day`. Without a class: the most specific scope that has one. With a class
+    (22 Nov, "anything unset inherits from the level above"): the most specific scope whose plan
+    covers that class -- a city plan for cars leaves the city's autos on the state's plan."""
+    return resolve_with_source(country, scope_codes, day, vehicle_type)[0]
+
+
+def resolve_with_source(country, scope_codes=(), day=None, vehicle_type=None):
+    """`(plan, scope_code)`: the plan and the place it comes from ('' = the country)."""
     day = day or timezone.localdate()
     qs = (DriverFeePlan.objects.filter(country=str(country or '').upper(),
                                        status__in=(ACTIVE, ARCHIVED), effective_from__lte=day)
@@ -83,9 +106,10 @@ def resolve(country, scope_codes=(), day=None):
     for plan in qs.order_by('-effective_from', '-version'):
         by_scope.setdefault(plan.scope_code, plan)
     for code in list(scope_codes) + ['']:
-        if code in by_scope:
-            return by_scope[code]
-    return None
+        plan = by_scope.get(code)
+        if plan is not None and (vehicle_type is None or covers(plan, vehicle_type)):
+            return plan, code
+    return None, None
 
 
 def in_force(plan, day):
@@ -105,31 +129,40 @@ def local_day(country, when=None, zone=None):
     return when.astimezone(ZoneInfo(tz)).date()
 
 
-def plan_for_zone(zone, when=None):
+def plan_for_zone(zone, when=None, vehicle_type=None):
     from servers.pricing.commission import country_code_of_zone
 
     if zone is None:
         return None
     country = country_code_of_zone(zone)
-    return resolve(country, scope_codes_of_zone(zone), local_day(country, when, zone))
+    return resolve(country, scope_codes_of_zone(zone), local_day(country, when, zone), vehicle_type)
 
 
 def snapshot_for_booking(zone, vehicle_type=None, when=None):
     """Trip fields for the plan in force at booking. A non-commission plan zeroes the trip's
     commission snapshot, so settlement keeps the whole fare for the driver."""
+    vt = getattr(vehicle_type, 'type', vehicle_type)
     try:
-        plan = plan_for_zone(zone, when)
+        plan = plan_for_zone(zone, when, vt) if vt else plan_for_zone(zone, when)
     except Exception:  # noqa: BLE001 - a snapshot never breaks a booking
         logger.exception('fee plan snapshot failed')
         return {}
     if plan is None:
         return {}
-    vt = getattr(vehicle_type, 'type', vehicle_type)
     if plan.plan_type in NON_COMMISSION and not plan.amounts_for(vt):
         # The plan sets nothing for this class (autos and bikes still to be decided): the class
         # keeps today's percentage commission.
         return {}
     out = {'fee_plan_id': plan.id, 'fee_plan_version': plan.version, 'fee_plan_type': plan.plan_type}
+    if plan.plan_type == PERCENT_COMMISSION:
+        # 22 Nov: a commission plan's own percentage, never above the legal cap (India 20%).
+        pct = plan.amounts_for(vt).get('commission_percent')
+        if pct is not None:
+            from servers.pricing.regulation import state_code_of_zone
+
+            cap = legal_cap_percent(plan.country, state_code_of_zone(zone) or '')
+            out.update({'commission_percent_snapshot': min(Decimal(str(pct)), cap).quantize(Decimal('0.01')),
+                        'commission_rule_id': None, 'commission_rule_version': None})
     if plan.plan_type in NON_COMMISSION:
         out.update({'commission_percent_snapshot': Decimal('0.00'), 'commission_rule_id': None,
                     'commission_rule_version': None})
@@ -149,6 +182,29 @@ class DayFee:
     fares_minor: int
     reduced_from_minor: Optional[int] = None
     per_trip_minor: list = field(default_factory=list)
+
+
+def raises_fee(plan, day=None):
+    """Would `plan` make any driver pay more than the plan in force for its place and class? Judged
+    at 5, 12 and 20 trips of a normal fare per class (the simulator's presets). 22 Nov: an increase
+    starts only after the notice period (`commission.notice_days`, 7), a cut the next day."""
+    from servers.admin_access.models import GeoNode
+    from servers.payments.payout_scope import scope_codes_of_node
+
+    day = day or local_day(plan.country)
+    node = GeoNode.objects.filter(code=plan.scope_code).first() if plan.scope_code else None
+    scopes = scope_codes_of_node(node) if node is not None else []
+    for vt in (plan.amounts or {}):
+        if vt == '*':
+            continue
+        current = resolve(plan.country, scopes, day, vt)
+        fare = normal_trip_fare_minor(plan.country, vt) or 15000
+        for n in PRESETS.values():
+            new = simulate(plan, vt, n, fare)['driver_pays_day_minor']
+            old = simulate(current, vt, n, fare)['driver_pays_day_minor'] if current is not None else 0
+            if new > old:
+                return True
+    return False
 
 
 def legal_cap_percent(country, state_code=''):
@@ -535,31 +591,87 @@ def refund_day(driver, day, *, apply=False):
 # The words on the driver's screens (11 Nov): always from the plan in force
 # ---------------------------------------------------------------------------
 
+def plan_words(plan, vehicle_type, country=None):
+    """A plan for one class in plain words (22 Nov): "₹20 a day", "₹10 a trip, at most ₹149 a day",
+    "10% of each fare", "To be decided", with "first 60 days free" when it waives new drivers."""
+    if plan is None:
+        return None
+    a = plan.amounts_for(vehicle_type)
+    cur = plan.currency
+    if not any(v is not None for v in a.values()):
+        return 'To be decided'
+    if plan.plan_type == DAILY_PASS:
+        text = f"{_money(a.get('daily_pass_minor') or 0, cur)} a day, only on a day with a trip"
+    elif plan.plan_type == PERCENT_COMMISSION:
+        text = f"{a.get('commission_percent')}% of each fare"
+    else:
+        text = f"{_money(a.get('per_trip_fee_minor') or 0, cur)} a trip"
+        if plan.daily_cap_minor is not None:
+            text += f', at most {_money(plan.daily_cap_minor, cur)} a day'
+    if plan.waiver_first_days:
+        text += f'; first {plan.waiver_first_days} days free'
+    return text
+
+
+def _driver_place(driver):
+    from servers.payments.payout_config import driver_payout_country
+    from servers.payments.payout_scope import scope_codes_of_node
+
+    country = driver_payout_country(driver) or 'IN'
+    home = getattr(driver, 'home_city', None)
+    vehicle = getattr(driver, 'active_vehicle', None)
+    vt = getattr(getattr(vehicle, 'vehicle_type_id', None), 'type', '') if vehicle is not None else ''
+    return country, (scope_codes_of_node(home) if home else []), vt
+
+
+def fee_notice(driver, today=None):
+    """An approved change that has not started yet, for the driver (22 Nov: "notices of upcoming
+    changes"): "From 30 Nov: ₹49 daily fee, charged only if you complete a trip", or None."""
+    country, scopes, vt = _driver_place(driver)
+    today = today or local_day(country)
+    upcoming = (DriverFeePlan.objects.filter(country=country, status=ACTIVE, effective_from__gt=today,
+                                             scope_code__in=list(scopes) + [''])
+                .order_by('effective_from'))
+    order = {code: i for i, code in enumerate(list(scopes) + [''])}
+    for plan in sorted(upcoming, key=lambda p: (p.effective_from, order.get(p.scope_code, 99))):
+        if covers(plan, vt):
+            from base.market_dates import day_month
+
+            words = _line_words(plan, vt)
+            return f'From {day_month(plan.effective_from, country)}: {words}'
+    return None
+
+
+def _line_words(plan, vt):
+    cur, a = plan.currency, plan.amounts_for(vt)
+    if plan.plan_type == DAILY_PASS:
+        return f"{_money(a.get('daily_pass_minor') or 0, cur)} daily fee, charged only if you complete a trip"
+    if plan.plan_type == PERCENT_COMMISSION:
+        return f"{a.get('commission_percent')}% of each fare"
+    text = f"{_money(a.get('per_trip_fee_minor') or 0, cur)} a trip"
+    if plan.daily_cap_minor is not None:
+        text += f', at most {_money(plan.daily_cap_minor, cur)} a day'
+    return text
+
+
 def fee_words(driver, today=None):
     """How the driver's platform fee works, in a few words, from the plan in force for their city
     and class: "No fee until 1 Jan, then ₹10.00 a trip, at most ₹149.00 a day". Never fixed text."""
     from servers.payments.payout_config import driver_payout_country
     from servers.payments.payout_scope import scope_codes_of_node
 
-    country = driver_payout_country(driver) or 'IN'
+    country, scopes, vt = _driver_place(driver)
     today = today or local_day(country)
-    home = getattr(driver, 'home_city', None)
-    plan = resolve(country, scope_codes_of_node(home) if home else [], today)
-    vehicle = getattr(driver, 'active_vehicle', None)
-    vt = getattr(getattr(vehicle, 'vehicle_type_id', None), 'type', '') if vehicle is not None else ''
+    plan = resolve(country, scopes, today, vt or None)
     if plan is None and _fee_plan_market(driver):
         # 15 Nov: a market that charges by fee plan (USA) with no plan in force charges nothing,
         # and says so; it never shows a rate the owner has not approved.
         return 'No platform fee'
-    if plan is None or plan.plan_type == PERCENT_COMMISSION or not plan.amounts_for(vt):
+    if plan is None or not plan.amounts_for(vt):
         return 'A commission on each trip, shown on every trip'
-    cur, a = plan.currency, plan.amounts_for(vt)
-    if plan.plan_type == DAILY_PASS:
-        text = f"{_money(a.get('daily_pass_minor') or 0, cur)} a day you drive"
-    else:
-        text = f"{_money(a.get('per_trip_fee_minor') or 0, cur)} a trip"
-    if plan.daily_cap_minor is not None and plan.plan_type != DAILY_PASS:
-        text += f', at most {_money(plan.daily_cap_minor, cur)} a day'
+    if plan.plan_type == PERCENT_COMMISSION and plan.amounts_for(vt).get('commission_percent') is None:
+        return 'A commission on each trip, shown on every trip'
+    text = _line_words(plan, vt)
     until = None
     if plan.waiver_until and today < plan.waiver_until:
         until = plan.waiver_until
@@ -610,6 +722,7 @@ def simulate(plan, vehicle_type, trips_per_day, average_fare_minor, *, cost_per_
     cost = int(cost_per_trip_minor) * len(fares)
     return {'plan_type': plan.plan_type, 'trips_per_day': int(trips_per_day),
             'fares_per_day_minor': total, 'driver_pays_day_minor': fee,
+            'driver_takes_home_day_minor': total - fee,
             'driver_pays_month_minor': fee * 30,
             'driver_share_percent': round(100 * (total - fee) / total, 1) if total else None,
             'our_cost_day_minor': cost, 'we_keep_day_minor': fee - cost,

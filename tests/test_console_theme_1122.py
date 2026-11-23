@@ -6,7 +6,7 @@ from servers.auth_user.models import UserPreference
 from test_sos_support_zones_matrix import geo, operator  # noqa: F401 - fixtures
 
 pytestmark = pytest.mark.django_db
-PREFS = '/api/v1/auth/admin/preferences/'
+PREFS = '/api/v1/auth/console-preferences/'
 
 
 def test_light_by_default_and_dark_once_chosen(geo):

@@ -80,7 +80,7 @@ urlpatterns = [
     # than on a capability -- see mfa_views and the allowlist in
     # tests/test_admin_namespace_is_gated.py.
     path('admin/mfa/status/', mfa_status),
-    path('admin/preferences/', console_preferences),
+    path('console-preferences/', console_preferences),
     path('admin/mfa/recovery-codes/regenerate/', regenerate_recovery_codes),
 ]
 

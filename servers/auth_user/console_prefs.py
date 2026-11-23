@@ -1,8 +1,11 @@
 """The console's own settings on the operator's account (owner, 22 Nov: "Dark is a full theme of its
 own, chosen by the person and saved to their account. Light stays the default").
 
-    GET   /api/v1/auth/admin/preferences/          {"theme": "light" | "dark"}
-    PATCH /api/v1/auth/admin/preferences/          {"theme": "dark"}
+    GET   /api/v1/auth/console-preferences/          {"theme": "light" | "dark"}
+    PATCH /api/v1/auth/console-preferences/          {"theme": "dark"}
+
+Outside `admin/` on purpose: it is the operator's own account setting (self-service, no target
+object), like the apps' language and theme, and the admin namespace's allowlist stays at four.
 
 Stored in `UserPreference.preferred_theme`, the same field the apps use, so one person has one
 choice. Unset reads as light.

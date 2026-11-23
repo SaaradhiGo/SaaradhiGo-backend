@@ -113,10 +113,6 @@ ALLOWLIST = {
     # refused), so a stolen token alone cannot mint a way back in.
     'api/v1/auth/admin/mfa/status/':
         'Self-service MFA status; operator identity from the token, no target object.',
-    # 22 Nov: the operator's own console theme (light or dark). Identity from the token, no
-    # target object; is_operator is checked inside.
-    'api/v1/auth/admin/preferences/':
-        'Self-service console theme; operator identity from the token, no target object.',
     'api/v1/auth/admin/mfa/recovery-codes/regenerate/':
         'Self-service recovery-code regeneration against a live TOTP code; '
         'operator identity from the token, no target object.',

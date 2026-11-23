@@ -124,6 +124,10 @@ def changes(before, after, place=None):
     return out
 
 
+#: A bulk action's target ("all") in words.
+ALL_WORDS = {'user_preference': 'Every account', 'trip': 'All trips', 'user': 'Every account'}
+
+
 def target_words(entry, names):
     t, tid = entry.target_type or '', entry.target_id or ''
     if t == 'geonode' and tid:
@@ -131,8 +135,8 @@ def target_words(entry, names):
     prefix = {'driver': 'Driver D-', 'rider': 'Rider R-', 'trip': 'Trip T-', 'user': 'Account #',
               'withdrawal': 'Payout W-', 'operator_alert': 'Alert #', 'service_zone': 'Zone #',
               'wallet': 'Wallet #', 'operator': 'Operator #'}.get(t)
-    if prefix and tid == 'all':
-        return f"All {t.replace('_', ' ')}s"
+    if tid == 'all':
+        return ALL_WORDS.get(t, f"All {t.replace('_', ' ')}s")
     if prefix and tid:
         return f'{prefix}{tid}'
     if not t:

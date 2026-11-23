@@ -48,3 +48,10 @@ def test_theme_reset_reads_as_a_sentence():
     e = _row(action='themes_reset_to_light', target_type='user_preference', target_id='all',
              before={'not_light': 3}, after={'reset': 3})
     assert summary(e, viewer.names_for([e])) == 'Reset 3 accounts to the light theme'
+
+
+@pytest.mark.django_db
+def test_bulk_theme_reset_target_reads_every_account():
+    e = _row(action='themes_reset_to_light', target_type='user_preference', target_id='all',
+             before={'not_light': 3}, after={'reset': 3})
+    assert viewer.entry_row(e)['target_label'] == 'Every account'

@@ -386,11 +386,16 @@ def driver_fee_plan(request):
     driver = request.user.driver
     country = driver_payout_country(driver) or 'IN'
     home = getattr(driver, 'home_city', None)
-    plan = resolve(country, scope_codes_of_node(home) if home else [], local_day(country))
     vt = getattr(getattr(driver.active_vehicle, 'vehicle_type_id', None), 'type', '')         if driver.active_vehicle_id else ''
+    plan = resolve(country, scope_codes_of_node(home) if home else [], local_day(country), vt or None)
+    from servers.pricing.fee_plans import fee_notice, fee_words
+
     body = {'plan': plan_dict(plan) if plan else None,
             'applies_to_my_class': bool(plan and plan.amounts_for(vt)),
-            'my_class': vt, 'today': today_so_far(driver, country)}
+            'my_class': vt, 'today': today_so_far(driver, country),
+            # 22 Nov: the driver's line ("₹49 daily fee, charged only if you complete a trip") and
+            # any approved change that has not started yet.
+            'fee_words': fee_words(driver), 'notice': fee_notice(driver)}
     if plan:
         body['my_amounts'] = plan.amounts_for(vt)
     return success_response(body, status.HTTP_200_OK)

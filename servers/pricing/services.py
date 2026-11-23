@@ -484,7 +484,8 @@ def _rider_platform_fee(zone, vehicle_type, currency):
         if not flag_enabled('rider_platform_fee', city=city_node_of(getattr(zone, 'geo_node', None)),
                             country=country_code_of_zone(zone)):
             return Decimal('0.00')
-        plan = plan_for_zone(zone)
+        # 22 Nov: per class, inherited like the driver fee (a city plan for cars, the state's for autos).
+        plan = plan_for_zone(zone, vehicle_type=vehicle_type)
         minor = int((plan.amounts_for(vehicle_type).get('rider_platform_fee_minor') or 0)) if plan else 0
         return from_minor(minor, currency) if minor else Decimal('0.00')
     except Exception:  # noqa: BLE001 - a quote never fails over this line

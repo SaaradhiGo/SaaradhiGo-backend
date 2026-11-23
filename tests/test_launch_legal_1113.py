@@ -231,3 +231,13 @@ def test_a_closed_city_shows_fares_refuses_booking_and_takes_interest(market, se
         r = c.post('/api/v1/platform/launch-interest/', {'zone': zone.code}, format='json')
         assert r.status_code == 200 and r.json()['data']['saved'] is True
     assert LaunchInterest.objects.filter(user=rider, city=city).count() == 1
+
+
+@pytest.fixture(autouse=True)
+def _the_test_class_has_a_driver_fee(db):
+    """22 Nov: riders are offered only classes with an approved driver fee; this file's class has one."""
+    from servers.pricing.fee_plan_models import DriverFeePlan
+
+    for plan in DriverFeePlan.objects.filter(status='active'):
+        plan.amounts = {**(plan.amounts or {}), 'parity-sedan': {'per_trip_fee_minor': 1000}}
+        plan.save(update_fields=['amounts'])

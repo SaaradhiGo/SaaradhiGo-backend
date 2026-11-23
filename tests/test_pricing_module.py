@@ -979,10 +979,21 @@ class TestReadiness:
         return {i['key']: i for i in city_readiness(node)}
 
     def test_a_city_with_no_rule_and_no_card_fails_both_new_items(self, world):
+        # No fee plan either: where one covers the city, commission is not used (22 Nov, below).
+        from servers.pricing.fee_plan_models import DriverFeePlan
+        DriverFeePlan.objects.all().delete()
         items = self.items(world.geo['IN-TG-HYD'])
         assert items['commission']['ok'] is False and 'No active commission rule' in items['commission']['detail']
         assert items['fare_card']['ok'] is False
         assert {'safety_coverage', 'commission', 'fare_card'} <= set(items)
+
+    def test_a_fee_plan_satisfies_commission(self, world):
+        # 22 Nov (owner): "Drivers are charged through fee plans only"; no commission blocker there.
+        from servers.pricing.fee_plan_models import DriverFeePlan
+        if not DriverFeePlan.objects.filter(country='IN').exists():
+            pytest.skip('no India fee plan in this test database')
+        item = self.items(world.geo['IN-TG-HYD'])['commission']
+        assert item['ok'] is True and 'fee plan' in item['detail']
 
     def test_a_country_rule_alone_satisfies_commission_but_not_the_fare_card(self, world):
         make_rule('IN', '15.00', node=world.geo['IN'])
@@ -1024,6 +1035,8 @@ class TestReadiness:
     def test_a_city_cannot_go_live_without_them(self, world):
         from servers.admin_access.readiness import CityNotReady, set_city_status
 
+        from servers.pricing.fee_plan_models import DriverFeePlan
+        DriverFeePlan.objects.all().delete()
         node = world.geo['IN-TG-HYD']
         GeoNode.objects.filter(pk=node.pk).update(status='paused')
         node.refresh_from_db()

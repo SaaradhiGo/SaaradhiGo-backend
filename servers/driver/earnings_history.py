@@ -122,7 +122,7 @@ def _fee_rows(driver, since=None, until=None):
     # A refund for a trip is on that trip's row (`settlement_rows`), on the trip's day; not here. A
     # refund of a whole day's fee (`DAY_<yyyymmdd>`, 15 Nov) is a fee line with the sign turned.
     qs = counted(WalletTransaction.objects.filter(
-        Q(purpose=PURPOSE) | Q(purpose=REFUND_PURPOSE, reference_id__startswith='DAY_'),
+        Q(purpose=PURPOSE) | Q(purpose__in=(REFUND_PURPOSE, 'whole_rupee_correction'), reference_id__startswith='DAY_'),
         user_id=driver.user_id_id))
     if since is not None:
         qs = qs.filter(created_at__gte=since)
@@ -182,7 +182,9 @@ class _Data:
         self.payouts = _payout_rows(driver, since, until)
 
 
-def summarise_period(trips, fees, payouts, tz):
+def summarise_period(trips, fees, payouts, tz, currency=None):
+    from base.money import round_money
+
     from .earnings import summarise
 
     t = summarise(trips)
@@ -195,7 +197,9 @@ def summarise_period(trips, fees, payouts, tz):
         'trips': trips_n,
         'days_driven': len(days),
         'fares': t['total_gross'],
-        'avg_fare': (t['total_gross'] / trips_n).quantize(Decimal('0.01')) if trips_n else ZERO,
+        # The average is worked out, then rounded: whole rupees for INR (owner, 23 Nov), cents for USD.
+        'avg_fare': ((round_money(t['total_gross'] / trips_n, currency) if currency
+                      else (t['total_gross'] / trips_n).quantize(Decimal('0.01'))) if trips_n else ZERO),
         'commission': commission,
         'daily_fee': daily_fee,
         'platform_fee': commission + daily_fee,
@@ -316,7 +320,7 @@ def history(driver, period, anchor=None, start=None, end=None):
     today = datetime.now(tz).date()
     first, last = bounds(period, anchor or today, start, end)
     data = _Data(driver, _start(tz, first), _start(tz, last + timedelta(days=1)))
-    summary = summarise_period(data.trips, data.fees, data.payouts, tz)
+    summary = summarise_period(data.trips, data.fees, data.payouts, tz, driver_currency(driver))
 
     unit = chart_unit(period, first, last)
     # Each bar carries its breakdown (11 Nov), for the chart's tap or hover: fares, platform fee, earned.
@@ -379,7 +383,8 @@ def months(driver):
         key = m.strftime('%Y-%m')
         s = summarise_period([r for r in data.trips if r.created_at and month_of(r.created_at) == key],
                              [f for f in data.fees if month_of(f.created_at) == key],
-                             [p for p in data.payouts if month_of(p.created_at) == key], tz)
+                             [p for p in data.payouts if month_of(p.created_at) == key], tz,
+                             driver_currency(driver))
         # 14 Nov: the month's tips too, as the history and the dashboard count them.
         s = _with_tips(driver, s, m, _month_end(m), tz)
         out.append({'month': key, 'so_far': m == today.replace(day=1), **_strings(s)})
@@ -400,7 +405,8 @@ def statement(driver, year, month):
     since, until = _start(tz, first), _start(tz, last + timedelta(days=1))
     data = _Data(driver, since, until)
     # 14 Nov: the statement counts the month's tips, as the screen does.
-    summary = _with_tips(driver, summarise_period(data.trips, data.fees, data.payouts, tz), first, last, tz)
+    summary = _with_tips(driver, summarise_period(data.trips, data.fees, data.payouts, tz, driver_currency(driver)),
+                         first, last, tz)
     ledger = build_statement(driver, since, until)
     country = req.for_driver(driver)['country']
     from base.encrypted import mask

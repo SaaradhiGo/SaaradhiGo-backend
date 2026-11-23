@@ -79,6 +79,9 @@ DRIVER_LEDGER_PURPOSES = (
     # The driver fee plan's one row per local day (9 Nov, `pricing.fee_plans`), and a credit
     # returning a fee the plan did not ask for (11 Nov, `fee_plans.refund_overcharged`).
     'platform_fee', 'platform_fee_refund',
+    # 23 Nov (India money in whole rupees end to end): the append-only line that takes a stored INR
+    # trip or day from paise to whole rupees (`round_inr_money_to_rupees`), keyed TRIP_<id> or DAY_<date>.
+    'whole_rupee_correction',
 )
 
 #: `model label -> ORM lookup(s) reaching GeoNode.path`. One table, so a view

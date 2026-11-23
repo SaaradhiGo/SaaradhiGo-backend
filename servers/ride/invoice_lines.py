@@ -17,7 +17,7 @@ Pure: amounts in, lines out. Nothing here changes what anyone is charged.
 """
 from decimal import ROUND_HALF_UP, Decimal
 
-from base.money import quantize
+from base.money import quantize, round_fare, whole_units
 
 ZERO = Decimal('0.00')
 UNTAXED_CODES = ('rider_platform_fee', 'per_trip_fee')
@@ -27,8 +27,12 @@ def _d(value):
     return Decimal(str(value if value not in (None, '') else '0'))
 
 
-def _minor(currency):
-    """The currency's smallest unit (0.01 for INR and USD, 1 for JPY)."""
+def _minor(currency, target=None):
+    """The smallest unit a line is stated in: 0.01 for USD, 1 for JPY, and 1 for INR when the taxable
+    value is whole rupees (owner, 23 Nov: India money in whole rupees end to end). A receipt issued
+    before that, whose tax carries paise, keeps paise lines so they still add up to it."""
+    if whole_units(currency) and (target is None or Decimal(target) == Decimal(target).to_integral_value()):
+        return Decimal(1)
     exponent = quantize(Decimal('1.5'), currency).as_tuple().exponent
     return Decimal(1).scaleb(exponent)
 
@@ -41,7 +45,7 @@ def _scale(lines, target, currency):
     if gross == 0:
         out = [(code, label, ZERO) for code, label, _ in lines]
     else:
-        unit = _minor(currency)
+        unit = _minor(currency, target)
         out = [(code, label, (amount * target / gross).quantize(unit, rounding=ROUND_HALF_UP))
                for code, label, amount in lines]
     gap = target - sum((amount for _, _, amount in out), ZERO)
@@ -136,7 +140,7 @@ def from_receipt(trip, receipt, fare_pricing, tax_percent, tax_label):
         components = [('base', 'Base fare', base), ('distance_time', 'Distance and time', metered)]
         if surge != Decimal('1'):
             from servers.ride.receipts import _demand_line
-            components.append(('surge', _demand_line(surge), quantize((base + metered) * (surge - 1), currency)))
+            components.append(('surge', _demand_line(surge), round_fare((base + metered) * (surge - 1), currency)))
         fee_minor = getattr(fare_pricing, 'rider_platform_fee_minor', 0) or 0
         if fee_minor:
             from base.money import from_minor

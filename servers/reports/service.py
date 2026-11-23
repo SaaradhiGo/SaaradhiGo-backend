@@ -289,7 +289,12 @@ def _derive_revenue(row, n, series):
         + row['regulatory_fee_expense_minor'] + row['incentive_rewards_minor']
         + row['referral_rewards_minor'] - row['reward_recovery_minor'])
     row['net_take_minor'] = row['commission_minor'] - row['platform_cost_minor']
-    row['avg_fare_minor'] = (int(round(row['rider_paid_minor'] / row['trips_completed']))
+    # Worked out, then rounded: whole rupees for an INR row (owner, 23 Nov), cents for USD.
+    from base.money import round_minor
+    from decimal import ROUND_HALF_UP
+    row['avg_fare_minor'] = (round_minor(int((Decimal(row['rider_paid_minor']) / row['trips_completed'])
+                                             .quantize(Decimal('1'), rounding=ROUND_HALF_UP)),
+                                         row.get('currency'))
                              if row['trips_completed'] else None)
     row.setdefault('gmv_growth_percent', None)
 

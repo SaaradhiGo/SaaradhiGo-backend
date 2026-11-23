@@ -29,7 +29,7 @@ from django.utils import timezone
 from shapely.geometry import Point, Polygon, shape as shapely_shape
 
 from base.market_time import zone_timezone
-from base.money import quantize, round_fare
+from base.money import quantize, round_fare, whole_units
 from servers.pricing.models import PlatformSettings, RateCard, ServiceZone
 
 logger = logging.getLogger(__name__)
@@ -487,7 +487,7 @@ def _rider_platform_fee(zone, vehicle_type, currency):
         # 22 Nov: per class, inherited like the driver fee (a city plan for cars, the state's for autos).
         plan = plan_for_zone(zone, vehicle_type=vehicle_type)
         minor = int((plan.amounts_for(vehicle_type).get('rider_platform_fee_minor') or 0)) if plan else 0
-        return from_minor(minor, currency) if minor else Decimal('0.00')
+        return round_fare(from_minor(minor, currency), currency) if minor else Decimal('0.00')
     except Exception:  # noqa: BLE001 - a quote never fails over this line
         logger.exception('rider platform fee lookup failed')
         return Decimal('0.00')
@@ -663,10 +663,20 @@ def quote_fare(
     # Every value is Decimal throughout. No float touches money. Each line is
     # its own stored amount (FarePricing), so each is rounded once, by the
     # helper.
-    _base_r = quantize(base_fare, currency)
-    _dist_r = quantize(distance_fare, currency)
-    _time_r = quantize(time_fare, currency)
+    # INR lines are whole rupees (owner, 23 Nov: India money in whole rupees end to end). Each line
+    # is the step between rounded running totals (round(base), round(base + distance) - round(base),
+    # ...), so whole-rupee lines add up to the whole-rupee fare with no rupee-sized "Rounding" line.
+    # USD lines keep cents, each rounded on its own exactly as before.
     _pre_surge = base_fare + distance_fare + time_fare
+    _whole = whole_units(currency)
+    if _whole:
+        _base_r = round_fare(base_fare, currency)
+        _dist_r = round_fare(base_fare + distance_fare, currency) - _base_r
+        _time_r = round_fare(_pre_surge, currency) - _base_r - _dist_r
+    else:
+        _base_r = quantize(base_fare, currency)
+        _dist_r = quantize(distance_fare, currency)
+        _time_r = quantize(time_fare, currency)
 
     adjustments = []
     if surge_multiplier != Decimal('1.00'):
@@ -674,7 +684,8 @@ def quote_fare(
             'code': 'surge',
             # MVAG 2025 disclosure: the rider reads "Higher demand" / "Lower demand", never "surge".
             'label': regulation.demand_label(surge_multiplier),
-            'amount': quantize(_pre_surge * surge_multiplier - _pre_surge, currency),
+            'amount': (round_fare(_pre_surge * surge_multiplier, currency) - round_fare(_pre_surge, currency)
+                       if _whole else quantize(_pre_surge * surge_multiplier - _pre_surge, currency)),
         })
     if min_fare_applied:
         # The uplift from whatever the metered lines came to, up to the minimum.
@@ -682,7 +693,8 @@ def quote_fare(
         adjustments.append({
             'code': 'minimum_fare',
             'label': 'Minimum fare adjustment',
-            'amount': quantize(min_fare - _after_surge, currency),
+            'amount': (round_fare(min_fare, currency) - round_fare(_after_surge, currency)
+                       if _whole else quantize(min_fare - _after_surge, currency)),
         })
 
     _explained = _base_r + _dist_r + _time_r + sum(
@@ -749,7 +761,7 @@ def quote_fare(
         # carries no tax. Extracted exactly the way the receipt extracts it, so
         # the quote and the document the rider keeps state the same number.
         if tax_percent:
-            tax_amount = quantize(
+            tax_amount = round_fare(
                 total_fare * tax_percent / (Decimal('100.00') + tax_percent),
                 currency)
 

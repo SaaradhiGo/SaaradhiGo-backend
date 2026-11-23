@@ -40,6 +40,7 @@ class TestWords:
 class TestNoiseHidden:
     def test_page_views_and_sign_ins_are_noise(self):
         assert is_noise('ops_api_login') and is_noise('driver_record_viewed')
+        assert is_noise('live_ops_session_opened') and is_noise('live_ops_ticket_issued')
         assert not is_noise('payout_config_changed') and not is_noise('kyc_approved')
 
     def test_hidden_by_default_and_shown_on_request(self, geo):

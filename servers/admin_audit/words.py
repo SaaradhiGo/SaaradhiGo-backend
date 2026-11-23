@@ -28,8 +28,10 @@ ACTION_WORDS = {
 }
 
 #: Page views and session events: hidden by default on the audit page (owner, 22 Nov).
-NOISE_PREFIXES = ('ops_api_login', 'ops_token', 'ops_logout', 'session_', 'page_view', 'console_page')
-NOISE_SUFFIXES = ('_viewed', '_page_view', '_listed', '_searched', '_exported_view')
+NOISE_PREFIXES = ('ops_api_login', 'ops_token', 'ops_logout', 'session_', 'page_view', 'console_page',
+                  'live_ops_session', 'live_ops_ticket')
+NOISE_SUFFIXES = ('_viewed', '_page_view', '_listed', '_searched', '_exported_view', '_session_opened',
+                  '_session_closed', '_ticket_issued')
 
 #: Field names in words.
 FIELD_WORDS = {

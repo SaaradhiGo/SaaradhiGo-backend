@@ -243,14 +243,14 @@
           "seats": 4,
           "cancellation_due": null,
           "rider_reason": null,
-          "quote_id": "1d16d005410d41728e836100ae47c43c",
+          "quote_id": "efca5f5b8e6946fc9471162415e0cbf4",
           "quote_expires_at": "2026-01-01T00:00:00.000000+05:30",
           "currency": "INR",
           "distance_unit": "km",
           "fare_breakdown": {
             "base_fare": "60.00",
-            "distance_fare": "114.07",
-            "time_fare": "40.25",
+            "distance_fare": "114.00",
+            "time_fare": "40.00",
             "surge_multiplier": "1.00",
             "demand_label": null,
             "fare_limits": {
@@ -263,32 +263,21 @@
             "tax_mode": "inclusive",
             "tax_label": "GST",
             "tax_percent": "5.000",
-            "tax_amount": "10.19",
+            "tax_amount": "10.00",
             "per_trip_fee": "0.00"
           },
-          "fare_adjustments": [
-            {
-              "code": "rounding",
-              "label": "Rounding",
-              "amount": "-0.32"
-            }
-          ],
+          "fare_adjustments": [],
           "fare_lines": {
             "lines": [
               {
                 "code": "base",
                 "label": "Base fare",
-                "amount": "60.00"
+                "amount": "60"
               },
               {
                 "code": "distance_time",
                 "label": "Distance and time",
-                "amount": "154.32"
-              },
-              {
-                "code": "rounding",
-                "label": "Rounding",
-                "amount": "-0.32"
+                "amount": "154"
               }
             ],
             "taxable": "214.00",
@@ -551,7 +540,7 @@
           "planned_route_polyline": null,
           "driver_photo_url": null,
           "driver_total_trips": 0,
-          "driver_earning": "163.20",
+          "driver_earning": "163.00",
           "invoice": null,
           "search_expires_at": null,
           "vehicle_line": null,

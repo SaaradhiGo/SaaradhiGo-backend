@@ -74,9 +74,9 @@ class TestOperatorEnd:
         trip.refresh_from_db()
         assert trip.final_fare_minor == 4_900                        # the FULL capped fare
         assert rider_promos.payable_minor(trip) == 2_900
-        # Driver economics are on the full capped fare: 20% commission = 980, net 3,920.
+        # Driver economics are on the full capped fare: 20% commission = 9.80, whole rupees Rs 10, net 3,900.
         s = TripSettlement.objects.get(trip=trip)
-        assert (s.gross_fare_minor, s.commission_amount_minor, s.driver_net_minor) == (4_900, 980, 3_920)
+        assert (s.gross_fare_minor, s.commission_amount_minor, s.driver_net_minor) == (4_900, 1_000, 3_900)
         assert Payment.objects.get(trip_id=trip).amount_minor == 2_900
         # The discount is platform-funded; the cash driver collected less and is credited it.
         assert LedgerEntry.objects.get(kind=DISCOUNT_FUNDED).amount_minor == 2_000

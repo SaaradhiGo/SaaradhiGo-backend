@@ -229,7 +229,7 @@ class TestStandardRule:
         assert data['uncapped_fare_minor'] == expected and expected >= 25_000
         assert data['upfront_price_minor'] == 5_300 and data['capped_fare_minor'] == 5_300
         assert data['cap_applied'] is True and data['rider_pays_minor'] == 5_300
-        assert data['commission_minor'] == 1_060 and data['driver_earnings_minor'] == 4_240
+        assert data['commission_minor'] == 1_100 and data['driver_earnings_minor'] == 4_200
         trip.refresh_from_db()
         assert trip.final_fare_minor == 5_300
         snapshot = FarePricing.objects.get(trip_id=trip, snapshot_type='ops_end')
@@ -315,16 +315,16 @@ class TestStandardRule:
         trip = started(world, card, method='cash')
         client, _ = operator('city_ops_manager', geo)
         data = release(client, trip).json()['data']
-        assert data['commission_minor'] == 980 and data['driver_earnings_minor'] == 3_920
+        assert data['commission_minor'] == 1_000 and data['driver_earnings_minor'] == 3_900
         settlement = TripSettlement.objects.get(trip=trip)
         assert (settlement.gross_fare_minor, settlement.commission_amount_minor,
-                settlement.driver_net_minor) == (4_900, 980, 3_920)
+                settlement.driver_net_minor) == (4_900, 1_000, 3_900)
         assert settlement.commission_percent == COMMISSION
         # Cash, exactly as a normal cash completion records it: the driver holds the fare, so
         # the ledger carries the commission as a debit, the Payment stays pending until the
         # driver confirms the cash, and no platform-funded entry exists.
         txn = driver_ledger(world['driver']).get()
-        assert (txn.purpose, txn.txn_type, txn.amount_minor) == ('trip_commission', 'debit', 980)
+        assert (txn.purpose, txn.txn_type, txn.amount_minor) == ('trip_commission', 'debit', 1_000)
         payment = Payment.objects.get(trip_id=trip)
         assert (payment.method, payment.status, payment.amount_minor) == ('cash', 'pending', 4_900)
         assert not driver_ledger(world['driver']).filter(
@@ -346,9 +346,9 @@ class TestStandardRule:
         credit_driver_wallet(trip)
         settlement = TripSettlement.objects.get(trip=trip)
         assert (settlement.gross_fare_minor, settlement.commission_amount_minor,
-                settlement.driver_net_minor) == (4_900, 980, 3_920)
+                settlement.driver_net_minor) == (4_900, 1_000, 3_900)
         txn = driver_ledger(world['driver']).get()
-        assert (txn.purpose, txn.txn_type, txn.amount_minor) == ('trip_earnings', 'credit', 3_920)
+        assert (txn.purpose, txn.txn_type, txn.amount_minor) == ('trip_earnings', 'credit', 3_900)
 
     def test_a_prepaid_online_amount_above_the_fare_is_returned(
             self, geo, world, card):  # noqa: F811
@@ -387,18 +387,18 @@ class TestPlatformFundedRule:
         client, _ = operator('city_ops_manager', geo)
         data = release(client, trip, code).json()['data']
         assert data['rider_pays_minor'] == 0 and data['funded_by'] == 'platform'
-        assert data['capped_fare_minor'] == 4_900 and data['driver_earnings_minor'] == 3_920
+        assert data['capped_fare_minor'] == 4_900 and data['driver_earnings_minor'] == 3_900
         trip.refresh_from_db()
-        assert trip.final_fare_minor == 0 and trip.platform_funded_minor == 3_920
+        assert trip.final_fare_minor == 0 and trip.platform_funded_minor == 3_900
         assert trip.payment_status == 'waived'
         # Nothing to capture: no payment row at all.
         assert not Payment.objects.filter(trip_id=trip).exists()
         txn = driver_ledger(world['driver']).get()
         assert (txn.purpose, txn.txn_type, txn.amount_minor, txn.status) == (
-            'platform_funded_trip_end', 'credit', 3_920, 'completed')
+            'platform_funded_trip_end', 'credit', 3_900, 'completed')
         assert txn.reference_id == f'TRIP_{trip.id}'
         wallet = Wallet.objects.get(user_id=world['driver'].user_id, scope='driver')
-        assert wallet.balance_minor == 3_920
+        assert wallet.balance_minor == 3_900
 
     def test_no_commission_revenue_is_recorded(self, geo, world, card):  # noqa: F811
         trip = started(world, card, method='cash')
@@ -451,7 +451,7 @@ class TestPlatformFundedRule:
         release(client, trip, 'safety_incident')
         alert = OperatorAlert.objects.get(kind=FINANCE_PLATFORM_FUNDED_END)
         assert alert.severity == 'warning' and alert.source_id == str(trip.id)
-        assert alert.payload['driver_earnings_minor'] == 3_920
+        assert alert.payload['driver_earnings_minor'] == 3_900
         assert alert.payload['reason_code'] == 'safety_incident'
         assert alert.city is not None
         assert FINANCE_PLATFORM_FUNDED_END in FINANCE_ALERT_KINDS
@@ -476,10 +476,10 @@ class TestPlatformFundedRule:
         block = response.json()['data']['platform_funded_trip_ends']
         assert block['count'] == 1
         assert block['totals'] == [{'currency': 'INR', 'count': 1,
-                                    'driver_earnings_minor': 3_920}]
+                                    'driver_earnings_minor': 3_900}]
         row = block['rows'][0]
         assert row['trip_id'] == trip.id and row['reason_code'] == 'platform_fault'
-        assert row['driver_earnings_minor'] == 3_920 and row['city']['code'] == 'IN-TG-HYD'
+        assert row['driver_earnings_minor'] == 3_900 and row['city']['code'] == 'IN-TG-HYD'
         assert 'rider' not in str(row).lower() and 'driver_name' not in row
 
     def test_the_overview_block_is_scoped_to_the_finance_holders_city(
@@ -504,11 +504,11 @@ class TestPlatformFundedRule:
         start = timezone.now() - timedelta(days=1)
         end = timezone.now() + timedelta(days=1)
         statement = ledger.build_statement(driver, start, end)
-        assert statement['credits_minor'] == 3_920 and statement['closing_minor'] == 3_920
+        assert statement['credits_minor'] == 3_900 and statement['closing_minor'] == 3_900
         assert statement['unexplained_minor'] == 0
         entries = ledger.entry_dicts(driver, statement['rows'], statement['opening_minor'], 0, 10)
         assert [(e['kind'], e['amount_minor'], e['trip_id']) for e in entries] == [
-            ('platform_funded_trip_end', 3_920, trip.id)]
+            ('platform_funded_trip_end', 3_900, trip.id)]
 
     def test_the_credit_goes_into_the_weekly_payout_balance(self, geo, world, card):  # noqa: F811
         from servers.driver.models import Driver  # noqa: F401
@@ -517,7 +517,7 @@ class TestPlatformFundedRule:
         trip = started(world, card)
         client, _ = operator('city_ops_manager', geo)
         release(client, trip, 'safety_incident')
-        assert calculate_available_balance(world['driver']) == Decimal('39.20')
+        assert calculate_available_balance(world['driver']) == Decimal('39.00')
 
     def test_the_receipt_says_not_charged(self, geo, world, card):  # noqa: F811
         from servers.ride.receipts import issue_receipt
@@ -569,7 +569,7 @@ class TestNotices:
         assert set(rider_msgs.values_list('channel', flat=True)) == {'in_app', 'push'}
         assert set(driver_msgs.values_list('channel', flat=True)) == {'in_app', 'push'}
         assert all('49.00' in m.body for m in rider_msgs if m.body)
-        assert all('39.20' in m.body for m in driver_msgs if m.body)
+        assert all('39.00' in m.body for m in driver_msgs if m.body)
 
     def test_the_rider_is_told_they_were_not_charged_on_the_platform_rule(
             self, geo, world, card, django_capture_on_commit_callbacks):  # noqa: F811
@@ -584,7 +584,7 @@ class TestNotices:
         driver = NotificationMessage.objects.get(
             template_key='trips.operator_ended_driver',
             recipient_user_id=world['driver'].user_id_id, channel='in_app')
-        assert 'SaaradhiGo pays you' in driver.body and '39.20' in driver.body
+        assert 'SaaradhiGo pays you' in driver.body and '39.00' in driver.body
 
 
 # ---------------------------------------------------------------------------
@@ -628,7 +628,7 @@ class TestGates:
         assert again.json()['error']['code'] == 'already_ended'
         assert driver_ledger(world['driver']).count() == 1
         assert Wallet.objects.get(user_id=world['driver'].user_id,
-                                  scope='driver').balance_minor == 3_920
+                                  scope='driver').balance_minor == 3_900
         assert OperatorAlert.objects.filter(kind=FINANCE_PLATFORM_FUNDED_END).count() == 1
         assert FarePricing.objects.filter(trip_id=trip, snapshot_type='ops_end').count() == 1
 
@@ -645,7 +645,7 @@ class TestGates:
         assert after['case'] == 'C' and after['reason_code'] == 'safety_incident'
         assert after['rule'] == 'platform_funded' and after['distance_km'] == '2.00'
         assert after['capped_fare_minor'] == 4_900 and after['rider_pays_minor'] == 0
-        assert after['driver_earnings_minor'] == 3_920 and after['funded_by'] == 'platform'
+        assert after['driver_earnings_minor'] == 3_900 and after['funded_by'] == 'platform'
         refused = AdminAuditLog.objects.get(action='trip_stale_driver_released_refused',
                                             target_id=str(trip.id))
         assert refused.after['code'] == 'already_ended'

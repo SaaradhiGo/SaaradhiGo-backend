@@ -56,7 +56,7 @@ class TestFreeToCancel:
         trip = self._trip(hyd, timedelta(minutes=6))
         r = client_for(hyd.rider).get(f'/api/v1/ride/trip/{trip.id}/cancel-preview/')
         body = r.json()['data']
-        assert r.status_code == 200 and body['free'] is False and body['fee'] == '43.70'
+        assert r.status_code == 200 and body['free'] is False and body['fee'] == '44.00'  # 10% of 437 = 43.70, whole rupees (23 Nov)
 
     def test_app_config_says_free_before_accept(self, hyd):
         from servers.platform_ops.app_config import _cancel_policy

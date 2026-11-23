@@ -82,6 +82,8 @@ WRITING_COMMANDS = [
     'reset_operator_mfa',
     # 22 Nov: every account's theme back to light; one audit row.
     'reset_themes_to_light',
+    # 23 Nov: stored INR trip money, settlements and platform fees to whole rupees; audited per row.
+    'round_inr_money_to_rupees',
     # Seals audit-chain forks from before the 22 Nov lock fix: one audit row, named actor.
     'seal_audit_chain_forks',
     'send_queued_notices',
@@ -296,6 +298,28 @@ TEST_ACCOUNT = 'qa.rider.flag@saaradhigo.test'
 def _prepare_mark_test(settings, monkeypatch):
     User.objects.create_user(phone_number='+917770001099', email=TEST_ACCOUNT, role='rider')
     return ['--emails', TEST_ACCOUNT, '--confirm'], {}
+
+
+def _prepare_inr_paise_fee(settings, monkeypatch):
+    """A stored INR platform fee with paise (before 23 Nov), for round_inr_money_to_rupees."""
+    from datetime import date
+
+    from finance_world import make_driver
+    from servers.pricing.fee_plan_models import DriverDailyFee, DriverFeePlan
+
+    driver = make_driver({}, '', 'inr', currency='INR', calling='91', city_node=False)
+    plan = DriverFeePlan.objects.create(country='IN', scope_code='IN-ZZ-QA', plan_type='fair_share', version=1,
+                                        status='active', effective_from=date(2026, 1, 1),
+                                        amounts={'sedan': {'per_trip_fee_minor': 1000}})
+    DriverDailyFee.objects.create(driver=driver, day=date(2026, 11, 20), plan=plan, plan_version=1, currency='INR',
+                                  trips=12, fares_minor=180000, fee_minor=14925, reason='charged', explanation='x')
+    return ['--confirm'], {}
+
+
+def _fp_inr_fees():
+    from servers.pricing.fee_plan_models import DriverDailyFee
+
+    return tuple(DriverDailyFee.objects.values_list('id', 'fee_minor').order_by('id'))
 
 
 def _prepare_dark_theme(settings, monkeypatch):
@@ -561,6 +585,8 @@ CASES = [
          _prepare_mark_test, _fp_test_accounts, dry_run=(['--emails', TEST_ACCOUNT], {})),
     Case('reset_themes_to_light --confirm', 'reset_themes_to_light',
          _prepare_dark_theme, _fp_themes, dry_run=([], {})),
+    Case('round_inr_money_to_rupees --confirm', 'round_inr_money_to_rupees',
+         _prepare_inr_paise_fee, _fp_inr_fees, dry_run=([], {})),
     Case('set_operator_password', 'set_operator_password',
          _prepare_set_password, _fp_passwords, needs_operator_to_prepare=True),
     Case('record_retroactive_access_audit', 'record_retroactive_access_audit',

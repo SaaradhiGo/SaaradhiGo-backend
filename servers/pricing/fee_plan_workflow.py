@@ -36,7 +36,14 @@ def plan_dict(p):
             'effective_from': p.effective_from.isoformat() if p.effective_from else None,
             'effective_to': p.effective_to.isoformat() if p.effective_to else None,
             'note': p.note, 'reason': p.reason, 'approval_request_id': p.approval_request_id,
-            'created_by': p.created_by_label}
+            'created_by': p.created_by_label,
+            # 22 Nov review: the place by name ("Treasure Valley", not "US-ID-TV").
+            'scope_name': _scope_name(p)}
+
+
+def _scope_name(p):
+    node = _node(p.country, p.scope_code)
+    return node.name if node is not None else (p.scope_code or p.country)
 
 
 def _node(country, scope_code):

@@ -600,6 +600,8 @@ def plan_words(plan, vehicle_type, country=None):
     cur = plan.currency
     if not any(v is not None for v in a.values()):
         return 'To be decided'
+    if _charges_nothing(plan, a):
+        return 'No platform fee'
     if plan.plan_type == DAILY_PASS:
         text = f"{_money(a.get('daily_pass_minor') or 0, cur)} a day, only on a day with a trip"
     elif plan.plan_type == PERCENT_COMMISSION:
@@ -642,8 +644,17 @@ def fee_notice(driver, today=None):
     return None
 
 
+def _charges_nothing(plan, a):
+    """A plan whose fee for this class is zero (Treasure Valley's launch plan): no platform fee."""
+    keys = {DAILY_PASS: 'daily_pass_minor', PERCENT_COMMISSION: 'commission_percent'}.get(
+        plan.plan_type, 'per_trip_fee_minor')
+    return a.get(keys) is not None and float(a.get(keys) or 0) == 0
+
+
 def _line_words(plan, vt):
     cur, a = plan.currency, plan.amounts_for(vt)
+    if _charges_nothing(plan, a):
+        return 'No platform fee'
     if plan.plan_type == DAILY_PASS:
         return f"{_money(a.get('daily_pass_minor') or 0, cur)} daily fee, charged only if you complete a trip"
     if plan.plan_type == PERCENT_COMMISSION:

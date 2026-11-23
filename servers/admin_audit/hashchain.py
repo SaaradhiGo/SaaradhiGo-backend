@@ -300,7 +300,7 @@ def write_anchor(Model, *, label):
     return row
 
 
-def write_fork_seal(Model, *, label, reason):
+def write_fork_seal(Model, *, label, reason, actor=None):
     """Seal forks written before the locking fix (22 Nov). Refuses unless
     every problem in the log is a broken link whose stored previous_hash is
     the hash of an EARLIER row (a fork) and no row's content is altered --
@@ -334,7 +334,7 @@ def write_fork_seal(Model, *, label, reason):
         rows = list(Model.objects.order_by('id'))
         first, last = rows[0].pk, rows[-1].pk
         row = Model(
-            actor_label=label, action=SEAL_ACTION, target_type=ANCHOR_TARGET_TYPE, target_id='',
+            actor=actor, actor_label=label, action=SEAL_ACTION, target_type=ANCHOR_TARGET_TYPE, target_id='',
             before={},
             after={
                 'fork_ids': forks, 'forks': len(forks),

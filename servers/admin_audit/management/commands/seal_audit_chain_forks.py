@@ -54,7 +54,7 @@ class Command(BaseCommand):
             raise CommandError(f'--reason must say why, at least {MIN_REASON} characters.')
         actor = require_actor(options, COMMAND)
         try:
-            row = write_fork_seal(AdminAuditLog, label=actor_label(actor, COMMAND), reason=reason)
+            row = write_fork_seal(AdminAuditLog, label=actor_label(actor, COMMAND), reason=reason, actor=actor)
         except ChainStateError as exc:
             raise CommandError(str(exc)) from exc
         after = inspect_chain(AdminAuditLog.objects.all())

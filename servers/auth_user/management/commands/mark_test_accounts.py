@@ -41,7 +41,11 @@ class Command(BaseCommand):
         if like:
             q |= Q(email__icontains=like)
         want = not options['unmark']
-        users = list(get_user_model().objects.filter(q).exclude(is_test_account=want))
+        from servers.auth_user.models import TestAccount
+
+        flagged = TestAccount.objects.values('user_id')
+        users = list(get_user_model().objects.filter(q).exclude(pk__in=flagged) if want
+                     else get_user_model().objects.filter(q, pk__in=flagged))
         self.stdout.write(f'{len(users)} account(s) to {"flag" if want else "unflag"}: '
                           + ', '.join(str(u.pk) for u in users[:50]))
         if not options['confirm']:
@@ -51,7 +55,10 @@ class Command(BaseCommand):
         reason = 'Test account: its trips are left out of every figure' if want else 'No longer a test account'
         with audit_context(actor=actor, actor_label=actor_label(actor, COMMAND), reason=reason):
             for u in users:
-                type(u).objects.filter(pk=u.pk).update(is_test_account=want)
+                if want:
+                    TestAccount.objects.get_or_create(user=u)
+                else:
+                    TestAccount.objects.filter(user=u).delete()
                 record_admin_action(None, action='test_account_flagged' if want else 'test_account_unflagged',
                                     target_type='user', target_id=str(u.pk),
                                     before={'is_test_account': not want}, after={'is_test_account': want},

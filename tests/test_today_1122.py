@@ -29,14 +29,16 @@ class TestTestTripsNeverCount:
         rider = world['rider']
         theirs = Trip.objects.filter(user_id=rider).count()
         before = real_trips(Trip.objects.all()).count()
-        type(rider).objects.filter(pk=rider.pk).update(is_test_account=True)
+        from servers.auth_user.models import TestAccount
+        TestAccount.objects.create(user=rider)
         assert theirs and real_trips(Trip.objects.all()).count() == before - theirs
 
     def test_a_test_drivers_trips_are_left_out(self, geo, world):
         user = world['hyd_driver'].user_id
         theirs = Trip.objects.filter(driver_id=world['hyd_driver']).count()
         before = real_trips(Trip.objects.all()).count()
-        type(user).objects.filter(pk=user.pk).update(is_test_account=True)
+        from servers.auth_user.models import TestAccount
+        TestAccount.objects.create(user=user)
         assert theirs and real_trips(Trip.objects.all()).count() == before - theirs
 
 

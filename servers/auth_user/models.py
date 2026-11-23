@@ -47,8 +47,6 @@ class customUser(AbstractUser):
         validators=[validate_image_file, validate_file_size],
     )
     fcm_token = models.CharField(max_length=255, blank=True, null=True)
-    #: A QA or demo account (22 Nov, owner): its trips never count in any figure (base/test_data.py).
-    is_test_account = models.BooleanField(default=False, db_index=True)
 
     # Which authority an OPERATOR holds. Meaningless on a rider or driver account:
     # `base.permissions.ops_role_of` returns None unless the account is already an
@@ -236,6 +234,18 @@ class UserPreference(models.Model):
     preferred_theme = models.CharField(max_length=5, choices=THEME_CHOICES,
                                        null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class TestAccount(models.Model):
+    """A QA or demo account (owner, 22 Nov): its trips never count in any figure (base/test_data.py).
+
+    Its own table, like UserPreference, so the user table -- which the migration tests rebuild at
+    old states -- is untouched. A row means "test account"; no row means a real one.
+    """
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, primary_key=True,
+                                related_name='test_account')
+    created_at = models.DateTimeField(auto_now_add=True)
 
 
 class AccountClosure(models.Model):

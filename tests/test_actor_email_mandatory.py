@@ -297,7 +297,9 @@ def _prepare_mark_test(settings, monkeypatch):
 
 
 def _fp_test_accounts():
-    return tuple(User.objects.filter(is_test_account=True).values_list('pk', flat=True))
+    from servers.auth_user.models import TestAccount
+
+    return tuple(TestAccount.objects.values_list('user_id', flat=True))
 
 
 def _prepare_seal(settings, monkeypatch):

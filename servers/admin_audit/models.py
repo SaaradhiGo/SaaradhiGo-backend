@@ -214,23 +214,27 @@ class AdminAuditLog(models.Model):
     objects = _AppendOnlyQuerySet.as_manager()
 
     def _link_into_chain(self):
-        """Attach this row to the end of the chain.
+        """Attach this row to the end of the chain. Called by `save` INSIDE
+        the transaction that inserts the row, after `chain_write_lock`.
 
-        Taken under `select_for_update` on the current tail, because two
-        requests inserting at the same moment would otherwise read the same
-        predecessor and produce two rows claiming the same place -- a fork
-        that `verify_chain` would report forever after. The lock is held for
-        one indexed row and released with the transaction.
+        WHY NOT `select_for_update` ON THE TAIL (the fix of 22 Nov)
+        ------------------------------------------------------------
+        That was the old way, and QA's chain forked 145 times with it. Two
+        things were wrong. The lock was released when this method's own
+        atomic block ended, BEFORE the INSERT; and even held, it locks the
+        current tail row, which a second writer waiting on it still reads
+        as the tail once the first commits -- the first writer's new row is
+        not that tail row, so both link to the same predecessor. Rows a few
+        milliseconds apart (QA rows 345/346, 366/367, 540/541) were exactly
+        such pairs. The lock is now one transaction-scoped advisory lock
+        held from reading the tail until the new row commits.
         """
-        from django.db import transaction
-
         from .hashchain import GENESIS, compute_hash
 
-        with transaction.atomic():
-            tail = (type(self).objects.select_for_update()
-                    .order_by('-id').values('content_hash').first())
-            self.previous_hash = (tail or {}).get('content_hash') or GENESIS
-            self.content_hash = compute_hash(self.previous_hash, self)
+        tail = (type(self).objects.order_by('-id')
+                .values('content_hash').first())
+        self.previous_hash = (tail or {}).get('content_hash') or GENESIS
+        self.content_hash = compute_hash(self.previous_hash, self)
 
     def save(self, *args, **kwargs):
         """Insert only.
@@ -252,7 +256,16 @@ class AdminAuditLog(models.Model):
             # would hash to something different from what it stores.
             if self.created_at is None:
                 self.created_at = timezone.now()
-            self._link_into_chain()
+            from django.db import transaction
+
+            from .hashchain import chain_write_lock
+
+            # Read the tail, hash, INSERT and commit under one lock, so no
+            # other writer can read the same tail in between.
+            with transaction.atomic():
+                chain_write_lock()
+                self._link_into_chain()
+                return super().save(*args, **kwargs)
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):

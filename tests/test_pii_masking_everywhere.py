@@ -559,6 +559,7 @@ INVENTORY = {
     'api/v1/command-centre/admin/needs-action/': False,
     'api/v1/command-centre/admin/engineering/': False,
     'api/v1/command-centre/admin/today/': False,
+    'api/v1/auth/admin/preferences/': False,
     'api/v1/pricing/admin/fee-plans/resolved/': False,
     'api/v1/command-centre/admin/pulse/': False,
     # The Safety board: the incident queue's own masked rows, by lane.

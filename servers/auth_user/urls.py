@@ -1,4 +1,5 @@
 from django.conf import settings
+from .console_prefs import console_preferences
 from django.urls import path
 from .ws_ticket import ws_ticket
 from .views import (
@@ -79,6 +80,7 @@ urlpatterns = [
     # than on a capability -- see mfa_views and the allowlist in
     # tests/test_admin_namespace_is_gated.py.
     path('admin/mfa/status/', mfa_status),
+    path('admin/preferences/', console_preferences),
     path('admin/mfa/recovery-codes/regenerate/', regenerate_recovery_codes),
 ]
 

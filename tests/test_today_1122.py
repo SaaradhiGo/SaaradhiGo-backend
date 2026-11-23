@@ -86,3 +86,18 @@ class TestToday:
 
         assert [c['code'] for c in data['countries']] == ['IN']
         assert [c['code'] for c in data['cities']] == ['IN-TG-HYD']
+
+
+class TestPlaceNamesNotStateCodes:
+    @pytest.mark.parametrize('address,city,expected', [
+        ('Boise, ID, USA', 'Treasure Valley', 'Boise'),
+        ('1910 University Dr, Boise, ID 83725, USA', 'Treasure Valley', 'Boise'),
+        ('Boise State University, 1910 University Dr, Boise, ID 83725, USA', 'Treasure Valley', 'Boise'),
+        ('The Village at Meridian, Meridian, ID 83646, USA', 'Treasure Valley', 'Meridian'),
+        ('Road No. 3, Banjara Hills, Hyderabad, Telangana 500034, India', 'Hyderabad', 'Banjara Hills'),
+        ('ID', 'Treasure Valley', None),
+    ])
+    def test_a_state_code_is_never_the_place(self, address, city, expected):
+        from base.locality import locality
+
+        assert locality(address, city) == expected

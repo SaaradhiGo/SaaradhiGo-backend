@@ -23,8 +23,11 @@ _NOT_LOCALITY = {
     'united kingdom', 'uk', 'australia',
     'telangana', 'andhra pradesh', 'karnataka', 'maharashtra', 'tamil nadu', 'kerala',
     'delhi', 'gujarat', 'rajasthan', 'west bengal', 'uttar pradesh', 'texas',
-    'california', 'ontario', 'england', 'new south wales',
+    'california', 'ontario', 'england', 'new south wales', 'idaho', 'washington', 'oregon',
 }
+#: A US state or a country as its two-letter code ("ID", "TX"), alone or before a ZIP code: never a
+#: locality (22 Nov: the console showed "ID → ID" for Boise trips).
+_STATE_CODE = re.compile(r'^[A-Z]{2}(\s+\d{5}(-\d{4})?)?$')
 _MAX = 40
 
 
@@ -35,7 +38,7 @@ def _clean(part):
 def locality(address, city_name=None):
     if not address:
         return None
-    parts = [_clean(p) for p in str(address).split(',') if _clean(p)]
+    parts = [_clean(p) for p in str(address).split(',') if _clean(p) and not _STATE_CODE.match(_clean(p))]
     if not parts:
         return None
     city = (city_name or '').strip().lower()

@@ -120,7 +120,16 @@ def zone_timezone_for_country(country):
 # ---------------------------------------------------------------------------
 
 def window_bounds(window, now, tz):
-    """`(start, end)` for `window`, both aware UTC datetimes."""
+    """`(start, end)` for `window`, both aware UTC datetimes.
+
+    23 Nov: `window` may also be `('range', date_from, date_to)`, local calendar days in the
+    city's own zone (the dashboard's date presets); the end is never later than now.
+    """
+    if isinstance(window, tuple) and window and window[0] == 'range':
+        _, first, last = window
+        start = datetime.combine(first, time.min, tzinfo=tz)
+        end = datetime.combine(last + timedelta(days=1), time.min, tzinfo=tz)
+        return start.astimezone(dt_timezone.utc), min(end.astimezone(dt_timezone.utc), now)
     if window not in OVERVIEW_WINDOWS:
         raise ValueError(f'window must be one of {OVERVIEW_WINDOWS}, got {window!r}')
     if window == WINDOW_TODAY:

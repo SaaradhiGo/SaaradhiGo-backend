@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 MACRO_TARGET = 'support_macro'
 INBOX_TARGET = 'operator_notification'
-MAX_RANGE_DAYS = 92
+MAX_RANGE_DAYS = 366  # 23 Nov: the "12 months" date preset on every page
 MAX_TICKETS = 20000
 DEFAULT_RANGE_DAYS = 7
 

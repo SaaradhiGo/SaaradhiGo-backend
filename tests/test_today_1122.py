@@ -103,3 +103,19 @@ class TestPlaceNamesNotStateCodes:
         from base.locality import locality
 
         assert locality(address, city) == expected
+
+
+class TestTodayRange1123:
+    """23 Nov: the dashboard's date presets ask for local days, at most 12 months."""
+
+    def test_a_range_is_counted_and_echoed(self):
+        from datetime import date
+
+        from servers.command_centre.overview import window_bounds
+        from zoneinfo import ZoneInfo
+        from django.utils import timezone as tz
+
+        now = tz.now()
+        start, end = window_bounds(('range', date(2026, 11, 1), date(2026, 11, 7)), now, ZoneInfo('Asia/Kolkata'))
+        assert start.isoformat().startswith('2026-10-31T18:30')
+        assert end <= now

@@ -240,7 +240,7 @@ class TestTheCitysOwnDay:
     def test_a_bad_date_and_an_oversized_range_are_400(self, world):
         client, _ = world.finance
         assert client.get(f'{BASE}/settlements/?from=nope').status_code == 400
-        assert client.get(f'{BASE}/overview/?from=2026-01-01&to=2026-12-31').status_code == 400
+        assert client.get(f'{BASE}/overview/?from=2025-01-01&to=2026-12-31').status_code == 400
         assert client.get(f'{BASE}/overview/?from=2026-03-05&to=2026-03-01').status_code == 400
 
 

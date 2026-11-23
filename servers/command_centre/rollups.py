@@ -24,6 +24,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from base.money import charged_fare
+from base.test_data import real_trips
 
 from .models import CityRollup
 
@@ -58,7 +59,7 @@ def count(start, end):
     from servers.support.models import SupportTicket
 
     rows = defaultdict(lambda: defaultdict(int))
-    requested = (Trip.objects.filter(requested_at__gte=start, requested_at__lt=end,
+    requested = (real_trips(Trip.objects).filter(requested_at__gte=start, requested_at__lt=end,
                                      zone__geo_node__isnull=False)
                  .values_list('zone__geo_node_id', 'requested_at', 'accepted_at', 'reached_at',
                               'status_id__status_code', 'currency'))
@@ -75,7 +76,7 @@ def count(start, end):
                 values['unfulfilled'] = 1
         _add(rows, city, req_at, cur, **values)
 
-    completed = (Trip.objects.filter(completed_at__gte=start, completed_at__lt=end,
+    completed = (real_trips(Trip.objects).filter(completed_at__gte=start, completed_at__lt=end,
                                      status_id__status_code='completed',
                                      zone__geo_node__isnull=False)
                  .annotate(fare=charged_fare())

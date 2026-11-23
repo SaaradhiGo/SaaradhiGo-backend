@@ -409,10 +409,12 @@ def set_city_status(node, status, actor, reason, request=None):
             # 22 Nov: back to "not launched" -- only for a city that never ran a trip (QA's
             # Vijayawada, Visakhapatnam and Warangal were opened by a seed). A city that ran is
             # paused, never un-launched: its history stays a live city's history.
+            from base.test_data import real_trips
             from servers.ride.models import Trip
 
-            if Trip.objects.filter(zone__geo_node=locked, is_seed=False,
-                                   status_id__status_code='completed').exists():
+            # Test trips (seed trips, test accounts) do not make a city "one that ran".
+            if real_trips(Trip.objects.filter(zone__geo_node=locked,
+                                              status_id__status_code='completed')).exists():
                 raise ValueError(f'{locked.code} has completed trips: pause it instead')
         if status == PAUSED and locked.status != ACTIVE:
             raise ValueError(f'{locked.code} is {locked.status}, not live: only a live city '

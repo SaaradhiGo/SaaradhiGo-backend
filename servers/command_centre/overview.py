@@ -48,6 +48,7 @@ from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Mi
 from django.utils import timezone
 
 from base.countries import get_country
+from base.test_data import real_trips
 from base.market_time import zone_timezone
 from base.money import charged_fare, normalize_currency
 
@@ -233,7 +234,7 @@ def measure_trips(contexts, bounds_by_city):
             'riders': Count('user_id', distinct=True, filter=req),
         }
 
-    return _aggregate(Trip.objects.all(), contexts, build)
+    return _aggregate(real_trips(Trip.objects.all()), contexts, build)
 
 
 def measure_collected(contexts, bounds_by_city):
@@ -245,7 +246,7 @@ def measure_collected(contexts, bounds_by_city):
                 & Q(status_id__status_code='completed'))
         return {'collected': Sum(charged_fare(), filter=done)}
 
-    return _by_currency(Trip.objects.all(), contexts, build)
+    return _by_currency(real_trips(Trip.objects.all()), contexts, build)
 
 
 def measure_riders_24h(contexts, now):
@@ -260,7 +261,7 @@ def measure_riders_24h(contexts, now):
                 filter=trip_anchor(ctx) & between('requested_at', (now - DAY - WEEK, now - WEEK))),
         }
 
-    return _aggregate(Trip.objects.all(), contexts, build)
+    return _aggregate(real_trips(Trip.objects.all()), contexts, build)
 
 
 def online_driver_ids():

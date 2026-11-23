@@ -120,6 +120,10 @@ def public_fares(request):
             if card.vehicle_type_id in seen:
                 continue
             seen.add(card.vehicle_type_id)
+            from servers.pricing.fee_plans import class_offered
+
+            if not class_offered(zone, card.vehicle_type.type):
+                continue  # 22 Nov: no driver fee approved for this class yet
             band = limits_for_zone(zone, card.surge_cap_multiplier)
             rows.append({
                 'vehicle': card.vehicle_type.type,

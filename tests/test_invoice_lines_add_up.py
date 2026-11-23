@@ -217,3 +217,13 @@ def test_with_mail_the_link_is_sent_and_resend_works(monkeypatch, settings):
     again = c.post(RESEND, {}, format='json')
     assert again.status_code == 200, again.content.decode()
     assert len(mail.outbox) == n + 1
+
+
+@pytest.fixture(autouse=True)
+def _the_test_class_has_a_driver_fee(db):
+    """22 Nov: riders are offered only classes with an approved driver fee; this file's class has one."""
+    from servers.pricing.fee_plan_models import DriverFeePlan
+
+    for plan in DriverFeePlan.objects.filter(status='active'):
+        plan.amounts = {**(plan.amounts or {}), 'parity-sedan': {'per_trip_fee_minor': 1000}}
+        plan.save(update_fields=['amounts'])

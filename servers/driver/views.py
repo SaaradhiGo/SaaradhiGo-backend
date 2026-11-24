@@ -288,6 +288,7 @@ def _add_places(data):
         d['pickup_address'] = t.pickup_address if t else None
         d['destination_address'] = t.destination_address if t else None
         d['ride_class'] = str(vt) if vt else None
+        d['trip_ref'] = t.public_ref if t else None  # 24 Nov: the reference the driver sees
 
 
 @api_view(['GET'])

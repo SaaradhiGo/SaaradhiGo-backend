@@ -41,7 +41,7 @@ def _who(user):
 def refund_row(a):
     trip = a.trip
     return {
-        'id': a.id, 'source': 'ledger', 'trip_id': a.trip_id,
+        'id': a.id, 'source': 'ledger', 'trip_id': a.trip_id, 'trip_ref': getattr(trip, 'public_ref', None),
         'amount_minor': a.amount_minor, 'currency': a.currency,
         'method': a.method, 'method_label': a.get_method_display(),
         'status': a.status, 'reason': a.reason,
@@ -53,8 +53,11 @@ def refund_row(a):
 
 def waiting_row(r):
     trip_id = r.target_id if r.target_type == 'trip' else None
+    from servers.ride.models import Trip
+    trip_ref = Trip.objects.filter(pk=trip_id).values_list('public_ref', flat=True).first() if trip_id else None
     return {
-        'id': r.id, 'source': 'approval', 'trip_id': int(trip_id) if trip_id else None,
+        'id': r.id, 'source': 'approval', 'trip_id': int(trip_id) if trip_id else None, 'trip_ref': trip_ref,
+        'approval_ref': r.public_ref,
         'amount_minor': r.amount, 'currency': r.currency,
         'method': (r.payload or {}).get('method', ''), 'method_label': '',
         'status': 'waiting', 'reason': r.request_reason,

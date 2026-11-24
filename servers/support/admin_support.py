@@ -154,8 +154,10 @@ def _requester(ticket):
         kind, page = 'rider', {'type': 'rider', 'id': user.id}
     else:
         kind, page = (user.role or 'user'), None
+    profile_row = driver if driver is not None else rider
     return {
         'id': user.id, 'role': kind, 'page': page,
+        'ref': getattr(profile_row, 'public_ref', None),  # 24 Nov: the person's reference
         'full_name': user.full_name, 'phone_number': user.phone_number,
         'email': user.email,
     }

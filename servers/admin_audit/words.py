@@ -47,7 +47,7 @@ FIELD_WORDS = {
     'warn_value': 'warning level', 'critical_value': 'critical level', 'instant_cashout_enabled': 'Withdraw now',
     # 24 Nov (owner): no field names on the page.
     'estimated_fare_minor': 'quoted fare', 'final_fare_minor': 'fare', 'net_whole': 'driver earning',
-    'net_shown': 'driver earning', 'commission_whole': 'commission', 'correction_minor': 'balance correction',
+    'net_shown': 'driver earning', 'commission_whole': 'driver fee', 'correction_minor': 'balance correction',
     'wallets_moved': 'driver balances corrected', 'fee_minor': 'platform fee', 'trips': 'trips',
     'fee_days': 'fee days',
 }

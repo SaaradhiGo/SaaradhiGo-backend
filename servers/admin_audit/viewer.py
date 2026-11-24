@@ -192,8 +192,27 @@ def scrub(value):
     return value
 
 
+#: 24 Nov (owner): a command or automatic actor in words, never its key.
+COMMAND_WORDS = {
+    'backfill_reports': 'report rebuild', 'mark_test_accounts': 'marking test accounts',
+    'reset_themes_to_light': 'theme reset', 'archive_city': 'archiving a city',
+    'assign_public_refs': 'giving records references', 'retire_commission_rules': 'retiring commission rules',
+    'qa_final_1124': 'QA clean-up (24 Nov)', 'round_inr_money_to_rupees': 'whole-rupee rounding',
+    'seal_audit_chain_forks': 'sealing audit chain forks', 'seed_admin_access': 'access set-up',
+}
+
+
 def _actor_label(entry):
     label = entry.actor_label or ''
+    if label.startswith('system:'):
+        from servers.approvals.describe import actor_words
+        return actor_words(label)
+    if ' via ' in label:
+        who, cmd = label.split(' via ', 1)
+        cmd = cmd.strip()
+        words = COMMAND_WORDS.get(cmd, cmd.replace('_', ' ').replace(' (management command)', ''))
+        who = mask_contact(who) if ('@' in who or re.sub(r'[\s+\-()]', '', who).isdigit()) else who
+        return f'{who}, by {words}'
     if label and ('@' in label or re.sub(r'[\s+\-()]', '', label).isdigit()):
         return mask_contact(label)
     return label or None

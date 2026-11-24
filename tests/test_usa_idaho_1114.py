@@ -38,6 +38,9 @@ def _client(user):
 @pytest.fixture
 def idaho():
     seed_admin_access()
+    # These tests are about a US market with no fee plan yet: drop the test market's default plan.
+    from servers.pricing.fee_plan_models import DriverFeePlan
+    DriverFeePlan.objects.filter(country='US', version=900).delete()
     zone = ServiceZone.objects.get(code='US-ID-TV')
     ServiceZone.objects.filter(pk=zone.pk).update(is_active=True)
     zone.refresh_from_db()
@@ -276,6 +279,8 @@ def test_the_qa_seed_builds_a_bookable_treasure_valley_with_an_onboarded_driver(
             self.instance.save()
     monkeypatch.setattr(FieldFile, 'save', stored)
     monkeypatch.delenv('ENVIRONMENT', raising=False)
+    from servers.pricing.fee_plan_models import DriverFeePlan as _Plan
+    _Plan.objects.filter(country='US', version=900).delete()   # no test-market default plan here
     call_command('seed_us_idaho_qa', actor_email=seed_actor().email)
     call_command('seed_us_idaho_qa', actor_email=seed_actor().email)   # idempotent
     d = Driver.objects.get(user_id__phone_number='+12085550120')

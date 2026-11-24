@@ -2,7 +2,8 @@
 
 A receipt is generated when a trip transitions to `completed`. Rule:
 
-  * receipt_number is unique and stable: `SG-<YYYY>-<trip_id>-v<n>`
+  * receipt_number is a gap-free series per legal entity (24 Nov): DTS/<FY>/NNNNNN, DTL/<year>/NNNNNN;
+    receipts issued before keep their old SG-<YYYYMM>-<trip>-v<n> numbers
   * html_body snapshots the rendered email at issue-time so a re-send
     months later sends the exact same content (auditable).
   * GST is captured from the trip's effective RateCard at issue time
@@ -878,6 +879,15 @@ def _receipt_tax(trip, total, rate):
     }
 
 
+def _next_receipt_number(trip):
+    """The next number in the gap-free series of the entity operating the trip's market (owner,
+    24 Nov): DTS/<FY>/NNNNNN in India, DTL/<year>/NNNNNN in the US. Call inside the transaction."""
+    from servers.ride.receipt_numbers import allocate
+
+    country = getattr(getattr(trip, 'zone', None), 'country', None) or 'IN'
+    return allocate(country, trip.completed_at or timezone.now())
+
+
 def issue_receipt(trip, force_resend: bool = False):
     """Generate (and email) a Receipt for a completed trip.
 
@@ -913,26 +923,34 @@ def issue_receipt(trip, force_resend: bool = False):
     gst_amount, tax_mode = tax['amount'], tax['mode']
     tax_label, currency = tax['label'], tax['currency']
 
-    receipt_number = f"SG-{(trip.completed_at or timezone.now()).strftime('%Y%m')}-{trip.id}-v1"
+    from django.db import IntegrityError
 
-    with transaction.atomic():
-        receipt = Receipt.objects.create(
-            trip_id=trip,
-            user_id=rider,
-            receipt_number=receipt_number,
-            total_fare=total,
-            gst_amount=gst_amount,
-            currency=currency,
-            payment_method=trip.payment_method or '',
-            payment_status=trip.payment_status or '',
-            sent_to_email=rider.email or '',
-            html_body=_render_receipt_html(
-                trip=trip, rider=rider, receipt_number=receipt_number,
-                gst_rate=gst_rate, gst_amount=gst_amount, fare_pricing=fare_pricing,
-                currency=currency, tax_label=tax_label, tax_mode=tax_mode,
-            ),
-            version=1,
-        )
+    try:
+        with transaction.atomic():
+            # 24 Nov (owner): the next number in the entity's gap-free series, taken in this transaction.
+            # A second worker issuing the same trip at the same moment hits the one-per-trip-and-version
+            # constraint; its transaction (and the number it took) rolls back and it returns the first.
+            receipt_number = _next_receipt_number(trip)
+            receipt = Receipt.objects.create(
+                trip_id=trip,
+                user_id=rider,
+                receipt_number=receipt_number,
+                total_fare=total,
+                gst_amount=gst_amount,
+                currency=currency,
+                payment_method=trip.payment_method or '',
+                payment_status=trip.payment_status or '',
+                sent_to_email=rider.email or '',
+                html_body=_render_receipt_html(
+                    trip=trip, rider=rider, receipt_number=receipt_number,
+                    gst_rate=gst_rate, gst_amount=gst_amount, fare_pricing=fare_pricing,
+                    currency=currency, tax_label=tax_label, tax_mode=tax_mode,
+                ),
+                version=1,
+            )
+    except IntegrityError:
+        # Another worker issued this trip's receipt first: return that one (no number was used).
+        return Receipt.objects.filter(trip_id=trip).order_by('-version', '-id').first()
 
     # Build + attach the PDF blob BEFORE we email so we can include it
     # as an attachment. Failure to render PDF does not block the email.
@@ -962,23 +980,23 @@ def reissue_receipt(trip):
     total = _total_fare(trip)
     tax = _receipt_tax(trip, _tax_basis(trip, total), gst_rate)
     gst_amount = tax['amount']
-    receipt_number = f"SG-{(trip.completed_at or timezone.now()).strftime('%Y%m')}-{trip.id}-v{new_version}"
-
-    receipt = Receipt.objects.create(
-        trip_id=trip, user_id=rider, receipt_number=receipt_number,
-        total_fare=total, gst_amount=gst_amount,
-        currency=tax['currency'],
-        payment_method=trip.payment_method or '',
-        payment_status=trip.payment_status or '',
-        sent_to_email=rider.email or '',
-        html_body=_render_receipt_html(
-            trip=trip, rider=rider, receipt_number=receipt_number,
-            gst_rate=gst_rate, gst_amount=gst_amount, fare_pricing=fare_pricing,
-            currency=tax['currency'], tax_label=tax['label'],
-            tax_mode=tax['mode'],
-        ),
-        version=new_version,
-    )
+    with transaction.atomic():
+        receipt_number = _next_receipt_number(trip)  # 24 Nov: a new document takes the next number
+        receipt = Receipt.objects.create(
+            trip_id=trip, user_id=rider, receipt_number=receipt_number,
+            total_fare=total, gst_amount=gst_amount,
+            currency=tax['currency'],
+            payment_method=trip.payment_method or '',
+            payment_status=trip.payment_status or '',
+            sent_to_email=rider.email or '',
+            html_body=_render_receipt_html(
+                trip=trip, rider=rider, receipt_number=receipt_number,
+                gst_rate=gst_rate, gst_amount=gst_amount, fare_pricing=fare_pricing,
+                currency=tax['currency'], tax_label=tax['label'],
+                tax_mode=tax['mode'],
+            ),
+            version=new_version,
+        )
     _attach_pdf_to_receipt(receipt)
     ok, err = _send_receipt_email(receipt)
     if ok:

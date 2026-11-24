@@ -71,9 +71,9 @@ def class_offered(zone, vehicle_type):
         scopes, day = scope_codes_of_zone(zone), local_day(country, zone=zone)
         plan = resolve(country, scopes, day, vehicle_type)
         if plan is None:
-            # No plan covers this class. In a fee-plan place (some plan applies here) the class's
-            # fee is undecided; with no fee plan at all, the commission rules charge it as before.
-            return resolve(country, scopes, day) is None
+            # 24 Nov (owner): no fallback. Drivers are charged only through an approved fee plan,
+            # so a class no plan covers is not offered.
+            return False
     except Exception:  # noqa: BLE001
         logger.exception('class_offered: fee plan lookup failed')
         return True

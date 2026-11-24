@@ -41,7 +41,7 @@ def items(node):
 class TestReadinessItems:
     def test_a_fresh_draft_city_fails_every_blocking_item_and_names_where_to_fix_it(self, geo):
         got = items(geo['US-TX-AUS'])        # no zone, no cards, no payout rules, no gateway
-        for key in ('zone', 'fare_card', 'commission', 'safety_coverage', 'payout_config',
+        for key in ('zone', 'fare_card', 'fee_plan', 'safety_coverage', 'payout_config',
                     'approval_policies', 'payment_gateway'):
             assert key in got
         assert got['zone']['status'] == 'missing' and got['zone']['blocking'] is True
@@ -50,10 +50,10 @@ class TestReadinessItems:
             assert set(item) >= {'key', 'ok', 'detail', 'status', 'blocking', 'label', 'href'}
             assert item['status'] in ('ok', 'missing', 'warning')
 
-    def test_zone_fare_card_commission_and_safety_go_green_together(self, geo, settings):
+    def test_zone_fare_card_fee_plan_and_safety_go_green_together(self, geo, settings):
         ready_up(geo, settings)
         got = items(geo[WGL])
-        for key in ('zone', 'fare_card', 'commission', 'safety_coverage'):
+        for key in ('zone', 'fare_card', 'fee_plan', 'safety_coverage'):
             assert got[key]['status'] == 'ok', got[key]
 
     def test_payout_config_ok_and_missing(self, geo):

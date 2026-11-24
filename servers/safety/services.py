@@ -225,7 +225,7 @@ def attach_sos(event):
     raiser = event.user
     driver = getattr(raiser, 'driver', None) if raiser is not None else None
     rider_user = raiser if (raiser is not None and getattr(raiser, 'rider', None) is not None) else None
-    title = f'SOS ({event.event_type})' + (f' on trip {event.trip_id}' if event.trip_id else '')
+    title = f'SOS ({event.event_type})' + (f' on trip {refs.trip_ref(event.trip)}' if event.trip_id else '')
 
     with transaction.atomic():
         incident, created = open_incident(
@@ -287,7 +287,7 @@ def open_from_ticket(ticket, *, actor, note=''):
 def open_from_signal(signal, *, category, severity='high'):
     """Open (or join) the incident for a signal's trip. Idempotent."""
     trip = signal.trip
-    title = f'{signal.get_kind_display()} on trip {trip.id}'
+    title = f'{signal.get_kind_display()} on trip {refs.trip_ref(trip)}'
     incident, created = open_incident(
         source=SRC_SIGNAL, category=category, severity=severity, title=title, trip=trip,
         driver=trip.driver_id)

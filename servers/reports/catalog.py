@@ -84,12 +84,12 @@ TRIPS = Report(
 
 REVENUE = Report(
     key='revenue', area='Revenue', title='Revenue and take rate',
-    description='GMV, what riders paid, commission, platform costs and take rate by vehicle class and period, per currency.',
+    description='GMV, what riders paid, driver fees, platform costs and take rate by vehicle class and period, per currency.',
     gate=MONEY_GATE, money=True, groups=('vehicle', 'none', 'city'), default_group='vehicle',
     columns=(
         col('trips_completed', 'Completed trips'), col('settled_trips', 'Settled trips'),
         col('gmv_minor', 'GMV (full fare)', MONEY), col('rider_paid_minor', 'Rider paid', MONEY),
-        col('commission_minor', 'Commission', MONEY), col('take_rate', 'Take rate', PERCENT),
+        col('commission_minor', 'Driver fee', MONEY), col('take_rate', 'Take rate', PERCENT),
         col('driver_net_minor', 'Driver net', MONEY), col('promo_cost_minor', 'Promo cost', MONEY),
         col('platform_funded_trip_end_minor', 'Platform-funded trip ends', MONEY),
         col('regulatory_fee_expense_minor', 'Regulatory fee expense', MONEY),
@@ -100,10 +100,10 @@ REVENUE = Report(
         col('avg_fare_minor', 'Average fare', MONEY), col('gmv_growth_percent', 'GMV vs previous period', PERCENT),
     ),
     definitions=(
-        'GMV, commission and driver net come from the settlement of each trip (its current version, on the day it settled): the commission is the rate applied at settlement, not today\'s rate card.',
-        'Rider paid is the charged fare (the discounted fare when a promo applied) of trips completed that day; it is the old executive_revenue "gross booking value".',
+        "GMV, driver fee and driver net come from the settlement of each trip (its current version, on the day it settled): the driver fee is what the fee plan took at settlement, not today's rates.",
+        'Rider paid is the charged fare (the discounted fare when a promo applied) of trips completed that day; the same figure as "gross booking value".',
         'Promo cost comes from the promotions ledger; incentive and referral rewards, platform-funded trip ends and reward recovery from the wallet ledger; the regulatory fee from platform expenses; refunds from trip refunds.',
-        'Platform cost = promo + platform-funded trip ends + regulatory fee + incentive + referral rewards - reward recovery. Net take = commission - platform cost. Refunds are shown, not netted.',
+        'Platform cost = promo + platform-funded trip ends + regulatory fee + incentive + referral rewards - reward recovery. Net take = driver fee - platform cost. Refunds are shown, not netted.',
         'Money is never added across currencies: each currency has its own rows and totals.',
         'Rewards, recovery and a vehicle filter: rewards are not tied to a vehicle class, so they appear only under "Not vehicle-specific" and not at all when a vehicle class is chosen.',
     ),
@@ -127,7 +127,7 @@ PROMOTIONS = Report(
     definitions=(
         'Promo cost is the platform-funded discount in the promotions ledger; incentive and referral rewards are credits in the driver and rider wallet ledgers; recovery is the amount taken back after a reviewed fraud decision.',
         'Net promotion cost = promo + incentive + referral - recovery.',
-        'GMV is the full fare of the trips settled that day, before any promo. It is shown here so promo cost can be read against it; commission, take rate and platform revenue stay in Revenue (Finance).',
+        'GMV is the full fare of the trips settled that day, before any promo. It is shown here so promo cost can be read against it; driver fees, take rate and platform revenue stay in Revenue (Finance).',
     ),
 )
 

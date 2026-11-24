@@ -50,23 +50,23 @@ _COMMISSION_SAMPLE = {'effective_date': '12 November 2026', 'scope': 'Sedan in H
 
 COPY = {
     (COMMISSION, 'in_app'): dict(
-        title='Commission change from {effective_date}',
-        body='From {effective_date} the platform commission for {scope} changes from '
+        title='Driver fee change from {effective_date}',
+        body='From {effective_date} the driver fee for {scope} changes from '
              '{old_rate} to {new_rate}. It applies to trips that start on or after that date.',
         variables=_COMMISSION_VARS, sample=_COMMISSION_SAMPLE),
     (COMMISSION, 'push'): dict(
-        title='Commission change from {effective_date}',
-        body='The commission for {scope} changes from {old_rate} to {new_rate}.',
+        title='Driver fee change from {effective_date}',
+        body='The driver fee for {scope} changes from {old_rate} to {new_rate}.',
         variables=_COMMISSION_VARS, sample=_COMMISSION_SAMPLE),
     (COMMISSION, 'email'): dict(
-        subject='Commission change from {effective_date}',
-        body='Hello,\n\nFrom {effective_date} the platform commission for {scope} changes from '
+        subject='Driver fee change from {effective_date}',
+        body='Hello,\n\nFrom {effective_date} the driver fee for {scope} changes from '
              '{old_rate} to {new_rate}. It applies to trips that start on or after that date.'
              '\n\nYou can review your earnings in the app, or contact driver support.\n\n'
              'SaaradhiGo',
         variables=_COMMISSION_VARS, sample=_COMMISSION_SAMPLE),
     (COMMISSION, 'sms'): dict(
-        body='SaaradhiGo: from {effective_date} the commission for {scope} changes from '
+        body='SaaradhiGo: from {effective_date} the driver fee for {scope} changes from '
              '{old_rate} to {new_rate}. Contact driver support in the app for details.',
         variables=_COMMISSION_VARS, sample=_COMMISSION_SAMPLE),
 
@@ -136,7 +136,7 @@ COPY = {
     (INCENTIVE_COMPLETED, 'in_app'): dict(
         title='You completed {name}',
         body='You earned {reward} for {name}. It is added to your balance and paid out in your '
-             'next weekly payout, with no commission.',
+             'next weekly payout, with no driver fee.',
         variables=['name', 'reward'], sample={'name': 'Weekend 20', 'reward': 'Rs. 500.00'}),
     (INCENTIVE_COMPLETED, 'push'): dict(
         title='You completed {name}',

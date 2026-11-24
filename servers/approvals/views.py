@@ -109,6 +109,12 @@ def shown(row, user):
     action = ACTIONS.get(row.action_key)
     data['ref'] = refs.ref(refs.APPROVAL, row.id)
     data['title'] = action.description if action else row.action_key
+    # 24 Nov (owner): say exactly what changes, and name automatic makers in words.
+    from servers.approvals.describe import actor_words, describe
+    data['summary'] = describe(row, data['title'])
+    for who in ('maker', 'checker'):
+        if isinstance(data.get(who), dict):
+            data[who]['label'] = actor_words(data[who].get('label'))
     data['subjects'], data['blockers'] = [], []
     if row.action_key == FINANCE_PAYOUT:
         data['subjects'], data['blockers'] = _withdrawal_facts(row)

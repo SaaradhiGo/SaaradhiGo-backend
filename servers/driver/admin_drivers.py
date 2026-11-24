@@ -363,7 +363,8 @@ def _base_row(driver):
         'license_expiry': _iso(driver.license_expiry),
         'status': driver.status,
         'total_trips': getattr(driver, 'trip_count', None),
-        'ratings': str(driver.ratings),
+        # 24 Nov: no rated trips reads "—", never the 5.00 default.
+        'ratings': str(driver.ratings) if getattr(driver, 'rating_count', 1) else None,
         'rating_count': getattr(driver, 'rating_count', None),
         'approved': driver.approved,
         'active_vehicle': driver.active_vehicle_id,

@@ -116,7 +116,7 @@ def _gateway_status(kind, country_code):
     blocker = PAYMENT_BLOCKER_US if currency and currency != 'INR' else None
     return {'configured': False, 'provider': None, 'currency': currency, 'mode': 'off',
             'blocker': blocker, 'env': (),
-            'note': (f'not configured, blocker #17: no {noun} is configured for {country_code} '
+            'note': (f'Not set up: no {noun} is configured for {country_code} '
                      'until Stripe Connect is confirmed.') if blocker
             else f'no {noun} is configured for this country.'}
 
@@ -173,12 +173,31 @@ def _payment_times(provider='cashfree'):
 # The table
 # ---------------------------------------------------------------------------
 
+#: 24 Nov (owner): what each go-live blocker is and who clears it, in words for a Super Admin.
+BLOCKER_WORDS = {
+    4: ('File storage needs its Cloudflare R2 keys.', 'Engineering'),
+    17: ('The US card gateway waits on the Stripe Connect account being confirmed.', 'Srini (company owner)'),
+    18: ('India SMS needs a DLT-registered sender name and message templates.', 'Srini (company owner)'),
+    19: ('US SMS needs the sending number registered for business texting (10DLC).', 'Srini (company owner)'),
+    20: ('Email needs Amazon SES moved out of its test sandbox.', 'Engineering'),
+    21: ('WhatsApp and push need the business account and Firebase project approved.', 'Engineering'),
+}
+
+
+def waits_on(blocker):
+    """"India SMS needs ... Who fixes it: Srini (company owner)." or ''."""
+    if not blocker:
+        return ''
+    what, who = BLOCKER_WORDS.get(blocker, ('A go-live step is still open.', 'Engineering'))
+    return f'{what} Who fixes it: {who}.'
+
+
 def _row(ptype, label, provider, country, configured, mode, *, env=(), blocker=None, note='',
          last_ok=None, last_bad=None):
     return {
         'type': ptype, 'label': label, 'provider': provider, 'country': country,
         'configured': bool(configured), 'mode': mode, 'env_vars': list(env),
-        'blocker': blocker, 'note': note,
+        'blocker': blocker, 'note': note, 'waits_on': waits_on(blocker),
         'last_success_at': _iso(last_ok), 'last_error_at': _iso(last_bad),
     }
 
@@ -223,11 +242,11 @@ def rows():
             ok, bad = _message_times(configured, channel)
             note = ''
             if not nconfig.live_send_enabled():
-                note = 'Live sending is off (NOTIFY_LIVE_SEND): messages go to the stub.'
+                note = 'Live sending is switched off here, so messages go to the test sender and nobody receives them.'
             elif not present:
                 note = 'Live sending is on but the credentials are not all set.'
             elif nconfig.sns_blocked(configured):
-                note = 'AWS SNS is sandbox-only: SNS_LIVE_CONFIRMED is off, so nothing is sent.'
+                note = 'Amazon SNS is still in its test mode, so nothing is sent.'
                 mode = 'stubbed'
             out.append(_row(
                 channel, CHANNEL_LABEL[channel], configured, code, present, mode,
@@ -240,7 +259,7 @@ def rows():
                     env=('AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION',
                          'AWS_SNS_SENDER_ID'),
                     blocker=18 if sns else None,
-                    note='India needs a DLT-registered sender and template (blocker #18).'))
+                    note='India needs a DLT-registered sender and template.'))
     maps = _present('GOOGLE_MAPS_API_KEY')
     out.append(_row('maps', 'Maps and places', 'google_maps', 'all', maps,
                     'live' if maps else 'off', env=('GOOGLE_MAPS_API_KEY',)))
@@ -249,7 +268,7 @@ def rows():
                     'live' if store else 'off',
                     env=('AWS_S3_BUCKET_NAME', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'),
                     blocker=None if store else 4,
-                    note='' if store else 'Document upload needs the R2 credentials (blocker #4).'))
+                    note='' if store else 'Document upload needs the storage keys.'))
     sentry = _present('SENTRY_DSN')
     out.append(_row('error_tracking', 'Error tracking', 'sentry', 'all', sentry,
                     'live' if sentry else 'off', env=('SENTRY_DSN',)))

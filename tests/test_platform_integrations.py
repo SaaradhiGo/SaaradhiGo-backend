@@ -53,7 +53,7 @@ class TestNoSecretEverLeaves:
         for row in data(client.get(URL))['rows']:
             assert set(row) == {'type', 'label', 'provider', 'country', 'configured', 'mode',
                                 'env_vars', 'blocker', 'note', 'last_success_at',
-                                'last_error_at'}
+                                'last_error_at', 'waits_on'}
             assert isinstance(row['configured'], bool)
             assert row['mode'] in ('live', 'sandbox', 'stubbed', 'off')
 
@@ -68,7 +68,7 @@ class TestRows:
         assert got[('payment_gateway', 'IN')]['mode'] == 'sandbox'
         us = got[('payment_gateway', 'US')]
         assert (us['configured'], us['mode'], us['blocker']) == (False, 'off', 17)
-        assert 'not configured, blocker #17' in us['note']
+        assert 'Not set up' in us['note'] and 'Stripe Connect' in us['waits_on']
         settings.CASHFREE_ENVIRONMENT = 'production'
         assert rows(client)[('payment_gateway', 'IN')]['mode'] == 'live'
 
@@ -78,7 +78,7 @@ class TestRows:
         client, _ = operator('super_admin', geo)
         sms = rows(client)[('sms', 'IN')]
         assert sms['provider'] == 'msg91' and sms['mode'] == 'stubbed' and sms['blocker'] == 18
-        assert 'NOTIFY_LIVE_SEND' in sms['note']
+        assert 'Live sending is switched off' in sms['note']
         settings.NOTIFY_LIVE_SEND = True
         assert rows(client)[('sms', 'IN')]['mode'] == 'live'
         assert rows(client)[('sms', 'US')]['blocker'] == 19

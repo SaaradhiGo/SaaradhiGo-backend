@@ -11,6 +11,9 @@ import re
 
 #: Verbs for actions whose name alone reads badly.
 ACTION_WORDS = {
+    'city_archived': 'Archived the city (not a planned market)',
+    'test_account_deactivated': 'Turned off a test account',
+    'assign_public_refs': 'Gave records their readable references',
     'ops_api_login': 'Signed in to the console',
     'ops_password_changed': 'Changed their password',
     'ops_mfa_enrolled': 'Set up their authenticator',

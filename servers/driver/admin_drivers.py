@@ -411,7 +411,8 @@ def _page(request, queryset, build):
 def list_response(request, queryset):
     """Body of GET /driver/admin/ for an already SCOPED queryset."""
     try:
-        queryset = filter_drivers(request.query_params, queryset.select_related(
+        # 24 Nov (owner): people of an archived place (QA's Austin) are out of every working list.
+        queryset = filter_drivers(request.query_params, queryset.exclude(home_city__status='archived').select_related(
             'user_id', 'home_city', 'active_vehicle', 'active_vehicle__vehicle_type_id'))
     except BadInput as exc:
         return exc.response()

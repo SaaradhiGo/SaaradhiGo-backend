@@ -86,7 +86,10 @@ ALLOWED_PARENT = {
 #: filter on it); `draft` is a city that has never been launched, `paused` one that was live.
 #: draft -> live -> paused -> live. Only `readiness.set_city_status` moves a city (module 15).
 DRAFT, ACTIVE, PAUSED = 'draft', 'active', 'paused'
-STATUS_CHOICES = [(DRAFT, 'Draft'), (ACTIVE, 'Live'), (PAUSED, 'Paused')]
+#: 24 Nov (owner): a place that is not a planned market (QA's Austin). Hidden everywhere; it keeps its
+#: history and can be set back to draft. Only `manage.py archive_city` sets it.
+ARCHIVED = 'archived'
+STATUS_CHOICES = [(DRAFT, 'Draft'), (ACTIVE, 'Live'), (PAUSED, 'Paused'), (ARCHIVED, 'Archived')]
 
 
 class GeoNode(models.Model):

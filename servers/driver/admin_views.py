@@ -394,6 +394,7 @@ def driver_full_detail_admin(request, driver_id):
 
     payload = {
         'id': driver.id,
+        'ref': driver.public_ref or f'D-{driver.id}',  # 24 Nov: the reference people see
         'status': driver.status,
         'approved': driver.approved,
         'ratings': str(driver.ratings),

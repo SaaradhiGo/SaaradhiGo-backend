@@ -293,6 +293,7 @@ def admin_trip_detail(request, trip_id):
     return success_response(
         {
             'id': trip.id,
+            'ref': trip.public_ref or f'T-{trip.id}',  # 24 Nov: the reference people see
             'status': trip.status_id.status_code if trip.status_id else None,
             'pickup': {
                 'address': trip.pickup_address,

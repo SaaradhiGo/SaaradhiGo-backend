@@ -154,8 +154,10 @@ def _requester(ticket):
         kind, page = 'rider', {'type': 'rider', 'id': user.id}
     else:
         kind, page = (user.role or 'user'), None
+    profile_row = driver if driver is not None else rider
     return {
         'id': user.id, 'role': kind, 'page': page,
+        'ref': getattr(profile_row, 'public_ref', None),  # 24 Nov: the person's reference
         'full_name': user.full_name, 'phone_number': user.phone_number,
         'email': user.email,
     }
@@ -188,6 +190,7 @@ def _message(message):
 def _row(ticket, now):
     return {
         'id': ticket.id,
+        'ref': ticket.public_ref or f'TKT-{ticket.id}',  # 24 Nov: the reference people see
         'user_id': ticket.user_id_id,
         'trip_id': ticket.trip_id_id,
         'issue_type': ticket.issue_type,

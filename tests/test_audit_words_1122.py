@@ -29,7 +29,7 @@ class TestWords:
 
     def test_an_action_without_changes_reads_in_words_with_its_target(self, geo):
         e = _row(action='kyc_approved', target_type='driver', target_id='12')
-        assert entry_row(e)['summary'] == "Approved a driver's documents · Driver D-12"
+        assert entry_row(e)['summary'] == "Approved a driver's documents · A driver"  # 24 Nov: never an id
 
     def test_a_phone_number_never_reaches_the_sentence(self, geo):
         e = _row(action='rider_contact_changed', before={'phone': '+919876500001'},

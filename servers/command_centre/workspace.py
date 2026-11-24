@@ -52,6 +52,8 @@ WEEK = timedelta(days=7)
 CRITICAL, HIGH, WAITING = 'critical', 'high', 'waiting'
 SEVERITY_RANK = {CRITICAL: 0, HIGH: 1, WAITING: 2}
 #: Within a severity, the owner's order (2026-11-03).
+#: 24 Nov (owner): an approval request waiting longer than this escalates to Super Admin.
+APPROVAL_ESCALATE_AFTER = timedelta(days=3)
 KIND_RANK = {'sos': 0, 'stuck_trip': 1, 'approval': 2, 'payout_failed': 3, 'kyc': 4, 'alert': 5}
 GROUP_OVER = 3
 #: A rate is shown only over at least this many requests (console "Not enough data yet").
@@ -98,7 +100,7 @@ def live_counts(cities, user):
 
     ids = [c.id for c in cities]
     out = {cid: {'drivers_online': 0, 'sos_active': 0, 'sos_unacknowledged': 0,
-                 'alerts_critical': 0, 'alerts_warning': 0, 'kyc_waiting': 0, 'stuck_trips': 0}
+                 'alerts_critical': 0, 'alerts_warning': 0, 'kyc_waiting': 0, 'kyc_uploading': 0, 'stuck_trips': 0}
            for cid in ids}
 
     # The Drivers list's own "Online now" (its status column), so the overview and
@@ -108,9 +110,14 @@ def live_counts(cities, user):
     drivers = Driver.objects.filter(home_city_id__in=ids, status__in=ONLINE_STATUSES)
     for row in drivers.values('home_city_id').annotate(n=Count('id')):
         out[row['home_city_id']]['drivers_online'] = row['n']
-    for row in (Driver.objects.filter(home_city_id__in=ids, approved=False)
-                .values('home_city_id').annotate(n=Count('id'))):
-        out[row['home_city_id']]['kyc_waiting'] = row['n']
+    # 24 Nov (owner): one definition per count -- the KYC queue's own ("in review"), and drivers
+    # still uploading documents counted separately, never folded into "KYC waiting".
+    from servers.driver.admin_drivers import kyc_state_q
+
+    for key, state in (('kyc_waiting', 'in_review'), ('kyc_uploading', 'pending')):
+        for row in (Driver.objects.filter(kyc_state_q(state), home_city_id__in=ids)
+                    .values('home_city_id').annotate(n=Count('id'))):
+            out[row['home_city_id']][key] = row['n']
 
     for anchor, kind, trip_city, st in (SOSEvent.objects.filter(status__in=('open', 'acknowledged'))
                                         .values_list('anchor_node_id', 'anchor_node__kind',
@@ -396,7 +403,7 @@ def needs_action(request, limit=50, now=None):
         configs = active_configs()
         cases = (_annotate(incidents_visible_to(user, node, SafetyIncident.objects.all()))
                  .exclude(status=CLOSED).filter(active_sos__gt=0)
-                 .select_related('anchor_node', 'assigned_to')[:200])
+                 .select_related('anchor_node', 'assigned_to', 'trip')[:200])
         for case in cases:
             case._has_sos = True
             ref = refs.incident_ref(case)
@@ -407,13 +414,31 @@ def needs_action(request, limit=50, now=None):
             items.append(_item(
                 'sos', CRITICAL if unacked else HIGH,
                 f"{ref} · {'not acknowledged' if unacked else 'being handled'}"
-                + (f' · {refs.ref(refs.TRIP, case.trip_id)}' if case.trip_id else ''),
+                + (f' · {refs.trip_ref(case.trip)}' if case.trip_id else ''),
                 where=_place(case.anchor_node), at=case.oldest_active or case.opened_at, now=now,
                 link=f'/safety-ops/incidents/{case.id}', ref=ref,
                 owner={'id': case.assigned_to_id, 'label': who} if case.assigned_to_id else None,
                 target_seconds=target,
                 detail='Rider reports false alarm' if getattr(case, 'reported_mistake', 0) else '',
                 actions=['acknowledge', 'assign_me'] if unacked else ['assign_me']))
+
+        # 24 Nov (owner): a safety-concern ticket is safety. Its open case shows here, high,
+        # until someone takes it, whether or not the city is live yet.
+        from servers.safety.models import SRC_TICKET
+
+        concerns = (incidents_visible_to(user, node, SafetyIncident.objects.all())
+                    .exclude(status=CLOSED).filter(source=SRC_TICKET)
+                    .select_related('anchor_node', 'assigned_to')[:50])
+        for case in concerns:
+            ref = refs.incident_ref(case)
+            who = getattr(case.assigned_to, 'full_name', None) or getattr(case.assigned_to, 'email', None)
+            items.append(_item(
+                'sos', HIGH, f"{ref} · safety concern raised in support"
+                + ('' if case.assigned_to_id else ' · nobody assigned'),
+                where=_place(case.anchor_node), at=case.opened_at, now=now,
+                link=f'/safety-ops/incidents/{case.id}', ref=ref,
+                owner={'id': case.assigned_to_id, 'label': who} if case.assigned_to_id else None,
+                actions=['assign_me']))
 
     # ---- Stuck trips --------------------------------------------------------
     if granted(user, 'trip.read')[0]:
@@ -432,7 +457,7 @@ def needs_action(request, limit=50, now=None):
                     link=f'/trips?stuck=1&scope={city.code}', count=len(rows)))
                 continue
             for trip, reason, minutes in rows:
-                ref = refs.ref(refs.TRIP, trip.id)
+                ref = refs.trip_ref(trip)
                 items.append(_item(
                     'stuck_trip', HIGH, f'{ref} · {WORDS[reason]} for {minutes} min',
                     where=_place(city), at=now - timedelta(minutes=minutes), now=now,
@@ -445,17 +470,28 @@ def needs_action(request, limit=50, now=None):
         from servers.approvals.service import checker_problem
         from servers.approvals.views import shown
 
+        from servers.admin_access.access import is_super_admin
+
         waiting = (visible(user, ApprovalRequest.objects.select_related('scope_node', 'policy'))
                    .filter(status=REQUESTED).exclude(maker_id=user.pk).order_by('requested_at')[:100])
         mine = [r for r in waiting if checker_problem(r, user) is None]
+        # 24 Nov (owner): a request waiting more than 3 days escalates to Super Admin.
+        late = now - APPROVAL_ESCALATE_AFTER
+        if is_super_admin(user):
+            mine += [r for r in waiting if r not in mine and r.requested_at < late]
+        escalated = [r for r in mine if r.requested_at < late]
         if len(mine) > GROUP_OVER:
-            items.append(_item('approval', WAITING, f'{len(mine)} requests waiting for your approval',
+            items.append(_item('approval', HIGH if escalated else WAITING,
+                               f'{len(mine)} requests waiting for approval'
+                               + (f', {len(escalated)} for over 3 days' if escalated else ''),
                                at=mine[0].requested_at, now=now, link='/approvals', count=len(mine)))
         else:
             for r in mine:
                 row = shown(r, user)
                 blocked = f" · {row['blockers'][0]}" if row['blockers'] else ''
-                items.append(_item('approval', WAITING, f"{row['ref']} · {row['title']}{blocked}",
+                late_words = 'Escalated, waiting over 3 days · ' if r.requested_at < late else ''
+                items.append(_item('approval', HIGH if r.requested_at < late else WAITING,
+                                   f"{late_words}{row['ref']} · {row.get('summary') or row['title']}{blocked}",
                                    where=_place(r.scope_node), at=r.requested_at, now=now,
                                    link=f'/approvals?id={r.id}', ref=row['ref']))
 
@@ -463,8 +499,9 @@ def needs_action(request, limit=50, now=None):
     if granted(user, 'driver.read')[0]:
         from servers.driver.models import Driver
 
-        drivers = scoped(user, Driver.objects.filter(approved=False, doc_status='pending',
-                                                     uploaded_timestamp__isnull=False))
+        from servers.driver.admin_drivers import kyc_state_q
+
+        drivers = scoped(user, Driver.objects.filter(kyc_state_q('in_review')))  # the KYC queue's own rule
         if node is not None:
             drivers = drivers.filter(home_city__path__startswith=node.path)
         day_ago = now - timedelta(hours=24)

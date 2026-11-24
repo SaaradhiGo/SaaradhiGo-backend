@@ -50,23 +50,23 @@ _COMMISSION_SAMPLE = {'effective_date': '12 November 2026', 'scope': 'Sedan in H
 
 COPY = {
     (COMMISSION, 'in_app'): dict(
-        title='Commission change from {effective_date}',
-        body='From {effective_date} the platform commission for {scope} changes from '
+        title='Driver fee change from {effective_date}',
+        body='From {effective_date} the driver fee for {scope} changes from '
              '{old_rate} to {new_rate}. It applies to trips that start on or after that date.',
         variables=_COMMISSION_VARS, sample=_COMMISSION_SAMPLE),
     (COMMISSION, 'push'): dict(
-        title='Commission change from {effective_date}',
-        body='The commission for {scope} changes from {old_rate} to {new_rate}.',
+        title='Driver fee change from {effective_date}',
+        body='The driver fee for {scope} changes from {old_rate} to {new_rate}.',
         variables=_COMMISSION_VARS, sample=_COMMISSION_SAMPLE),
     (COMMISSION, 'email'): dict(
-        subject='Commission change from {effective_date}',
-        body='Hello,\n\nFrom {effective_date} the platform commission for {scope} changes from '
+        subject='Driver fee change from {effective_date}',
+        body='Hello,\n\nFrom {effective_date} the driver fee for {scope} changes from '
              '{old_rate} to {new_rate}. It applies to trips that start on or after that date.'
              '\n\nYou can review your earnings in the app, or contact driver support.\n\n'
              'SaaradhiGo',
         variables=_COMMISSION_VARS, sample=_COMMISSION_SAMPLE),
     (COMMISSION, 'sms'): dict(
-        body='SaaradhiGo: from {effective_date} the commission for {scope} changes from '
+        body='SaaradhiGo: from {effective_date} the driver fee for {scope} changes from '
              '{old_rate} to {new_rate}. Contact driver support in the app for details.',
         variables=_COMMISSION_VARS, sample=_COMMISSION_SAMPLE),
 
@@ -92,35 +92,35 @@ COPY = {
 
     (OPERATOR_CANCELLED, 'in_app'): dict(
         title='Your ride was cancelled',
-        body='Trip #{trip_id} was cancelled by SaaradhiGo support because it could not '
+        body='Trip {trip_id} was cancelled by SaaradhiGo support because it could not '
              'go ahead. You have not been charged. You can book again at any time.',
-        variables=['trip_id'], sample={'trip_id': '1042'}),
+        variables=['trip_id'], sample={'trip_id': 'HYD-261116-K7Q4'}),
     (OPERATOR_CANCELLED, 'push'): dict(
         title='Your ride was cancelled',
-        body='Trip #{trip_id} was cancelled by support. You have not been charged.',
-        variables=['trip_id'], sample={'trip_id': '1042'}),
+        body='Trip {trip_id} was cancelled by support. You have not been charged.',
+        variables=['trip_id'], sample={'trip_id': 'HYD-261116-K7Q4'}),
 
     (OPERATOR_ENDED_RIDER, 'in_app'): dict(
         title='Your ride was ended',
-        body='Trip #{trip_id} was ended by SaaradhiGo support. {charge_text}',
+        body='Trip {trip_id} was ended by SaaradhiGo support. {charge_text}',
         variables=['trip_id', 'charge_text'],
-        sample={'trip_id': '1042', 'charge_text': 'You have not been charged.'}),
+        sample={'trip_id': 'HYD-261116-K7Q4', 'charge_text': 'You have not been charged.'}),
     (OPERATOR_ENDED_RIDER, 'push'): dict(
         title='Your ride was ended',
-        body='Trip #{trip_id} was ended by SaaradhiGo. {charge_text}',
+        body='Trip {trip_id} was ended by SaaradhiGo. {charge_text}',
         variables=['trip_id', 'charge_text'],
-        sample={'trip_id': '1042', 'charge_text': 'You have not been charged.'}),
+        sample={'trip_id': 'HYD-261116-K7Q4', 'charge_text': 'You have not been charged.'}),
     (OPERATOR_ENDED_DRIVER, 'in_app'): dict(
         title='Your trip was ended',
-        body='Trip #{trip_id} was ended by SaaradhiGo support. {earnings_text} You are free '
+        body='Trip {trip_id} was ended by SaaradhiGo support. {earnings_text} You are free '
              'to take new trips.',
         variables=['trip_id', 'earnings_text'],
-        sample={'trip_id': '1042', 'earnings_text': 'You earn Rs. 120.00 for the distance driven.'}),
+        sample={'trip_id': 'HYD-261116-K7Q4', 'earnings_text': 'You earn Rs. 120.00 for the distance driven.'}),
     (OPERATOR_ENDED_DRIVER, 'push'): dict(
         title='Your trip was ended',
-        body='Trip #{trip_id} was ended by SaaradhiGo. {earnings_text}',
+        body='Trip {trip_id} was ended by SaaradhiGo. {earnings_text}',
         variables=['trip_id', 'earnings_text'],
-        sample={'trip_id': '1042', 'earnings_text': 'You earn Rs. 120.00 for the distance driven.'}),
+        sample={'trip_id': 'HYD-261116-K7Q4', 'earnings_text': 'You earn Rs. 120.00 for the distance driven.'}),
 
     # Promotions & Incentives (module 12). English, India and the United States, in_app + push.
     (INCENTIVE_PROGRESS, 'in_app'): dict(
@@ -136,7 +136,7 @@ COPY = {
     (INCENTIVE_COMPLETED, 'in_app'): dict(
         title='You completed {name}',
         body='You earned {reward} for {name}. It is added to your balance and paid out in your '
-             'next weekly payout, with no commission.',
+             'next weekly payout, with no driver fee.',
         variables=['name', 'reward'], sample={'name': 'Weekend 20', 'reward': 'Rs. 500.00'}),
     (INCENTIVE_COMPLETED, 'push'): dict(
         title='You completed {name}',
@@ -163,13 +163,13 @@ COPY = {
     # rider's app shows it from the rider's own trip API.
     (PICKUP_CODE_REMINDER, 'in_app'): dict(
         title='Your pickup code',
-        body='Your pickup code for trip #{trip_id} is on the ride screen in the app. Share it '
+        body='Your pickup code for trip {trip_id} is on the ride screen in the app. Share it '
              'with your driver only when you get in.',
-        variables=['trip_id'], sample={'trip_id': '1042'}),
+        variables=['trip_id'], sample={'trip_id': 'HYD-261116-K7Q4'}),
     (PICKUP_CODE_REMINDER, 'push'): dict(
         title='Your pickup code',
-        body='Open SaaradhiGo to see your pickup code for trip #{trip_id}.',
-        variables=['trip_id'], sample={'trip_id': '1042'}),
+        body='Open SaaradhiGo to see your pickup code for trip {trip_id}.',
+        variables=['trip_id'], sample={'trip_id': 'HYD-261116-K7Q4'}),
     (PROMO_AVAILABLE, 'in_app'): dict(
         title='A new offer for you', body='{offer}', category='promotional',
         variables=['offer'], sample={'offer': '20% off your next ride this weekend.'}),

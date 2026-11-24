@@ -978,27 +978,20 @@ class TestReadiness:
 
         return {i['key']: i for i in city_readiness(node)}
 
-    def test_a_city_with_no_rule_and_no_card_fails_both_new_items(self, world):
-        # No fee plan either: where one covers the city, commission is not used (22 Nov, below).
+    def test_a_city_with_no_fee_plan_and_no_card_fails_both_items(self, world):
+        # 24 Nov (owner): no commission fallback; an approved fee plan is the gate, in every market.
         from servers.pricing.fee_plan_models import DriverFeePlan
         DriverFeePlan.objects.all().delete()
         items = self.items(world.geo['IN-TG-HYD'])
-        assert items['commission']['ok'] is False and 'No active commission rule' in items['commission']['detail']
+        assert items['fee_plan']['ok'] is False and 'No approved driver fee plan' in items['fee_plan']['detail']
         assert items['fare_card']['ok'] is False
-        assert {'safety_coverage', 'commission', 'fare_card'} <= set(items)
+        assert 'commission' not in items and {'safety_coverage', 'fee_plan', 'fare_card'} <= set(items)
 
-    def test_a_fee_plan_satisfies_commission(self, world):
-        # 22 Nov (owner): "Drivers are charged through fee plans only"; no commission blocker there.
+    def test_a_commission_rule_alone_does_not_open_a_city(self, world):
         from servers.pricing.fee_plan_models import DriverFeePlan
-        if not DriverFeePlan.objects.filter(country='IN').exists():
-            pytest.skip('no India fee plan in this test database')
-        item = self.items(world.geo['IN-TG-HYD'])['commission']
-        assert item['ok'] is True and 'fee plan' in item['detail']
-
-    def test_a_country_rule_alone_satisfies_commission_but_not_the_fare_card(self, world):
+        DriverFeePlan.objects.all().delete()
         make_rule('IN', '15.00', node=world.geo['IN'])
-        items = self.items(world.geo['IN-TG-HYD'])
-        assert items['commission']['ok'] is True and items['fare_card']['ok'] is False
+        assert self.items(world.geo['IN-TG-HYD'])['fee_plan']['ok'] is False
 
     def cards_for(self, world, classes):
         for vt in classes:
@@ -1026,11 +1019,10 @@ class TestReadiness:
         items = self.items(world.geo['IN-TG-HYD'])
         assert items['fare_card']['ok'] is False and 'no active service zone' in items['fare_card']['detail']
 
-    def test_a_city_with_a_rule_and_every_card_is_ready_on_both_new_items(self, world):
-        make_rule('IN', '15.00', node=world.geo['IN'])
-        self.cards_for(world, VehicleType.objects.all())
+    def test_a_city_with_a_fee_plan_and_every_card_is_ready_on_both_items(self, world):
+        self.cards_for(world, VehicleType.objects.all())   # the test market's 15% commission-type plan
         items = self.items(world.geo['IN-TG-HYD'])
-        assert items['commission']['ok'] is True and items['fare_card']['ok'] is True
+        assert items['fee_plan']['ok'] is True and items['fare_card']['ok'] is True
 
     def test_a_city_cannot_go_live_without_them(self, world):
         from servers.admin_access.readiness import CityNotReady, set_city_status
@@ -1044,7 +1036,7 @@ class TestReadiness:
         with pytest.raises(CityNotReady) as caught:
             set_city_status(node, 'active', actor, 'Launch')
         keys = {i['key'] for i in caught.value.items}
-        assert {'commission', 'fare_card'} <= keys
+        assert {'fee_plan', 'fare_card'} <= keys
 
 
 # ===========================================================================

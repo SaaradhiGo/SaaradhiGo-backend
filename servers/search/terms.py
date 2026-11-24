@@ -100,7 +100,7 @@ def parse_term(raw):
 
     from base.refs import parse as parse_ref
 
-    ref = parse_ref(text)
+    ref = parse_ref(text) or _public(text)
     if ref is not None:
         kind, pk = ref
         return Term(raw=text, kind='ref', ref_kind=kind, ref_id=pk,
@@ -161,3 +161,24 @@ def _phone(text):
     if len(digits) >= MIN_PHONE_PARTIAL:
         return Term(raw=text, kind='phone', digits=digits, phone_prefix=digits)
     return Term(raw=text, kind='unsupported', digits=digits)
+
+
+def _public(text):
+    """(kind, pk) for a readable reference ("HYD-261116-K7Q4", "D-HYD-7K3Q"; owner 24 Nov), else None."""
+    from django.apps import apps
+
+    from base import public_ref
+
+    hit = public_ref.parse(text)
+    if hit is None:
+        return None
+    kind, ref = hit
+    model = {key: apps.get_model(app, name) for (app, name), key in public_ref.MODELS.items()}.get(kind)
+    if model is None:
+        return None
+    if kind == public_ref.RIDER:
+        user_id = model.objects.filter(public_ref=ref).values_list('user_id', flat=True).first()
+        return ('rider', user_id) if user_id else None
+    pk = model.objects.filter(public_ref=ref).values_list('pk', flat=True).first()
+    names = {public_ref.TICKET: 'ticket', public_ref.PAYOUT: 'payout', public_ref.APPROVAL: 'approval'}
+    return (names.get(kind, kind), pk) if pk and kind != public_ref.FRAUD else None

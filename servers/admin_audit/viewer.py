@@ -192,8 +192,27 @@ def scrub(value):
     return value
 
 
+#: 24 Nov (owner): a command or automatic actor in words, never its key.
+COMMAND_WORDS = {
+    'backfill_reports': 'report rebuild', 'mark_test_accounts': 'marking test accounts',
+    'reset_themes_to_light': 'theme reset', 'archive_city': 'archiving a city',
+    'assign_public_refs': 'giving records references', 'retire_commission_rules': 'retiring commission rules',
+    'qa_final_1124': 'QA clean-up (24 Nov)', 'round_inr_money_to_rupees': 'whole-rupee rounding',
+    'seal_audit_chain_forks': 'sealing audit chain forks', 'seed_admin_access': 'access set-up',
+}
+
+
 def _actor_label(entry):
     label = entry.actor_label or ''
+    if label.startswith('system:'):
+        from servers.approvals.describe import actor_words
+        return actor_words(label)
+    if ' via ' in label:
+        who, cmd = label.split(' via ', 1)
+        cmd = cmd.strip()
+        words = COMMAND_WORDS.get(cmd, cmd.replace('_', ' ').replace(' (management command)', ''))
+        who = mask_contact(who) if ('@' in who or re.sub(r'[\s+\-()]', '', who).isdigit()) else who
+        return f'{who}, by {words}'
     if label and ('@' in label or re.sub(r'[\s+\-()]', '', label).isdigit()):
         return mask_contact(label)
     return label or None
@@ -245,7 +264,36 @@ def names_for(entries):
     codes.discard(None)
     names = dict(GeoNode.objects.filter(code__in=list(codes)).values_list('code', 'name'))
     names.update(trips)
+    names.update(_refs_for(entries))
     return names
+
+
+#: Audit target types whose record has a readable reference (owner 24 Nov), and its model.
+REF_TARGETS = {'trip': ('ride', 'Trip'), 'driver': ('driver', 'Driver'), 'withdrawal': ('driver', 'WithdrawalRequest'),
+               'support_ticket': ('support', 'SupportTicket'), 'approval_request': ('approvals', 'ApprovalRequest'),
+               'rider': ('rider', 'Rider'), 'user': ('rider', 'Rider'), 'risk_flag': ('fraud', 'RiskFlag')}
+
+
+def _refs_for(entries):
+    """{('ref', type, id): reference} for the targets on a page that have one. Riders by user id."""
+    from django.apps import apps
+
+    wanted = {}
+    for e in entries:
+        if e.target_type in REF_TARGETS and str(e.target_id or '').isdigit():
+            wanted.setdefault(e.target_type, set()).add(int(e.target_id))
+    out = {}
+    # GeoNode targets written by id (a city's status change): their names.
+    pks = {int(e.target_id) for e in entries if (e.target_type or '').lower() == 'geonode'
+           and str(e.target_id or '').isdigit()}
+    for pk, name in GeoNode.objects.filter(pk__in=pks).values_list('pk', 'name'):
+        out[('place_pk', str(pk))] = name
+    for t, ids in wanted.items():
+        model = apps.get_model(*REF_TARGETS[t])
+        key = 'user_id' if t in ('rider', 'user') else 'pk'
+        for pk, ref in model.objects.filter(**{f'{key}__in': ids}, public_ref__isnull=False).values_list(key, 'public_ref'):
+            out[('ref', t, str(pk))] = ref
+    return out
 
 
 def entry_row(entry, names=None):

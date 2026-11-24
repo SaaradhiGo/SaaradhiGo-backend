@@ -82,7 +82,7 @@ class TestOneStepSos:
         client, me = world['hyd_safety']
         listed = client.get(INCIDENTS).json()['data']['results']
         row = next(r for r in listed if r['id'] == incident.id)
-        assert row['ref'] == f'SOS-{incident.id}' and row['trip_ref'] == f'T-{world["hyd_trip"].id}'
+        assert row['ref'] == f'SOS-{incident.id}' and row['trip_ref'] == world['hyd_trip'].public_ref
 
         r = post(client, f'{INCIDENTS}{incident.id}/acknowledge/')
         assert r.status_code == 200, r.content

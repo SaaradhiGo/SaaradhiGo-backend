@@ -18,6 +18,8 @@ class Rider(models.Model):
     counts so we can reconstruct or audit the EWMA path later if a
     rider disputes a low score.
     """
+    #: 24 Nov (owner): the reference people see (base.public_ref), never the database id.
+    public_ref = models.CharField(max_length=24, unique=True, null=True, blank=True, editable=False)
     user_id=models.OneToOneField(User,on_delete=models.CASCADE,related_name='rider')
     #: 14 Nov (USA; Idaho 49-3713): "I use a folding wheelchair". The trip's driver sees it.
     accessibility_note=models.CharField(max_length=200,blank=True,default='')

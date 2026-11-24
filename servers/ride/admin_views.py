@@ -90,10 +90,11 @@ def admin_trip_detail(request, trip_id):
         rider_profile = Rider.objects.filter(user_id=rider_user).first()
         rider_payload = {
             'user_id': rider_user.id,
+            'rider_ref': getattr(rider_profile, 'public_ref', None) if rider_profile else None,
             'phone_number': getattr(rider_user, 'phone_number', None),
             'full_name': getattr(rider_user, 'full_name', None),
             'email': getattr(rider_user, 'email', None),
-            'rating': str(rider_profile.rating) if rider_profile else None,
+            'rating': str(rider_profile.rating) if rider_profile and rider_profile.rating_count else None,
             'rating_count': rider_profile.rating_count if rider_profile else 0,
             'flagged_for_review': bool(rider_profile.flagged_for_review) if rider_profile else False,
             'review_flagged_at': rider_profile.review_flagged_at.isoformat() if rider_profile and rider_profile.review_flagged_at else None,
@@ -106,6 +107,7 @@ def admin_trip_detail(request, trip_id):
         d = trip.driver_id
         driver_payload = {
             'driver_id': d.id,
+            'driver_ref': d.public_ref,
             'user_id': d.user_id.id if d.user_id else None,
             'phone_number': d.user_id.phone_number if d.user_id else None,
             'full_name': d.user_id.full_name if d.user_id else None,
@@ -293,6 +295,7 @@ def admin_trip_detail(request, trip_id):
     return success_response(
         {
             'id': trip.id,
+            'ref': trip.public_ref or f'T-{trip.id}',  # 24 Nov: the reference people see
             'status': trip.status_id.status_code if trip.status_id else None,
             'pickup': {
                 'address': trip.pickup_address,

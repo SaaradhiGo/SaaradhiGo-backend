@@ -92,13 +92,13 @@ def _withdrawal_facts(row):
     for w in rows:
         name = (w.driver.user_id.full_name or '').strip()
         subjects.append({
-            'ref': refs.ref(refs.PAYOUT, w.id), 'withdrawal_id': w.id,
-            'driver_id': w.driver_id, 'driver_ref': refs.ref(refs.DRIVER, w.driver_id),
-            'driver_name': name or f'Driver #{w.driver_id}',
+            'ref': refs.payout_ref(w), 'withdrawal_id': w.id,
+            'driver_id': w.driver_id, 'driver_ref': refs.driver_ref(w.driver),
+            'driver_name': name or refs.driver_ref(w.driver),
             'amount_minor': w.amount_minor, 'currency': w.currency, 'status': w.status,
         })
         if not has_payout_destination(w.driver):
-            blockers.append(f'{MISSING_FOR_OPERATORS} for {refs.ref(refs.DRIVER, w.driver_id)}')
+            blockers.append(f'{MISSING_FOR_OPERATORS} for {refs.driver_ref(w.driver)}')
     return subjects, blockers
 
 
@@ -107,8 +107,14 @@ def shown(row, user):
     stops it, and whether THIS caller may decide it (and if not, why not)."""
     data = row.as_dict()
     action = ACTIONS.get(row.action_key)
-    data['ref'] = refs.ref(refs.APPROVAL, row.id)
+    data['ref'] = refs.approval_ref(row)
     data['title'] = action.description if action else row.action_key
+    # 24 Nov (owner): say exactly what changes, and name automatic makers in words.
+    from servers.approvals.describe import actor_words, describe
+    data['summary'] = describe(row, data['title'])
+    for who in ('maker', 'checker'):
+        if isinstance(data.get(who), dict):
+            data[who]['label'] = actor_words(data[who].get('label'))
     data['subjects'], data['blockers'] = [], []
     if row.action_key == FINANCE_PAYOUT:
         data['subjects'], data['blockers'] = _withdrawal_facts(row)

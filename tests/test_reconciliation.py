@@ -51,7 +51,8 @@ def run(country='IN', *, later=timedelta(hours=3), force=True):
     """Reconcile today's local day, three hours on (past the grace period)."""
     tz = ZoneInfo(get_country(country).default_timezone)
     date = timezone.now().astimezone(tz).date()
-    return run_one(country, 'cashfree', date, now=timezone.now() + later, force=force)
+    gateway = 'cashfree' if country == 'IN' else 'stripe'  # 24 Nov: each market's own gateway
+    return run_one(country, gateway, date, now=timezone.now() + later, force=force)
 
 
 def kinds(country='IN', **extra):
@@ -259,9 +260,9 @@ class TestBoundedAndIdempotent:
         from servers.payments.tasks import run_daily_reconciliation
 
         result = run_daily_reconciliation()
-        from servers.payments.models import PaymentGateway
+        from servers.payments.reconciliation import gateways_for
 
-        expected = 2 * 3 * len(PaymentGateway.values)   # 2 countries x 3 days x every gateway
+        expected = 3 * (len(gateways_for('IN')) + len(gateways_for('US')))   # 3 days x each market's gateways
         assert result['runs'] == expected and result['failed'] == []
         assert ReconciliationRun.objects.count() == expected
         again = run_daily_reconciliation()

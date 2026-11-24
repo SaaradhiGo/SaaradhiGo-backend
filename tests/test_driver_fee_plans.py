@@ -392,6 +392,7 @@ class TestClassOfferedOnlyWithADriverFee:
         DriverFeePlan.objects.filter(pk=india.plan.pk).update(amounts={'*': CARS})
         assert fee_plans.class_offered(india.hyd, 'bike') is True
 
-    def test_no_fee_plan_means_the_commission_market_offers_everything(self, india):
+    def test_no_fee_plan_means_no_class_is_offered(self, india):
+        # 24 Nov (owner): no commission fallback; without an approved plan riders see no class.
         DriverFeePlan.objects.all().delete()
-        assert fee_plans.class_offered(india.hyd, 'auto') is True
+        assert fee_plans.class_offered(india.hyd, 'auto') is False

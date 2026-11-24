@@ -20,6 +20,7 @@ be made (no gateway payment id, the gateway refused) the alert stays as the to-d
 The provider is answered 200, so it stops retrying.
 """
 
+from base import refs
 import logging
 
 from django.db import transaction
@@ -84,7 +85,7 @@ def record(payment, *, gateway_name, gateway_payment_id=None, source='', order_i
     city = city_node_of(trip)
     raise_alert(
         FINANCE_PAID_AFTER_SETTLED, severity=CRITICAL,
-        title=(f'Trip {trip.id}: {format_money(payment.amount, payment.currency)} was captured '
+        title=(f'{refs.trip_ref(trip)}: {format_money(payment.amount, payment.currency)} was captured '
                f'again after the trip was paid; refunding')[:200],
         payload={'trip_id': trip.id, 'payment_id': payment.id, 'amount_minor': payment.amount_minor,
                  'currency': payment.currency, 'gateway': gateway, 'source': source,

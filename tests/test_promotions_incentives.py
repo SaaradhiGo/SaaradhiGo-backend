@@ -288,7 +288,7 @@ class TestNotifications:
         assert keys == {'promotions.incentive_progress', 'promotions.incentive_completed'}
         assert {r.channel for r in rows} == {'in_app', 'push'}
         done = rows.get(template_key='promotions.incentive_completed', channel='in_app')
-        assert 'Weekend 3' in done.body and 'no commission' in done.body
+        assert 'Weekend 3' in done.body and 'no driver fee' in done.body
 
     def test_promo_available_is_a_promotional_template_that_respects_opt_in(self, world):
         from io import StringIO

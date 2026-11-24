@@ -96,22 +96,24 @@ async def test_a_booking_snapshots_the_rule_and_a_later_change_never_reaches_it(
     await asyncio.to_thread(_ready)
     rider = await asyncio.to_thread(
         User.objects.create_user, phone_number='+919600099001', role='rider')
-    rule = await asyncio.to_thread(
-        CommissionRule.objects.get, country='IN', status=ACTIVE, version=1)
     created = await _book_one(rider)
     assert created is not None, 'the booking must succeed'
 
+    # 24 Nov (owner): drivers are charged only through fee plans; the test market's plan is a 15%
+    # commission-type plan, snapshotted at booking.
     trip = await asyncio.to_thread(Trip.objects.get, user_id_id=rider.id)
     assert trip.commission_percent_snapshot == Decimal('15.00')
-    assert trip.commission_rule_id == rule.id and trip.commission_rule_version == 1
+    assert trip.fee_plan_id is not None and trip.commission_rule_id is None
 
-    # An operator changes the rate after the booking...
+    # An operator changes the plan after the booking...
     def change_rule():
-        CommissionRule.objects.filter(pk=rule.pk).update(
-            effective_to=timezone.now(), status=ARCHIVED)
-        CommissionRule.objects.create(
-            country='IN', percent=Decimal('35.00'), status=ACTIVE, version=2,
-            effective_from=timezone.now(), reason='after the booking')
+        from datetime import date
+
+        from servers.pricing.fee_plan_models import ACTIVE as PLAN_ACTIVE, DriverFeePlan
+        DriverFeePlan.objects.create(country='IN', scope_code='', version=901, currency='INR',
+                                     plan_type='percent_commission', status=PLAN_ACTIVE,
+                                     amounts={'*': {'commission_percent': 18}},
+                                     effective_from=date.today(), reason='after the booking')
         from servers.pricing.services import commission_percent_for_trip
         return commission_percent_for_trip(Trip.objects.get(pk=trip.pk))
 

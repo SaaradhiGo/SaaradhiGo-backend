@@ -283,6 +283,7 @@ def _row(rider, nodes):
     return {
         'id': user.id,
         'profile_id': rider.id,
+        'ref': rider.public_ref or f'R-{user.id}',  # 24 Nov: the reference people see
         'user_details': {
             'id': user.id, 'full_name': user.full_name, 'phone_number': user.phone_number,
             'email': user.email, 'is_active': user.is_active,
@@ -293,7 +294,7 @@ def _row(rider, nodes):
         'trips_completed': rider.trips_completed,
         'last_trip_at': _iso(rider.last_trip_at),
         'last_trip_id': rider.latest_trip_id,
-        'rating': str(rider.rating),
+        'rating': str(rider.rating) if rider.rating_count else None,  # 24 Nov: none rated reads "—"
         'low_rating': rider.flagged_for_review,
         'soft_blocked': _soft_blocked(rider),
         'blocked': bool(rider.is_blocked),
@@ -319,8 +320,12 @@ def admin_list_riders(request):
     except ScopeNotHeld as exc:
         return _scope_refused(exc)
     try:
+        from servers.admin_access.readiness import hidden_city_ids
+
+        hidden = hidden_city_ids()  # archived places; not-launched people stay listed
         riders = filter_riders(request.query_params, riders_visible_to(
-            request.user, node, annotate(Rider.objects.select_related('user_id'))))
+            request.user, node, annotate(Rider.objects.exclude(home_city_id__in=hidden).select_related(
+                'user_id')).exclude(city_node_id__in=hidden)))
     except BadInput as exc:
         return exc.response()
 
@@ -462,7 +467,7 @@ def _ratings(rider):
         return round(float(value), 2) if value is not None else None
 
     return {
-        'rating': str(rider.rating),
+        'rating': str(rider.rating) if rider.rating_count else None,
         'rating_count': rider.rating_count,
         'low_rating': rider.flagged_for_review,
         'soft_blocked': _soft_blocked(rider),
@@ -569,6 +574,7 @@ def admin_rider_detail(request, rider_id):
     return success_response({
         'id': user.id,
         'profile_id': rider.id,
+        'ref': rider.public_ref or f'R-{user.id}',
         'user_details': {
             'id': user.id, 'full_name': user.full_name, 'phone_number': user.phone_number,
             'email': user.email, 'is_active': user.is_active,

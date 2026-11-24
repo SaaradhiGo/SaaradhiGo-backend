@@ -310,9 +310,8 @@ def _active_fee_plan(node):
 
 
 def _fee_plan(node):
-    """Where the market requires one (US), an active driver fee plan covers this city (14 Nov)."""
-    if not _rules(node)['fee_plan_required']:
-        return {'key': 'fee_plan', 'ok': True, 'detail': 'Not required in this market.'}
+    """An approved driver fee plan covers this city (owner 24 Nov: in every market; it is the only
+    way drivers are charged, so a city cannot go live without one)."""
     from servers.payments.payout_scope import scope_codes_of_node
     from servers.pricing.fee_plans import local_day, resolve
 
@@ -320,7 +319,8 @@ def _fee_plan(node):
     plan = resolve(country, scope_codes_of_node(node), local_day(country))
     if plan is None:
         return {'key': 'fee_plan', 'ok': False,
-                'detail': 'No driver fee plan is active here. Drivers cannot go online until one is set.'}
+                'detail': 'No approved driver fee plan covers this city. It cannot go live, and riders '
+                          'are offered no class, until one is approved.'}
     return {'key': 'fee_plan', 'ok': True, 'detail': f'Fee plan v{plan.version} ({plan.plan_type}) is active.'}
 
 
@@ -340,7 +340,8 @@ def _platform_insurance(node):
 
 
 #: Append here. Each is `callable(node) -> {key, ok, detail[, status]}`.
-ITEMS = [_safety_coverage, _commission, _fare_card, _zone, _payout_config, _approval_policies,
+# 24 Nov (owner): no commission item. Commission is only a fee-plan type; the fee plan is the gate.
+ITEMS = [_safety_coverage, _fare_card, _zone, _payout_config, _approval_policies,
          _payment_gateway, _sms_provider, _tax, _fee_plan, _platform_insurance]
 
 #: What the console shows for each item, and the page that fixes it.
@@ -354,7 +355,7 @@ ITEM_META = {
     'payment_gateway': ('Payment gateway', '/settings/integrations'),
     'sms_provider': ('SMS provider', '/settings/integrations'),
     'tax': ('Tax settings', '/pricing'),
-    'fee_plan': ('Driver fee plan', '/pricing'),
+    'fee_plan': ('Driver fee plan', '/pricing/fee-plans'),
     'platform_insurance': ('Platform insurance', '/settings'),
 }
 
@@ -385,7 +386,7 @@ def failing(items):
     return [i for i in items if not i['ok']]
 
 
-def set_city_status(node, status, actor, reason, request=None):
+def set_city_status(node, status, actor, reason, request=None, actor_label=None):
     """Change a city's status. Returns `(node, changed)`.
 
     draft -> live, paused -> live, live -> paused. Refuses ACTIVE (live) while any readiness
@@ -393,8 +394,10 @@ def set_city_status(node, status, actor, reason, request=None):
     a node that is not a city and `ValueError` for an unknown status, a missing reason, or
     pausing a city that is not live.
     """
-    if status not in (ACTIVE, PAUSED, DRAFT):
-        raise ValueError(f'status must be {ACTIVE!r}, {PAUSED!r} or {DRAFT!r}')
+    from servers.admin_access.models import ARCHIVED
+
+    if status not in (ACTIVE, PAUSED, DRAFT, ARCHIVED):
+        raise ValueError(f'status must be {ACTIVE!r}, {PAUSED!r}, {DRAFT!r} or {ARCHIVED!r}')
     reason = (reason or '').strip()
     if not reason:
         raise ValueError('reason is required')
@@ -405,7 +408,8 @@ def set_city_status(node, status, actor, reason, request=None):
             raise NotACity(f'{locked.code} is a {locked.kind}, not a city')
         if locked.status == status:
             return locked, False
-        if status == DRAFT:
+        if status in (DRAFT, ARCHIVED):
+            # 24 Nov (owner): archiving (not a planned market) has the same rule as un-launching.
             # 22 Nov: back to "not launched" -- only for a city that never ran a trip (QA's
             # Vijayawada, Visakhapatnam and Warangal were opened by a seed). A city that ran is
             # paused, never un-launched: its history stays a live city's history.
@@ -424,8 +428,23 @@ def set_city_status(node, status, actor, reason, request=None):
             if bad:
                 raise CityNotReady(locked, bad)
         with audit_context(actor=actor, request=request, reason=reason,
+                           **({'actor_label': actor_label} if actor_label else {}),
                            action='city_status_changed',
                            extra_after={'status_from': locked.status, 'status_to': status}):
             locked.status = status
             locked.save()
     return locked, True
+
+
+def hidden_city_ids(include_not_launched=True):
+    """Cities left out of working lists (owner, 24 Nov): archived always; not launched (draft with
+    no active service zone) unless `include_not_launched`. A coming-soon city stays in."""
+    from servers.pricing.models import ServiceZone
+
+    from servers.admin_access.models import ARCHIVED
+
+    ids = set(GeoNode.objects.filter(kind=CITY, status=ARCHIVED).values_list('id', flat=True))
+    if not include_not_launched:
+        zoned = ServiceZone.objects.filter(is_active=True).values_list('geo_node_id', flat=True)
+        ids |= set(GeoNode.objects.filter(kind=CITY, status=DRAFT).exclude(id__in=zoned).values_list('id', flat=True))
+    return ids

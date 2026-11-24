@@ -162,6 +162,7 @@
         "status": "success",
         "data": {
           "id": 1,
+          "public_ref": "SG-261124-9PMJ",
           "pickup_address": "Banjara Hills",
           "destination_address": "Hitech City",
           "total_charged": "192.00",
@@ -243,7 +244,7 @@
           "seats": 4,
           "cancellation_due": null,
           "rider_reason": null,
-          "quote_id": "efca5f5b8e6946fc9471162415e0cbf4",
+          "quote_id": "25f68280c135469faf198cdc3f352068",
           "quote_expires_at": "2026-01-01T00:00:00.000000+05:30",
           "currency": "INR",
           "distance_unit": "km",
@@ -332,6 +333,7 @@
           "results": [
             {
               "id": 1,
+              "public_ref": "SG-261124-9PMJ",
               "pickup_address": "Banjara Hills",
               "destination_address": "Hitech City",
               "total_charged": "192.00",
@@ -383,6 +385,7 @@
           "results": [
             {
               "id": 1,
+              "public_ref": "SG-261124-9PMJ",
               "pickup_address": "Banjara Hills",
               "destination_address": "Hitech City",
               "total_charged": "192.00",
@@ -493,6 +496,7 @@
         "status": "success",
         "data": {
           "id": 1,
+          "public_ref": "SG-261124-9PMJ",
           "pickup_address": "Banjara Hills",
           "destination_address": "Hitech City",
           "total_charged": "192.00",
@@ -567,6 +571,7 @@
         "status": "success",
         "data": {
           "id": 1,
+          "public_ref": "SG-261124-9PMJ",
           "pickup_address": "Banjara Hills",
           "destination_address": "Hitech City",
           "total_charged": "192.00",

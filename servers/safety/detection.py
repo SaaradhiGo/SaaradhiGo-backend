@@ -239,7 +239,7 @@ def _promote(signal, config):
         locked.save(update_fields=['incident'])
         raise_alert(
             SAFETY_SIGNAL, severity=WARNING,
-            title=f'{refs.incident_ref(incident)}: {locked.get_kind_display()} on {refs.ref(refs.TRIP, locked.trip_id)}',
+            title=f'{refs.incident_ref(incident)}: {locked.get_kind_display()} on {refs.trip_ref(locked.trip)}',
             payload={'signal_id': locked.id, 'incident_id': incident.id, 'kind': locked.kind,
                      'trip_id': locked.trip_id, **locked.measured},
             source_type='safety_incident', source_id=incident.id, city=locked.anchor_node)

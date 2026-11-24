@@ -274,10 +274,10 @@ def test_the_receipt_number_is_unique_in_the_database_not_only_in_python(
         'receipt_number is not unique in the database, so two workers running this '
         'task at the same moment would each pass the existence check and insert'
     )
-    assert existing.receipt_number.endswith(f'-{trip.id}-v1'), (
-        'the number is not derived from the trip, so a concurrent duplicate would '
-        'not collide and the unique index would not save us'
-    )
+    # 24 Nov (owner): numbers come from the entity's gap-free series, so what stops a second
+    # version-1 receipt for the trip is the (trip, version) constraint.
+    assert any(c.name == 'receipt_one_per_trip_version' for c in Receipt._meta.constraints)
+    assert existing.receipt_number.startswith(('QA-DTS/', 'DTS/')), existing.receipt_number
 
 
 # ===========================================================================

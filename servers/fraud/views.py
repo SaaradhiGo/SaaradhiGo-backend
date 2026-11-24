@@ -90,7 +90,7 @@ def flag_dict(flag):
     """The list row. Also what the Promotions tab and the module-12 list have always returned."""
     role = flag.subject.role if flag.subject.role in ('rider', 'driver') else 'user'
     return {
-        'id': flag.id, 'kind': flag.kind, 'status': flag.status, 'severity': flag.severity,
+        'id': flag.id, 'ref': flag.public_ref or f'FR-{flag.id}', 'kind': flag.kind, 'status': flag.status, 'severity': flag.severity,
         'score': flag.score, 'rule_key': flag.rule_key or flag.kind,
         'rule_version': flag.rule_version, 'hit_count': flag.hit_count,
         'subject': {'ref': f'{role} #{flag.subject_id}', 'role': role,

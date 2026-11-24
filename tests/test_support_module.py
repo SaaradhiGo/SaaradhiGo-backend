@@ -841,7 +841,7 @@ class TestModel:
         rider = _client_for(world['hyd_rider'])
         data = rider.get(f'{MY_TICKETS}{world["t_hyd"].id}/').json()['data']
         assert set(data) == {'id', 'user_id', 'trip_id', 'issue_type', 'status', 'description',
-                             'assigned_to', 'created_at', 'updated_at', 'resolved_at', 'messages'}
+                             'assigned_to', 'created_at', 'updated_at', 'resolved_at', 'messages', 'public_ref'}
 
     def test_creating_through_the_app_sets_the_clock(self, geo, world):
         rider = _client_for(world['hyd_rider'])

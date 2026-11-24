@@ -11,6 +11,10 @@ import re
 
 #: Verbs for actions whose name alone reads badly.
 ACTION_WORDS = {
+    'commission_rule_retired': 'Retired a commission rule (drivers pay through fee plans only)',
+    'city_archived': 'Archived the city (not a planned market)',
+    'test_account_deactivated': 'Turned off a test account',
+    'assign_public_refs': 'Gave records their readable references',
     'ops_api_login': 'Signed in to the console',
     'ops_password_changed': 'Changed their password',
     'ops_mfa_enrolled': 'Set up their authenticator',
@@ -44,7 +48,7 @@ FIELD_WORDS = {
     'warn_value': 'warning level', 'critical_value': 'critical level', 'instant_cashout_enabled': 'Withdraw now',
     # 24 Nov (owner): no field names on the page.
     'estimated_fare_minor': 'quoted fare', 'final_fare_minor': 'fare', 'net_whole': 'driver earning',
-    'net_shown': 'driver earning', 'commission_whole': 'commission', 'correction_minor': 'balance correction',
+    'net_shown': 'driver earning', 'commission_whole': 'driver fee', 'correction_minor': 'balance correction',
     'wallets_moved': 'driver balances corrected', 'fee_minor': 'platform fee', 'trips': 'trips',
     'fee_days': 'fee days',
 }
@@ -132,16 +136,26 @@ def target_words(entry, names):
     t, tid = entry.target_type or '', entry.target_id or ''
     if t == 'geonode' and tid:
         return names.get(tid, tid)
-    prefix = {'driver': 'Driver D-', 'rider': 'Rider R-', 'trip': 'Trip T-', 'user': 'Account #',
-              'withdrawal': 'Payout W-', 'operator_alert': 'Alert #', 'service_zone': 'Zone #',
-              'wallet': 'Wallet #', 'operator': 'Operator #'}.get(t)
+    ref = names.get(('ref', t, str(tid)))
+    if ref:
+        return f"{t.replace('_', ' ').capitalize()} {ref}" if t not in ('trip', 'driver', 'rider') else {
+            'trip': 'Trip', 'driver': 'Driver', 'rider': 'Rider'}[t] + f' {ref}'
+    # 24 Nov (owner): never a database id. A target with no reference is named in words.
+    prefix = {'driver': 'A driver', 'rider': 'A rider', 'trip': 'A trip', 'user': 'An account',
+              'withdrawal': 'A payout', 'operator_alert': 'An alert', 'service_zone': 'A zone',
+              'wallet': 'A wallet', 'operator': 'A staff account', 'commission_rule': 'A commission rule',
+              'risk_flag': 'A fraud flag', 'support_ticket': 'A support ticket',
+              'approval_request': 'An approval request'}.get(t)
+    if t.lower() == 'geonode' and tid:
+        return names.get(('place_pk', str(tid))) or names.get(tid) or 'A place'
     if tid == 'all':
         return ALL_WORDS.get(t, f"All {t.replace('_', ' ')}s")
     if prefix and tid:
-        return f'{prefix}{tid}'
+        return prefix
     if not t:
         return ''
-    return f"{t.replace('_', ' ')} {tid}".strip()
+    words = t.replace('_', ' ').strip()
+    return f'{words[:1].upper()}{words[1:]}' if not str(tid).isdigit() else f'A {words}'
 
 
 def summary(entry, names):

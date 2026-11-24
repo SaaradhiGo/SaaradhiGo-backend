@@ -1,3 +1,4 @@
+from base import refs
 import redis
 import logging
 from django.conf import settings
@@ -447,7 +448,7 @@ def credit_driver_wallet(trip):
                 city = city_node_of(trip)
                 raise_alert(
                     FINANCE_PROMO_SETTLEMENT_FAILED, severity=CRITICAL,
-                    title=(f'Trip {trip.id}: the promo could not be settled'
+                    title=(f'{refs.trip_ref(trip)}: the promo could not be settled'
                            f'{"; the cash driver is short the discount" if trip.payment_method == "cash" else ""}')[:200],
                     payload={'trip_id': trip.id, 'payment_method': trip.payment_method or '',
                              'error': type(exc).__name__,

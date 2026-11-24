@@ -2418,6 +2418,7 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             return {
                 'success': True,
                 'message': 'Trip accepted',
+                'public_ref': trip.public_ref,
                 'driver_id': driver.id,
                 'driver_name': driver.public_name,
                 'rider_id': trip.user_id_id,

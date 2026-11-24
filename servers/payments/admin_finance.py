@@ -158,6 +158,7 @@ def payment_row(p):
     return {
         'id': p.id,
         'trip_id': trip.id,
+        'trip_ref': trip.public_ref,  # 24 Nov: the reference people see
         'city': _city(getattr(zone, 'geo_node', None)),
         'rider_name': getattr(p.user_id, 'full_name', '') or '',
         'amount_minor': p.amount_minor,
@@ -180,7 +181,9 @@ def settlement_row(s):
     return {
         'id': s.id,
         'trip_id': s.trip_id,
+        'trip_ref': getattr(s.trip, 'public_ref', None),
         'driver_id': s.driver_id,
+        'driver_ref': getattr(s.driver, 'public_ref', None),
         'driver_name': getattr(s.driver.user_id, 'full_name', '') or '',
         'city': _city(getattr(zone, 'geo_node', None)),
         'gross_fare_minor': s.gross_fare_minor,
@@ -294,7 +297,9 @@ def payout_row(w, approvals=None, now=None, blocked=None):
     open_ = w.status in OPEN_PAYOUT_STATUSES
     row = {
         'id': w.id,
+        'ref': w.public_ref,
         'driver_id': w.driver_id,
+        'driver_ref': getattr(w.driver, 'public_ref', None),
         'driver_name': getattr(w.driver.user_id, 'full_name', '') or '',
         'city': _city(getattr(w.driver, 'home_city', None)),
         'amount_minor': w.amount_minor,
@@ -693,6 +698,7 @@ def finance_driver_ledger(request, driver_id):
     base = {
         'driver': {
             'id': driver.id,
+            'ref': driver.public_ref,
             'driver_name': getattr(driver.user_id, 'full_name', '') or '',
             'home_city': _city(driver.home_city),
         },
@@ -1051,7 +1057,15 @@ def finance_reconciliation(request):
     country = (request.query_params.get('country') or '').strip().upper()
     if country:
         runs = runs.filter(country=country)
+    # 24 Nov (owner): only each market's own gateways (US: Stripe), never a run against one it does not use.
+    from servers.payments.reconciliation import GATEWAY_NAMES, GATEWAYS_BY_COUNTRY
+    used = Q()
+    for code, names in GATEWAYS_BY_COUNTRY.items():
+        used |= Q(country=code, gateway__in=names)
+    runs = runs.filter(used | ~Q(country__in=list(GATEWAYS_BY_COUNTRY)))
     items = money_visible_to(request.user, ReconciliationItem, node=node, permission=READ)
+    for code, names in GATEWAYS_BY_COUNTRY.items():
+        items = items.exclude(Q(run__country=code) & ~Q(run__gateway__in=names))
     open_items = items.filter(resolved_at__isnull=True)
     open_by_kind = {r['kind']: r['n'] for r in open_items.order_by().values('kind').annotate(n=Count('id'))}
     open_by_run = {r['run_id']: r['n'] for r in open_items.order_by().values('run_id').annotate(n=Count('id'))}
@@ -1059,7 +1073,8 @@ def finance_reconciliation(request):
     def run_row(run):
         return {
             'id': run.id, 'date': run.date, 'country': run.country, 'currency': run.currency,
-            'gateway': run.gateway, 'status': run.status, 'new_findings': run.counts,
+            'gateway': run.gateway, 'gateway_name': GATEWAY_NAMES.get(run.gateway, run.gateway.title()),
+            'status': run.status, 'new_findings': run.counts,
             'open_items': open_by_run.get(run.id, 0), 'checks': run.checks,
             'started_at': run.started_at, 'finished_at': run.finished_at, 'error': run.error,
         }
@@ -1159,12 +1174,12 @@ def finance_payout_config(request):
         cfg = active.get(code)
         history = [c.as_dict() for c in
                    PayoutCountryConfig.objects.filter(country=code).order_by('-version')[:HISTORY_LIMIT]]
-        pending = [r.as_dict() for r in ApprovalRequest.objects.filter(
+        pending = [{**r.as_dict(), 'ref': r.public_ref} for r in ApprovalRequest.objects.filter(
             action_key=FINANCE_PAYOUT_CONFIG, target_id=code, status=REQUESTED).order_by('-id')[:5]]
         runs = [{'id': r.id, 'week_start': r.week_start, 'withdrawal_count': r.withdrawal_count,
                  'amount_minor': r.amount_minor, 'currency': r.currency, 'outcome': r.outcome,
                  'approval_request_id': r.approval_request_id, 'truncated': r.truncated,
-                 'skipped': r.skipped, 'skipped_count': len(r.skipped or []),
+                 'skipped': _with_driver_refs(r.skipped), 'skipped_count': len(r.skipped or []),
                  'created_at': r.created_at}
                 for r in PayoutRun.objects.filter(country=code).order_by('-week_start')[:8]]
         can_edit = code in editable_in and cfg is not None
@@ -1336,3 +1351,12 @@ def _payout_scopes(country, cfg):
                               if node.kind == 'city' else None)),
         })
     return out
+
+
+def _with_driver_refs(skipped):
+    """24 Nov (owner): each skipped driver with their reference, so no screen shows a bare id."""
+    from servers.driver.models import Driver
+    rows = list(skipped or [])
+    refs = dict(Driver.objects.filter(id__in=[x.get('driver_id') for x in rows if isinstance(x, dict)])
+                .values_list('id', 'public_ref'))
+    return [{**x, 'ref': refs.get(x.get('driver_id'))} if isinstance(x, dict) else x for x in rows]

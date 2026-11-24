@@ -12,6 +12,7 @@ THE INVARIANTS
   audited services, called from the views.
 """
 
+from base import refs
 import logging
 
 from django.db import IntegrityError, transaction
@@ -273,12 +274,12 @@ def open_from_ticket(ticket, *, actor, note=''):
     rider_user = user if getattr(user, 'rider', None) is not None else None
     incident, created = open_incident(
         source=SRC_TICKET, category='other', severity='high',
-        title=f'Safety ticket {ticket.id}', trip=ticket.trip_id, driver=driver,
+        title=f'Safety ticket {refs.ticket_ref(ticket)}', trip=ticket.trip_id, driver=driver,
         rider_user=rider_user, ticket=ticket, actor=actor, note=note)
     if not created:
         _add_link(incident, LINK_TICKET, ticket.id, actor)
         add_update(incident, U_LINK, actor=actor,
-                   note=f'Support ticket {ticket.id} escalated into this incident',
+                   note=f'Support ticket {refs.ticket_ref(ticket)} escalated into this incident',
                    data={'kind': LINK_TICKET, 'target_id': ticket.id})
     return incident, created
 

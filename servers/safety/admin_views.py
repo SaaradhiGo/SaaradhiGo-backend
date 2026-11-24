@@ -63,7 +63,7 @@ from . import config as cfg
 from . import services
 from .models import (
     CATEGORIES, CLOSED, LINK_DRIVER, LINK_KINDS, LINK_RIDER, LINK_SOS, LINK_TICKET, LINK_TRIP,
-    LIVE_STATUSES, OPEN, OUTCOMES, SEVERITIES, SEVERITY_RANK, SOURCES, SRC_MANUAL, STATUSES,
+    LIVE_STATUSES, OPEN, OUTCOMES, SEVERITIES, SEVERITY_RANK, SOURCES, SRC_MANUAL, SRC_TICKET, STATUSES,
     U_NOTE, U_STATUS, SafetyCountryConfig, SafetyIncident, SafetyIncidentLink, SafetyIncidentUpdate,
     SafetySignal,
 )
@@ -284,7 +284,7 @@ def _row(incident, unacknowledged=None):
     return {
         'id': incident.id,
         'ref': refs.incident_ref(incident),
-        'trip_ref': refs.ref(refs.TRIP, incident.trip_id),
+        'trip_ref': refs.trip_ref(incident.trip) if incident.trip_id else None,
         # The raiser tapped "this was a mistake": an operator must confirm it.
         'rider_reports_false_alarm': bool(getattr(incident, 'reported_mistake', 0)),
         'title': incident.title,
@@ -1382,6 +1382,8 @@ def _lane(incident):
     """Which column a live case sits in, from what is recorded on it."""
     if getattr(incident, 'unack_sos', 0):
         return LANE_UNACKED
+    if incident.source == SRC_TICKET and not incident.assigned_to_id:
+        return LANE_UNACKED  # 24 Nov (owner): a safety concern nobody has taken waits like an SOS
     if incident.police_referred_at:
         return LANE_EMERGENCY
     trip_code = getattr(getattr(incident.trip, 'status_id', None), 'status_code', None) if incident.trip_id else None
@@ -1404,8 +1406,9 @@ def safety_board(request):
     except ScopeNotHeld as exc:
         return _scope_refused(exc)
     visible = incidents_visible_to(request.user, node, _annotate(INCIDENT_QUERYSET))
-    live = list(visible.exclude(status=CLOSED).filter(active_sos__gt=0)
-                .select_related('trip__status_id').order_by('oldest_active')[:300])
+    # 24 Nov (owner): a safety-concern ticket is safety: its open case is on the board too.
+    live = list(visible.exclude(status=CLOSED).filter(Q(active_sos__gt=0) | Q(source=SRC_TICKET))
+                .select_related('trip__status_id').order_by('oldest_active', 'opened_at')[:300])
     unack = _unacknowledged_ids(live)
     lanes = {LANE_UNACKED: [], LANE_RESPONDING: [], LANE_EMERGENCY: [], LANE_WATCHING: []}
     countries = defaultdict(int)

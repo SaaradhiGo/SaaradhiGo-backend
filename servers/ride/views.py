@@ -1,3 +1,4 @@
+from base import refs
 import logging
 from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
@@ -725,6 +726,7 @@ def trip_driver_details(request,trip_id):
     if cached and 'driver_id' in cached:
         return success_response({
             'id': trip_id,
+            'public_ref': Trip.objects.filter(pk=trip_id).values_list('public_ref', flat=True).first(),
             'status': cached.get('status'),
             'driver_name': cached.get('driver_name'),
             # Masked calls only (9 Nov): the rider never receives the driver's number. The key
@@ -757,6 +759,7 @@ def trip_driver_details(request,trip_id):
 
     data = {
         'id': trip.id,
+        'public_ref': trip.public_ref,  # 24 Nov: the reference the rider can share
         'status': trip.status_id.status_code if trip.status_id else 'pending',
         'driver_name': trip.driver_id.public_name if trip.driver_id else None,
         'driver_phone': None,  # masked calls only (9 Nov); see the cache path above
@@ -1249,7 +1252,7 @@ def driver_cancel_trip(request, trip_id):
                 user_id=trip.user_id,
                 title='Driver cancelled your trip',
                 message=(
-                    f"Your assigned driver cancelled Trip #{trip.id}. "
+                    f"Your assigned driver cancelled {refs.trip_ref(trip)}. "
                     f"We're finding another driver. Reason: {reason.replace('_', ' ')}."
                 ),
                 notif_type='ride_event',
@@ -1441,7 +1444,7 @@ def rider_cancel_trip(request, trip_id):
                     user_id=trip.driver_id.user_id,
                     title='Ride Cancelled by Rider',
                     message=(
-                        f'Rider cancelled Trip #{trip.id}.'
+                        f'Rider cancelled {refs.trip_ref(trip)}.'
                         + (f' Reason: {reason.replace("_", " ")}.' if reason else '')
                     ),
                     notif_type='ride_event',
@@ -1454,7 +1457,7 @@ def rider_cancel_trip(request, trip_id):
                 send_push_notification(
                     trip.driver_id.user_id,
                     'Ride Cancelled',
-                    f'Rider cancelled Trip #{trip.id}.',
+                    f'Rider cancelled {refs.trip_ref(trip)}.',
                     {'trip_id': str(trip.id), 'type': 'ride_cancelled'},
                 )
             except Exception as exc:

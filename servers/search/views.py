@@ -189,7 +189,7 @@ def _trip_row(trip):
     return {
         'type': 'trip',
         'id': trip.id,
-        'ref': f'T-{trip.id}',
+        'ref': trip.public_ref or f'T-{trip.id}',
         'status': trip.status_id.status_code if trip.status_id else 'pending',
         'city_code': _city_code(zone.geo_node if zone else None),
         'requested_at': trip.requested_at.isoformat() if trip.requested_at else None,
@@ -236,7 +236,7 @@ def _driver_row(driver):
     return {
         'type': 'driver',
         'id': driver.id,
-        'ref': f'D-{driver.id}',
+        'ref': driver.public_ref or f'D-{driver.id}',
         'status': driver.status,
         'approved': driver.approved,
         'doc_status': driver.doc_status,

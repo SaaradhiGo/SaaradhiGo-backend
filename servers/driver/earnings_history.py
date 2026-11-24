@@ -424,6 +424,8 @@ def statement(driver, year, month):
     produced = datetime.now(tz)
     home = getattr(driver, 'home_city', None)
     tips = tips_by_trip(driver, [r.trip_id for r in data.trips])
+    from servers.ride.models import Trip
+    trip_refs = dict(Trip.objects.filter(id__in=[r.trip_id for r in data.trips]).values_list('id', 'public_ref'))
     return {
         'driver': driver.user_id.full_name or '', 'pan_masked': pan, 'country': country,
         # Who and from whom (11 Nov): a statement a bank or the tax office can read on its own.
@@ -431,7 +433,7 @@ def statement(driver, year, month):
         'city': getattr(home, 'name', '') or '',
         # The entity operating the driver's market (13 Nov, base/legal_entity.py).
         'company': _company(country),
-        'number': f'SG-{first:%Y%m}-{driver.id:06d}', 'produced_on': produced.date().isoformat(),
+        'number': f'SG-{first:%Y%m}-{driver.public_ref or driver.id}', 'produced_on': produced.date().isoformat(),
         'fee_note': fee_note(driver),
         'month': first.strftime('%Y-%m'), 'start': first.isoformat(), 'end': last.isoformat(),
         'so_far': first <= today <= last, 'currency': driver_currency(driver),
@@ -439,7 +441,7 @@ def statement(driver, year, month):
         'opening': ledger and str(_minor(ledger['opening_minor'], ledger['currency'])),
         'closing': ledger and str(_minor(ledger['closing_minor'], ledger['currency'])),
         'trips': [{'at': r.created_at.astimezone(tz).isoformat() if r.created_at else None,
-                   'trip_id': r.trip_id, 'method': r.method, 'fare': _s(r.gross), 'fee': _s(r.commission),
+                   'trip_id': r.trip_id, 'trip_ref': trip_refs.get(r.trip_id), 'method': r.method, 'fare': _s(r.gross), 'fee': _s(r.commission),
                    # 15 Nov: the trip's tip, and what it earned with it, as the cards count it.
                    'tip': _s(tips.get(r.trip_id, ZERO)),
                    'earned': _s(None if r.net is None else r.net + tips.get(r.trip_id, ZERO))} for r in data.trips],
@@ -553,7 +555,7 @@ def statement_csv(st):
     w.writerow(['Trips'])
     w.writerow(['Date and time', 'Trip', 'Paid by', 'Fare', 'Fee', 'Tip', 'You earned'])
     for t in st['trips']:
-        w.writerow([_when(st, t['at']), t['trip_id'] or '', t['method'], t['fare'] or '', t['fee'] or '',
+        w.writerow([_when(st, t['at']), t.get('trip_ref') or t['trip_id'] or '', t['method'], t['fare'] or '', t['fee'] or '',
                     t.get('tip') or '', t['earned'] or ''])
     w.writerow([])
     w.writerow(['Daily platform fees'])

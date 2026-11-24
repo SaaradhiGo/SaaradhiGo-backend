@@ -92,35 +92,35 @@ COPY = {
 
     (OPERATOR_CANCELLED, 'in_app'): dict(
         title='Your ride was cancelled',
-        body='Trip #{trip_id} was cancelled by SaaradhiGo support because it could not '
+        body='Trip {trip_id} was cancelled by SaaradhiGo support because it could not '
              'go ahead. You have not been charged. You can book again at any time.',
-        variables=['trip_id'], sample={'trip_id': '1042'}),
+        variables=['trip_id'], sample={'trip_id': 'HYD-261116-K7Q4'}),
     (OPERATOR_CANCELLED, 'push'): dict(
         title='Your ride was cancelled',
-        body='Trip #{trip_id} was cancelled by support. You have not been charged.',
-        variables=['trip_id'], sample={'trip_id': '1042'}),
+        body='Trip {trip_id} was cancelled by support. You have not been charged.',
+        variables=['trip_id'], sample={'trip_id': 'HYD-261116-K7Q4'}),
 
     (OPERATOR_ENDED_RIDER, 'in_app'): dict(
         title='Your ride was ended',
-        body='Trip #{trip_id} was ended by SaaradhiGo support. {charge_text}',
+        body='Trip {trip_id} was ended by SaaradhiGo support. {charge_text}',
         variables=['trip_id', 'charge_text'],
-        sample={'trip_id': '1042', 'charge_text': 'You have not been charged.'}),
+        sample={'trip_id': 'HYD-261116-K7Q4', 'charge_text': 'You have not been charged.'}),
     (OPERATOR_ENDED_RIDER, 'push'): dict(
         title='Your ride was ended',
-        body='Trip #{trip_id} was ended by SaaradhiGo. {charge_text}',
+        body='Trip {trip_id} was ended by SaaradhiGo. {charge_text}',
         variables=['trip_id', 'charge_text'],
-        sample={'trip_id': '1042', 'charge_text': 'You have not been charged.'}),
+        sample={'trip_id': 'HYD-261116-K7Q4', 'charge_text': 'You have not been charged.'}),
     (OPERATOR_ENDED_DRIVER, 'in_app'): dict(
         title='Your trip was ended',
-        body='Trip #{trip_id} was ended by SaaradhiGo support. {earnings_text} You are free '
+        body='Trip {trip_id} was ended by SaaradhiGo support. {earnings_text} You are free '
              'to take new trips.',
         variables=['trip_id', 'earnings_text'],
-        sample={'trip_id': '1042', 'earnings_text': 'You earn Rs. 120.00 for the distance driven.'}),
+        sample={'trip_id': 'HYD-261116-K7Q4', 'earnings_text': 'You earn Rs. 120.00 for the distance driven.'}),
     (OPERATOR_ENDED_DRIVER, 'push'): dict(
         title='Your trip was ended',
-        body='Trip #{trip_id} was ended by SaaradhiGo. {earnings_text}',
+        body='Trip {trip_id} was ended by SaaradhiGo. {earnings_text}',
         variables=['trip_id', 'earnings_text'],
-        sample={'trip_id': '1042', 'earnings_text': 'You earn Rs. 120.00 for the distance driven.'}),
+        sample={'trip_id': 'HYD-261116-K7Q4', 'earnings_text': 'You earn Rs. 120.00 for the distance driven.'}),
 
     # Promotions & Incentives (module 12). English, India and the United States, in_app + push.
     (INCENTIVE_PROGRESS, 'in_app'): dict(
@@ -163,13 +163,13 @@ COPY = {
     # rider's app shows it from the rider's own trip API.
     (PICKUP_CODE_REMINDER, 'in_app'): dict(
         title='Your pickup code',
-        body='Your pickup code for trip #{trip_id} is on the ride screen in the app. Share it '
+        body='Your pickup code for trip {trip_id} is on the ride screen in the app. Share it '
              'with your driver only when you get in.',
-        variables=['trip_id'], sample={'trip_id': '1042'}),
+        variables=['trip_id'], sample={'trip_id': 'HYD-261116-K7Q4'}),
     (PICKUP_CODE_REMINDER, 'push'): dict(
         title='Your pickup code',
-        body='Open SaaradhiGo to see your pickup code for trip #{trip_id}.',
-        variables=['trip_id'], sample={'trip_id': '1042'}),
+        body='Open SaaradhiGo to see your pickup code for trip {trip_id}.',
+        variables=['trip_id'], sample={'trip_id': 'HYD-261116-K7Q4'}),
     (PROMO_AVAILABLE, 'in_app'): dict(
         title='A new offer for you', body='{offer}', category='promotional',
         variables=['offer'], sample={'offer': '20% off your next ride this weekend.'}),

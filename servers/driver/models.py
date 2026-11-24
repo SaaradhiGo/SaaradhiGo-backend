@@ -11,6 +11,8 @@ from servers.driver.plates import normalised_plate_expression
 User=get_user_model()
 class Driver(models.Model):
 
+    #: 24 Nov (owner): the reference people see (base.public_ref), never the database id.
+    public_ref = models.CharField(max_length=24, unique=True, null=True, blank=True, editable=False)
     user_id=models.OneToOneField(User,on_delete=models.CASCADE,related_name='driver')
     license_doc=models.FileField(
         blank=True,
@@ -537,6 +539,8 @@ class WithdrawalRequest(CurrencyStampedModel, models.Model):
             return normalize_currency(wallet.currency)
         return None
 
+    #: 24 Nov (owner): the reference people see (base.public_ref), never the database id.
+    public_ref = models.CharField(max_length=24, unique=True, null=True, blank=True, editable=False)
     driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='withdrawal_requests')
     # Minor units of `currency` (base/money.py); `amount` is the Decimal view.
     amount_minor = models.BigIntegerField()

@@ -1,3 +1,4 @@
+from base import refs
 import logging
 from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
@@ -1249,7 +1250,7 @@ def driver_cancel_trip(request, trip_id):
                 user_id=trip.user_id,
                 title='Driver cancelled your trip',
                 message=(
-                    f"Your assigned driver cancelled Trip #{trip.id}. "
+                    f"Your assigned driver cancelled {refs.trip_ref(trip)}. "
                     f"We're finding another driver. Reason: {reason.replace('_', ' ')}."
                 ),
                 notif_type='ride_event',
@@ -1441,7 +1442,7 @@ def rider_cancel_trip(request, trip_id):
                     user_id=trip.driver_id.user_id,
                     title='Ride Cancelled by Rider',
                     message=(
-                        f'Rider cancelled Trip #{trip.id}.'
+                        f'Rider cancelled {refs.trip_ref(trip)}.'
                         + (f' Reason: {reason.replace("_", " ")}.' if reason else '')
                     ),
                     notif_type='ride_event',
@@ -1454,7 +1455,7 @@ def rider_cancel_trip(request, trip_id):
                 send_push_notification(
                     trip.driver_id.user_id,
                     'Ride Cancelled',
-                    f'Rider cancelled Trip #{trip.id}.',
+                    f'Rider cancelled {refs.trip_ref(trip)}.',
                     {'trip_id': str(trip.id), 'type': 'ride_cancelled'},
                 )
             except Exception as exc:

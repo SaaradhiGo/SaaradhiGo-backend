@@ -226,6 +226,8 @@ class ApprovalRequest(models.Model):
     under the framework" is one query.
     """
 
+    #: 24 Nov (owner): the reference people see (base.public_ref), never the database id.
+    public_ref = models.CharField(max_length=24, unique=True, null=True, blank=True, editable=False)
     action_key = models.CharField(max_length=64, db_index=True)
     country = models.CharField(max_length=2, choices=COUNTRY_CHOICES, db_index=True)
     #: Where this happened, for scope. The country node when the caller

@@ -23,6 +23,7 @@ below zero, because the refund may already have been withdrawn before the late "
 negative balance is then recovered from later earnings, as a cash driver's commission owed is.
 """
 
+from base import refs
 import logging
 
 from django.utils import timezone
@@ -57,7 +58,7 @@ def freeze(withdrawal, *, provider_status=None, provider='', payout_id=''):
     city = getattr(withdrawal.driver, 'home_city', None)
     raise_alert(
         FINANCE_PAYOUT_CONFLICT, severity=CRITICAL,
-        title=(f'Payout {withdrawal.id} of {format_money(withdrawal.amount, withdrawal.currency)} '
+        title=(f'{refs.payout_ref(withdrawal)} of {format_money(withdrawal.amount, withdrawal.currency)} '
                f'reported paid after it was refunded'
                f'{" in " + city.name if city is not None else ""}')[:200],
         payload={'withdrawal_id': withdrawal.id, 'driver_id': withdrawal.driver_id,

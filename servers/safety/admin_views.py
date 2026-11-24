@@ -284,7 +284,7 @@ def _row(incident, unacknowledged=None):
     return {
         'id': incident.id,
         'ref': refs.incident_ref(incident),
-        'trip_ref': refs.ref(refs.TRIP, incident.trip_id),
+        'trip_ref': refs.trip_ref(incident.trip) if incident.trip_id else None,
         # The raiser tapped "this was a mistake": an operator must confirm it.
         'rider_reports_false_alarm': bool(getattr(incident, 'reported_mistake', 0)),
         'title': incident.title,

@@ -27,6 +27,7 @@ snapshot, if it has one). It decides nothing about what anyone is paid, so "Retr
 needs `finance.adjust` (the finance write capability) and an audit row, not an approval.
 """
 
+from base import refs
 import logging
 
 from django.utils import timezone
@@ -63,7 +64,7 @@ def raise_unsettled_alert(trip, detail=''):
                   else trip.estimated_fare_minor or 0)
     return raise_alert(
         SETTLEMENT_NO_COMMISSION_RULE, severity=CRITICAL,
-        title=f'Trip {trip.id} cannot be settled: no commission rule'
+        title=f'{refs.trip_ref(trip)} cannot be settled: no commission rule'
               f'{" in " + city.name if city is not None else ""}'[:200],
         payload={'trip_id': trip.id, 'city': city.code if city is not None else None,
                  'fare_minor': fare_minor, 'currency': trip.currency or '',

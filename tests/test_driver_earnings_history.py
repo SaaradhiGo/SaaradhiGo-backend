@@ -141,7 +141,7 @@ def test_the_statement_says_who_and_from_whom(driver, settings):  # noqa: F811
     client = _api(driver)
     key = _get(client, 'months/')['months'][0]['month']
     st = _get(client, f'statement/?month={key}')
-    assert st['number'] == f"SG-{key.replace('-', '')}-{driver.id:06d}" and st['produced_on']
+    assert st['number'] == f"SG-{key.replace('-', '')}-{driver.public_ref}" and st['produced_on']
     assert st['phone_masked'].endswith(driver.user_id.phone_number[-4:]) and '•' in st['phone_masked']
     assert st['company']['address'].startswith('1-2-3')
     r = client.get(f'/api/v1/driver/earnings/statement/?month={key}&as=csv')

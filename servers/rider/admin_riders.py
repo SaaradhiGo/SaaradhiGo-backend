@@ -283,6 +283,7 @@ def _row(rider, nodes):
     return {
         'id': user.id,
         'profile_id': rider.id,
+        'ref': rider.public_ref or f'R-{user.id}',  # 24 Nov: the reference people see
         'user_details': {
             'id': user.id, 'full_name': user.full_name, 'phone_number': user.phone_number,
             'email': user.email, 'is_active': user.is_active,

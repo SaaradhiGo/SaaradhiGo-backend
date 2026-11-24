@@ -1073,13 +1073,14 @@ class TestPayoutNeedsPayoutDetails:
         Driver.objects.filter(pk=d.pk).update(upi_id='')
 
         mine = client(hyd_finance).get(f"{API}/requests/{req['id']}/").json()['data']
-        assert mine['ref'] == f"APR-{req['id']}"
+        assert mine['ref'].startswith('APR-') and not mine['ref'].endswith(f"-{req['id']}")
         assert mine['can_decide'] is False and 'different person' in mine['cannot_decide_reason']
         assert mine['can_cancel'] is True
         theirs = client(hyd_checker).get(f"{API}/requests/{req['id']}/").json()['data']
         assert theirs['can_decide'] is True and theirs['cannot_decide_reason'] is None
-        assert theirs['blockers'] == [f'No payout details on file for D-{d.pk}']
-        assert theirs['subjects'][0]['driver_ref'] == f'D-{d.pk}'
+        d.refresh_from_db()
+        assert theirs['blockers'] == [f'No payout details on file for {d.public_ref}']
+        assert theirs['subjects'][0]['driver_ref'] == d.public_ref
 
         with mock.patch(PAYOUT_PATCH, return_value=True) as dispatch:
             refused = client(hyd_checker).post(f"{API}/requests/{req['id']}/approve/", {},

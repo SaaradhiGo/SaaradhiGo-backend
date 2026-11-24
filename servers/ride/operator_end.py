@@ -49,6 +49,8 @@ and adds no fee, tip or toll; neither does this. No fare-card, surge, fee or
 commission value is changed anywhere.
 """
 
+from base.refs import trip_text
+from base import refs
 import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -613,7 +615,7 @@ def apply_plan(trip, plan, *, actor):
         city = city_node_of(trip)
         raise_alert(
             FINANCE_PLATFORM_FUNDED_END, severity=WARNING,
-            title=(f'Trip {trip.id} ended by SaaradhiGo: the platform paid the driver'
+            title=(f'{refs.trip_ref(trip)} ended by SaaradhiGo: the platform paid the driver'
                    f'{" in " + city.name if city is not None else ""}')[:200],
             payload={'trip_id': trip.id, 'city': city.code if city is not None else None,
                      'reason_code': plan.reason_code,
@@ -686,12 +688,12 @@ def after_commit(trip_id, rider_id, driver_id, plan):
         if rider is not None:
             dispatcher.notify(
                 RIDER_TEMPLATE, rider,
-                {'trip_id': str(trip_id), 'charge_text': _charge_text(plan)},
+                {'trip_id': trip_text(trip_id), 'charge_text': _charge_text(plan)},
                 channels=('in_app', 'push'), idempotency_key=f'{RIDER_TEMPLATE}:{trip_id}')
         if driver_user is not None:
             dispatcher.notify(
                 DRIVER_TEMPLATE, driver_user,
-                {'trip_id': str(trip_id), 'earnings_text': _earnings_text(plan)},
+                {'trip_id': trip_text(trip_id), 'earnings_text': _earnings_text(plan)},
                 channels=('in_app', 'push'), idempotency_key=f'{DRIVER_TEMPLATE}:{trip_id}')
     except Exception:  # noqa: BLE001
         logger.exception('operator end: notices failed for trip %s', trip_id)

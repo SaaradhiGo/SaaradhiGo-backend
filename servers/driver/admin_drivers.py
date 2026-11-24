@@ -355,6 +355,7 @@ def _base_row(driver):
     user = driver.user_id
     return {
         'id': driver.id,
+        'ref': driver.public_ref or f'D-{driver.id}',  # 24 Nov: the reference people see
         'user_details': {
             'id': user.id, 'full_name': user.full_name, 'phone_number': user.phone_number,
             'email': user.email, 'role': user.role, 'is_active': user.is_active,

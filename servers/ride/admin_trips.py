@@ -27,6 +27,7 @@ RULES THIS FILE KEEPS
   `stale_rides` screen refused it for the same reason).
 """
 
+from base.refs import trip_text
 import logging
 from datetime import datetime, time, timedelta
 
@@ -411,12 +412,12 @@ def list_response(request, queryset):
         row.pop('pickup_address', None)
         row.pop('destination_address', None)
         row.update({
-            'ref': refs.ref(refs.TRIP, trip.id),
+            'ref': refs.trip_ref(trip),
             'pickup_locality': locality(trip.pickup_address, city_name),
             'drop_locality': locality(trip.destination_address, city_name),
             'driver_name': trip.driver_id.console_name if trip.driver_id else None,
-            'driver_ref': refs.ref(refs.DRIVER, trip.driver_id_id),
-            'rider_ref': refs.ref(refs.RIDER, trip.user_id_id),
+            'driver_ref': refs.driver_ref(trip.driver_id) if trip.driver_id_id else None,
+            'rider_ref': refs.rider_ref(trip.user_id),
             'rider_id': trip.user_id_id,
             'driver_id': trip.driver_id_id,
             'estimated_fare_minor': trip.estimated_fare_minor,
@@ -896,7 +897,7 @@ def _tell_rider_released(trip_id, rider_id):
         try:
             from servers.notifications import dispatcher
 
-            dispatcher.notify('trips.operator_cancelled', rider, {'trip_id': str(trip_id)},
+            dispatcher.notify('trips.operator_cancelled', rider, {'trip_id': trip_text(trip_id)},
                               channels=('in_app', 'push'),
                               idempotency_key=f'trips.operator_cancelled:{trip_id}')
         except Exception:  # noqa: BLE001
@@ -949,7 +950,9 @@ def _after_cancel(trip_id, rider_id, driver_id, stale_release=False):
         driver_user = Driver.objects.filter(pk=driver_id).values_list('user_id', flat=True).first()
         if driver_user:
             users.append(driver_user)
-    message = f'Trip #{trip_id} was cancelled by support.'
+    from servers.ride.models import Trip as _Trip
+    ref = _Trip.objects.filter(pk=trip_id).values_list('public_ref', flat=True).first() or 'Your trip'
+    message = f'{ref} was cancelled by support.'
     for user in get_user_model().objects.filter(pk__in=users):
         try:
             Notification.objects.create(user_id=user, title='Ride Cancelled', message=message,
@@ -1440,7 +1443,7 @@ def admin_resend_pickup_code(request, trip_id):
 
     sent_at = timezone.now()
     rows = dispatcher.notify(
-        PICKUP_CODE_TEMPLATE, trip.user_id, {'trip_id': str(trip.id)}, channels=('in_app', 'push'),
+        PICKUP_CODE_TEMPLATE, trip.user_id, {'trip_id': trip_text(trip.id)}, channels=('in_app', 'push'),
         idempotency_key=f'{PICKUP_CODE_TEMPLATE}:{trip.id}:{int(sent_at.timestamp())}')
     record_admin_action(request, action='trip_pickup_code_resent', target_type=TARGET,
                         target_id=trip.id, after={'channels': ['in_app', 'push'],

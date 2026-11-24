@@ -202,7 +202,7 @@ def _alerts(user, scope, cities, selected, exact):
     events = {
         e['id']: e for e in SOSEvent.objects.filter(id__in=sos_ids).values(
             'id', 'latitude', 'longitude', 'status', 'created_at', 'incident_id',
-            'incident__country')
+            'incident__country', 'incident__public_ref')
     } if sos_ids else {}
     from servers.safety.config import active_configs
 
@@ -218,6 +218,7 @@ def _alerts(user, scope, cities, selected, exact):
             cfg = cfgs.get(e['incident__country'] or '')
             minutes = cfg.sos_ack_minutes if cfg and cfg.sos_ack_minutes else None
             sos = {'sos_id': e['id'], 'sos_status': e['status'], 'incident_id': e['incident_id'],
+                   'incident_ref': e['incident__public_ref'],
                    'ack_due_at': (e['created_at'] + timedelta(minutes=minutes)
                                   if minutes and e['status'] == 'open' else None)}
         out.append(build_alert(

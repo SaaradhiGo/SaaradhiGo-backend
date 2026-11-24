@@ -78,7 +78,7 @@ def test_the_operator_sees_it_and_confirms_it():
     if ev.incident_id:
         row = _row(_annotate(SafetyIncident.objects.all()).get(pk=ev.incident_id))
         assert row['rider_reports_false_alarm'] is True
-        assert row['ref'] == f'SOS-{ev.incident_id}'
+        assert row['ref'] == SafetyIncident.objects.get(pk=ev.incident_id).public_ref
 
 
 def test_twice_is_harmless():

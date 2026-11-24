@@ -377,6 +377,9 @@ def filter_incidents(request, queryset, now):
         cond = Q(title__icontains=text)
         if text.isdigit() and len(text) <= 9:
             cond |= Q(id=int(text)) | Q(trip_id=int(text))
+        else:
+            ref = text.upper()
+            cond |= Q(public_ref=ref) | Q(trip__public_ref=ref)
         queryset = queryset.filter(cond)
 
     sort = (params.get('sort') or 'priority').strip()
@@ -639,8 +642,14 @@ def _target(request, kind, raw):
     from servers.support.models import SupportTicket
     from servers.support.scope import tickets_visible_to
 
-    target_id = _int(raw, f'{kind}_id')
     user = request.user
+    if kind == LINK_TRIP and isinstance(raw, str) and raw.strip() and not raw.strip().isdigit():
+        # 25 Nov (owner): people type the trip's reference (HYD-261116-K7Q4), never its database id.
+        found_id = Trip.objects.filter(public_ref=raw.strip().upper()).values_list('id', flat=True).first()
+        if found_id is None:
+            raise BadInput('NOT_FOUND', 'No trip has that reference.', 'trip_id')
+        raw = found_id
+    target_id = _int(raw, f'{kind}_id')
     if kind == LINK_DRIVER:
         found = scoped_or_none(user, Driver.objects.select_related('user_id', 'home_city'),
                                id=target_id)

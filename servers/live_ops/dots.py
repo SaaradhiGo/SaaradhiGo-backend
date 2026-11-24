@@ -29,7 +29,7 @@ TRIP_KEYS = frozenset({
 ALERT_KEYS = frozenset({
     'id', 'kind', 'severity', 'title', 'city', 'created_at', 'is_sos', 'lat', 'lng',
     # SOS only: the event, its status, its case, and when the country's ack timer runs out.
-    'sos_id', 'sos_status', 'incident_id', 'ack_due_at',
+    'sos_id', 'sos_status', 'incident_id', 'incident_ref', 'ack_due_at',
 })
 #: Reaching a browser with any of these in a payload is a bug.
 FORBIDDEN_KEYS = frozenset({
@@ -119,6 +119,7 @@ def build_alert(*, alert_id, kind, severity, title, city, created_at, is_sos,
         'sos_id': sos.get('sos_id'),
         'sos_status': sos.get('sos_status'),
         'incident_id': sos.get('incident_id'),
+        'incident_ref': sos.get('incident_ref'),
         'ack_due_at': iso(sos['ack_due_at']) if sos.get('ack_due_at') else None,
         'id': int(alert_id),
         'kind': kind,

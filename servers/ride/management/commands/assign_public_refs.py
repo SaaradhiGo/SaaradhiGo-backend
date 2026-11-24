@@ -8,6 +8,7 @@ RELATED = {
     public_ref.TRIP: ('zone__geo_node',), public_ref.DRIVER: ('home_city',), public_ref.RIDER: ('home_city',),
     public_ref.TICKET: ('trip_id__zone__geo_node', 'user_id'), public_ref.PAYOUT: ('driver__home_city',),
     public_ref.APPROVAL: ('scope_node',), public_ref.FRAUD: ('anchor_node',),
+    public_ref.INCIDENT: ('anchor_node', 'trip__zone__geo_node'),
 }
 
 

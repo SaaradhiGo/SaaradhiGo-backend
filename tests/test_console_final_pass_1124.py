@@ -75,7 +75,7 @@ class TestApprovalsSayWhatChanges:
         words = describe(row, 'Change to fare cards')
 
         assert words.startswith('Telangana daily driver fee: ') or words.startswith('IN-TG daily driver fee: ')
-        assert 'Auto ₹20 a day' in words and 'Cars ₹49 a day' in words and '.00' not in words
+        assert 'Auto ₹20 a day' in words and 'Sedan ₹49 a day' in words and '.00' not in words
 
     def test_automatic_makers_read_in_words(self):
         assert actor_words('system:weekly_payout') == 'Weekly payout run (automatic)'

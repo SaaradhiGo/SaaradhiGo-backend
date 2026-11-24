@@ -7,7 +7,9 @@ Unknown payloads fall back to the title, so a new action never shows a blank lin
 from servers.admin_access.models import GeoNode
 
 COUNTRY_NAMES = {'IN': 'India', 'US': 'United States'}
-CLASS_WORDS = {'auto': 'Auto', 'bike': 'Bike', 'sedan': 'Cars', 'suv': 'SUVs', 'hatchback': 'Hatchbacks', '*': 'Every class'}
+# 25 Nov (owner): classes by the names riders and drivers see (Mini, Sedan, SUV, Auto), never plurals.
+CLASS_WORDS = {'auto': 'Auto', 'bike': 'Bike', 'sedan': 'Sedan', 'suv': 'SUV', 'hatchback': 'Mini', 'mini': 'Mini',
+               'standard': 'Standard', 'xl': 'XL', '*': 'Every class'}
 
 
 def place_name(code):

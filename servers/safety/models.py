@@ -285,6 +285,9 @@ class SafetyIncident(models.Model):
     #: Escalation markers: the sweep fires each at most once per incident.
     assign_escalated_at = models.DateTimeField(null=True, blank=True)
 
+    #: 25 Nov (owner): the reference people see (base.public_ref), never the database id.
+    public_ref = models.CharField(max_length=24, unique=True, null=True, blank=True, editable=False)
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

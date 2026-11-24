@@ -35,9 +35,12 @@ def ref(prefix, pk):
 
 
 def incident_ref(incident):
-    """SOS-n when an SOS raised or joined the incident, else INC-n."""
+    """The incident's reference, INC-HYD-4MQ9 (25 Nov, owner). Old rows not yet backfilled fall back
+    to SOS-n when an SOS raised or joined the incident, else INC-n."""
     if incident is None:
         return None
+    if getattr(incident, 'public_ref', None):
+        return incident.public_ref
     has_sos = getattr(incident, '_has_sos', None)
     if has_sos is None:
         has_sos = incident.source == 'sos' or incident.links.filter(kind='sos').exists()

@@ -11,6 +11,7 @@ import re
 
 #: Verbs for actions whose name alone reads badly.
 ACTION_WORDS = {
+    'commission_rule_retired': 'Retired a commission rule (drivers pay through fee plans only)',
     'city_archived': 'Archived the city (not a planned market)',
     'test_account_deactivated': 'Turned off a test account',
     'assign_public_refs': 'Gave records their readable references',

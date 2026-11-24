@@ -121,6 +121,17 @@ def default_commission_rules(request):
             defaults={'percent': 15, 'status': ACTIVE, 'reason': 'test default (owner 15%)',
                       # In force since forever: a test may back-date a trip.
                       'effective_from': datetime(2000, 1, 1, tzinfo=timezone.utc)})
+    # 24 Nov (owner): drivers are charged only through fee plans, so every test market has one:
+    # commission as a fee-plan type, 15%, country-wide.
+    from datetime import date
+
+    from servers.pricing.fee_plan_models import ACTIVE as PLAN_ACTIVE, PERCENT_COMMISSION, DriverFeePlan
+    for country, currency in (('IN', 'INR'), ('US', 'USD')):
+        DriverFeePlan.objects.get_or_create(
+            country=country, scope_code='', version=900,  # clear of the versions tests create
+            defaults={'currency': currency, 'plan_type': PERCENT_COMMISSION, 'status': PLAN_ACTIVE,
+                      'amounts': {'*': {'commission_percent': 15}},
+                      'effective_from': date(2000, 1, 1), 'reason': 'test default (owner 15%)'})
     yield
 
 

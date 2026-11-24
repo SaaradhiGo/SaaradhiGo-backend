@@ -310,9 +310,8 @@ def _active_fee_plan(node):
 
 
 def _fee_plan(node):
-    """Where the market requires one (US), an active driver fee plan covers this city (14 Nov)."""
-    if not _rules(node)['fee_plan_required']:
-        return {'key': 'fee_plan', 'ok': True, 'detail': 'Not required in this market.'}
+    """An approved driver fee plan covers this city (owner 24 Nov: in every market; it is the only
+    way drivers are charged, so a city cannot go live without one)."""
     from servers.payments.payout_scope import scope_codes_of_node
     from servers.pricing.fee_plans import local_day, resolve
 
@@ -320,7 +319,8 @@ def _fee_plan(node):
     plan = resolve(country, scope_codes_of_node(node), local_day(country))
     if plan is None:
         return {'key': 'fee_plan', 'ok': False,
-                'detail': 'No driver fee plan is active here. Drivers cannot go online until one is set.'}
+                'detail': 'No approved driver fee plan covers this city. It cannot go live, and riders '
+                          'are offered no class, until one is approved.'}
     return {'key': 'fee_plan', 'ok': True, 'detail': f'Fee plan v{plan.version} ({plan.plan_type}) is active.'}
 
 
@@ -340,7 +340,8 @@ def _platform_insurance(node):
 
 
 #: Append here. Each is `callable(node) -> {key, ok, detail[, status]}`.
-ITEMS = [_safety_coverage, _commission, _fare_card, _zone, _payout_config, _approval_policies,
+# 24 Nov (owner): no commission item. Commission is only a fee-plan type; the fee plan is the gate.
+ITEMS = [_safety_coverage, _fare_card, _zone, _payout_config, _approval_policies,
          _payment_gateway, _sms_provider, _tax, _fee_plan, _platform_insurance]
 
 #: What the console shows for each item, and the page that fixes it.
@@ -354,7 +355,7 @@ ITEM_META = {
     'payment_gateway': ('Payment gateway', '/settings/integrations'),
     'sms_provider': ('SMS provider', '/settings/integrations'),
     'tax': ('Tax settings', '/pricing'),
-    'fee_plan': ('Driver fee plan', '/pricing'),
+    'fee_plan': ('Driver fee plan', '/pricing/fee-plans'),
     'platform_insurance': ('Platform insurance', '/settings'),
 }
 

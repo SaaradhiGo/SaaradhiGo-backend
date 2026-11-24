@@ -30,11 +30,15 @@ def _fee_plan(payload):
     place = place_name(plan.scope_code or plan.country)
     kind = {DAILY_PASS: 'daily driver fee', PERCENT_COMMISSION: 'driver fee (commission)'}.get(
         plan.plan_type, 'per-trip driver fee')
-    parts = []
+    parts, waiver = [], ''
     for vt in sorted((plan.amounts or {}).keys(), key=lambda k: (k == '*', k)):
-        words = fee_plans.plan_words(plan, vt if vt != '*' else '', plan.country) or ''
-        parts.append(f"{CLASS_WORDS.get(vt, vt.title())} {words.replace(', only on a day with a trip', '')}")
-    return f"{place} {kind}: {', '.join(parts) or 'no amounts yet'}"
+        words = (fee_plans.plan_words(plan, vt if vt != '*' else '', plan.country) or '').replace(
+            ', only on a day with a trip', '')
+        if '; ' in words:  # the waiver is the plan's, said once at the end (24 Nov)
+            words, waiver = words.split('; ', 1)
+        parts.append(f"{CLASS_WORDS.get(vt, vt.title())} {words}")
+    tail = f'; {waiver}' if waiver else ''
+    return f"{place} {kind}: {', '.join(parts) or 'no amounts yet'}{tail}"
 
 
 def _fare_card(payload):

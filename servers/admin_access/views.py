@@ -159,12 +159,26 @@ def _selectable_scopes(user):
             covered |= Q(path__startswith=path)
         nodes = GeoNode.objects.filter(covered)
 
+    from servers.pricing.models import ServiceZone
+
+    # 24 Nov (owner): a draft city with an active zone is "coming soon" and stays in working lists;
+    # one with none is "not launched" and is hidden by default. One query for all of them.
+    zoned = set(ServiceZone.objects.filter(is_active=True).values_list('geo_node_id', flat=True))
+
+    def launch(node):
+        if node.kind != 'city':
+            return None
+        if node.status == 'draft':
+            return 'coming_soon' if node.id in zoned else 'not_launched'
+        return {'active': 'live'}.get(node.status, node.status)
+
     return [
         {
             'code': node.code,
             'name': node.name,
             'kind': node.kind,
             'status': node.status,
+            'launch_state': launch(node),
             'depth': node.path.count('/') - 1,
             'path': node.path,
         }

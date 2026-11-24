@@ -140,16 +140,22 @@ def target_words(entry, names):
     if ref:
         return f"{t.replace('_', ' ').capitalize()} {ref}" if t not in ('trip', 'driver', 'rider') else {
             'trip': 'Trip', 'driver': 'Driver', 'rider': 'Rider'}[t] + f' {ref}'
-    prefix = {'driver': 'Driver D-', 'rider': 'Rider R-', 'trip': 'Trip T-', 'user': 'Account #',
-              'withdrawal': 'Payout W-', 'operator_alert': 'Alert #', 'service_zone': 'Zone #',
-              'wallet': 'Wallet #', 'operator': 'Operator #'}.get(t)
+    # 24 Nov (owner): never a database id. A target with no reference is named in words.
+    prefix = {'driver': 'A driver', 'rider': 'A rider', 'trip': 'A trip', 'user': 'An account',
+              'withdrawal': 'A payout', 'operator_alert': 'An alert', 'service_zone': 'A zone',
+              'wallet': 'A wallet', 'operator': 'A staff account', 'commission_rule': 'A commission rule',
+              'risk_flag': 'A fraud flag', 'support_ticket': 'A support ticket',
+              'approval_request': 'An approval request'}.get(t)
+    if t.lower() == 'geonode' and tid:
+        return names.get(('place_pk', str(tid))) or names.get(tid) or 'A place'
     if tid == 'all':
         return ALL_WORDS.get(t, f"All {t.replace('_', ' ')}s")
     if prefix and tid:
-        return f'{prefix}{tid}'
+        return prefix
     if not t:
         return ''
-    return f"{t.replace('_', ' ')} {tid}".strip()
+    words = t.replace('_', ' ').strip()
+    return f'{words[:1].upper()}{words[1:]}' if not str(tid).isdigit() else f'A {words}'
 
 
 def summary(entry, names):

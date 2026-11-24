@@ -726,6 +726,7 @@ def trip_driver_details(request,trip_id):
     if cached and 'driver_id' in cached:
         return success_response({
             'id': trip_id,
+            'public_ref': Trip.objects.filter(pk=trip_id).values_list('public_ref', flat=True).first(),
             'status': cached.get('status'),
             'driver_name': cached.get('driver_name'),
             # Masked calls only (9 Nov): the rider never receives the driver's number. The key
@@ -758,6 +759,7 @@ def trip_driver_details(request,trip_id):
 
     data = {
         'id': trip.id,
+        'public_ref': trip.public_ref,  # 24 Nov: the reference the rider can share
         'status': trip.status_id.status_code if trip.status_id else 'pending',
         'driver_name': trip.driver_id.public_name if trip.driver_id else None,
         'driver_phone': None,  # masked calls only (9 Nov); see the cache path above

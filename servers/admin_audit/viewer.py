@@ -271,7 +271,7 @@ def names_for(entries):
 #: Audit target types whose record has a readable reference (owner 24 Nov), and its model.
 REF_TARGETS = {'trip': ('ride', 'Trip'), 'driver': ('driver', 'Driver'), 'withdrawal': ('driver', 'WithdrawalRequest'),
                'support_ticket': ('support', 'SupportTicket'), 'approval_request': ('approvals', 'ApprovalRequest'),
-               'rider': ('rider', 'Rider'), 'user': ('rider', 'Rider')}
+               'rider': ('rider', 'Rider'), 'user': ('rider', 'Rider'), 'risk_flag': ('fraud', 'RiskFlag')}
 
 
 def _refs_for(entries):
@@ -283,6 +283,11 @@ def _refs_for(entries):
         if e.target_type in REF_TARGETS and str(e.target_id or '').isdigit():
             wanted.setdefault(e.target_type, set()).add(int(e.target_id))
     out = {}
+    # GeoNode targets written by id (a city's status change): their names.
+    pks = {int(e.target_id) for e in entries if (e.target_type or '').lower() == 'geonode'
+           and str(e.target_id or '').isdigit()}
+    for pk, name in GeoNode.objects.filter(pk__in=pks).values_list('pk', 'name'):
+        out[('place_pk', str(pk))] = name
     for t, ids in wanted.items():
         model = apps.get_model(*REF_TARGETS[t])
         key = 'user_id' if t in ('rider', 'user') else 'pk'

@@ -422,6 +422,24 @@ def needs_action(request, limit=50, now=None):
                 detail='Rider reports false alarm' if getattr(case, 'reported_mistake', 0) else '',
                 actions=['acknowledge', 'assign_me'] if unacked else ['assign_me']))
 
+        # 24 Nov (owner): a safety-concern ticket is safety. Its open case shows here, high,
+        # until someone takes it, whether or not the city is live yet.
+        from servers.safety.models import SRC_TICKET
+
+        concerns = (incidents_visible_to(user, node, SafetyIncident.objects.all())
+                    .exclude(status=CLOSED).filter(source=SRC_TICKET)
+                    .select_related('anchor_node', 'assigned_to')[:50])
+        for case in concerns:
+            ref = refs.incident_ref(case)
+            who = getattr(case.assigned_to, 'full_name', None) or getattr(case.assigned_to, 'email', None)
+            items.append(_item(
+                'sos', HIGH, f"{ref} · safety concern raised in support"
+                + ('' if case.assigned_to_id else ' · nobody assigned'),
+                where=_place(case.anchor_node), at=case.opened_at, now=now,
+                link=f'/safety-ops/incidents/{case.id}', ref=ref,
+                owner={'id': case.assigned_to_id, 'label': who} if case.assigned_to_id else None,
+                actions=['assign_me']))
+
     # ---- Stuck trips --------------------------------------------------------
     if granted(user, 'trip.read')[0]:
         trips = scoped(user, Trip.objects.all())

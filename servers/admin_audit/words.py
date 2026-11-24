@@ -42,9 +42,18 @@ FIELD_WORDS = {
     'per_min_fare': 'fare per minute', 'min_fare': 'minimum fare', 'approved': 'approval',
     'acknowledged': 'taken', 'is_test_account': 'test account', 'currency': 'currency',
     'warn_value': 'warning level', 'critical_value': 'critical level', 'instant_cashout_enabled': 'Withdraw now',
+    # 24 Nov (owner): no field names on the page.
+    'estimated_fare_minor': 'quoted fare', 'final_fare_minor': 'fare', 'net_whole': 'driver earning',
+    'net_shown': 'driver earning', 'commission_whole': 'commission', 'correction_minor': 'balance correction',
+    'wallets_moved': 'driver balances corrected', 'fee_minor': 'platform fee', 'trips': 'trips',
+    'fee_days': 'fee days',
 }
+#: Amounts kept in minor units (paise, cents) whose name does not end in _minor.
+MONEY_FIELDS = {'net_whole', 'net_shown', 'commission_whole', 'amount', 'fare'}
+#: The market's currency when the row does not carry one.
+COUNTRY_CURRENCY = {'IN': 'INR', 'US': 'USD'}
 SKIP_FIELDS = {'version', 'id', 'updated_at', 'created_at', 'reason', 'idempotency_key', 'country', 'scope',
-               'city', 'city_code', 'currency', 'kind', 'cleared_by', 'source_type', 'source_id'}
+               'city', 'city_code', 'currency', 'kind', 'cleared_by', 'source_type', 'source_id', 'settlements'}
 SYMBOL = {'INR': '₹', 'USD': '$'}
 
 
@@ -67,7 +76,7 @@ def _value(field, value, currency):
         return 'nothing'
     if isinstance(value, bool):
         return 'on' if value else 'off'
-    if field.endswith('_minor'):
+    if field.endswith('_minor') or field in MONEY_FIELDS:
         return _money(value, currency)
     if field.endswith('percent') or field == 'percent':
         return f'{value}%'
@@ -81,11 +90,25 @@ def _field(field):
     return FIELD_WORDS.get(field) or field.replace('_minor', '').replace('_', ' ')
 
 
-def changes(before, after):
+def _flat(blob):
+    """One level of nesting lifted ({'fare': {'final_fare_minor': 1}} -> {'final_fare_minor': 1})."""
+    if not isinstance(blob, dict):
+        return {}
+    out = {}
+    for key, value in blob.items():
+        if isinstance(value, dict) and key not in SKIP_FIELDS and all(isinstance(k, str) for k in value):
+            for inner, v in value.items():
+                out.setdefault(inner, v)
+        else:
+            out.setdefault(key, value)
+    return out
+
+
+def changes(before, after, place=None):
     """[(field words, from, to)] for the fields the entry changed, at most four."""
-    before = before if isinstance(before, dict) else {}
-    after = after if isinstance(after, dict) else {}
-    currency = after.get('currency') or before.get('currency')
+    before, after = _flat(before), _flat(after)
+    currency = (after.get('currency') or before.get('currency')
+                or COUNTRY_CURRENCY.get(str(place or '').split('-')[0]))
     out = []
     for key, new in after.items():
         if key in SKIP_FIELDS or key.startswith('_'):
@@ -101,6 +124,10 @@ def changes(before, after):
     return out
 
 
+#: A bulk action's target ("all") in words.
+ALL_WORDS = {'user_preference': 'Every account', 'trip': 'All trips', 'user': 'Every account'}
+
+
 def target_words(entry, names):
     t, tid = entry.target_type or '', entry.target_id or ''
     if t == 'geonode' and tid:
@@ -108,6 +135,8 @@ def target_words(entry, names):
     prefix = {'driver': 'Driver D-', 'rider': 'Rider R-', 'trip': 'Trip T-', 'user': 'Account #',
               'withdrawal': 'Payout W-', 'operator_alert': 'Alert #', 'service_zone': 'Zone #',
               'wallet': 'Wallet #', 'operator': 'Operator #'}.get(t)
+    if tid == 'all':
+        return ALL_WORDS.get(t, f"All {t.replace('_', ' ')}s")
     if prefix and tid:
         return f'{prefix}{tid}'
     if not t:
@@ -118,12 +147,19 @@ def target_words(entry, names):
 def summary(entry, names):
     """One sentence for the list."""
     action = entry.action or ''
-    place = names.get(_place(entry) or '', '')
-    lines = changes(entry.before, entry.after)
+    code = _place(entry, names)
+    place = names.get(code or '', '')
+    lines = changes(entry.before, entry.after, code)
+    if action in ROUNDING_ACTIONS:
+        return _rounding(entry, lines, names)
+    if action in TEMPLATES:
+        before = entry.before if isinstance(entry.before, dict) else {}
+        after = entry.after if isinstance(entry.after, dict) else {}
+        return TEMPLATES[action](before, after)
     if lines:
         where = f'{place} ' if place else ''
         field, old, new = lines[0]
-        text = f'Changed {where}{field} from {old} to {new}'
+        text = f'Set {where}{field} to {new}' if old == 'nothing' else f'Changed {where}{field} from {old} to {new}'
         if len(lines) > 1:
             text += f' (and {len(lines) - 1} more)'
         return text
@@ -132,7 +168,38 @@ def summary(entry, names):
     return f'{words}{" · " + target if target else ""}{" · " + place if place and place not in target else ""}'
 
 
-def _place(entry):
-    from .viewer import place_of
+def _n(count, word):
+    count = int(count or 0)
+    return f'{count} {word}{"s" * (count != 1)}'
 
-    return place_of(entry)
+
+#: Bulk actions whose before/after hold counts, said as a sentence.
+TEMPLATES = {
+    'themes_reset_to_light': lambda b, a: f"Reset {_n(a.get('reset'), 'account')} to the light theme",
+}
+
+ROUNDING_ACTIONS = {'inr_trip_money_rounded', 'inr_platform_fee_rounded', 'inr_money_rounded_to_rupees'}
+
+
+def _rounding(entry, lines, names):
+    """The 23 Nov whole-rupee correction in words: what was rounded and what the driver now sees."""
+    after = entry.after if isinstance(entry.after, dict) else {}
+    before = entry.before if isinstance(entry.before, dict) else {}
+    if entry.action == 'inr_money_rounded_to_rupees':
+        trips, moved = before.get('trips') or 0, after.get('wallets_moved') or 0
+        return (f'Rounded India money to whole rupees: {trips} trip{"s" * (trips != 1)}, '
+                f'{moved} driver balance{"s" * (moved != 1)} corrected')
+    head = ('Rounded the fare to whole rupees' if entry.action == 'inr_trip_money_rounded'
+            else 'Rounded the platform fee to whole rupees')
+    parts = [f'{field} {old} to {new}' if old != 'nothing' else f'{field} {new}'
+             for field, old, new in lines if field != 'balance correction']
+    corr = after.get('correction_minor')
+    if corr:
+        parts.append(f'balance corrected by {"+" if corr > 0 else "−"}{_money(abs(corr), "INR")}')
+    return f'{head}: {", ".join(parts[:3])}' if parts else head
+
+
+def _place(entry, names=None):
+    from .viewer import display_place, place_of
+
+    return display_place(entry, names) if names is not None else place_of(entry)

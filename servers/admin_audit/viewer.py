@@ -35,7 +35,7 @@ from servers.admin_access.access import scope_paths
 from servers.admin_access.masking import BULLET, RAW_PII_PATTERNS, mask_contact
 from servers.admin_access.models import COUNTRY, GLOBAL, GeoNode
 
-from .hashchain import GENESIS, compute_hash
+from .hashchain import ANCHOR_TARGET_TYPE, GENESIS, SEAL_ACTION, compute_hash, is_seal, sealed_digest
 from .models import AdminAuditLog
 
 NODE_KEYS = ('scope', 'city_code', 'geo_node_code', 'zone_code', 'home_city_code', 'city')
@@ -208,18 +208,51 @@ def _mask_ip(ip):
     return '.'.join(parts[:3] + ['x']) if len(parts) == 4 else None
 
 
+#: Actions that name no place in their row but are about one market (24 Nov: never "none").
+ACTION_PLACE = {'inr_money_rounded_to_rupees': 'IN', 'inr_trip_money_rounded': 'IN',
+                'inr_platform_fee_rounded': 'IN'}
+
+
+def _trip_cities(entries):
+    """{('trip', id): city code} for trip entries whose row names no place: the trip's own city."""
+    from servers.ride.models import Trip
+
+    ids = {int(e.target_id) for e in entries
+           if e.target_type == 'trip' and str(e.target_id or '').isdigit() and not place_of(e)}
+    out = {}
+    for trip in Trip.objects.filter(id__in=ids).select_related('zone__geo_node'):
+        zone = trip.zone
+        node = zone.geo_node if zone is not None else None
+        while node is not None and node.kind != 'city':
+            node = node.parent
+        if node is not None:
+            out[('trip', str(trip.id))] = node.code
+    return out
+
+
+def display_place(entry, names):
+    """The place a row shows: the row's own, else its trip's city, else the market its action is about."""
+    return (place_of(entry) or names.get(('trip', str(entry.target_id)))
+            if entry.target_type == 'trip' else place_of(entry)) or ACTION_PLACE.get(entry.action)
+
+
 def names_for(entries):
-    """{code: name} for the places and geonode targets a page of entries mentions."""
-    codes = {place_of(e) for e in entries} | {e.target_id for e in entries if e.target_type == 'geonode'}
+    """{code: name} for the places and geonode targets a page of entries mentions, plus
+    {('trip', id): city code} for trips whose row names no place."""
+    trips = _trip_cities(entries)
+    codes = ({place_of(e) for e in entries} | {e.target_id for e in entries if e.target_type == 'geonode'}
+             | set(trips.values()) | {ACTION_PLACE.get(e.action) for e in entries})
     codes.discard(None)
-    return dict(GeoNode.objects.filter(code__in=list(codes)).values_list('code', 'name'))
+    names = dict(GeoNode.objects.filter(code__in=list(codes)).values_list('code', 'name'))
+    names.update(trips)
+    return names
 
 
 def entry_row(entry, names=None):
     from .words import summary, target_words
 
     names = names if names is not None else names_for([entry])
-    place = place_of(entry)
+    place = display_place(entry, names)
     return {
         'id': entry.id, 'created_at': entry.created_at.isoformat(),
         'actor': {'id': entry.actor_id, 'label': _actor_label(entry), 'role': entry.actor_role},
@@ -235,10 +268,11 @@ def entry_row(entry, names=None):
 def entry_detail(entry):
     from .words import changes as word_changes
 
+    row = entry_row(entry)
     return {
-        **entry_row(entry), 'reason': scrub(entry.reason or ''),
+        **row, 'reason': scrub(entry.reason or ''),
         'changes': [{'field': f, 'from': scrub(a), 'to': scrub(b)}
-                    for f, a, b in word_changes(entry.before, entry.after)],
+                    for f, a, b in word_changes(entry.before, entry.after, row['place'])],
         'before': scrub(entry.before or {}), 'after': scrub(entry.after or {}),
         'ip': _mask_ip(entry.ip_address), 'user_agent': (entry.user_agent or '')[:120],
         'hash': {'previous': (entry.previous_hash or '')[:8],
@@ -272,6 +306,11 @@ def verify_ids(first, last):
                 .values_list('content_hash', flat=True).first())
     expected = previous or GENESIS
     problems, checked, pre_chain, truncated = [], 0, 0, False
+    # Rows a fork seal names (written concurrently before the 22 Nov locking fix) may link to
+    # any EARLIER row; their content is still checked, and each seal's digest is re-checked.
+    forgiven = set()
+    for after in AdminAuditLog.objects.filter(action=SEAL_ACTION, target_type=ANCHOR_TARGET_TYPE)             .values_list('after', flat=True):
+        forgiven.update(int(i) for i in (after or {}).get('fork_ids', []))
     rows = AdminAuditLog.objects.filter(id__gte=first, id__lte=last).order_by('id')
     for entry in rows.iterator():
         if checked >= VERIFY_MAX_ROWS:
@@ -284,14 +323,30 @@ def verify_ids(first, last):
             else:
                 pre_chain += 1
             continue
-        if entry.previous_hash != expected and not (pre_chain and expected == GENESIS):
+        if entry.previous_hash != expected and not (pre_chain and expected == GENESIS)                 and not (entry.pk in forgiven and _links_earlier(entry)):
             problems.append({'id': entry.pk, 'issue': 'broken link'})
+        if is_seal(entry) and not _seal_holds(entry):
+            problems.append({'id': entry.pk, 'issue': 'seal mismatch'})
         if compute_hash(entry.previous_hash, entry) != entry.content_hash:
             problems.append({'id': entry.pk, 'issue': 'content altered'})
         expected = entry.content_hash
     return {'status': 'ok' if not problems else 'broken', 'checked': checked,
             'problems': problems[:50], 'problem_count': len(problems), 'truncated': truncated,
             'first_id': first, 'last_id': last, 'pre_chain_rows': pre_chain}
+
+
+def _links_earlier(entry):
+    return entry.previous_hash == GENESIS or AdminAuditLog.objects.filter(
+        id__lt=entry.pk, content_hash=entry.previous_hash).exists()
+
+
+def _seal_holds(entry):
+    stored = entry.after or {}
+    first, last = stored.get('sealed_first_id'), stored.get('sealed_max_id')
+    if not (first and last):
+        return False
+    covered = list(AdminAuditLog.objects.filter(id__gte=first, id__lte=last).order_by('id'))
+    return len(covered) == stored.get('sealed_rows') and sealed_digest(covered) == stored.get('sealed_digest')
 
 
 # ---------------------------------------------------------------------------

@@ -183,3 +183,32 @@ def test_concurrent_writers_never_fork_the_chain():
     assert not errors
     assert AdminAuditLog.objects.count() == 120
     assert _issues() == []
+
+
+@pytest.mark.django_db
+class TestViewerHonoursSeals1124:
+    """The audit page's own check (verify_ids) must agree with inspect_chain once forks are sealed."""
+
+    def test_sealed_forks_verify_on_the_page(self):
+        from servers.admin_audit.viewer import verify_ids
+        a = _write(1)
+        _write(2)
+        _fork(a)
+        last = _write(3)
+        assert verify_ids(a.id, last.id)['status'] == 'broken'
+        write_fork_seal(AdminAuditLog, label='ops@saaradhigo.com', reason='Seal pre-fix forks.')
+        tail = AdminAuditLog.objects.order_by('-id').first()
+        result = verify_ids(a.id, tail.id)
+        assert result['status'] == 'ok', result['problems']
+
+    def test_tampering_a_sealed_row_still_breaks_the_page(self):
+        from servers.admin_audit.viewer import verify_ids
+        a = _write(1)
+        _write(2)
+        fork = _fork(a)
+        _write(3)
+        write_fork_seal(AdminAuditLog, label='ops@saaradhigo.com', reason='Seal pre-fix forks.')
+        _raw(f'UPDATE {TABLE} SET reason = %s WHERE id = %s', ['rewritten', fork.id])
+        tail = AdminAuditLog.objects.order_by('-id').first()
+        issues = {p['issue'] for p in verify_ids(a.id, tail.id)['problems']}
+        assert 'content altered' in issues and 'seal mismatch' in issues

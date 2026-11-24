@@ -362,3 +362,22 @@ class TestBeatTasksAndBackfill:
         with pytest.raises(CommandError):
             call_command('backfill_reports', '--since', '2026-10-05', '--until', '2026-10-01',
                          '--actor-email', actor.email, stdout=StringIO())
+
+
+class TestTestDataExcluded1124:
+    """Owner, 24 Nov: test trips and test accounts never count in a report."""
+
+    def test_a_test_riders_trip_and_a_seed_trip_are_not_counted(self, world, geo):
+        from servers.auth_user.models import TestAccount
+
+        hyd = geo['IN-TG-HYD']
+        day = world.trips.hyd[0].completed_at
+        local = compute.local_today(hyd, now=day)
+        compute.rebuild_day(hyd, local)
+        before = rollup_totals(hyd, 'trips_completed')
+        TestAccount.objects.create(user=world.trips.hyd[0].user_id)
+        from servers.ride.models import Trip
+        Trip.objects.filter(pk=world.trips.hyd[1].pk).update(is_seed=True)
+        compute.rebuild_day(hyd, local)
+        after = rollup_totals(hyd, 'trips_completed')
+        assert after.get('INR', 0) == before['INR'] - 2

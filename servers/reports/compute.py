@@ -202,8 +202,21 @@ class _Row(dict):
         self['eta_p90_seconds'] = None
 
 
+def _real(prefix=''):
+    """Trips that count (owner, 22 and 24 Nov): no seed trips, nothing by a test rider or driver.
+    The same rule as base/test_data.real_trips, as a Q so it also applies through a `trip__` join."""
+    return (~Q(**{f'{prefix}is_seed': True})
+            & Q(**{f'{prefix}user_id__test_account__isnull': True})
+            & Q(**{f'{prefix}driver_id__user_id__test_account__isnull': True}))
+
+
+#: A person who is not a test account, through a user foreign key named `field`.
+def _real_user(field):
+    return Q(**{f'{field}__test_account__isnull': True})
+
+
 def _trip_anchor(city):
-    return Q(zone__geo_node__path__startswith=city.path)
+    return Q(zone__geo_node__path__startswith=city.path) & _real()
 
 
 def _requests(city, start, end, rows, default_currency):
@@ -271,7 +284,7 @@ def _settlements(city, start, end, rows, default_currency):
     from servers.payments.aggregates import _current_settlements
 
     qs = (_current_settlements()
-          .filter(trip__zone__geo_node__path__startswith=city.path,
+          .filter(_real('trip__'), trip__zone__geo_node__path__startswith=city.path,
                   settled_at__gte=start, settled_at__lt=end)
           .annotate(_vt=_vehicle('trip__')).values('_vt', 'currency').order_by()
           .annotate(n=Count('id'), gross=Sum('gross_fare_minor'),
@@ -289,12 +302,12 @@ def _promo_and_refunds(city, start, end, rows, default_currency):
     from servers.ride.models import TripMoneyAction
 
     anchor = {'trip__zone__geo_node__path__startswith': city.path}
-    for r in (LedgerEntry.objects.filter(kind=DISCOUNT_KIND, created_at__gte=start,
+    for r in (LedgerEntry.objects.filter(_real('trip__'), kind=DISCOUNT_KIND, created_at__gte=start,
                                          created_at__lt=end, **anchor)
               .annotate(_vt=_vehicle('trip__')).values('_vt', 'currency').order_by()
               .annotate(total=Sum('amount_minor'))):
         rows[(r['_vt'], _cur(r['currency'], default_currency))]['promo_cost_minor'] += int(r['total'] or 0)
-    for r in (TripMoneyAction.objects.filter(kind=TripMoneyAction.REFUND, created_at__gte=start,
+    for r in (TripMoneyAction.objects.filter(_real('trip__'), kind=TripMoneyAction.REFUND, created_at__gte=start,
                                              created_at__lt=end, **anchor)
               .annotate(_vt=_vehicle('trip__')).values('_vt', 'currency').order_by()
               .annotate(total=Sum('amount_minor'))):
@@ -308,7 +321,7 @@ def _trip_ids_in_city(city, trip_ids):
     if not trip_ids:
         return {}
     return {tid: vt for tid, vt in (
-        Trip.objects.filter(id__in=trip_ids, zone__geo_node__path__startswith=city.path)
+        Trip.objects.filter(_real(), id__in=trip_ids, zone__geo_node__path__startswith=city.path)
         .annotate(_vt=_vehicle()).values_list('id', '_vt'))}
 
 
@@ -348,7 +361,7 @@ def _wallet_and_expenses(city, start, end, rows, default_currency):
     # Rewards and their recovery: not tied to a vehicle class. A driver's home city, else the
     # rider's city.
     driver_q = Q(user_id__driver__home_city__path__startswith=city.path)
-    reward_q = window & Q(purpose__in=list(REWARD_PURPOSES) + [RECOVERY_PURPOSE])
+    reward_q = window & Q(purpose__in=list(REWARD_PURPOSES) + [RECOVERY_PURPOSE]) & _real_user('user_id')
     for r in (WalletTransaction.objects.filter(reward_q & driver_q).values('purpose', 'currency')
               .order_by().annotate(total=Sum('amount_minor'))):
         _add_reward(rows, r['purpose'], r['currency'], r['total'], default_currency)
@@ -371,7 +384,7 @@ def _payouts(city, start, end, tz):
     from servers.driver.models import WithdrawalRequest
     from servers.payments.models import TransactionHistory
 
-    anchor_w = Q(driver__home_city__path__startswith=city.path)
+    anchor_w = Q(driver__home_city__path__startswith=city.path) & _real_user('driver__user_id')
     acc = defaultdict(lambda: defaultdict(int))
     for r in (WithdrawalRequest.objects.filter(anchor_w, requested_at__gte=start, requested_at__lt=end)
               .values('currency').order_by()
@@ -384,6 +397,7 @@ def _payouts(city, start, end, tz):
         acc[c]['failed_count'] += r['failed_n']
         acc[c]['failed_minor'] += int(r['failed'] or 0)
     for r in (TransactionHistory.objects.filter(
+            _real_user('driver_id__user_id'),
             driver_id__home_city__path__startswith=city.path, withdrawal_request__isnull=False,
             status='completed', created_at__gte=start, created_at__lt=end)
             .values('currency').order_by().annotate(n=Count('id'), total=Sum('amount_minor'))):
@@ -401,11 +415,12 @@ def _supply(city, day, start, end):
     from servers.driver.models import Driver, DriverSession
     from servers.ride.models import Trip
 
-    home = Q(home_city__path__startswith=city.path)
-    active = (Trip.objects.filter(status_id__status_code='completed', completed_at__gte=start,
+    home = Q(home_city__path__startswith=city.path) & _real_user('user_id')
+    active = (Trip.objects.filter(_real(), status_id__status_code='completed', completed_at__gte=start,
                                   completed_at__lt=end, driver_id__home_city__path__startswith=city.path)
               .values('driver_id').distinct().count())
-    sessions = (DriverSession.objects.filter(driver__home_city__path__startswith=city.path,
+    sessions = (DriverSession.objects.filter(_real_user('driver__user_id'),
+                                             driver__home_city__path__startswith=city.path,
                                              started_at__lt=end)
                 .filter(Q(ended_at__isnull=True) | Q(ended_at__gt=start))
                 .values_list('driver_id', 'started_at', 'ended_at'))
@@ -437,7 +452,7 @@ def _riders(city, day, start, end):
         user_id__in=completed_today, status_id__status_code='completed', completed_at__lt=start)
         .values_list('user_id', flat=True).distinct())
     first_trip = len([u for u in completed_today if u not in earlier])
-    signed_up = list(Rider.objects.filter(created_at__gte=start, created_at__lt=end)
+    signed_up = list(Rider.objects.filter(_real_user('user_id'), created_at__gte=start, created_at__lt=end)
                      .values_list('user_id_id', flat=True))
     where = rider_city_of(signed_up)
     new = len([u for u in signed_up if where.get(u) == city.id])
@@ -457,7 +472,7 @@ def _safety(city, start, end):
 
     anchor = (Q(anchor_node__path__startswith=city.path)
               | Q(anchor_node__isnull=True, trip__zone__geo_node__path__startswith=city.path))
-    events = list(SOSEvent.objects.filter(anchor, created_at__gte=start, created_at__lt=end)
+    events = list(SOSEvent.objects.filter(anchor, _real_user('user'), created_at__gte=start, created_at__lt=end)
                   .values_list('id', 'event_type', 'created_at'))
     if events:
         first_ack = {}
@@ -483,7 +498,7 @@ def _support(city, start, end, now):
 
     anchor = (Q(trip_id__zone__geo_node__path__startswith=city.path)
               | Q(trip_id__isnull=True, user_id__driver__home_city__path__startswith=city.path))
-    base = SupportTicket.objects.filter(anchor)
+    base = SupportTicket.objects.filter(anchor, _real_user('user_id'))
     opened = base.filter(created_at__gte=start, created_at__lt=end)
     first_late = (Q(first_response_due_at__isnull=False, first_responded_at__gt=F('first_response_due_at'))
                   | Q(first_responded_at__isnull=True, first_response_due_at__lt=now))

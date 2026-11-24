@@ -60,6 +60,8 @@ class TestSafetyTicketsAreSafety:
 
         items = sa.get('/api/v1/command-centre/admin/needs-action/').json()['data']['items']
         assert any('safety concern raised in support' in i['title'] for i in items), items
+        board = sa.get('/api/v1/safety/admin/board/').json()['data']
+        assert board['lanes']['not_acknowledged'], board['lanes']
 
 
 class TestApprovalsSayWhatChanges:

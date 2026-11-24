@@ -320,8 +320,12 @@ def admin_list_riders(request):
     except ScopeNotHeld as exc:
         return _scope_refused(exc)
     try:
+        from servers.admin_access.readiness import hidden_city_ids
+
+        hidden = hidden_city_ids()  # archived places; not-launched people stay listed
         riders = filter_riders(request.query_params, riders_visible_to(
-            request.user, node, annotate(Rider.objects.exclude(home_city__status='archived').select_related('user_id'))))
+            request.user, node, annotate(Rider.objects.exclude(home_city_id__in=hidden).select_related(
+                'user_id')).exclude(city_node_id__in=hidden)))
     except BadInput as exc:
         return exc.response()
 

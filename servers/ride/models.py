@@ -25,6 +25,8 @@ class Trip(CurrencyStampedModel, models.Model):
     #  already stamped on the trip for exactly this kind of reason.
     currency_source_fields = ('zone',)
 
+    #: 24 Nov (owner): the reference people see (base.public_ref), never the database id.
+    public_ref = models.CharField(max_length=24, unique=True, null=True, blank=True, editable=False)
     user_id=models.ForeignKey(User,on_delete=models.CASCADE,related_name='trips')
     driver_id=models.ForeignKey(Driver,on_delete=models.DO_NOTHING,related_name='trips',blank=True,null=True)
     vehicle_id=models.ForeignKey(Vehicle,on_delete=models.DO_NOTHING,related_name='trips',blank=True,null=True)

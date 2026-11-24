@@ -19,6 +19,7 @@ A reversal that arrives BEFORE the payout was paid is unchanged: it is a failed 
 money comes back as `refund_failed_withdrawal`.
 """
 
+from base import refs
 import logging
 
 from django.db import IntegrityError, transaction
@@ -65,7 +66,7 @@ def reverse_paid_payout(withdrawal, *, provider_status=None):
     amount = format_money(withdrawal.amount, withdrawal.currency)
     raise_alert(
         FINANCE_PAYOUT_REVERSED, severity=WARNING,
-        title=(f'Payout {withdrawal.id} of {amount} was reversed after it was paid'
+        title=(f'{refs.payout_ref(withdrawal)} of {amount} was reversed after it was paid'
                f'{" in " + city.name if city is not None else ""}')[:200],
         payload={'withdrawal_id': withdrawal.id, 'driver_id': withdrawal.driver_id,
                  'amount_minor': withdrawal.amount_minor, 'currency': withdrawal.currency,

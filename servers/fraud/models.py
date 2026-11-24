@@ -111,6 +111,8 @@ EVENT_CHOICES = [(a, a) for a in (EV_RAISED, EV_HIT, EV_ASSIGNED, EV_UNASSIGNED,
 
 
 class RiskFlag(models.Model):
+    #: 24 Nov (owner): the reference people see (base.public_ref), never the database id.
+    public_ref = models.CharField(max_length=24, unique=True, null=True, blank=True, editable=False)
     subject = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
                                 related_name='risk_flags')
     kind = models.CharField(max_length=40, choices=KIND_CHOICES, db_index=True)

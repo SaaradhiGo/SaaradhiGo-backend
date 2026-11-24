@@ -347,7 +347,7 @@ _RECEIPT_TEMPLATE = """\
 
   <table cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%; border: 1px solid #E4E4E4; font: 400 14px/20px Inter, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; color: #121212;">
     <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Receipt number</td><td>{receipt_number}</td></tr>
-    <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Trip ID</td><td>#{trip_id}</td></tr>
+    <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Trip</td><td>{trip_id}</td></tr>
     <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Date</td><td>{date_str}</td></tr>
     <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Pickup</td><td>{pickup}</td></tr>
     <tr><td style="color: #6B6B6B; border-bottom: 1px solid #E4E4E4;">Drop</td><td>{drop}</td></tr>
@@ -523,7 +523,7 @@ def _render_receipt_html(trip, rider, receipt_number, gst_rate, gst_amount,
         issuer=escape(_issuer_html_line(trip)),
         rider_name=escape(str(rider_name)),
         receipt_number=escape(receipt_number),
-        trip_id=trip.id,
+        trip_id=trip.public_ref or f'#{trip.id}',  # 24 Nov (owner): the trip's reference, never its id
         date_str=escape(date_str),
         pickup=escape(str(trip.pickup_address or '—')),
         drop=escape(str(trip.destination_address or '—')),
@@ -605,7 +605,7 @@ def _build_receipt_pdf(receipt) -> Optional[bytes]:
         # 18 Nov: a US document is a receipt, so its number is a receipt number too.
         ['Invoice number' if _shown and not _us else 'Receipt number', receipt.receipt_number],
         ['Issued to', rider_name],
-        ['Trip ID', f'#{trip.id}'],
+        ['Trip', trip.public_ref or f'#{trip.id}'],
         ['Date', _receipt_when(trip, trip.completed_at or receipt.issued_at)],
         ['Pickup', Paragraph(escape(trip.pickup_address or '—'), body)],
         ['Drop', Paragraph(escape(trip.destination_address or '—'), body)],

@@ -51,7 +51,7 @@ class TripListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Trip
         fields = [
-            'id', 'pickup_address', 'destination_address', 'total_charged',
+            'id', 'public_ref', 'pickup_address', 'destination_address', 'total_charged',
             # 13 Nov: "Charminar, Ghansi Bazaar" for lists and cards; the full address above.
             'pickup_label', 'destination_label',
             'pickup_lat', 'pickup_long', 'destination_lat', 'destination_long',

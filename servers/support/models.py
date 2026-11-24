@@ -33,6 +33,8 @@ class SupportTicket(models.Model):
         ('normal', 'Normal'),
         ('low', 'Low'),
     ]
+    #: 24 Nov (owner): the reference people see (base.public_ref), never the database id.
+    public_ref = models.CharField(max_length=24, unique=True, null=True, blank=True, editable=False)
     user_id=models.ForeignKey(User,on_delete=models.CASCADE,related_name='support_tickets')
     trip_id=models.ForeignKey('ride.Trip',on_delete=models.CASCADE,related_name='support_tickets',blank=True,null=True)
     issue_type=models.CharField(max_length=100,choices=ISSUE_CHOICES,default='other')

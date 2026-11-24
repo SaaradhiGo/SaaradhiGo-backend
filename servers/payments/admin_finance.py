@@ -180,7 +180,9 @@ def settlement_row(s):
     return {
         'id': s.id,
         'trip_id': s.trip_id,
+        'trip_ref': getattr(s.trip, 'public_ref', None),
         'driver_id': s.driver_id,
+        'driver_ref': getattr(s.driver, 'public_ref', None),
         'driver_name': getattr(s.driver.user_id, 'full_name', '') or '',
         'city': _city(getattr(zone, 'geo_node', None)),
         'gross_fare_minor': s.gross_fare_minor,
@@ -693,6 +695,7 @@ def finance_driver_ledger(request, driver_id):
     base = {
         'driver': {
             'id': driver.id,
+            'ref': driver.public_ref,
             'driver_name': getattr(driver.user_id, 'full_name', '') or '',
             'home_city': _city(driver.home_city),
         },
@@ -1168,12 +1171,12 @@ def finance_payout_config(request):
         cfg = active.get(code)
         history = [c.as_dict() for c in
                    PayoutCountryConfig.objects.filter(country=code).order_by('-version')[:HISTORY_LIMIT]]
-        pending = [r.as_dict() for r in ApprovalRequest.objects.filter(
+        pending = [{**r.as_dict(), 'ref': r.public_ref} for r in ApprovalRequest.objects.filter(
             action_key=FINANCE_PAYOUT_CONFIG, target_id=code, status=REQUESTED).order_by('-id')[:5]]
         runs = [{'id': r.id, 'week_start': r.week_start, 'withdrawal_count': r.withdrawal_count,
                  'amount_minor': r.amount_minor, 'currency': r.currency, 'outcome': r.outcome,
                  'approval_request_id': r.approval_request_id, 'truncated': r.truncated,
-                 'skipped': r.skipped, 'skipped_count': len(r.skipped or []),
+                 'skipped': _with_driver_refs(r.skipped), 'skipped_count': len(r.skipped or []),
                  'created_at': r.created_at}
                 for r in PayoutRun.objects.filter(country=code).order_by('-week_start')[:8]]
         can_edit = code in editable_in and cfg is not None
@@ -1345,3 +1348,12 @@ def _payout_scopes(country, cfg):
                               if node.kind == 'city' else None)),
         })
     return out
+
+
+def _with_driver_refs(skipped):
+    """24 Nov (owner): each skipped driver with their reference, so no screen shows a bare id."""
+    from servers.driver.models import Driver
+    rows = list(skipped or [])
+    refs = dict(Driver.objects.filter(id__in=[x.get('driver_id') for x in rows if isinstance(x, dict)])
+                .values_list('id', 'public_ref'))
+    return [{**x, 'ref': refs.get(x.get('driver_id'))} if isinstance(x, dict) else x for x in rows]

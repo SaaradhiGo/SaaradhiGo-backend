@@ -11,6 +11,9 @@ import re
 
 #: Verbs for actions whose name alone reads badly.
 ACTION_WORDS = {
+    'city_archived': 'Archived the city (not a planned market)',
+    'test_account_deactivated': 'Turned off a test account',
+    'assign_public_refs': 'Gave records their readable references',
     'ops_api_login': 'Signed in to the console',
     'ops_password_changed': 'Changed their password',
     'ops_mfa_enrolled': 'Set up their authenticator',
@@ -132,6 +135,10 @@ def target_words(entry, names):
     t, tid = entry.target_type or '', entry.target_id or ''
     if t == 'geonode' and tid:
         return names.get(tid, tid)
+    ref = names.get(('ref', t, str(tid)))
+    if ref:
+        return f"{t.replace('_', ' ').capitalize()} {ref}" if t not in ('trip', 'driver', 'rider') else {
+            'trip': 'Trip', 'driver': 'Driver', 'rider': 'Rider'}[t] + f' {ref}'
     prefix = {'driver': 'Driver D-', 'rider': 'Rider R-', 'trip': 'Trip T-', 'user': 'Account #',
               'withdrawal': 'Payout W-', 'operator_alert': 'Alert #', 'service_zone': 'Zone #',
               'wallet': 'Wallet #', 'operator': 'Operator #'}.get(t)

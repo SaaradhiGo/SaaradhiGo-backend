@@ -355,6 +355,7 @@ def _base_row(driver):
     user = driver.user_id
     return {
         'id': driver.id,
+        'ref': driver.public_ref or f'D-{driver.id}',  # 24 Nov: the reference people see
         'user_details': {
             'id': user.id, 'full_name': user.full_name, 'phone_number': user.phone_number,
             'email': user.email, 'role': user.role, 'is_active': user.is_active,
@@ -410,7 +411,8 @@ def _page(request, queryset, build):
 def list_response(request, queryset):
     """Body of GET /driver/admin/ for an already SCOPED queryset."""
     try:
-        queryset = filter_drivers(request.query_params, queryset.select_related(
+        # 24 Nov (owner): people of an archived place (QA's Austin) are out of every working list.
+        queryset = filter_drivers(request.query_params, queryset.exclude(home_city__status='archived').select_related(
             'user_id', 'home_city', 'active_vehicle', 'active_vehicle__vehicle_type_id'))
     except BadInput as exc:
         return exc.response()

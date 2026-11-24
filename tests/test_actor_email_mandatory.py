@@ -63,6 +63,8 @@ User = get_user_model()
 #: THE list. The meta-test below compares it with the command modules that
 #: import `servers.admin_audit.actor_option`.
 WRITING_COMMANDS = [
+    # 24 Nov (owner): archive a city that is not a planned market, with its test accounts.
+    'archive_city',
     # A one-off RULING command (not a seed_*): the owner's 15% commission, AUDIT 27.44.
     'apply_commission_ruling',
     # A one-off RULING command (not a seed_*): the owner's payout values, AUDIT 27.43.
@@ -330,6 +332,22 @@ def _prepare_dark_theme(settings, monkeypatch):
     return ['--confirm'], {}
 
 
+def _prepare_archive_city(settings, monkeypatch):
+    from servers.admin_access.models import CITY, COUNTRY, GLOBAL, STATE, GeoNode
+
+    root = GeoNode.objects.get_or_create(code='GLOBAL', defaults={'kind': GLOBAL, 'name': 'Global'})[0]
+    us = GeoNode.objects.get_or_create(code='US', defaults={'kind': COUNTRY, 'name': 'United States', 'parent': root})[0]
+    tx = GeoNode.objects.get_or_create(code='US-TX', defaults={'kind': STATE, 'name': 'Texas', 'parent': us})[0]
+    GeoNode.objects.get_or_create(code='US-TX-AUS', defaults={'kind': CITY, 'name': 'Austin', 'parent': tx})
+    return ['US-TX-AUS'], {'reason': 'not a planned market', 'apply': True}
+
+
+def _fp_cities():
+    from servers.admin_access.models import GeoNode
+
+    return tuple(GeoNode.objects.values_list('code', 'status').order_by('code'))
+
+
 def _fp_themes():
     from servers.auth_user.models import UserPreference
 
@@ -583,6 +601,8 @@ CASES = [
          _prepare_seal, _fp_audit, dry_run=([], {})),
     Case('mark_test_accounts --confirm', 'mark_test_accounts',
          _prepare_mark_test, _fp_test_accounts, dry_run=(['--emails', TEST_ACCOUNT], {})),
+    Case('archive_city --apply', 'archive_city',
+         _prepare_archive_city, _fp_cities, dry_run=(['US-TX-AUS'], {'reason': 'dry run'})),
     Case('reset_themes_to_light --confirm', 'reset_themes_to_light',
          _prepare_dark_theme, _fp_themes, dry_run=([], {})),
     Case('round_inr_money_to_rupees --confirm', 'round_inr_money_to_rupees',

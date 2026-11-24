@@ -346,7 +346,7 @@ class WithdrawalRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = WithdrawalRequest
         fields = [
-            'id', 'driver', 'driver_name', 'driver_phone', 'driver_upi_id',
+            'id', 'public_ref', 'driver', 'driver_name', 'driver_phone', 'driver_upi_id',
             # THE CURRENCY OF THE MONEY BEING RELEASED. It is stamped on the
             # row at write time from the driver's wallet (see
             # WithdrawalRequest._derive_currency) and was not exposed, so the

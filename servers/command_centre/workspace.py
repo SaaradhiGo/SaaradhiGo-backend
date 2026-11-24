@@ -403,7 +403,7 @@ def needs_action(request, limit=50, now=None):
         configs = active_configs()
         cases = (_annotate(incidents_visible_to(user, node, SafetyIncident.objects.all()))
                  .exclude(status=CLOSED).filter(active_sos__gt=0)
-                 .select_related('anchor_node', 'assigned_to')[:200])
+                 .select_related('anchor_node', 'assigned_to', 'trip')[:200])
         for case in cases:
             case._has_sos = True
             ref = refs.incident_ref(case)
@@ -414,7 +414,7 @@ def needs_action(request, limit=50, now=None):
             items.append(_item(
                 'sos', CRITICAL if unacked else HIGH,
                 f"{ref} · {'not acknowledged' if unacked else 'being handled'}"
-                + (f' · {refs.ref(refs.TRIP, case.trip_id)}' if case.trip_id else ''),
+                + (f' · {refs.trip_ref(case.trip)}' if case.trip_id else ''),
                 where=_place(case.anchor_node), at=case.oldest_active or case.opened_at, now=now,
                 link=f'/safety-ops/incidents/{case.id}', ref=ref,
                 owner={'id': case.assigned_to_id, 'label': who} if case.assigned_to_id else None,
@@ -439,7 +439,7 @@ def needs_action(request, limit=50, now=None):
                     link=f'/trips?stuck=1&scope={city.code}', count=len(rows)))
                 continue
             for trip, reason, minutes in rows:
-                ref = refs.ref(refs.TRIP, trip.id)
+                ref = refs.trip_ref(trip)
                 items.append(_item(
                     'stuck_trip', HIGH, f'{ref} · {WORDS[reason]} for {minutes} min',
                     where=_place(city), at=now - timedelta(minutes=minutes), now=now,

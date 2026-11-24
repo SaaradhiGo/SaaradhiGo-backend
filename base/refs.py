@@ -50,3 +50,45 @@ def parse(text):
     if not m:
         return None
     return KINDS[m.group(1).upper()], int(m.group(2))
+
+
+# 24 Nov (owner): references people see come from base.public_ref; these fall back to the old
+# form only for a row the backfill has not reached yet.
+def trip_ref(trip):
+    from base.public_ref import of
+    return of(trip, TRIP)
+
+
+def driver_ref(driver):
+    from base.public_ref import of
+    return of(driver, DRIVER)
+
+
+def rider_ref(user):
+    """A rider's reference from their user row (riders are named by User elsewhere)."""
+    if user is None:
+        return None
+    rider = getattr(user, 'rider', None) if hasattr(user, 'rider') else None
+    return getattr(rider, 'public_ref', None) or ref(RIDER, user.pk)
+
+
+def payout_ref(withdrawal):
+    from base.public_ref import of
+    return of(withdrawal, PAYOUT)
+
+
+def ticket_ref(ticket):
+    from base.public_ref import of
+    return of(ticket, TICKET)
+
+
+def approval_ref(row):
+    from base.public_ref import of
+    return of(row, APPROVAL)
+
+
+def trip_text(trip_id):
+    """A trip as message text: its reference ("HYD-261116-K7Q4"), else "#<id>" for an old row."""
+    from servers.ride.models import Trip
+    ref = Trip.objects.filter(pk=trip_id).values_list('public_ref', flat=True).first()
+    return ref or f'#{trip_id}'

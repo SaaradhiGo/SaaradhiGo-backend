@@ -188,6 +188,7 @@ def _message(message):
 def _row(ticket, now):
     return {
         'id': ticket.id,
+        'ref': ticket.public_ref or f'TKT-{ticket.id}',  # 24 Nov: the reference people see
         'user_id': ticket.user_id_id,
         'trip_id': ticket.trip_id_id,
         'issue_type': ticket.issue_type,

@@ -245,7 +245,31 @@ def names_for(entries):
     codes.discard(None)
     names = dict(GeoNode.objects.filter(code__in=list(codes)).values_list('code', 'name'))
     names.update(trips)
+    names.update(_refs_for(entries))
     return names
+
+
+#: Audit target types whose record has a readable reference (owner 24 Nov), and its model.
+REF_TARGETS = {'trip': ('ride', 'Trip'), 'driver': ('driver', 'Driver'), 'withdrawal': ('driver', 'WithdrawalRequest'),
+               'support_ticket': ('support', 'SupportTicket'), 'approval_request': ('approvals', 'ApprovalRequest'),
+               'rider': ('rider', 'Rider'), 'user': ('rider', 'Rider')}
+
+
+def _refs_for(entries):
+    """{('ref', type, id): reference} for the targets on a page that have one. Riders by user id."""
+    from django.apps import apps
+
+    wanted = {}
+    for e in entries:
+        if e.target_type in REF_TARGETS and str(e.target_id or '').isdigit():
+            wanted.setdefault(e.target_type, set()).add(int(e.target_id))
+    out = {}
+    for t, ids in wanted.items():
+        model = apps.get_model(*REF_TARGETS[t])
+        key = 'user_id' if t in ('rider', 'user') else 'pk'
+        for pk, ref in model.objects.filter(**{f'{key}__in': ids}, public_ref__isnull=False).values_list(key, 'public_ref'):
+            out[('ref', t, str(pk))] = ref
+    return out
 
 
 def entry_row(entry, names=None):

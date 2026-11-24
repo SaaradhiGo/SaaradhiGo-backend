@@ -385,7 +385,7 @@ def failing(items):
     return [i for i in items if not i['ok']]
 
 
-def set_city_status(node, status, actor, reason, request=None):
+def set_city_status(node, status, actor, reason, request=None, actor_label=None):
     """Change a city's status. Returns `(node, changed)`.
 
     draft -> live, paused -> live, live -> paused. Refuses ACTIVE (live) while any readiness
@@ -393,8 +393,10 @@ def set_city_status(node, status, actor, reason, request=None):
     a node that is not a city and `ValueError` for an unknown status, a missing reason, or
     pausing a city that is not live.
     """
-    if status not in (ACTIVE, PAUSED, DRAFT):
-        raise ValueError(f'status must be {ACTIVE!r}, {PAUSED!r} or {DRAFT!r}')
+    from servers.admin_access.models import ARCHIVED
+
+    if status not in (ACTIVE, PAUSED, DRAFT, ARCHIVED):
+        raise ValueError(f'status must be {ACTIVE!r}, {PAUSED!r}, {DRAFT!r} or {ARCHIVED!r}')
     reason = (reason or '').strip()
     if not reason:
         raise ValueError('reason is required')
@@ -405,7 +407,8 @@ def set_city_status(node, status, actor, reason, request=None):
             raise NotACity(f'{locked.code} is a {locked.kind}, not a city')
         if locked.status == status:
             return locked, False
-        if status == DRAFT:
+        if status in (DRAFT, ARCHIVED):
+            # 24 Nov (owner): archiving (not a planned market) has the same rule as un-launching.
             # 22 Nov: back to "not launched" -- only for a city that never ran a trip (QA's
             # Vijayawada, Visakhapatnam and Warangal were opened by a seed). A city that ran is
             # paused, never un-launched: its history stays a live city's history.
@@ -424,6 +427,7 @@ def set_city_status(node, status, actor, reason, request=None):
             if bad:
                 raise CityNotReady(locked, bad)
         with audit_context(actor=actor, request=request, reason=reason,
+                           **({'actor_label': actor_label} if actor_label else {}),
                            action='city_status_changed',
                            extra_after={'status_from': locked.status, 'status_to': status}):
             locked.status = status

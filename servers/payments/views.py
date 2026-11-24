@@ -1,3 +1,4 @@
+from base import refs
 import json
 import logging
 from django.conf import settings
@@ -241,7 +242,7 @@ def create_order(request):
         'amount_paise': order.get('amount') or str(amount_minor),
         'currency': order.get('currency') or pay_currency,
         'trip_id': trip.id,
-        'description': f'Payment for Trip #{trip.id}',
+        'description': f'Payment for {refs.trip_ref(trip)}',
         'prefill': {
             'name': request.user.full_name or '',
             'contact': request.user.phone_number or '',
@@ -1834,7 +1835,7 @@ def refund_payment(request):
                     # literal "Rs." on every refund notice.
                     f"Your refund of "
                     f"{format_money(refund_amount, locked_payment.currency)} "
-                    f"for Trip #{trip.id} has been initiated. It may take 5-7 "
+                    f"for {refs.trip_ref(trip)} has been initiated. It may take 5-7 "
                     f"business days to reflect in your account."
                 ),
             )

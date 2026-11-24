@@ -283,6 +283,7 @@ def _row(rider, nodes):
     return {
         'id': user.id,
         'profile_id': rider.id,
+        'ref': rider.public_ref or f'R-{user.id}',  # 24 Nov: the reference people see
         'user_details': {
             'id': user.id, 'full_name': user.full_name, 'phone_number': user.phone_number,
             'email': user.email, 'is_active': user.is_active,
@@ -320,7 +321,7 @@ def admin_list_riders(request):
         return _scope_refused(exc)
     try:
         riders = filter_riders(request.query_params, riders_visible_to(
-            request.user, node, annotate(Rider.objects.select_related('user_id'))))
+            request.user, node, annotate(Rider.objects.exclude(home_city__status='archived').select_related('user_id'))))
     except BadInput as exc:
         return exc.response()
 
@@ -569,6 +570,7 @@ def admin_rider_detail(request, rider_id):
     return success_response({
         'id': user.id,
         'profile_id': rider.id,
+        'ref': rider.public_ref or f'R-{user.id}',
         'user_details': {
             'id': user.id, 'full_name': user.full_name, 'phone_number': user.phone_number,
             'email': user.email, 'is_active': user.is_active,

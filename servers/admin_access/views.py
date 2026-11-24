@@ -111,6 +111,10 @@ def admin_whoami(request):
                 super_admin_shortfall() if is_super_admin(user) else 0
             ),
 
+            # 24 Nov (owner): two-step sign-in. Production requires it of every operator to sign in;
+            # the console shows a banner to anyone without it, wherever they are.
+            'two_step': _two_step(user),
+
             # Active console maintenance notices for this operator's scope: the banner (module 15).
             'notices': _console_notices(user),
 
@@ -166,3 +170,8 @@ def _selectable_scopes(user):
         }
         for node in nodes.order_by('path')
     ]
+
+
+def _two_step(user):
+    from base import ops_mfa
+    return {'set_up': ops_mfa.totp_enrolled(user), 'required_here': ops_mfa.mfa_enforced()}

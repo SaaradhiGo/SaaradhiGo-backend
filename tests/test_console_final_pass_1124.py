@@ -50,6 +50,19 @@ class TestSafetyTicketsAreSafety:
         assert ticket.priority == 'urgent'
         assert SafetyIncidentLink.objects.filter(kind=LINK_TICKET, target_id=ticket.id).exists()
 
+    def test_the_concern_waits_in_needs_action(self, geo, django_capture_on_commit_callbacks):
+        from servers.support.models import SupportTicket
+
+        sa, _ = operator('super_admin', geo)
+        user = get_user_model().objects.create_user(phone_number='+919800000003', role='rider')
+        with django_capture_on_commit_callbacks(execute=True):
+            SupportTicket.objects.create(user_id=user, issue_type='safety', description='Unsafe driving')
+
+        items = sa.get('/api/v1/command-centre/admin/needs-action/').json()['data']['items']
+        assert any('safety concern raised in support' in i['title'] for i in items), items
+        board = sa.get('/api/v1/safety/admin/board/').json()['data']
+        assert board['lanes']['not_acknowledged'], board['lanes']
+
 
 class TestApprovalsSayWhatChanges:
     def test_a_daily_fee_plan_names_the_place_and_amounts(self):

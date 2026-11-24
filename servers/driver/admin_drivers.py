@@ -412,7 +412,10 @@ def list_response(request, queryset):
     """Body of GET /driver/admin/ for an already SCOPED queryset."""
     try:
         # 24 Nov (owner): people of an archived place (QA's Austin) are out of every working list.
-        queryset = filter_drivers(request.query_params, queryset.exclude(home_city__status='archived').select_related(
+        from servers.admin_access.readiness import hidden_city_ids
+
+        hidden = hidden_city_ids()  # archived places; not-launched people stay listed
+        queryset = filter_drivers(request.query_params, queryset.exclude(home_city_id__in=hidden).select_related(
             'user_id', 'home_city', 'active_vehicle', 'active_vehicle__vehicle_type_id'))
     except BadInput as exc:
         return exc.response()

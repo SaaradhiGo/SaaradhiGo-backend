@@ -434,3 +434,17 @@ def set_city_status(node, status, actor, reason, request=None, actor_label=None)
             locked.status = status
             locked.save()
     return locked, True
+
+
+def hidden_city_ids(include_not_launched=True):
+    """Cities left out of working lists (owner, 24 Nov): archived always; not launched (draft with
+    no active service zone) unless `include_not_launched`. A coming-soon city stays in."""
+    from servers.pricing.models import ServiceZone
+
+    from servers.admin_access.models import ARCHIVED
+
+    ids = set(GeoNode.objects.filter(kind=CITY, status=ARCHIVED).values_list('id', flat=True))
+    if not include_not_launched:
+        zoned = ServiceZone.objects.filter(is_active=True).values_list('geo_node_id', flat=True)
+        ids |= set(GeoNode.objects.filter(kind=CITY, status=DRAFT).exclude(id__in=zoned).values_list('id', flat=True))
+    return ids

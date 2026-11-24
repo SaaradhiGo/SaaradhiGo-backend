@@ -1051,7 +1051,15 @@ def finance_reconciliation(request):
     country = (request.query_params.get('country') or '').strip().upper()
     if country:
         runs = runs.filter(country=country)
+    # 24 Nov (owner): only each market's own gateways (US: Stripe), never a run against one it does not use.
+    from servers.payments.reconciliation import GATEWAY_NAMES, GATEWAYS_BY_COUNTRY
+    used = Q()
+    for code, names in GATEWAYS_BY_COUNTRY.items():
+        used |= Q(country=code, gateway__in=names)
+    runs = runs.filter(used | ~Q(country__in=list(GATEWAYS_BY_COUNTRY)))
     items = money_visible_to(request.user, ReconciliationItem, node=node, permission=READ)
+    for code, names in GATEWAYS_BY_COUNTRY.items():
+        items = items.exclude(Q(run__country=code) & ~Q(run__gateway__in=names))
     open_items = items.filter(resolved_at__isnull=True)
     open_by_kind = {r['kind']: r['n'] for r in open_items.order_by().values('kind').annotate(n=Count('id'))}
     open_by_run = {r['run_id']: r['n'] for r in open_items.order_by().values('run_id').annotate(n=Count('id'))}
@@ -1059,7 +1067,8 @@ def finance_reconciliation(request):
     def run_row(run):
         return {
             'id': run.id, 'date': run.date, 'country': run.country, 'currency': run.currency,
-            'gateway': run.gateway, 'status': run.status, 'new_findings': run.counts,
+            'gateway': run.gateway, 'gateway_name': GATEWAY_NAMES.get(run.gateway, run.gateway.title()),
+            'status': run.status, 'new_findings': run.counts,
             'open_items': open_by_run.get(run.id, 0), 'checks': run.checks,
             'started_at': run.started_at, 'finished_at': run.finished_at, 'error': run.error,
         }

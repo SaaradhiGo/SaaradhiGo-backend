@@ -504,6 +504,16 @@ def run_one(country, gateway, date, *, now=None, force=False):
     return run
 
 
+#: 24 Nov (owner): the gateways each market actually uses. The US takes cards through Stripe;
+#: India through Razorpay and Cashfree. A run against a gateway a market does not use is noise.
+GATEWAYS_BY_COUNTRY = {'IN': ('razorpay', 'cashfree'), 'US': ('stripe',)}
+GATEWAY_NAMES = {'razorpay': 'Razorpay', 'cashfree': 'Cashfree', 'stripe': 'Stripe'}
+
+
+def gateways_for(country):
+    return GATEWAYS_BY_COUNTRY.get(country, tuple(PaymentGateway.values))
+
+
 def run_daily(*, now=None, days=3, force=False):
     """Every supported country and gateway for the last `days` finished local days.
 
@@ -516,7 +526,7 @@ def run_daily(*, now=None, days=3, force=False):
         today = now.astimezone(country_timezone(code)).date()
         for back in range(days, 0, -1):
             day = today - timedelta(days=back)
-            for gateway in PaymentGateway.values:
+            for gateway in gateways_for(code):
                 runs.append(run_one(code, gateway, day, now=now, force=force))
     return runs
 

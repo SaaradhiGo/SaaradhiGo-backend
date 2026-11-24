@@ -94,6 +94,11 @@ class SupportTicket(models.Model):
             # exactly the base the due times count from.
             from servers.support.sla import apply_due_times
             apply_due_times(self)
+        if adding and self.is_safety:
+            # 24 Nov (owner): a safety concern is treated like safety -- it opens a safety
+            # incident, so it escalates on the SOS rules and shows on the Safety board.
+            from django.db import transaction
+            transaction.on_commit(lambda pk=self.pk: open_safety_incident(pk))
 
     @property
     def is_safety(self):
@@ -260,3 +265,23 @@ class OperatorNotification(models.Model):
 
     def __str__(self):
         return f'Inbox {self.id} -> {self.recipient_id} {self.kind}'
+
+
+def open_safety_incident(ticket_id):
+    """Open (or join) the safety incident for a safety-concern ticket. Never breaks ticket creation."""
+    import logging
+
+    try:
+        from servers.safety import services
+        from servers.safety.models import CLOSED, LINK_TICKET, SafetyIncidentLink
+
+        ticket = SupportTicket.objects.select_related('user_id', 'trip_id').filter(pk=ticket_id).first()
+        if ticket is None or SafetyIncidentLink.objects.filter(
+                kind=LINK_TICKET, target_id=ticket.id).exclude(incident__status=CLOSED).exists():
+            return None
+        incident, _created = services.open_from_ticket(
+            ticket, actor=None, note=f'Opened automatically from safety-concern ticket {ticket.id}')
+        return incident
+    except Exception:  # noqa: BLE001 - the ticket is saved either way; the sweep retries
+        logging.getLogger(__name__).exception('safety_ticket_incident_failed', extra={'ticket_id': ticket_id})
+        return None

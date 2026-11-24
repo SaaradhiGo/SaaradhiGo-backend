@@ -93,7 +93,7 @@ def admin_trip_detail(request, trip_id):
             'phone_number': getattr(rider_user, 'phone_number', None),
             'full_name': getattr(rider_user, 'full_name', None),
             'email': getattr(rider_user, 'email', None),
-            'rating': str(rider_profile.rating) if rider_profile else None,
+            'rating': str(rider_profile.rating) if rider_profile and rider_profile.rating_count else None,
             'rating_count': rider_profile.rating_count if rider_profile else 0,
             'flagged_for_review': bool(rider_profile.flagged_for_review) if rider_profile else False,
             'review_flagged_at': rider_profile.review_flagged_at.isoformat() if rider_profile and rider_profile.review_flagged_at else None,

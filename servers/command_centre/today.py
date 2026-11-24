@@ -99,6 +99,9 @@ def today(user, cities, now=None, date_range=None):
              'link': _link('/ops/finance/payouts?status=pending', city.code)} if money else None,
             {'key': 'kyc', 'label': 'KYC waiting', 'count': now_live.get('kyc_waiting', 0),
              'link': _link('/ops/kyc', city.code)} if granted(user, 'driver.read')[0] else None,
+            {'key': 'kyc_uploading', 'label': 'drivers still uploading documents',
+             'count': now_live.get('kyc_uploading', 0),
+             'link': _link('/ops/drivers?kyc_state=pending', city.code)} if granted(user, 'driver.read')[0] else None,
             {'key': 'stuck', 'label': 'Stuck trips', 'count': now_live.get('stuck_trips', 0),
              'link': _link('/ops/trips?stuck=1', city.code)} if granted(user, 'trip.read')[0] else None,
         ]
@@ -106,7 +109,7 @@ def today(user, cities, now=None, date_range=None):
         out_cities.append({
             'code': city.code, 'name': city.name, 'country': code, 'timezone': str(ctx.tz),
             'actions': actions,
-            'waiting': sum(a['count'] or 0 for a in actions),
+            'waiting': sum(a['count'] or 0 for a in actions if a['key'] != 'kyc_uploading'),
             'drivers_online': now_live.get('drivers_online', 0),
             'drivers_link': _link('/ops/drivers?status=online', city.code),
         })

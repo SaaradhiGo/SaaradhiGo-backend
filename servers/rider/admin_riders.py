@@ -293,7 +293,7 @@ def _row(rider, nodes):
         'trips_completed': rider.trips_completed,
         'last_trip_at': _iso(rider.last_trip_at),
         'last_trip_id': rider.latest_trip_id,
-        'rating': str(rider.rating),
+        'rating': str(rider.rating) if rider.rating_count else None,  # 24 Nov: none rated reads "—"
         'low_rating': rider.flagged_for_review,
         'soft_blocked': _soft_blocked(rider),
         'blocked': bool(rider.is_blocked),
@@ -462,7 +462,7 @@ def _ratings(rider):
         return round(float(value), 2) if value is not None else None
 
     return {
-        'rating': str(rider.rating),
+        'rating': str(rider.rating) if rider.rating_count else None,
         'rating_count': rider.rating_count,
         'low_rating': rider.flagged_for_review,
         'soft_blocked': _soft_blocked(rider),

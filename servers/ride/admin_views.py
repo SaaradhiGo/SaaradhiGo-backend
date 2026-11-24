@@ -90,6 +90,7 @@ def admin_trip_detail(request, trip_id):
         rider_profile = Rider.objects.filter(user_id=rider_user).first()
         rider_payload = {
             'user_id': rider_user.id,
+            'rider_ref': getattr(rider_profile, 'public_ref', None) if rider_profile else None,
             'phone_number': getattr(rider_user, 'phone_number', None),
             'full_name': getattr(rider_user, 'full_name', None),
             'email': getattr(rider_user, 'email', None),
@@ -106,6 +107,7 @@ def admin_trip_detail(request, trip_id):
         d = trip.driver_id
         driver_payload = {
             'driver_id': d.id,
+            'driver_ref': d.public_ref,
             'user_id': d.user_id.id if d.user_id else None,
             'phone_number': d.user_id.phone_number if d.user_id else None,
             'full_name': d.user_id.full_name if d.user_id else None,

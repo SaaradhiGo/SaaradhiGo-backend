@@ -158,6 +158,7 @@ def payment_row(p):
     return {
         'id': p.id,
         'trip_id': trip.id,
+        'trip_ref': trip.public_ref,  # 24 Nov: the reference people see
         'city': _city(getattr(zone, 'geo_node', None)),
         'rider_name': getattr(p.user_id, 'full_name', '') or '',
         'amount_minor': p.amount_minor,
@@ -296,7 +297,9 @@ def payout_row(w, approvals=None, now=None, blocked=None):
     open_ = w.status in OPEN_PAYOUT_STATUSES
     row = {
         'id': w.id,
+        'ref': w.public_ref,
         'driver_id': w.driver_id,
+        'driver_ref': getattr(w.driver, 'public_ref', None),
         'driver_name': getattr(w.driver.user_id, 'full_name', '') or '',
         'city': _city(getattr(w.driver, 'home_city', None)),
         'amount_minor': w.amount_minor,

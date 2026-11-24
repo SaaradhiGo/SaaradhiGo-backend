@@ -41,12 +41,11 @@ class Command(BaseCommand):
             self.stdout.write('Dry run: nothing written. Add --apply.')
             return
         actor = require_actor(options, COMMAND)
+        from servers.admin_access.readiness import set_city_status
+        from servers.admin_audit.actor_option import actor_label
+
         with attributed(actor, COMMAND, reason=reason), transaction.atomic():
-            before = node.status
-            node.status = ARCHIVED
-            node.save(update_fields=['status', 'updated_at'])
-            record_admin_action(None, action='city_archived', target_type='geonode', target_id=node.code,
-                                before={'status': before}, after={'status': ARCHIVED}, reason=reason)
+            set_city_status(node, ARCHIVED, actor, reason, actor_label=actor_label(actor, COMMAND))
             for user in users:
                 user.is_active = False
                 user.save(update_fields=['is_active'])

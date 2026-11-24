@@ -63,6 +63,8 @@ User = get_user_model()
 #: THE list. The meta-test below compares it with the command modules that
 #: import `servers.admin_audit.actor_option`.
 WRITING_COMMANDS = [
+    # 24 Nov (owner): no commission fallback; fee plans are the only charge.
+    'retire_commission_rules',
     # 24 Nov (owner): archive a city that is not a planned market, with its test accounts.
     'archive_city',
     # A one-off RULING command (not a seed_*): the owner's 15% commission, AUDIT 27.44.
@@ -348,6 +350,16 @@ def _fp_cities():
     return tuple(GeoNode.objects.values_list('code', 'status').order_by('code'))
 
 
+def _prepare_commission_rules(settings, monkeypatch):
+    return [], {'reason': 'fee plans only', 'apply': True}
+
+
+def _fp_commission_rules():
+    from servers.pricing.commission_models import CommissionRule
+
+    return tuple(CommissionRule.objects.values_list('id', 'status').order_by('id'))
+
+
 def _fp_themes():
     from servers.auth_user.models import UserPreference
 
@@ -601,6 +613,8 @@ CASES = [
          _prepare_seal, _fp_audit, dry_run=([], {})),
     Case('mark_test_accounts --confirm', 'mark_test_accounts',
          _prepare_mark_test, _fp_test_accounts, dry_run=(['--emails', TEST_ACCOUNT], {})),
+    Case('retire_commission_rules --apply', 'retire_commission_rules',
+         _prepare_commission_rules, _fp_commission_rules, dry_run=([], {'reason': 'dry run'})),
     Case('archive_city --apply', 'archive_city',
          _prepare_archive_city, _fp_cities, dry_run=(['US-TX-AUS'], {'reason': 'dry run'})),
     Case('reset_themes_to_light --confirm', 'reset_themes_to_light',

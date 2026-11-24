@@ -42,7 +42,15 @@ def allocate(country, when=None):
     country = (country or 'IN').upper()
     prefix = SERIES.get(country, SERIES['IN'])[0]
     period = period_of(country, when or timezone.now())
-    row, _ = ReceiptSeries.objects.select_for_update().get_or_create(prefix=prefix, period=period)
+    row = ReceiptSeries.objects.select_for_update().filter(prefix=prefix, period=period).first()
+    if row is None:
+        from django.db import IntegrityError
+        try:
+            with transaction.atomic():  # savepoint: a concurrent first issue may create it first
+                ReceiptSeries.objects.create(prefix=prefix, period=period)
+        except IntegrityError:
+            pass
+        row = ReceiptSeries.objects.select_for_update().get(prefix=prefix, period=period)
     row.last_number += 1
     row.save(update_fields=['last_number'])
     number = f'{prefix}/{period}/{row.last_number:06d}'

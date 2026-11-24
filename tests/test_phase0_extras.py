@@ -124,7 +124,7 @@ def test_receipt_pdf_endpoint_returns_url(
     body = resp.json()['data']
     assert body['trip_id'] == trip.id
     assert body['pdf_url']
-    assert body['receipt_number'].endswith('-v1')
+    assert '/' in body['receipt_number'] and body['receipt_number'].split('/')[-1].isdigit()  # 24 Nov series
 
 
 # ---------------------------------------------------------------------------

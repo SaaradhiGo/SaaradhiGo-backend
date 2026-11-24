@@ -503,6 +503,21 @@ class Rating(models.Model):
         return f'Rating {self.score} for Trip {self.trip_id.id}'
 
 
+class ReceiptSeries(models.Model):
+    """One gap-free running series of receipt numbers per legal entity and period (owner, 24 Nov):
+    DTS/<financial year> in India, DTL/<calendar year> in the US. `ride.receipt_numbers.allocate`
+    takes the next number under a row lock, inside the transaction that writes the receipt."""
+    prefix = models.CharField(max_length=8)
+    period = models.CharField(max_length=9)
+    last_number = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['prefix', 'period'], name='receipt_series_once')]
+
+    def __str__(self):
+        return f'{self.prefix}/{self.period} at {self.last_number}'
+
+
 class Receipt(CurrencyStampedModel, models.Model):
     """Per-completed-trip receipt sent to the rider.
 
@@ -561,6 +576,9 @@ class Receipt(CurrencyStampedModel, models.Model):
         indexes = [
             models.Index(fields=['trip_id', '-version'], name='receipt_trip_ver_idx'),
         ]
+        # 24 Nov: numbers now come from the entity's series, not the trip, so one receipt per trip
+        # and version is enforced here: two workers cannot both issue version 1.
+        constraints = [models.UniqueConstraint(fields=['trip_id', 'version'], name='receipt_one_per_trip_version')]
 
     def __str__(self):
         return f'Receipt {self.receipt_number} trip={self.trip_id_id}'

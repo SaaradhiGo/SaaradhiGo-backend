@@ -277,7 +277,8 @@ def campaign_audience(request, promotion_id):
         who = 'drivers'
         if cfg.get('vehicle_type'):
             qs = qs.filter(active_vehicle__vehicle_type_id__type=cfg['vehicle_type'])
-            rules.append(f"drives a {cfg['vehicle_type']}")
+            from servers.approvals.describe import CLASS_WORDS  # the names riders and drivers see
+            rules.append(f"drives a {CLASS_WORDS.get(cfg['vehicle_type'], cfg['vehicle_type'].title())}")
     return success_response({'who': who, 'count': qs.count(), 'place': place.name if place else campaign.country,
                              'rules': rules}, status.HTTP_200_OK)
 

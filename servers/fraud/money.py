@@ -877,7 +877,8 @@ def lapse_due_holds(now=None):
         for pk in list(PayoutHold.objects.filter(status=PayoutHold.ACTIVE, expires_at__lte=now)
                        .values_list('pk', flat=True)):
             with transaction.atomic():
-                hold = (PayoutHold.objects.select_for_update().select_related('flag', 'driver')
+                # of=self: the flag is optional now (25 Nov), and Postgres refuses FOR UPDATE on an outer join.
+                hold = (PayoutHold.objects.select_for_update(of=('self',)).select_related('flag', 'driver')
                         .filter(pk=pk, status=PayoutHold.ACTIVE).first())
                 if hold is None:
                     continue

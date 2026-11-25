@@ -29,7 +29,7 @@ from servers.admin_access import readiness
 from servers.admin_access.access import scope_paths
 from servers.admin_access.bridge import granted
 from servers.admin_access.models import (
-    ACTIVE, CITY, COUNTRY, DRAFT, GLOBAL, PAUSED, STATE, GeoNode,
+    ACTIVE, ARCHIVED, CITY, COUNTRY, DRAFT, GLOBAL, PAUSED, STATE, GeoNode,
 )
 from servers.approvals import service as approvals
 from servers.approvals.actions import PLATFORM_CITY_STATUS
@@ -332,11 +332,21 @@ def propose_status(actor, node, to_status, reason, http_request=None):
     if node.kind != CITY:
         raise PlatformError(f'{node.code} is a {node.kind}, not a city.', code='NOT_A_CITY',
                             field='city', status=400)
-    to_status = {LIVE: ACTIVE, 'active': ACTIVE, 'paused': PAUSED}.get(to_status)
+    to_status = {LIVE: ACTIVE, 'active': ACTIVE, 'paused': PAUSED, ARCHIVED: ARCHIVED}.get(to_status)
     if to_status is None:
-        raise PlatformError('status must be "live" or "paused".', code='INVALID_STATUS',
+        raise PlatformError('status must be "live", "paused" or "archived".', code='INVALID_STATUS',
                             field='status')
-    if to_status == ACTIVE:
+    if to_status == ARCHIVED:
+        # 25 Nov (owner): archive a place that is not a planned market. Not a live city (pause it
+        # first); a city that ran real trips is refused when the request is carried out.
+        if not granted(actor, 'platform.settings', node)[0]:
+            raise PlatformError('Archiving a city needs platform.settings here.',
+                                code='SCOPE_NOT_HELD', field='city', status=403)
+        if node.status in (ACTIVE, ARCHIVED):
+            raise PlatformError(f'{node.code} is {label_of(node.status)}; pause it first.' if node.status == ACTIVE
+                                else f'{node.code} is already archived.', code='NOT_ARCHIVABLE',
+                                field='status', status=409)
+    elif to_status == ACTIVE:
         if not granted(actor, 'platform.settings', node)[0]:
             raise PlatformError('Launching a city needs platform.settings here.',
                                 code='SCOPE_NOT_HELD', field='city', status=403)

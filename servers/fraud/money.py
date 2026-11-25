@@ -671,7 +671,7 @@ def payout_hold_state(flag):
 def hold_dict(h):
     return {'id': h.pk, 'status': h.status, 'starts_at': h.starts_at.isoformat(),
             'expires_at': h.expires_at.isoformat(), 'max_days': h.max_days,
-            'renewal_of': h.renewal_of_id, 'note': h.note,
+            'renewal_of': h.renewal_of_id, 'note': h.note, 'reason_kind': h.reason_kind,
             'released_at': h.released_at.isoformat() if h.released_at else None,
             'release_note': h.release_note, 'approval_request_id': h.approval_request_id}
 
@@ -711,7 +711,7 @@ def request_payout_hold(actor, flag, note, days, key, renew=False, http_request=
 
     country = driver_payout_country(driver)
     cfg = settings_for(country)
-    max_days = cfg['payout_hold_max_days']
+    max_days = min(HOLD_MAX_DAYS, cfg['payout_hold_max_days'])
     days = max_days if days in (None, '') else days
     if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= max_days:
         raise MoneyError('INVALID_DAYS', f'days must be between 1 and {max_days}.', 400, 'days')
@@ -731,21 +731,24 @@ def execute_payout_hold(request_row):
     from servers.driver.models import Driver
 
     p = request_row.payload or {}
-    flag = RiskFlag.objects.select_related('subject').filter(pk=p.get('flag_id')).first()
+    flag = (RiskFlag.objects.select_related('subject').filter(pk=p.get('flag_id')).first()
+            if p.get('flag_id') else None)
     driver = Driver.objects.filter(pk=p.get('driver_id')).first()
-    if flag is None or driver is None:
+    if driver is None or (p.get('flag_id') and flag is None):
         raise registry.ExecutionRefused('BAD_PAYOUT_HOLD', 'The request is not valid.')
     existing = PayoutHold.objects.filter(approval_request=request_row).first()
     if existing is not None:
         return {'payout_hold_id': existing.pk, 'duplicate': True}
-    blockers = payout_hold_blockers(flag)
+    blockers = payout_hold_blockers(flag) if flag is not None else []
     if blockers:
         raise registry.ExecutionRefused(
             'PAYOUT_HOLD_NOT_ALLOWED',
             f'The conditions no longer hold ({", ".join(blockers)}).')
+    if flag is None and active_payout_hold(driver) is not None:
+        raise registry.ExecutionRefused('ALREADY_HELD', 'This driver already has an active payout hold.')
     from servers.payments.payout_config import driver_payout_country
 
-    max_days = settings_for(driver_payout_country(driver))['payout_hold_max_days']
+    max_days = hold_max_days(driver_payout_country(driver))
     days = min(int(p.get('days') or max_days), max_days)
     now = timezone.now()
     with transaction.atomic():
@@ -755,19 +758,87 @@ def execute_payout_hold(request_row):
             previous.status, previous.released_at = PayoutHold.RELEASED, now
             previous.release_note = 'renewed'
             previous.save(update_fields=['status', 'released_at', 'release_note'])
+        kind = p.get('reason_kind') or PayoutHold.SUSPECTED_FRAUD
         hold = PayoutHold.objects.create(
             driver=driver, flag=flag, approval_request=request_row, starts_at=now,
-            expires_at=now + timedelta(days=days), max_days=max_days,
+            expires_at=now + timedelta(days=days), max_days=max_days, reason_kind=kind,
             renewal_of=previous if p.get('renew') else None, note=(p.get('note') or '')[:500])
         record_admin_action(
             None, action='payout_hold_placed', target_type='driver', target_id=driver.pk,
-            after={'payout_hold_id': hold.pk, 'flag_id': flag.pk, 'days': days,
-                   'expires_at': hold.expires_at.isoformat(), 'renewal': bool(p.get('renew')),
+            after={'payout_hold_id': hold.pk, 'flag_id': flag.pk if flag else None, 'reason_kind': kind,
+                   'days': days, 'expires_at': hold.expires_at.isoformat(), 'renewal': bool(p.get('renew')),
                    'approval_request_id': request_row.pk},
             reason=request_row.request_reason)
-        _note(flag, f'Payout hold approved for {plural(days, "day")} (until {hold.expires_at:%Y-%m-%d}).',
-              data={'payout_hold_id': hold.pk}, reason='payout_hold')
+        if flag is not None:
+            _note(flag, f'Payout hold approved for {plural(days, "day")} (until {hold.expires_at:%Y-%m-%d}).',
+                  data={'payout_hold_id': hold.pk}, reason='payout_hold')
+        tell_driver(hold)
     return {'payout_hold_id': hold.pk, 'expires_at': hold.expires_at.isoformat(), 'days': days}
+
+
+#: 25 Nov (owner ruling): never longer than 14 days, whatever the country setting says.
+HOLD_MAX_DAYS = 14
+HOLD_REASON_WORDS = {PayoutHold.SUSPECTED_FRAUD: 'a review of recent activity', PayoutHold.DISPUTE: 'a dispute',
+                     PayoutHold.COMPLIANCE_CHECK: 'a compliance check',
+                     PayoutHold.DETAILS_VERIFICATION: 'a check of your payout details'}
+
+
+def hold_max_days(country):
+    return min(HOLD_MAX_DAYS, int(settings_for(country)['payout_hold_max_days'] or HOLD_MAX_DAYS))
+
+
+def tell_driver(hold):
+    """The driver is told their payouts are held, why in neutral words, and until when."""
+    from servers.notifications.dispatcher import notify
+    from servers.notifications.seed_data import PAYOUT_HELD
+
+    def go():
+        try:
+            notify(PAYOUT_HELD, hold.driver.user_id,
+                   {'reason': HOLD_REASON_WORDS.get(hold.reason_kind, 'a check'),
+                    'until': f'{hold.expires_at:%d %b %Y}'},
+                   idempotency_key=f'payout_hold:{hold.pk}')
+        except Exception:  # noqa: BLE001 - a failed notice never undoes the approved hold
+            logger.exception('payout hold notice failed hold=%s', hold.pk)
+    transaction.on_commit(go)
+
+
+def request_driver_payout_hold(actor, driver, reason_kind, note, days, key, http_request=None):
+    """25 Nov: hold a driver's payouts for a named reason, with a second person (finance.payout_hold,
+    always a checker, India and US). A suspected-fraud hold from a fraud flag still goes through the flag."""
+    from servers.admin_access.bridge import granted
+    from servers.approvals import service as approvals
+
+    if not granted(actor, 'finance.payout', driver.home_city)[0]:
+        raise MoneyError('PERMISSION_DENIED', 'You do not hold finance.payout here.', 403, 'permission')
+    if reason_kind not in dict(PayoutHold.REASON_CHOICES):
+        raise MoneyError('INVALID_REASON', 'Choose a reason: suspected fraud, dispute, compliance check or '
+                         'payout details being verified.', 400, 'reason_kind')
+    note = (note or '').strip()
+    if len(note) < 10:
+        raise MoneyError('INVALID_NOTE', 'Write the reason, at least 10 characters.', 400, 'note')
+    if active_payout_hold(driver) is not None:
+        raise MoneyError('ALREADY_HELD', 'This driver already has an active payout hold.', 409, 'status')
+    from servers.payments.payout_config import driver_payout_country
+
+    country = driver_payout_country(driver)
+    max_days = hold_max_days(country)
+    days = max_days if days in (None, '') else days
+    if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= max_days:
+        raise MoneyError('INVALID_DAYS', f'days must be between 1 and {max_days}.', 400, 'days')
+    words = dict(PayoutHold.REASON_CHOICES)[reason_kind]
+    return approvals.require_approval_or_execute(
+        FINANCE_PAYOUT_HOLD, actor=actor, country=country, scope_node=driver.home_city,
+        target_type='payout_hold', target_id=driver.pk,
+        payload={'flag_id': None, 'driver_id': driver.pk, 'days': days, 'renew': False,
+                 'reason_kind': reason_kind, 'note': note[:500],
+                 'display': {'changes': [{'label': 'Payouts', 'from': 'Paid as usual',
+                                          'to': f'Held for {plural(days, "day")} ({words})'}],
+                             'effective': 'From approval; it lapses on its own after the days above. '
+                                          'The driver is told.'}},
+        idempotency_key=f'payout_hold:driver:{driver.pk}:{key}'[:200],
+        reason=f'Payout hold ({words}, {plural(days, "day")}): {note}'[:2000],
+        http_request=http_request)
 
 
 def release_payout_hold(actor, hold, note, http_request=None):
@@ -788,8 +859,9 @@ def release_payout_hold(actor, hold, note, http_request=None):
             target_id=hold.driver_id,
             before={'payout_hold_id': hold.pk, 'status': 'active'},
             after={'payout_hold_id': hold.pk, 'status': 'released'}, reason=note)
-        _note(hold.flag, 'Payout hold released early.', actor,
-              data={'payout_hold_id': hold.pk}, reason='payout_hold_release')
+        if hold.flag_id:
+            _note(hold.flag, 'Payout hold released early.', actor,
+                  data={'payout_hold_id': hold.pk}, reason='payout_hold_release')
     return hold
 
 
@@ -814,13 +886,13 @@ def lapse_due_holds(now=None):
                 hold.expiry_alerted_at = now
                 hold.save(update_fields=['status', 'released_at', 'release_note',
                                          'expiry_alerted_at'])
-                city = hold.flag.anchor_node
+                city = hold.flag.anchor_node if hold.flag_id else hold.driver.home_city
                 raise_alert(
                     FRAUD_PAYOUT_HOLD_EXPIRED, severity=WARNING,
                     title=('A payout hold ended' + (f' in {city.name}' if city else '')
                            + ': renew it or leave the payout released')[:200],
                     payload={'payout_hold_id': hold.pk, 'flag_id': hold.flag_id,
-                             'path': f'/fraud/{hold.flag_id}'},
+                             'path': f'/fraud/{hold.flag_id}' if hold.flag_id else f'/drivers/{hold.driver_id}'},
                     source_type='fraud_payout_hold_expired', source_id=str(hold.pk), city=city)
                 record_admin_action(
                     None, action='payout_hold_lapsed', target_type='driver',
@@ -828,9 +900,10 @@ def lapse_due_holds(now=None):
                     before={'payout_hold_id': hold.pk, 'status': 'active'},
                     after={'payout_hold_id': hold.pk, 'status': 'lapsed'},
                     reason='maximum duration reached; released unless renewed')
-                _note(hold.flag, 'Payout hold ended at its maximum duration; the driver is '
-                                 'paid again unless it is renewed.',
-                      data={'payout_hold_id': hold.pk}, reason='payout_hold_lapsed')
+                if hold.flag_id:
+                    _note(hold.flag, 'Payout hold ended at its maximum duration; the driver is '
+                                     'paid again unless it is renewed.',
+                          data={'payout_hold_id': hold.pk}, reason='payout_hold_lapsed')
                 count += 1
     return count
 

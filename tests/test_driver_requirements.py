@@ -84,6 +84,26 @@ class TestMarkets:
         assert bad.status_code == 400
 
 
+class TestMarketRuleEditPreview:
+    def test_a_cancellation_rule_change_previews_what_a_rider_pays_25_nov(self, world):  # noqa: F811
+        from servers.approvals.models import ApprovalRequest
+
+        client, _ = operator('super_admin', world.geo)
+        r = client.post('/api/v1/pricing/admin/regulation/IN/preview/', {
+            'cancel_penalty_percent': '12', 'cancel_penalty_cap_minor': 5000}, format='json')
+        assert r.status_code == 200, r.content[:300]
+        shown = r.json()['data']
+        labels = [c['label'] for c in shown['changes']]
+        assert 'Cancellation fee (% of the fare)' in labels
+        assert shown['impact']['rows'][0][2] == '₹18.00'      # 12% of Rs 150
+        assert shown['impact']['rows'][2][2] == '₹50.00'      # capped at Rs 50
+        r = client.put('/api/v1/pricing/admin/regulation/IN/', {
+            'cancel_penalty_percent': '12', 'reason': 'MVAG review'}, format='json')
+        assert r.status_code == 202
+        req = ApprovalRequest.objects.get(id=r.json()['data']['approval_request']['id'])
+        assert req.payload['display']['changes']
+
+
 class TestPersonal:
     def test_address_pin_must_match_the_state(self, world):  # noqa: F811
         client = client_for(new_driver(world).user_id)

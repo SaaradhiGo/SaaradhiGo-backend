@@ -394,10 +394,20 @@ class PayoutHold(models.Model):
 
     ACTIVE, RELEASED, LAPSED = 'active', 'released', 'lapsed'
     STATUS_CHOICES = [(ACTIVE, 'Active'), (RELEASED, 'Released'), (LAPSED, 'Lapsed')]
+    #: 25 Nov (owner ruling, supersedes the fraud-only rule of AUDIT 27.56): a hold names one of
+    #: these reasons, with a written note, a second person's approval, at most 14 days, and the
+    #: driver is told. Only a suspected-fraud hold from a fraud flag carries `flag`.
+    SUSPECTED_FRAUD, DISPUTE, COMPLIANCE_CHECK, DETAILS_VERIFICATION = (
+        'suspected_fraud', 'dispute', 'compliance_check', 'payout_details_verification')
+    REASON_CHOICES = [(SUSPECTED_FRAUD, 'Suspected fraud'), (DISPUTE, 'Dispute'),
+                      (COMPLIANCE_CHECK, 'Compliance check'),
+                      (DETAILS_VERIFICATION, 'Payout details being verified')]
 
     driver = models.ForeignKey('driver.Driver', on_delete=models.CASCADE,
                                related_name='payout_holds')
-    flag = models.ForeignKey(RiskFlag, on_delete=models.PROTECT, related_name='payout_holds')
+    flag = models.ForeignKey(RiskFlag, on_delete=models.PROTECT, related_name='payout_holds',
+                             null=True, blank=True)
+    reason_kind = models.CharField(max_length=32, choices=REASON_CHOICES, default=SUSPECTED_FRAUD)
     approval_request = models.OneToOneField('approvals.ApprovalRequest', on_delete=models.PROTECT,
                                             related_name='+')
     status = models.CharField(max_length=8, choices=STATUS_CHOICES, default=ACTIVE, db_index=True)

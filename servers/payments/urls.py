@@ -1,5 +1,6 @@
 from django.urls import path
 
+from . import payout_hold_views
 from .admin_refunds import finance_refunds
 from .views import (
     create_order, verify_payment, payment_webhook, payout_webhook, payment_history, refund_payment,
@@ -7,7 +8,7 @@ from .views import (
 )
 from .admin_views import admin_list_transactions
 from .admin_actions import (
-    driver_adjust, payout_approve, payout_bulk, payout_config_propose, payout_hold_release,
+    driver_adjust, payout_approve, payout_bulk, payout_config_preview, payout_config_propose, payout_hold_release,
     payout_investigation,
     payout_reject, payout_retry, rider_wallet_credit,
 )
@@ -54,7 +55,9 @@ urlpatterns = [
     path('admin/payouts/<int:payout_id>/retry/', payout_retry),
     path('admin/payouts/<int:payout_id>/investigation/', payout_investigation),
     path('admin/drivers/<int:driver_id>/adjust/', driver_adjust),
+    path('admin/drivers/<int:driver_id>/payout-hold/', payout_hold_views.driver_payout_hold),
     path('admin/riders/<int:rider_id>/wallet-credit/', rider_wallet_credit),
+    path('admin/payout-config/<str:country>/preview/', payout_config_preview),
     path('admin/payout-config/<str:country>/', payout_config_propose),
     path('admin/payout-holds/<int:hold_id>/release/', payout_hold_release),
     path('admin/drivers/<int:driver_id>/ledger/', finance_driver_ledger),

@@ -325,6 +325,20 @@ def regulation_list(request):
                             status.HTTP_200_OK)
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, WRITE])
+def regulation_preview(request, country):
+    """POST admin/regulation/<country>/preview/  The Edit preview of a market rule change (25 Nov)."""
+    d = request.data or {}
+    try:
+        body = reg_flow.preview_regulation(
+            request.user, country=country, state_code=d.get('state_code') or '',
+            changes={name: d.get(name) for name in reg_flow.FIELDS if name in d}, clear=tuple(d.get('clear') or ()))
+    except ApprovalError as exc:
+        return exc.response()
+    return success_response(body, status.HTTP_200_OK)
+
+
 @api_view(['PUT'])
 @permission_classes([IsAuthenticated, WRITE])
 def regulation_update(request, country):

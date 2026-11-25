@@ -237,6 +237,54 @@ def _ref(role, user_id):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, READ])
+def campaign_audience(request, promotion_id):
+    """GET /promotions/admin/campaigns/<id>/audience/
+
+    25 Nov (owner): preview who qualifies. Counts only, never people: riders or drivers whose home
+    is in the campaign's place and who match its rules (new riders only; the incentive's class;
+    the referral's audience). Accounts that are blocked, closed or off are not counted."""
+    from django.db.models import Q
+
+    from servers.driver.models import Driver
+    from servers.rider.models import Rider
+
+    campaign = _campaign(request, promotion_id)
+    if campaign is None:
+        return _not_found()
+    node = campaign.geo_node
+    cfg = campaign.config or {}
+
+    place = node or GeoNode.objects.filter(kind=COUNTRY, code=campaign.country).first()
+
+    def in_place(field):
+        return Q(**{f'{field}__path__startswith': place.path}) if place is not None and place.path else Q(pk__in=[])
+
+    who, rules = None, []
+    if campaign.kind == RIDER_PROMO or (campaign.kind == REFERRAL and cfg.get('audience') == 'rider'):
+        from django.db.models import Exists, OuterRef
+
+        from servers.ride.models import Trip
+        from servers.rider.models import RiderBlock
+
+        qs = Rider.objects.filter(in_place('home_city'), user_id__is_active=True).exclude(
+            Exists(RiderBlock.objects.filter(rider=OuterRef('pk'), lifted_at__isnull=True)))
+        who = 'riders'
+        if cfg.get('new_riders_only'):
+            qs = qs.exclude(Exists(Trip.objects.filter(user_id=OuterRef('user_id'))))
+            rules.append('new riders only (no trip yet)')
+    else:
+        qs = Driver.objects.filter(in_place('home_city'), user_id__is_active=True, approved=True)
+        who = 'drivers'
+        if cfg.get('vehicle_type'):
+            qs = qs.filter(active_vehicle__vehicle_type_id__type=cfg['vehicle_type'])
+            from servers.approvals.describe import CLASS_WORDS  # the names riders and drivers see
+            rules.append(f"drives a {CLASS_WORDS.get(cfg['vehicle_type'], cfg['vehicle_type'].title())}")
+    return success_response({'who': who, 'count': qs.count(), 'place': place.name if place else campaign.country,
+                             'rules': rules}, status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, READ])
 def campaign_activity(request, promotion_id):
     campaign = _campaign(request, promotion_id)
     if campaign is None:

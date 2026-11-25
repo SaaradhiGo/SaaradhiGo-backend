@@ -6,7 +6,7 @@ from servers.support.admin_followups import (
 )
 from servers.support.admin_support import (
     admin_country_config_update, admin_assignees, admin_macro_detail, admin_macro_preview, admin_macros, admin_note,
-    admin_set_category, admin_set_priority, admin_set_status, admin_sla, admin_sla_update,
+    admin_link_trip, admin_set_category, admin_set_priority, admin_set_status, admin_sla, admin_sla_update,
 )
 from servers.support.views import (
     add_user_message,
@@ -38,6 +38,7 @@ urlpatterns = [
     path('admin/tickets/<int:ticket_id>/status/', admin_set_status),
     path('admin/tickets/<int:ticket_id>/priority/', admin_set_priority),
     path('admin/tickets/<int:ticket_id>/category/', admin_set_category),
+    path('admin/tickets/<int:ticket_id>/trip/', admin_link_trip),
     path('admin/macros/', admin_macros),
     path('admin/macros/<int:macro_id>/', admin_macro_detail),
     path('admin/macros/<int:macro_id>/preview/', admin_macro_preview),

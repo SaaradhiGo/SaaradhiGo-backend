@@ -35,7 +35,8 @@ class TestCountsMatchTheirLists:
         assert acts['kyc']['count'] == in_review == queue['count']
         assert acts['kyc_uploading']['count'] == uploading
         assert 'kyc_state=pending' in acts['kyc_uploading']['link']
-        assert acts['kyc_uploading']['label'] == 'drivers still uploading documents'
+        assert acts['kyc_uploading']['label'] == ('driver still uploading documents' if uploading == 1
+                                                  else 'drivers still uploading documents')
 
 
 class TestSafetyTicketsAreSafety:

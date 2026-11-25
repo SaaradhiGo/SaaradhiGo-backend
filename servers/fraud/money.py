@@ -52,6 +52,7 @@ from servers.admin_audit.services import record_admin_action
 from servers.approvals import adjust, registry
 from servers.approvals.actions import FINANCE_ADJUST, FINANCE_PAYOUT_HOLD
 
+from base.words import plural
 from .models import (
     ACTIVE_STATUSES, COLLUSION, CONFIRMED, EV_NOTE, INCENTIVE_FARMING, MULTI_ACCOUNTING,
     REFERRAL_ABUSE, FlagEvent, PayoutHold, RecoveryDebt, RecoveryDeduction, RewardHold, RiskFlag,
@@ -258,7 +259,7 @@ def hold_for_flag(flag, now=None):
             if created:
                 total = sum(h.amount_minor for h in created)
                 _note(flag, f'Reward held pending review: {total} minor units on '
-                            f'{len(created)} reward(s); released automatically after {days} days '
+                            f'{len(created)} reward(s); released automatically after {plural(days, "day")} '
                             f'if the flag is not decided.',
                       data={'reward_holds': [h.pk for h in created], 'amount_minor': total},
                       reason='reward_hold')
@@ -720,7 +721,7 @@ def request_payout_hold(actor, flag, note, days, key, renew=False, http_request=
         payload={'flag_id': flag.pk, 'driver_id': driver.pk, 'days': days, 'renew': bool(renew),
                  'note': note[:500]},
         idempotency_key=f'payout_hold:{flag.pk}:{key}'[:200],
-        reason=f'Payout hold ({"renewal, " if renew else ""}{days} days): {note}'[:2000],
+        reason=f'Payout hold ({"renewal, " if renew else ""}{plural(days, "day")}): {note}'[:2000],
         http_request=http_request)
     return outcome
 
@@ -764,7 +765,7 @@ def execute_payout_hold(request_row):
                    'expires_at': hold.expires_at.isoformat(), 'renewal': bool(p.get('renew')),
                    'approval_request_id': request_row.pk},
             reason=request_row.request_reason)
-        _note(flag, f'Payout hold approved for {days} days (until {hold.expires_at:%Y-%m-%d}).',
+        _note(flag, f'Payout hold approved for {plural(days, "day")} (until {hold.expires_at:%Y-%m-%d}).',
               data={'payout_hold_id': hold.pk}, reason='payout_hold')
     return {'payout_hold_id': hold.pk, 'expires_at': hold.expires_at.isoformat(), 'days': days}
 

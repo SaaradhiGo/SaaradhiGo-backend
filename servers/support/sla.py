@@ -28,6 +28,7 @@ allowed as a status but the clock keeps running.
 from datetime import timedelta
 
 from django.utils import timezone
+from base.words import plural
 
 PRIORITIES = ('urgent', 'high', 'normal', 'low')
 PRIORITY_RANK = {name: rank for rank, name in enumerate(PRIORITIES)}
@@ -114,7 +115,7 @@ def refund_review_sentence(country):
     hours = config.refund_review_hours
     if hours >= 48:
         days = -(-hours // 24)
-        span = f'{days} days'
+        span = plural(days, 'day')
     else:
         span = f'{hours} hour' + ('' if hours == 1 else 's')
     return f"{base} You'll hear from us within {span}."

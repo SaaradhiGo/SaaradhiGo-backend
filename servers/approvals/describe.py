@@ -38,7 +38,10 @@ def _fee_plan(payload):
             ', only on a day with a trip', '')
         if '; ' in words:  # the waiver is the plan's, said once at the end (24 Nov)
             words, waiver = words.split('; ', 1)
-        parts.append(f"{CLASS_WORDS.get(vt, vt.title())} {words}")
+        if vt == '*':  # 25 Nov (owner): "No platform fee for any class", not "Every class No platform fee"
+            parts.append(f"{words} for {'every other' if len(plan.amounts) > 1 else 'any'} class")
+        else:
+            parts.append(f"{CLASS_WORDS.get(vt, vt.title())} {words}")
     tail = f'; {waiver}' if waiver else ''
     return f"{place} {kind}: {', '.join(parts) or 'no amounts yet'}{tail}"
 

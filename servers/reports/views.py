@@ -249,3 +249,29 @@ def report_export(request, report_key):
         f'{params.d_from:%Y%m%d}-{params.d_to:%Y%m%d}.csv"')
     response['Cache-Control'] = 'no-store'
     return response
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('report.read')])
+def daily_email_subscription(request):
+    """GET/POST admin/daily-email/  {subscribed: bool}  (owner ruling 25 Nov)
+
+    The caller's own opt-in to the daily report email, and whether email is live yet (SES)."""
+    from servers.notifications import config as nconfig
+
+    from .models import DailyReportSubscription
+
+    sub = DailyReportSubscription.objects.filter(user=request.user).first()
+    if request.method == 'POST':
+        want = (request.data or {}).get('subscribed') is True
+        if sub is None:
+            sub = DailyReportSubscription.objects.create(user=request.user, is_active=want)
+        elif sub.is_active != want:
+            sub.is_active = want
+            sub.save(update_fields=['is_active', 'updated_at'])
+        record_admin_action(request, action='daily_report_email_' + ('on' if want else 'off'),
+                            target_type='daily_report', target_id=request.user.pk, after={'subscribed': want})
+    _, live = nconfig.effective_provider('email', 'IN')
+    _, live_us = nconfig.effective_provider('email', 'US')
+    return success_response({'subscribed': bool(sub and sub.is_active), 'email_live': {'IN': live, 'US': live_us},
+                             'send_hour': 8}, status.HTTP_200_OK)

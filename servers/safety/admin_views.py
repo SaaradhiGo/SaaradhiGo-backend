@@ -54,6 +54,7 @@ from base.countries import COUNTRIES
 from base.utils import error_response, success_response
 from servers.admin_access.bridge import AnyOfScopedPermission, ScopedPermission, granted
 from servers.admin_access.masking import mask_phone
+from servers.approvals.service import ApprovalError
 from servers.admin_access.scoping import ScopeNotHeld, requested_node, scoped, scoped_or_none
 from servers.admin_audit.services import record_admin_action
 from servers.ride.admin_trips import BadInput, _date, _idempotency_key, _int, _iso, _text
@@ -1501,6 +1502,67 @@ def _rota_row(node, rota, user):
             'updated_at': _iso(rota.updated_at) if rota else None,
             'updated_by': (rota.updated_by.full_name or rota.updated_by.email) if rota and rota.updated_by_id else None,
             'can_edit': granted(user, 'safety.config', node)[0]}
+
+
+def _rota_city(request, city_code, capability):
+    from servers.admin_access.models import CITY, GeoNode
+
+    node = GeoNode.objects.filter(kind=CITY, code=(city_code or '').upper()).first()
+    if node is None or not granted(request.user, capability, node)[0]:
+        return None
+    return node
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('safety.config')])
+def safety_rota(request, city_code):
+    """GET rota/<city>/  The hourly rota: the plan in force as a week grid, the staff who may be on it,
+    and its history. POST {shifts, reason} -> 202: a change for a second person to approve (25 Nov)."""
+    from . import rota
+    from .models import OnCallShiftPlan
+
+    node = _rota_city(request, city_code, 'safety.config')
+    if node is None:
+        return error_response(code='NOT_FOUND', message='Unknown city.', field='city', issue=city_code,
+                              status=status.HTTP_404_NOT_FOUND)
+    if request.method == 'POST':
+        try:
+            outcome = rota.propose(request.user, node, (request.data or {}).get('shifts'),
+                                   str((request.data or {}).get('reason') or ''), http_request=request)
+        except ApprovalError as exc:
+            return exc.response()
+        row = outcome.request
+        return success_response({'approval_request': row.as_dict(), 'duplicate': outcome.duplicate,
+                                 'state': 'pending_approval' if row.status == 'requested' else row.status},
+                                status.HTTP_202_ACCEPTED)
+    plan = rota.active_plan_here(node)
+    staff = rota.eligible_staff(node)
+    history = OnCallShiftPlan.objects.filter(city=node).order_by('-version')[:10]
+    return success_response({
+        'city': {'code': node.code, 'name': node.name},
+        'plan': {'version': plan.version, 'shifts': plan.shifts, 'created_by': plan.created_by_label,
+                 'reason': plan.reason, 'created_at': _iso(plan.created_at)} if plan else None,
+        'grid': rota.week_grid(plan),
+        'staff': [{'id': u.pk, 'name': u.full_name or u.email, 'has_phone': bool(getattr(u, 'phone_number', ''))}
+                  for u in staff.values()],
+        'history': [{'version': p.version, 'status': p.status, 'created_by': p.created_by_label,
+                     'reason': p.reason, 'created_at': _iso(p.created_at)} for p in history],
+    }, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('safety.config')])
+def safety_rota_preview(request, city_code):
+    from . import rota
+
+    node = _rota_city(request, city_code, 'safety.config')
+    if node is None:
+        return error_response(code='NOT_FOUND', message='Unknown city.', field='city', issue=city_code,
+                              status=status.HTTP_404_NOT_FOUND)
+    try:
+        return success_response(rota.preview(node, (request.data or {}).get('shifts')), status.HTTP_200_OK)
+    except ApprovalError as exc:
+        return exc.response()
 
 
 @api_view(['GET'])

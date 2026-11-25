@@ -597,6 +597,9 @@ INVENTORY = {
     # Zones and geofences (module 9): shapes, revisions and pending requests name no person
     # beyond the staff attribution block the renderer leaves alone.
     'api/v1/pricing/admin/zones/pending/': False,
+    'api/v1/pricing/admin/zones/<int:zone_id>/areas/': False,
+    'api/v1/safety/admin/rota/<str:city_code>/': False,
+    'api/v1/reports/admin/daily-email/': False,
     'api/v1/pricing/admin/zones/cities/': False,
     'api/v1/pricing/admin/zones/(?P<pk>[^/.]+)/history/': False,
     # Live Ops map (module 10): dots, trips and alert pins are built from whitelists

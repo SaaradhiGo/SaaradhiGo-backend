@@ -45,6 +45,8 @@ PAYOUT_DETAILS_CHANGED = 'payout.details_changed'
 DOCUMENT_EXPIRING = 'driver.document_expiring'
 #: 25 Nov (owner ruling): a driver's payouts are held for a named reason (in_app + push).
 PAYOUT_HELD = 'payout.held'
+#: 25 Nov (owner ruling): the daily report email to staff who opt in (email only).
+REPORT_DAILY = 'reports.daily_summary'
 
 _COMMISSION_VARS = ['effective_date', 'scope', 'old_rate', 'new_rate']
 _COMMISSION_SAMPLE = {'effective_date': '12 November 2026', 'scope': 'Sedan in Hyderabad',
@@ -205,6 +207,15 @@ COPY.update({
         body='Payouts are on hold until {until} for {reason}. Your earnings are safe.', **_HELD),
 })
 
+COPY.update({
+    (REPORT_DAILY, 'email'): dict(
+        subject='SaaradhiGo daily report, {date}',
+        body='Hello,\n\nYesterday, {date}:\n\n{summary}\n\nThe full reports are in the console under Reports.'
+             '\n\nSaaradhiGo', variables=['date', 'summary'],
+        sample={'date': '24 Nov 2026', 'summary': 'Hyderabad: 120 trips completed, 9 cancelled, fares ₹21,400.00, '
+                                                  'refunds ₹300.00, 0 SOS.'}),
+})
+
 _EXPIRING = dict(variables=['document', 'date', 'days'],
                  sample={'document': 'Vehicle insurance', 'date': '18 Dec 2026', 'days': '7'})
 COPY.update({
@@ -227,6 +238,7 @@ KEY_CHANNELS = {OPERATOR_CANCELLED: ('in_app', 'push'),
                 PROMO_AVAILABLE: ('in_app', 'push'),
                 PAYOUT_REVERSED: ('in_app', 'push'),
                 PAYOUT_HELD: ('in_app', 'push'),
+                REPORT_DAILY: ('email',),
                 PICKUP_CODE_REMINDER: ('in_app', 'push'),
                 PAYOUT_DETAILS_CHANGED: ('in_app', 'push', 'sms'),
                 DOCUMENT_EXPIRING: ('in_app', 'push')}
@@ -246,7 +258,7 @@ def seed_rows():
     for key in (COMMISSION, PAYOUT, OPERATOR_CANCELLED, OPERATOR_ENDED_RIDER,
                 OPERATOR_ENDED_DRIVER, INCENTIVE_PROGRESS, INCENTIVE_COMPLETED, REFERRAL_REWARD,
                 PROMO_AVAILABLE, PAYOUT_REVERSED, PICKUP_CODE_REMINDER, PAYOUT_DETAILS_CHANGED,
-                DOCUMENT_EXPIRING, PAYOUT_HELD):
+                DOCUMENT_EXPIRING, PAYOUT_HELD, REPORT_DAILY):
         for country in COUNTRIES:
             for channel in KEY_CHANNELS.get(key, CHANNELS):
                 copy = dict(COPY[(key, channel)])

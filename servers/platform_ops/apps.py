@@ -8,4 +8,4 @@ class PlatformOpsConfig(AppConfig):
 
     def ready(self):
         # Executors register by action key when imported (see approvals.registry).
-        from . import workflows  # noqa: F401  (platform.city_status, flag_change, ...)
+        from . import provider_mode, workflows  # noqa: F401  (platform.city_status, provider_mode, ...)

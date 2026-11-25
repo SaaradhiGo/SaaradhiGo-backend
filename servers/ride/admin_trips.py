@@ -305,6 +305,16 @@ def filter_trips(params, queryset, now=None):
             raise BadInput('INVALID_FILTER', 'rider_phone needs at least 6 digits.', 'rider_phone')
         queryset = queryset.filter(user_id__phone_number__endswith=phone[-10:])
 
+    # 25 Nov (owner): search by the driver's plate, in any spacing ("TS 09 AB 1234").
+    plate_text = (params.get('plate') or '').strip()
+    if plate_text:
+        from servers.driver.plates import normalise_plate, normalised_plate_expression
+        plate = normalise_plate(plate_text)
+        if len(plate) < 3:
+            raise BadInput('INVALID_FILTER', 'plate needs at least 3 letters or digits.', 'plate')
+        queryset = queryset.annotate(plate_norm=normalised_plate_expression('vehicle_id__vehicle_number')).filter(
+            plate_norm__contains=plate)
+
     rider_id = params.get('rider_id') or params.get('user_id')
     if rider_id:
         queryset = queryset.filter(user_id=_int(rider_id, 'rider_id'))
@@ -1420,6 +1430,71 @@ def admin_note_trip(request, trip_id):
                         target_id=trip.id, after={'note_id': note.id, 'body': body},
                         reason='internal note')
     return success_response({'trip_id': trip.id, 'note_id': note.id, 'created': True},
+                            status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('trip.read')])
+def admin_trips_export_log(request):
+    """POST /ride/admin/trips/export-log/  {rows, view, filters}
+
+    25 Nov (owner): every trips export is in the audit log, with its view, filters and row count.
+    The console builds the file from the same scoped, masked list it shows."""
+    try:
+        rows = int(request.data.get('rows') or 0)
+    except (TypeError, ValueError):
+        return BadInput('INVALID_ROWS', 'rows must be a number.', 'rows').response()
+    filters = request.data.get('filters') if isinstance(request.data.get('filters'), dict) else {}
+    filters = {str(k)[:40]: str(v)[:200] for k, v in list(filters.items())[:30]}
+    record_admin_action(request, action='trips_exported', target_type=TARGET, target_id='list',
+                        after={'rows': rows, 'view': str(request.data.get('view') or '')[:40], 'filters': filters},
+                        reason='CSV export')
+    return success_response({'recorded': True}, status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('support.reply')])
+def admin_open_ticket(request, trip_id):
+    """POST /ride/admin/trips/<id>/ticket/  {for: rider|driver, issue_type, description, priority?}
+
+    25 Nov (owner): support opens a ticket from the trip, for its rider or its driver, linked to it.
+    The description is the first message, as an internal note (the person did not write it)."""
+    from servers.support.models import SupportMessage, SupportTicket
+
+    trip, refusal = _trip_for_write(request, trip_id, 'support.reply')
+    if refusal:
+        return refusal
+    try:
+        who = _text(request.data, 'for', required=True, limit=10)
+        description = _text(request.data, 'description', required=True, limit=5000)
+        issue = _text(request.data, 'issue_type', limit=40) or 'other'
+        priority = _text(request.data, 'priority', limit=10) or 'normal'
+        if who not in ('rider', 'driver'):
+            raise BadInput('INVALID_FOR', 'for must be rider or driver.', 'for')
+        if issue not in dict(SupportTicket.ISSUE_CHOICES):
+            raise BadInput('INVALID_ISSUE_TYPE', 'That is not a ticket category.', 'issue_type')
+        if priority not in dict(SupportTicket.PRIORITY_CHOICES):
+            raise BadInput('INVALID_PRIORITY', 'That is not a priority.', 'priority')
+        if len(description) < 10:
+            raise BadInput('DESCRIPTION_TOO_SHORT', 'Say what the ticket is about, in at least 10 characters.',
+                           'description')
+    except BadInput as exc:
+        return exc.response()
+    person = trip.user_id if who == 'rider' else (trip.driver_id.user_id if trip.driver_id_id else None)
+    if person is None:
+        return BadInput('NO_DRIVER', 'This trip had no driver.', 'for').response()
+    with transaction.atomic():
+        ticket = SupportTicket.objects.create(user_id=person, trip_id=trip, issue_type=issue,
+                                              description=description, priority=priority,
+                                              assigned_to=request.user)
+        SupportMessage.objects.create(ticket=ticket, author=request.user, author_role='internal',
+                                      body=description)
+        record_admin_action(request, action='support_ticket_opened_from_trip', target_type=TARGET,
+                            target_id=trip.id, after={'ticket_id': ticket.id, 'for': who,
+                                                      'issue_type': issue, 'priority': priority},
+                            reason=description[:500])
+    ticket.refresh_from_db()
+    return success_response({'trip_id': trip.id, 'ticket_id': ticket.id, 'ticket_ref': ticket.public_ref},
                             status.HTTP_201_CREATED)
 
 

@@ -142,6 +142,7 @@ def _snapshot(ticket):
         'waiting_since': _iso(ticket.waiting_since),
         'resolution_paused_seconds': ticket.resolution_paused_seconds,
         'returned_at': _iso(ticket.returned_at),
+        'trip': ticket.trip_id_id,
     }
 
 
@@ -803,6 +804,38 @@ def admin_set_category(request, ticket_id):
         ticket.issue_type = wanted
         return ['issue_type']
     return _change(request, ticket, 'category', apply, 'support_ticket_category_changed')
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('support.reply')])
+def admin_link_trip(request, ticket_id):
+    """POST /support/admin/tickets/<id>/trip/  {trip, reason?}
+
+    25 Nov (owner): link the ticket to a trip, by its reference (HYD-261116-K7Q4) or number. Only a
+    trip the ticket's person rode or drove, and one the caller may see."""
+    from servers.admin_access.scoping import scoped_or_none
+    from servers.ride.models import Trip
+
+    ticket, refusal = _ticket_for(request, ticket_id, 'support.reply')
+    if refusal:
+        return refusal
+    text = str(request.data.get('trip') or '').strip()
+    if not text:
+        return BadInput('TRIP_REQUIRED', 'Give the trip reference.', 'trip').response()
+    lookup = {'id': int(text)} if text.isdigit() else {'public_ref': text.upper()}
+    trip = scoped_or_none(request.user, Trip.objects.select_related('driver_id'), **lookup)
+    if trip is None:
+        return BadInput('NOT_FOUND', 'No trip has that reference.', 'trip').response()
+    person = ticket.user_id_id
+    if person not in (trip.user_id_id, getattr(trip.driver_id, 'user_id_id', None)):
+        return BadInput('NOT_THEIR_TRIP', 'That trip is not one this person rode or drove.', 'trip').response()
+
+    def apply(locked, now):
+        if locked.trip_id_id == trip.id:
+            return None
+        locked.trip_id = trip
+        return ['trip_id']
+    return _change(request, ticket, 'trip', apply, 'support_ticket_trip_linked')
 
 
 def eligible_assignee(candidate, ticket):

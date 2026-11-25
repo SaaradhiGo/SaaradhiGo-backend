@@ -1109,6 +1109,11 @@ def resend_receipt(request, trip_id):
         )
 
     receipt = issue_receipt(trip, force_resend=True)
+    if receipt and trip.user_id_id != request.user.id:
+        # 25 Nov (owner): staff resends are in the audit log.
+        from servers.admin_audit.services import record_admin_action
+        record_admin_action(request, action='trip_receipt_resent', target_type='trip', target_id=trip.id,
+                            after={'receipt': getattr(receipt, 'id', None)}, reason='Receipt resent by support')
     if not receipt:
         return error_response(
             code='RECEIPT_UNAVAILABLE', message='Could not issue receipt.',

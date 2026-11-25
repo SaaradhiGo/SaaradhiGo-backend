@@ -4,6 +4,8 @@
     POST   /pricing/admin/fee-plans/                    pricing.write: a draft
     PATCH  /pricing/admin/fee-plans/<id>/               pricing.write: edit a draft
     POST   /pricing/admin/fee-plans/<id>/submit/        pricing.write -> 202 (maker-checker)
+    POST   /pricing/admin/fee-plans/<id>/impact/        zone.read: the Edit preview (changes, impact, start)
+    POST   /pricing/admin/fee-plans/<id>/edit/          pricing.write -> 202: a new version for approval
     POST   /pricing/admin/fee-plans/simulate/           zone.read: never activates anything
     GET    /pricing/admin/cost-per-trip/?country&month  finance.read
     PUT    /pricing/admin/fixed-costs/<country>/<YYYY-MM>/  finance.config
@@ -60,10 +62,28 @@ def fee_plans_list(request):
         except ApprovalError as exc:
             return exc.response()
         return success_response(flow.plan_dict(plan), status.HTTP_201_CREATED)
-    plans = DriverFeePlan.objects.order_by('country', 'scope_code', '-version')[:300]
-    return success_response({'results': [flow.plan_dict(p) for p in plans],
+    plans = list(DriverFeePlan.objects.order_by('country', 'scope_code', '-version')[:300])
+    return success_response({'results': _with_decisions(plans),
                              'plan_types': [PERCENT_COMMISSION, PER_TRIP_FEE, DAILY_PASS, FAIR_SHARE],
                              'presets': fee_plans.PRESETS}, status.HTTP_200_OK)
+
+
+def _with_decisions(plans):
+    """Version history (25 Nov): who approved or sent back each version, when and why."""
+    from servers.approvals.models import ApprovalRequest
+
+    ids = [p.approval_request_id for p in plans if p.approval_request_id]
+    rows = {r.id: r for r in ApprovalRequest.objects.filter(pk__in=ids)}
+    out = []
+    for p in plans:
+        d = flow.plan_dict(p)
+        r = rows.get(p.approval_request_id)
+        d['decision'] = ({'status': r.status, 'by': r.checker_label or '', 'at': r.decided_at.isoformat()
+                          if r.decided_at else None, 'reason': r.decision_reason or '',
+                          'request_reason': r.request_reason or '', 'maker_id': r.maker_id}
+                         if r is not None else None)
+        out.append(d)
+    return out
 
 
 def _plan_or_404(pk):
@@ -94,6 +114,37 @@ def fee_plan_submit(request, plan_id):
     try:
         outcome = flow.submit(request.user, plan, reason=str((request.data or {}).get('reason') or ''),
                               http_request=request)
+    except ApprovalError as exc:
+        return exc.response()
+    return success_response(_approval_body(outcome), status.HTTP_202_ACCEPTED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, READ])
+def fee_plan_impact(request, plan_id):
+    """What an edit would change, its impact on a driver's day per class, and the first day."""
+    from . import edit_pattern
+
+    plan = _plan_or_404(plan_id)
+    if plan is None:
+        return error_response(code='NOT_FOUND', message='No such plan', field='id', issue='No such plan',
+                              status=status.HTTP_404_NOT_FOUND)
+    try:
+        _, _, body = edit_pattern.preview(plan, request.data or {})
+    except ApprovalError as exc:
+        return exc.response()
+    return success_response(body, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, WRITE])
+def fee_plan_edit(request, plan_id):
+    plan = _plan_or_404(plan_id)
+    if plan is None:
+        return error_response(code='NOT_FOUND', message='No such plan', field='id', issue='No such plan',
+                              status=status.HTTP_404_NOT_FOUND)
+    try:
+        outcome = flow.edit(request.user, plan, request.data or {}, http_request=request)
     except ApprovalError as exc:
         return exc.response()
     return success_response(_approval_body(outcome), status.HTTP_202_ACCEPTED)

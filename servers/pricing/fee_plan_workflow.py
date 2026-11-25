@@ -37,6 +37,8 @@ def plan_dict(p):
             'effective_to': p.effective_to.isoformat() if p.effective_to else None,
             'note': p.note, 'reason': p.reason, 'approval_request_id': p.approval_request_id,
             'created_by': p.created_by_label,
+            'created_at': p.created_at.isoformat() if p.created_at else None,
+            'activated_at': p.activated_at.isoformat() if p.activated_at else None,
             # 22 Nov review: the place by name ("Treasure Valley", not "US-ID-TV").
             'scope_name': _scope_name(p)}
 
@@ -120,7 +122,7 @@ def update_draft(actor, plan, data):
     return plan
 
 
-def submit(actor, plan, *, reason='', http_request=None):
+def submit(actor, plan, *, reason='', http_request=None, requested_from=None, display=None):
     if plan.status != DRAFT:
         raise InvalidRequest('Only a draft can be submitted.', code='NOT_A_DRAFT', field='status')
     if not reason.strip():
@@ -138,8 +140,12 @@ def submit(actor, plan, *, reason='', http_request=None):
                                  code='ABOVE_COMMISSION_CAP', field='amounts')
     outcome = require_approval_or_execute(
         PRICING_CHANGE, actor=actor, country=plan.country, scope_node=_node(plan.country, plan.scope_code),
-        target_type=KIND, target_id=str(plan.id), payload={'kind': KIND, 'plan_id': plan.id},
-        idempotency_key=f'{KIND}:{plan.id}', reason=reason, http_request=http_request)
+        target_type=KIND, target_id=str(plan.id),
+        payload={'kind': KIND, 'plan_id': plan.id,
+                 **({'requested_from': requested_from} if requested_from else {}),
+                 **({'display': display} if display else {})},
+        idempotency_key=f'{KIND}:{plan.id}', reason=reason,
+        http_request=http_request)
     plan.refresh_from_db()
     if plan.status == DRAFT:
         plan.status = PENDING_APPROVAL
@@ -164,6 +170,10 @@ def execute(request_row):
             from servers.pricing.commission import notice_days
 
             start = max(start, today + timedelta(days=notice_days(plan.country)))
+        if p.get('requested_from'):
+            from datetime import date
+
+            start = max(start, date.fromisoformat(p['requested_from']))
         for old in DriverFeePlan.objects.select_for_update().filter(
                 country=plan.country, scope_code=plan.scope_code, status=ACTIVE):
             old.status, old.effective_to = ARCHIVED, start
@@ -175,3 +185,57 @@ def execute(request_row):
                             target_id=str(plan.id), after=plan_dict(plan),
                             reason=request_row.decision_reason or request_row.request_reason)
     return {'plan_id': plan.id, 'effective_from': start.isoformat()}
+
+
+def edit(actor, base, data, *, http_request=None):
+    """Edit (25 Nov): a new version of the plan in force, or the draft that came back, sent for
+    approval in one step with the impact the editor saw. The version in force stays until approved."""
+    from . import edit_pattern
+
+    data = dict(data or {})
+    reason = str(data.pop('reason', '') or '').strip()
+    if len(reason) < 5:
+        raise InvalidRequest('Say why, in a few words.', code='REASON_REQUIRED', field='reason')
+    if base.status not in (ACTIVE, DRAFT):
+        raise InvalidRequest('Only the plan in force or a draft can be edited.', code='NOT_EDITABLE', field='status')
+    from servers.admin_access.bridge import granted
+
+    node = _node(base.country, base.scope_code)
+    if node is None or not granted(actor, 'pricing.write', node)[0]:
+        raise NotPermitted('You do not hold pricing.write here.', code='SCOPE_NOT_HELD', field='scope_code')
+    if DriverFeePlan.objects.filter(country=base.country, scope_code=base.scope_code,
+                                    status=PENDING_APPROVAL).exclude(pk=base.pk).exists():
+        raise InvalidRequest('A change for this place is already waiting for approval: withdraw it or wait.',
+                             code='CHANGE_WAITING', field='status')
+    new, old, body = edit_pattern.preview(base, data)
+    if not body['changes'] or (old is not None and all(c['from'] == c['to'] for c in body['changes'])):
+        raise InvalidRequest('Nothing is changed.', code='NO_CHANGE', field='general')
+    values = {k: data[k] for k in ('plan_type', 'amounts', 'earnings_floor_minor', 'daily_cap_minor',
+                                   'waiver_first_days', 'waiver_until', 'note') if k in data}
+    if base.status == DRAFT:
+        plan = update_draft(actor, base, {**values, 'reason': reason})
+    else:
+        plan = create_draft(actor, {**plan_dict(base), **values, 'reason': reason},
+                            label=_label(actor))
+    return submit(actor, plan, reason=reason, http_request=http_request,
+                  requested_from=body['start']['effective_from'], display=edit_pattern.display(body))
+
+
+def _label(user):
+    from servers.admin_audit.models import actor_snapshot
+
+    return actor_snapshot(user).get('actor_label') or f'admin {getattr(user, "pk", "")}'
+
+
+def closed(request, outcome):
+    """Withdrawn, sent back, rejected or expired: the plan goes back to a draft its editor can
+    change and send again. The plan in force never moved."""
+    payload = request.payload or {}
+    plan = DriverFeePlan.objects.filter(pk=payload.get('plan_id'), status=PENDING_APPROVAL).first()
+    if plan is None:
+        return
+    plan.status = DRAFT
+    plan.save(update_fields=['status'])
+    record_admin_action(None, action='driver_fee_plan_returned_to_draft', target_type=KIND,
+                        target_id=str(plan.id), after={'approval_request_id': request.id, 'outcome': outcome},
+                        reason=request.decision_reason or f'request {outcome}')

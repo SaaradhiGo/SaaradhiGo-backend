@@ -388,6 +388,19 @@ class ServiceZoneViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.Mod
         return success_response(result, status.HTTP_200_OK)
 
 
+def _effective(zone, raw, parsed):
+    """25 Nov: `effective_day` (YYYY-MM-DD) starts the card at that local midnight in the zone."""
+    day = (raw or {}).get('effective_day')
+    if day:
+        from servers.approvals.service import InvalidRequest
+
+        try:
+            return fare_cards.local_midnight(zone, day)
+        except ValueError:
+            raise InvalidRequest('effective_day is YYYY-MM-DD.', code='INVALID_DATE', field='effective_day')
+    return parsed
+
+
 class RateCardViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.ModelViewSet):
     """Fare cards. Reads are direct; every change goes through maker-checker.
 
@@ -445,7 +458,7 @@ class RateCardViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.ModelV
         try:
             outcome = fare_cards.propose_new_version(
                 request.user, zone=zone, vehicle_type=vt, values=values, base_card=base,
-                effective_from=data.get('effective_from'), notes=data.get('notes', ''),
+                effective_from=_effective(zone, request.data, data.get('effective_from')), notes=data.get('notes', ''),
                 reason=str(request.data.get('reason') or ''), http_request=request)
         except ApprovalError as exc:
             return exc.response()
@@ -478,7 +491,8 @@ class RateCardViewSet(_ScopedPricingMixin, _AuditedPricingMixin, viewsets.ModelV
                                if k in fare_cards.VALUE_FIELDS})
                 return self._pending(fare_cards.propose_new_version(
                     request.user, zone=card.zone, vehicle_type=card.vehicle_type, values=merged,
-                    base_card=card, effective_from=serializer.validated_data.get('effective_from'),
+                    base_card=card, effective_from=_effective(
+                        card.zone, request.data, serializer.validated_data.get('effective_from')),
                     notes=serializer.validated_data.get('notes', card.notes), reason=reason,
                     http_request=request))
         except ApprovalError as exc:

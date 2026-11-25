@@ -392,22 +392,32 @@ def fare_cards_overview(request):
                  .order_by('-version', '-effective_from')):
         by_key.setdefault((card.zone_id, card.vehicle_type_id), []).append(card)
     out = []
+    from servers.platform_ops.markets import city_of_zone, launch_state
+
+    from . import fee_plans
+    from .regulation import rules_for_zone
     for zone in zones:
         classes = []
+        # 25 Nov (owner): a zone shows its own market's classes; another market's are not "missing".
+        offered = rules_for_zone(zone).get('vehicle_classes') or [vt.type for vt in vts]
+        city = city_of_zone(zone)
+        state = launch_state(city)['launch_state'] if city is not None else 'live'
         for vt in vts:
             history = by_key.get((zone.id, vt.id), [])
             live = next((c for c in history if _card_row(c, now)['state'] == 'live'), None)
             scheduled = next((c for c in history if _card_row(c, now)['state'] == 'scheduled'),
                              None)
             classes.append({
-                'vehicle_type': vt.id, 'vehicle_type_name': vt.type,
+                'vehicle_type': vt.id, 'vehicle_type_name': vt.type, 'offered': vt.type in offered,
                 'live': _card_row(live, now) if live else None,
                 'scheduled': _card_row(scheduled, now) if scheduled else None,
                 'history': [_card_row(c, now) for c in history[:25]],
             })
         out.append({'zone': zone.id, 'code': zone.code, 'name': zone.name,
                     'country': zone.country, 'currency': zone.currency,
-                    'distance_unit': zone.distance_unit, 'classes': classes})
+                    'distance_unit': zone.distance_unit, 'classes': classes,
+                    'offered_classes': offered, 'launch_state': state,
+                    'local_today': fee_plans.local_day(zone.country, zone=zone).isoformat()})
     return success_response({'zones': out}, status.HTTP_200_OK)
 
 

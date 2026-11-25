@@ -80,7 +80,7 @@ from . import registry
 from .actions import POLICY_CHANGE, action_for
 from .models import (
     ALWAYS, APPROVED, CANCELLED, COUNT, EXECUTED, EXPIRED, FAILED,
-    KEY_HELD_STATUSES, MONEY, REJECTED, REQUESTED, ApprovalPolicy,
+    KEY_HELD_STATUSES, MONEY, REJECTED, REQUESTED, RETURNED, ApprovalPolicy,
     ApprovalRequest,
 )
 from .scope import anchor_for, country_node, may_act
@@ -778,6 +778,40 @@ def reject(request, checker, reason, http_request=None):
             row.decision_reason = reason[:10000]
             row.save()
             _audit(row, 'approval_rejected', actor=checker, http_request=http_request,
+                   before=before, reason=reason)
+            registry.notify_closed(row, registry.REJECTED_OUTCOME)
+    if overdue:
+        raise _expired(row)
+    return row
+
+
+def send_back(request, checker, reason, http_request=None):
+    """25 Nov (owner): the checker sends the request back with comments. Nothing runs; the
+    maker reads why and may raise it again, changed. Same checker rules as a rejection."""
+    if len((reason or '').strip()) < 5:
+        raise InvalidRequest('Say what to change: at least 5 characters.',
+                             code='REASON_REQUIRED', field='reason')
+    with transaction.atomic():
+        row = _lock(request)
+        _check_checker(row, checker)
+        overdue = _is_overdue(row)
+        if overdue:
+            pass  # expired outside this block, see `_expired`
+        elif row.status != REQUESTED:
+            if row.checker_id == checker.pk and row.status == RETURNED:
+                return row
+            raise WrongState(
+                f'This request is {row.status}; only a requested one can be sent back.',
+                code='ALREADY_DECIDED' if row.checker_id else 'NOT_OPEN',
+            )
+        else:
+            before = _facts(row)
+            row.status = RETURNED
+            row.set_checker(checker)
+            row.decided_at = timezone.now()
+            row.decision_reason = reason[:10000]
+            row.save()
+            _audit(row, 'approval_sent_back', actor=checker, http_request=http_request,
                    before=before, reason=reason)
             registry.notify_closed(row, registry.REJECTED_OUTCOME)
     if overdue:

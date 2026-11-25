@@ -545,6 +545,11 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'promotions.sweep',
         'schedule': _crontab(minute='*/5'),
     },
+    'approvals-escalation-every-15-min': {
+        # 25 Nov (owner): a request waiting over 3 days escalates to Super Admin (approvals/escalation.py).
+        'task': 'approvals.escalation_sweep',
+        'schedule': _crontab(minute='*/15'),
+    },
     'kyc-review-target-every-15-min': {
         # 12 Nov: drivers waiting for document review past their city's target raise one alert
         # per city, cleared when the queue is back within it (driver/review_target.py).

@@ -64,6 +64,10 @@ PROMOTION_BUDGET_INCREASE = 'promotion.budget_increase'
 FRAUD_RULE_CHANGE = 'fraud.rule_change'
 FINANCE_PAYOUT_HOLD = 'finance.payout_hold'
 PLATFORM_CITY_STATUS = 'platform.city_status'
+#: 25 Nov (owner ruling): the hourly safety rota of a city (servers.safety.rota).
+SAFETY_ROTA_CHANGE = 'safety.rota_change'
+#: 25 Nov (owner ruling): a provider's mode (live, test, off) per country.
+PROVIDER_MODE_CHANGE = 'platform.provider_mode'
 PLATFORM_FLAG_CHANGE = 'platform.flag_change'
 PLATFORM_APP_VERSION = 'platform.app_version'
 PLATFORM_SETTING_CHANGE = 'platform.setting_change'
@@ -126,6 +130,9 @@ ACTIONS = {
         # always need a checker, in India and the US, and the checker must hold platform.settings
         # too (a second Super Admin).
         Action(PLATFORM_CITY_STATUS, 'Add, launch or pause a country or city', 'platform.settings'),
+        Action(PROVIDER_MODE_CHANGE, 'Switch a provider between live, test and off', 'platform.settings',
+               always_checker=True),
+        Action(SAFETY_ROTA_CHANGE, 'Change a city\'s hourly safety rota', 'safety.config', always_checker=True),
         Action(PLATFORM_FLAG_CHANGE, 'Change a money-affecting or safety feature flag',
                'platform.settings'),
         Action(PLATFORM_APP_VERSION, 'Raise the minimum supported app version',

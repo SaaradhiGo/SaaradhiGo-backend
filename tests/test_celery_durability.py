@@ -251,6 +251,7 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # no trip, money, account or setting. No retry needed: the next run is the retry.
         'reports.rebuild_recent',
         'reports.rebuild_week',
+        'reports.daily_email',
         'pricing.fare_shadow_sweep',
         # No explicit name= on the decorator, unlike its siblings in the same
         # module, so Celery registers the full dotted path. Nothing references

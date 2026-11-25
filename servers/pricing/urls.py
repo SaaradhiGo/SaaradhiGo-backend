@@ -12,6 +12,7 @@ from servers.pricing.views import (
 from . import fee_plan_views
 from .commission_views import (
     commission_matrix, config_list, config_update, fare_cards_overview, fare_cards_preview, regulation_preview,
+    zone_areas_preview, zone_areas_view,
     regulation_list, regulation_update, state_cap_update,
     rule_detail, rule_preview, rule_submit, rules,
 )
@@ -60,6 +61,8 @@ urlpatterns = [
     path('admin/vehicle-classes/', vehicle_classes, name='vehicle-classes'),
     path('admin/vehicle-classes/<int:pk>/', vehicle_class_detail, name='vehicle-class'),
     path('admin/fare-cards/overview/', fare_cards_overview, name='fare-cards-overview'),
+    path('admin/zones/<int:zone_id>/areas/', zone_areas_view, name='zone-areas'),
+    path('admin/zones/<int:zone_id>/areas/preview/', zone_areas_preview, name='zone-areas-preview'),
     path('admin/fare-cards/preview/', fare_cards_preview, name='fare-cards-preview'),
     path('', include(router.urls)),
 ]

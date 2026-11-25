@@ -614,6 +614,10 @@ def execute_pricing_change(request_row):
 
     if kind in fare_card_workflow.KINDS:
         return fare_card_workflow.execute(kind, request_row)
+    from . import zone_areas
+
+    if kind == zone_areas.KIND:
+        return zone_areas.execute(request_row)
     raise registry.ExecutionRefused('UNKNOWN_PRICING_CHANGE',
                                     f'Unknown pricing change {kind!r}.')
 

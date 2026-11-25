@@ -22,6 +22,7 @@ urlpatterns = [
     path('admin/settings/', views.settings_collection, name='platform_settings'),
     path('admin/settings/<str:key>/', views.setting_update, name='platform_setting'),
     path('admin/integrations/', views.integrations_status, name='platform_integrations'),
+    path('admin/integrations/mode/', views.integrations_mode, name='platform_integrations_mode'),
     path('admin/maps/', maps_views.maps_usage, name='platform_maps'),
     path('admin/maps/prices/<str:sku>/', maps_views.maps_price_update, name='platform_maps_price'),
     path('admin/maps/budget/<str:country>/', maps_views.maps_budget_update,

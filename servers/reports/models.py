@@ -24,6 +24,7 @@ as a wallet reward or a payout). Trips with no pricing zone cannot be placed in 
 no rollup (the same rule as the Finance and Command Centre anchors).
 """
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -213,3 +214,12 @@ class DailyFraud(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=['city', 'date', 'kind'], name='dailyfraud_key')]
+
+
+class DailyReportSubscription(models.Model):
+    """A staff member who gets the daily report email (25 Nov; daily_email.py)."""
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='daily_report')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)

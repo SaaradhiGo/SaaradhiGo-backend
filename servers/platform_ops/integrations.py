@@ -253,6 +253,18 @@ def rows():
                 env=nconfig.CREDENTIALS.get(configured, ()),
                 blocker=NOTIFY_BLOCKERS.get((channel, configured)), note=note,
                 last_ok=ok, last_bad=bad))
+    # 25 Nov: masked calls (riders, drivers and the console) through the call bridge, per country.
+    from servers.callbridge.providers import _REAL, provider_name
+    from servers.platform_ops.provider_mode import mode_for
+
+    for code in sorted(COUNTRIES):
+        name = provider_name(code)
+        real = name in _REAL and bool(getattr(settings, 'CALL_BRIDGE_REAL_ENABLED', False))
+        override = mode_for('calling', code)
+        mode = 'off' if override == 'off' else ('stubbed' if override == 'test' or not real else 'live')
+        out.append(_row('calling', 'Masked calls', name, code, real, mode,
+                        env=('CALL_BRIDGE_PROVIDER', 'CALL_BRIDGE_REAL_ENABLED'),
+                        note='' if real else 'Calls use the test bridge: no phone rings until the provider keys are set.'))
     # The login one-time code (AWS SNS today), the same for every country.
     sns = _present('AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION')
     out.append(_row('otp_sms', 'Login OTP SMS', 'aws_sns', 'all', sns, 'live' if sns else 'off',

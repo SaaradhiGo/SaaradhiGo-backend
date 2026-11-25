@@ -125,7 +125,14 @@ def validate_service_area_detail(
     elif not is_inside_service_area(dest_lat, dest_lon):
         side = 'Drop'
     else:
-        return _city_gate(pickup_lat, pickup_lon)
+        ok, code, message = _city_gate(pickup_lat, pickup_lon)
+        if not ok:
+            return ok, code, message
+        # 25 Nov (owner ruling): restricted areas and pickup points, when a zone has any.
+        from servers.pricing.zone_areas import check_points
+
+        ok, code, message, _extra = check_points(pickup_lat, pickup_lon, dest_lat, dest_lon)
+        return ok, code, message
     if not any_active_zone():
         return False, NO_ACTIVE_ZONE, (
             'SaaradhiGo is not serving any area right now: no service zone is active.')

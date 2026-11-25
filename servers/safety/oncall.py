@@ -82,7 +82,12 @@ def page(event, step, now):
 
     role = target_of(step)
     rota = rota_for(event.anchor_node)
-    name, phone = rota.contact(role) if rota else ('', '')
+    # 25 Nov: the hourly rota's person on shift first, then the city's fixed list.
+    from .rota import active_plan, contact_for
+
+    name, phone = contact_for(event.anchor_node, role, now)
+    if rota is None and active_plan(event.anchor_node) is not None:
+        rota = True  # an hourly plan counts as a rota for the 'no_rota' outcome
     ref_name = refs.incident_ref(event.incident) if event.incident_id else f'SOS-{event.id}'
     from base import sms_templates
     message = sms_templates.render('oncall_page', ref=ref_name)

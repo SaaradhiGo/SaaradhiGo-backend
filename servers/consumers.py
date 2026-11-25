@@ -1165,11 +1165,21 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             )
             if not area_ok:
                 logger.warning(f"Service area rejection: {area_msg}")
-                if area_code in ('CITY_PAUSED', 'CITY_NOT_LIVE'):
+                if area_code in ('CITY_PAUSED', 'CITY_NOT_LIVE', 'AREA_RESTRICTED', 'PICKUP_POINT_REQUIRED'):
                     # Module 15: a city that is paused or not yet live takes no NEW bookings.
                     # The rider gets the stable code and a neutral message, not "Failed".
                     self._booking_refusal = (area_code, area_msg)
                 raise ValueError(area_msg)
+            # 25 Nov (owner ruling): a class with its own service area is offered only inside it.
+            if vehicle_type:
+                from servers.pricing.services import find_zone_for_point
+                from servers.pricing.zone_areas import class_offered_at
+
+                if not class_offered_at(find_zone_for_point(float(pickup_lat), float(pickup_lng)),
+                                        vehicle_type, pickup_lat, pickup_lng):
+                    msg = 'This ride type is not available at this pickup. Choose another ride type.'
+                    self._booking_refusal = ('CLASS_NOT_OFFERED_HERE', msg)
+                    raise ValueError(msg)
 
             is_valid, validated_km, validated_min, msg = validate_distance(
                 dist, dur, pickup_lat, pickup_lng, destination_lat, destination_lng

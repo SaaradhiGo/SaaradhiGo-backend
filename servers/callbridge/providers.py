@@ -70,6 +70,14 @@ def country_of_phone(phone):
 
 def get_provider(country=None):
     name = provider_name(country)
+    # 25 Nov (owner ruling): the console's approved mode: test uses the fake bridge, off refuses.
+    from servers.platform_ops.provider_mode import mode_for
+
+    mode = mode_for('calling', country or 'IN')
+    if mode == 'off':
+        raise CallingUnavailable('off')
+    if mode == 'test':
+        return FakeProvider()
     if name == 'fake':
         return FakeProvider()
     if not getattr(settings, 'CALL_BRIDGE_REAL_ENABLED', False) or name not in _REAL:

@@ -96,6 +96,11 @@ def effective_provider(channel, country):
         return configured, False
     if not live_send_enabled() or configured is None:
         return 'stub', False
+    # 25 Nov (owner ruling): the console's approved mode can hold a channel at test or off.
+    from servers.platform_ops.provider_mode import mode_for
+
+    if mode_for(channel, country) in ('test', 'off'):
+        return 'stub', False
     return configured, True
 
 

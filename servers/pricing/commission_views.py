@@ -478,4 +478,54 @@ def fare_cards_preview(request):
     }, status.HTTP_200_OK)
 
 
+
+# ---------------------------------------------------------------------------
+# Pickup points, restricted areas, a service area per class (25 Nov)
+# ---------------------------------------------------------------------------
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated, READ])
+def zone_areas_view(request, zone_id):
+    """GET admin/zones/<id>/areas/  The zone's areas. POST {kind, name, polygon_geojson, points?,
+    vehicle_type?, reason} or {remove: <area id>, reason} -> 202: a change for a second person."""
+    from . import zone_areas
+
+    zone = scoped_or_none(request.user, ServiceZone.objects.select_related('geo_node'), pk=zone_id)
+    if zone is None:
+        return _not_found('zone', 'zone')
+    if request.method == 'POST':
+        if not WRITE.has_permission(request, None):
+            return error_response(code='PERMISSION_DENIED', message=WRITE.message, field='general',
+                                  issue='pricing.write', status=status.HTTP_403_FORBIDDEN)
+        d = request.data or {}
+        try:
+            remove = None
+            if d.get('remove'):
+                remove = zone_areas.ZoneArea.objects.filter(pk=d['remove'], zone=zone, is_active=True).first()
+                if remove is None:
+                    return _not_found('area', 'remove')
+            outcome = zone_areas.propose(request.user, zone, d, str(d.get('reason') or ''), remove=remove,
+                                         http_request=request)
+        except ApprovalError as exc:
+            return exc.response()
+        return success_response(_approval_body(outcome), status.HTTP_202_ACCEPTED)
+    rows = zone_areas.ZoneArea.objects.filter(zone=zone).order_by('-is_active', 'kind', 'name')[:200]
+    return success_response({'zone': {'id': zone.id, 'code': zone.code, 'name': zone.name},
+                             'results': [a.as_dict() for a in rows]}, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, WRITE])
+def zone_areas_preview(request, zone_id):
+    from . import zone_areas
+
+    zone = scoped_or_none(request.user, ServiceZone.objects.select_related('geo_node'), pk=zone_id)
+    if zone is None:
+        return _not_found('zone', 'zone')
+    try:
+        return success_response(zone_areas.preview(zone, request.data or {}), status.HTTP_200_OK)
+    except ApprovalError as exc:
+        return exc.response()
+
+
 __all__ = ['DRAFT']

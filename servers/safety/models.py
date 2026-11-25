@@ -450,6 +450,26 @@ class OnCallRota(models.Model):
         return getattr(self, f'{role}_name', ''), getattr(self, f'{role}_phone', '')
 
 
+class OnCallShiftPlan(models.Model):
+    """The hourly safety rota of one city (owner ruling, 25 Nov; `rota.py`). One ACTIVE plan per city;
+    a change is a new version, approved by a second person (`safety.rota_change`)."""
+    ACTIVE, ARCHIVED = 'active', 'archived'
+
+    city = models.ForeignKey('admin_access.GeoNode', on_delete=models.PROTECT, related_name='shift_plans')
+    version = models.PositiveIntegerField(default=1)
+    #: [{weekday 0-6, start 0-23, end 1-24, primary: user id, backup: user id or null}], city time.
+    shifts = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=10, default=ACTIVE, db_index=True)
+    approval_request_id = models.BigIntegerField(null=True, blank=True)
+    reason = models.TextField(blank=True, default='')
+    created_by_label = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['city'], condition=models.Q(status='active'),
+                                               name='shiftplan_one_active_per_city')]
+
+
 class SOSPage(models.Model):
     """One step of the escalation chain for one SOS: who was phoned, how, and what happened.
 

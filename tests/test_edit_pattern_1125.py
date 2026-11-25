@@ -119,3 +119,15 @@ class TestFareCardEdit:
         offered = {c['vehicle_type_name']: c['offered'] for c in hyd['classes']}
         assert offered['sedan'] is True and offered['standard'] is False
         assert hyd['local_today'] and hyd['launch_state']
+
+
+def test_the_approval_list_says_the_fare_change_in_words(world):  # noqa: F811
+    from servers.approvals.describe import describe
+
+    card = RateCard.objects.create(zone=world.hyd, vehicle_type=world.sedan, effective_from=LONG_AGO,
+                                   base_fare=Decimal('30'), per_km_fare=Decimal('12'), per_min_fare=Decimal('2'),
+                                   min_fare=Decimal('50'))
+    maker, _ = world.super
+    r = maker.patch(f'{BASE}/rate-cards/{card.id}/', {'per_km_fare': '13.00', 'reason': 'Fuel price'}, format='json')
+    req = ApprovalRequest.objects.get(pk=body_of(r)['approval_request']['id'])
+    assert describe(req, 'title') == 'Sedan fare card in Hyderabad: Per km ₹12.00 → ₹13.00'

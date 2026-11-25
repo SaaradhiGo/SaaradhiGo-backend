@@ -28,4 +28,6 @@ urlpatterns = [
     path('admin/config/<str:country>/', v.safety_config_update),
     path('admin/oncall/', v.safety_oncall),
     path('admin/oncall/<str:city_code>/', v.safety_oncall_update),
+    path('admin/rota/<str:city_code>/', v.safety_rota),
+    path('admin/rota/<str:city_code>/preview/', v.safety_rota_preview),
 ]

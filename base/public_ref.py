@@ -6,6 +6,7 @@ A reference says where a record belongs and cannot be guessed or counted:
     D-HYD-7K3Q        a driver (home city)      R-HYD-9MX2   a rider (home city)
     SUP-HYD-4KQ7      a support ticket          PO-HYD-M3XA  a payout
     APR-HYD-Q7KD      an approval request       FR-HYD-T9PC  a fraud flag
+    INC-HYD-4MQ9      a safety incident (25 Nov: SOS or not; the kind says which)
 
 The random part avoids letters people confuse (0/O, 1/I/L, 2/Z, 5/S, 8/B). Old references
 ("T-232") are still understood by search, so nothing anyone wrote down stops working.
@@ -18,14 +19,15 @@ import secrets
 ALPHABET = 'ACDEFGHJKMNPQRTUVWXY34679'
 RANDOM_LEN = 4
 
-TRIP, DRIVER, RIDER, TICKET, PAYOUT, APPROVAL, FRAUD = 'trip', 'driver', 'rider', 'ticket', 'payout', 'approval', 'fraud'
-PREFIX = {DRIVER: 'D', RIDER: 'R', TICKET: 'SUP', PAYOUT: 'PO', APPROVAL: 'APR', FRAUD: 'FR'}
+TRIP, DRIVER, RIDER, TICKET, PAYOUT, APPROVAL, FRAUD, INCIDENT = (
+    'trip', 'driver', 'rider', 'ticket', 'payout', 'approval', 'fraud', 'incident')
+PREFIX = {DRIVER: 'D', RIDER: 'R', TICKET: 'SUP', PAYOUT: 'PO', APPROVAL: 'APR', FRAUD: 'FR', INCIDENT: 'INC'}
 KIND_OF_PREFIX = {v: k for k, v in PREFIX.items()}
 
 #: A city's short code: the last part of its place code, except where people say it differently.
 SHORT = {'US-ID-TV': 'TV'}
 
-_NEW = re.compile(r'^\s*(?:(D|R|SUP|PO|APR|FR)-)?([A-Z]{2,4})-(?:(\d{6})-)?([' + ALPHABET + r']{4})\s*$', re.IGNORECASE)
+_NEW = re.compile(r'^\s*(?:(D|R|SUP|PO|APR|FR|INC)-)?([A-Z]{2,4})-(?:(\d{6})-)?([' + ALPHABET + r']{4})\s*$', re.IGNORECASE)
 
 
 def city_short(place_code):
@@ -125,6 +127,12 @@ def place_of(kind, obj):
         return _code(getattr(obj, 'scope_node', None)) or getattr(obj, 'country', None), None
     if kind == FRAUD:
         return _code(getattr(obj, 'anchor_node', None)), None
+    if kind == INCIDENT:
+        place = _code(getattr(obj, 'anchor_node', None))
+        trip = getattr(obj, 'trip', None)
+        if not place and trip is not None:
+            place = _trip_place(trip)[0]
+        return place or getattr(obj, 'country', None) or None, None
     return None, None
 
 
@@ -145,6 +153,7 @@ MODELS = {
     ('ride', 'Trip'): TRIP, ('driver', 'Driver'): DRIVER, ('rider', 'Rider'): RIDER,
     ('support', 'SupportTicket'): TICKET, ('driver', 'WithdrawalRequest'): PAYOUT,
     ('approvals', 'ApprovalRequest'): APPROVAL, ('fraud', 'RiskFlag'): FRAUD,
+    ('safety', 'SafetyIncident'): INCIDENT,
 }
 
 

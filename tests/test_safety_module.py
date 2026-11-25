@@ -731,7 +731,7 @@ class TestWorkingAnIncident:
                                   'node_name': incident.anchor_node.name,
                                   'timezone': data['anchor']['timezone']}
         assert data['anchor']['timezone']  # the city's own clock, never the viewer's
-        assert data['ref'] == f'SOS-{incident.id}'
+        assert data['ref'] == SafetyIncident.objects.get(pk=incident.pk).public_ref
         assert data['emergency'] == {'country': 'IN', 'configured': True, 'numbers': IN_NUMBERS}
         assert [p['id'] for p in data['people']['drivers']] == [world['hyd_driver'].id]
         assert data['people']['riders'][0]['in_scope'] is True

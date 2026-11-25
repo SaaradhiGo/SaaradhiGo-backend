@@ -180,5 +180,6 @@ def _public(text):
         user_id = model.objects.filter(public_ref=ref).values_list('user_id', flat=True).first()
         return ('rider', user_id) if user_id else None
     pk = model.objects.filter(public_ref=ref).values_list('pk', flat=True).first()
-    names = {public_ref.TICKET: 'ticket', public_ref.PAYOUT: 'payout', public_ref.APPROVAL: 'approval'}
+    names = {public_ref.TICKET: 'ticket', public_ref.PAYOUT: 'payout', public_ref.APPROVAL: 'approval',
+             public_ref.INCIDENT: 'incident'}
     return (names.get(kind, kind), pk) if pk and kind != public_ref.FRAUD else None

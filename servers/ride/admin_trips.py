@@ -284,7 +284,14 @@ def filter_trips(params, queryset, now=None):
 
     trip_id = params.get('id') or params.get('trip_id')
     if trip_id:
-        queryset = queryset.filter(id=_int(trip_id, 'id'))
+        text = str(trip_id).strip()
+        if text.isdigit():
+            queryset = queryset.filter(id=_int(text, 'id'))
+        else:  # 25 Nov (owner): the trip's reference, HYD-261116-K7Q4 (old "T-232" still works)
+            from base import refs as _refs
+            old = _refs.parse(text)
+            queryset = queryset.filter(id=old[1]) if old and old[0] == 'trip' else queryset.filter(
+                public_ref=text.upper())
 
     driver_id = params.get('driver_id')
     if driver_id:

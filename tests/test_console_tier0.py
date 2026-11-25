@@ -82,7 +82,7 @@ class TestOneStepSos:
         client, me = world['hyd_safety']
         listed = client.get(INCIDENTS).json()['data']['results']
         row = next(r for r in listed if r['id'] == incident.id)
-        assert row['ref'] == f'SOS-{incident.id}' and row['trip_ref'] == world['hyd_trip'].public_ref
+        assert row['ref'] == incident.public_ref and row['trip_ref'] == world['hyd_trip'].public_ref
 
         r = post(client, f'{INCIDENTS}{incident.id}/acknowledge/')
         assert r.status_code == 200, r.content
@@ -232,7 +232,7 @@ def test_the_safety_board_puts_each_case_in_its_lane(world):
     incident = incident_of(event)
     client, _ = world['hyd_safety']
     board = client.get('/api/v1/safety/admin/board/').json()['data']
-    assert [r['ref'] for r in board['lanes']['not_acknowledged']] == [f'SOS-{incident.id}']
+    assert [r['ref'] for r in board['lanes']['not_acknowledged']] == [incident.public_ref]
     post(client, f'{INCIDENTS}{incident.id}/acknowledge/')
     board = client.get('/api/v1/safety/admin/board/').json()['data']
     assert [r['id'] for r in board['lanes']['responding']] == [incident.id]

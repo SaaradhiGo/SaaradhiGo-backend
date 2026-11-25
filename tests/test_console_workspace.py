@@ -116,7 +116,7 @@ class TestNeedsAction:
         data = client.get(NEEDS).json()['data']
         first = data['items'][0]
         assert first['kind'] == 'sos' and first['severity'] == 'critical'
-        assert first['ref'].startswith('SOS-') and first['link'].startswith('/safety-ops/incidents/')
+        assert first['ref'].startswith('INC-') and first['link'].startswith('/safety-ops/incidents/')
 
     def test_an_analyst_sees_no_sos_and_no_money(self, geo, world):
         client, _ = operator('analyst', geo)

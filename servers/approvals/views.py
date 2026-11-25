@@ -27,6 +27,7 @@ identical to a missing id.
 
 from django.conf import settings
 from django.db.models import F
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.pagination import PageNumberPagination
@@ -118,6 +119,10 @@ def shown(row, user):
     data['subjects'], data['blockers'] = [], []
     if row.action_key == FINANCE_PAYOUT:
         data['subjects'], data['blockers'] = _withdrawal_facts(row)
+    # 25 Nov (owner): waiting over 3 days escalates to Super Admin.
+    from servers.approvals.models import ESCALATE_AFTER_HOURS
+    data['escalated'] = row.status == REQUESTED and (
+        timezone.now() - row.requested_at).total_seconds() > ESCALATE_AFTER_HOURS * 3600
     if row.status == REQUESTED:
         problem = service.checker_problem(row, user)
         data['can_decide'] = problem is None
@@ -268,6 +273,23 @@ def reject_request(request, request_id):
         return _not_found(request_id)
     try:
         row = service.reject(
+            row, request.user, reason=str(request.data.get('reason', '') or ''),
+            http_request=request,
+        )
+    except service.ApprovalError as exc:
+        return exc.response()
+    return success_response(shown(row, request.user), status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('approval.check')])
+def send_back_request(request, request_id):
+    """25 Nov (owner): back to the maker with comments; nothing runs."""
+    row = _load(request, request_id, 'approval.check')
+    if row is None:
+        return _not_found(request_id)
+    try:
+        row = service.send_back(
             row, request.user, reason=str(request.data.get('reason', '') or ''),
             http_request=request,
         )

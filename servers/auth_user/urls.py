@@ -18,6 +18,7 @@ from .dpdp_views import me_export, me_delete
 from .email_auth_views import email_login
 from .invite_views import invite_operator, invite_test_driver, invite_test_rider
 from .mfa_views import mfa_status, regenerate_recovery_codes
+from .session_views import my_sessions, sign_out_others
 from .password_views import (
     change_password,
     confirm_email_verification,
@@ -80,6 +81,9 @@ urlpatterns = [
     # than on a capability -- see mfa_views and the allowlist in
     # tests/test_admin_namespace_is_gated.py.
     path('admin/mfa/status/', mfa_status),
+    # 25 Nov: My security sessions; outside admin/ like logout-all (self-service, is_operator inside).
+    path('sessions/', my_sessions),
+    path('sessions/sign-out-others/', sign_out_others),
     path('console-preferences/', console_preferences),
     # Any signed-in account's own Light/Dark choice (23 Nov), the same stored value.
     path('theme/', my_theme),

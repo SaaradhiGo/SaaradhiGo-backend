@@ -134,6 +134,9 @@ KYC_REVIEW_PAST_TARGET = 'kyc.review_past_target'
 #: (warning). Seen by Finance (`finance.read`) AND the flag's reviewers (`fraud.read`), to renew it
 #: or leave the payout released. A city, never a person.
 FRAUD_PAYOUT_HOLD_EXPIRED = 'fraud.payout_hold_expired'
+#: 25 Nov (owner): an approval request waiting over 3 days escalates to Super Admin, once per
+#: request; cleared when it is decided (approvals/escalation.py).
+APPROVAL_ESCALATED = 'approval.escalated'
 FRAUD_ALERT_KINDS = frozenset({FRAUD_FLAG_HIGH, FRAUD_QUEUE_AGING, FRAUD_PAYOUT_HOLD_EXPIRED})
 #: Capabilities, besides `ACK_PERMISSION`'s, that may also acknowledge a kind.
 ACK_ALSO = {PROMOTION_BUDGET_EXHAUSTED: ('incentive.write',),
@@ -147,6 +150,7 @@ DATA_INTEGRITY = 'platform.data_integrity'
 SCHEDULER_STOPPED = 'platform.scheduler_stopped'
 PLATFORM_ALERT_KINDS = frozenset({NOTIFY_PROVIDER_FAILING, MAPS_BUDGET, DATA_INTEGRITY, SCHEDULER_STOPPED})
 ACK_PERMISSION = {
+    APPROVAL_ESCALATED: 'platform.settings',
     NOTIFY_PROVIDER_FAILING: 'platform.settings',
     MAPS_BUDGET: 'platform.settings',
     DATA_INTEGRITY: 'platform.settings',

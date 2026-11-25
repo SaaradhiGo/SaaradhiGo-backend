@@ -622,6 +622,8 @@ INVENTORY = {
     'api/v1/promotions/admin/campaigns/': False,
     'api/v1/promotions/admin/campaigns/<int:promotion_id>/': False,
     'api/v1/promotions/admin/campaigns/<int:promotion_id>/activity/': False,
+    # 25 Nov: who qualifies, as counts only.
+    'api/v1/promotions/admin/campaigns/<int:promotion_id>/audience/': False,
     'api/v1/promotions/admin/options/': False,
     'api/v1/fraud/admin/flags/': False,
     # Fraud & Risk (module 13): a flag names a subject by a masked reference (`rider #12`) and

@@ -19,6 +19,8 @@ urlpatterns = [
          name='notify_template_registrations'),
     path('admin/templates/<int:template_id>/preview/', views.template_preview,
          name='notify_template_preview'),
+    path('admin/templates/<int:template_id>/test-send/', views.template_test_send,
+         name='notify_template_test_send'),
     path('admin/templates/<int:template_id>/submit/', views.template_submit,
          name='notify_template_submit'),
     path('admin/templates/<int:template_id>/archive/', views.template_archive,

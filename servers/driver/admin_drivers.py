@@ -660,7 +660,9 @@ def admin_kyc_assign(request):
             return BadInput('NO_REVIEWER', 'No such reviewer.', 'reviewer').response()
     elif target != 'none':
         return BadInput('INVALID_REVIEWER', 'reviewer is a person, me or none.', 'reviewer').response()
-    drivers = list(scoped_or_none_many(request.user, Driver.objects.select_related('home_city'), [int(i) for i in ids]))
+    from servers.admin_access.scoping import scoped
+
+    drivers = list(scoped(request.user, Driver.objects.select_related('home_city')).filter(pk__in=[int(i) for i in ids]))
     if len(drivers) != len(set(ids)):
         return BadInput('NOT_FOUND', 'Some of those drivers are not in your scope.', 'driver_ids').response()
     for d in drivers:
@@ -684,12 +686,6 @@ def admin_kyc_assign(request):
                                 reason='KYC reviewer assigned')
     return success_response({'assigned': changed, 'reviewer': reviewer.pk if reviewer else None}, status.HTTP_200_OK)
 
-
-def scoped_or_none_many(user, queryset, ids):
-    """The drivers among `ids` the caller may see (scoped like every driver read)."""
-    from servers.admin_access.scoping import scoped
-
-    return scoped(user, queryset).filter(pk__in=ids)
 
 
 # ---------------------------------------------------------------------------

@@ -461,7 +461,7 @@ def _ids(world):
         'ticket_id': world['ticket'].id, 'macro_id': world['macro'].id, 'sos_id': world['sos'].id,
         'alert_id': world['alert'].id, 'withdrawal_id': world['withdrawal'].id,
         'incident_id': world['sos'].incident_id, 'signal_id': world['signal'].id,
-        'pk': world['hyd_zone'].id, 'request_id': world['approval'].id,
+        'pk': world['hyd_zone'].id, 'zone_id': world['hyd_zone'].id, 'request_id': world['approval'].id,
         'rule_id': world['rule'].id,
         'template_id': world['notify_template'].id, 'campaign_id': world['notify_campaign'].id,
         'message_id': world['notify_message'].id, 'user_id': world['driver_user'].id,

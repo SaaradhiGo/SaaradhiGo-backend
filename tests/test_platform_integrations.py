@@ -53,7 +53,7 @@ class TestNoSecretEverLeaves:
         for row in data(client.get(URL))['rows']:
             assert set(row) == {'type', 'label', 'provider', 'country', 'configured', 'mode',
                                 'env_vars', 'blocker', 'note', 'last_success_at',
-                                'last_error_at', 'waits_on'}
+                                'last_error_at', 'waits_on', 'switchable', 'console_mode'}
             assert isinstance(row['configured'], bool)
             assert row['mode'] in ('live', 'sandbox', 'stubbed', 'off')
 

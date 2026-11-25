@@ -1543,7 +1543,7 @@ def safety_rota(request, city_code):
         'plan': {'version': plan.version, 'shifts': plan.shifts, 'created_by': plan.created_by_label,
                  'reason': plan.reason, 'created_at': _iso(plan.created_at)} if plan else None,
         'grid': rota.week_grid(plan),
-        'staff': [{'id': u.pk, 'name': u.full_name or u.email, 'has_phone': bool(getattr(u, 'phone_number', ''))}
+        'staff': [{'id': u.pk, 'name': u.full_name or u.email, 'reachable': bool(getattr(u, 'phone_number', ''))}
                   for u in staff.values()],
         'history': [{'version': p.version, 'status': p.status, 'created_by': p.created_by_label,
                      'reason': p.reason, 'created_at': _iso(p.created_at)} for p in history],

@@ -14,8 +14,6 @@ Used by:
 A city with no plan behaves exactly as before.
 """
 
-from zoneinfo import ZoneInfo
-
 from django.db import transaction
 from django.utils import timezone
 
@@ -32,13 +30,10 @@ GAP_SOURCE = 'safety_rota_gap'
 
 
 def city_tz(node):
-    from base.countries import get_country
+    """The city's own zone: its service zone's, else its market's (the reports module's rule)."""
+    from servers.reports.compute import city_context
 
-    from servers.pricing.models import ServiceZone
-
-    zone = ServiceZone.objects.filter(geo_node=node, is_active=True).exclude(timezone_name='').first()
-    tz = getattr(zone, 'timezone_name', '') or get_country(node.code.split('-')[0]).default_timezone
-    return ZoneInfo(tz)
+    return city_context(node).tz
 
 
 def active_plan(node):

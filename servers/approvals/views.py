@@ -371,6 +371,27 @@ def _int_or_none(value):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, ScopedPermission('platform.settings')])
+def preview_policy(request):
+    """25 Nov (owner): the Edit preview of a limit change, the `display` the request will carry."""
+    data = request.data or {}
+    try:
+        country, currency, maker_limit = service._validate_policy_fields(
+            str(data.get('country', '') or ''), str(data.get('action_key', '') or ''),
+            str(data.get('limit_kind', '') or ''), str(data.get('currency', '') or ''),
+            _int_or_none(data.get('maker_limit')))
+        daily, cumulative = service._validate_room_fields(
+            str(data.get('limit_kind', '') or ''), _int_or_none(data.get('maker_daily_limit')),
+            data.get('cumulative_per_target') is True)
+    except service.ApprovalError as exc:
+        return exc.response()
+    after = {'limit_kind': str(data.get('limit_kind')), 'currency': currency, 'maker_limit': maker_limit,
+             'maker_daily_limit': daily, 'cumulative_per_target': cumulative}
+    return success_response(service.policy_display(country, str(data.get('action_key')), after),
+                            status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('platform.settings')])
 def change_policy(request):
     """Propose a threshold. Body: country, action_key, limit_kind
     (money|count|always), currency (money only), maker_limit (int minor

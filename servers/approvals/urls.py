@@ -1,8 +1,8 @@
 from django.urls import path
 
 from .views import (
-    approve_request, cancel_request, change_policy, list_policies, send_back_request,
-    list_requests, reject_request, request_detail, self_approval,
+    approve_request, cancel_request, change_policy, list_policies, list_requests, preview_policy,
+    reject_request, request_detail, self_approval, send_back_request,
 )
 
 # Mounted at api/v1/approvals/. The `admin/` segment is what puts every
@@ -18,4 +18,5 @@ urlpatterns = [
     path('admin/policies/', list_policies, name='approvals_policies'),
     path('admin/self-approval/', self_approval, name='approvals_self_approval'),
     path('admin/policies/change/', change_policy, name='approvals_policy_change'),
+    path('admin/policies/preview/', preview_policy, name='approvals_policy_preview'),
 ]

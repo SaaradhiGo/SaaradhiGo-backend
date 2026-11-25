@@ -40,7 +40,7 @@ from servers.ride.admin_trips import (
     BadInput, _approval_answer, _idempotency_key, _minor_amount, _text,
 )
 
-from . import payout_actions
+from . import payout_actions, payout_edit
 from .finance_executors import (
     ADJUST_DIRECTIONS, ADJUST_REASONS, CREDIT_REASONS, DRIVER_BALANCE, PAYOUT_CONFIG_TARGET,
     RIDER_WALLET,
@@ -667,6 +667,27 @@ def _override_values(data, current):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, ScopedPermission('finance.config')])
+def payout_config_preview(request, country):
+    """POST /payments/admin/payout-config/<country>/preview/  The Edit preview (25 Nov): the change
+    in words and the next payout, today against the change. Writes nothing."""
+    def core(request, country):
+        from .scope import country_codes_visible
+
+        code = str(country).upper()
+        if code not in country_codes_visible(request.user, None, 'finance.config'):
+            raise ActionError('NOT_FOUND', 'Country not found', field='country',
+                              http=status.HTTP_404_NOT_FOUND)
+        current = PayoutCountryConfig.objects.filter(country=code, is_active=True).first()
+        if current is None:
+            raise ActionError('NOT_CONFIGURED', 'This country has no payout settings yet.',
+                              field='country', http=status.HTTP_409_CONFLICT)
+        return success_response(payout_edit.display(current, _config_values(request.data, current)),
+                                status.HTTP_200_OK)
+    return _guard(core)(request, country)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.config')])
 def payout_config_propose(request, country):
     """POST /payments/admin/payout-config/<country>/
 
@@ -708,7 +729,8 @@ def payout_config_propose(request, country):
             scope_node=node, target_type=PAYOUT_CONFIG_TARGET, target_id=code,
             payload={'country': code, 'base_version': current.version,
                      'values': _jsonable_values(values),
-                     'before': _jsonable_values(values_of(current))},
+                     'before': _jsonable_values(values_of(current)),
+                     'display': payout_edit.display(current, values)},
             idempotency_key=f'payout_config:{code}:{key}', reason=reason,
             http_request=request)
         return _approval_answer(outcome, {'country': code})

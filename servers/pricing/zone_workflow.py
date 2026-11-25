@@ -490,6 +490,32 @@ def _existing_values(zone):
     return zone_values(zone)
 
 
+def update_display(zone, base, values, geom, changed):
+    """25 Nov (owner): the checker sees the before/after and the same impact lines as the editor."""
+    def words(v):
+        if v in (None, ''):
+            return 'not set'
+        return 'Yes' if v is True else 'No' if v is False else str(v)
+    changes = []
+    for k in changed:
+        if k == 'polygon_geojson':
+            continue
+        changes.append({'label': k.replace('_', ' ').capitalize(), 'from': words(base.get(k)), 'to': words(values.get(k))})
+    out = {'changes': changes, 'effective': 'Applies to bookings made after approval.'}
+    try:
+        from . import zone_impact
+
+        r = zone_impact.impact(zone, values, geom)
+        if 'polygon_geojson' in changed:
+            changes.insert(0, {'label': 'Shape (area)', 'from': f"{r.get('old_area_km2') or 0:,} km²",
+                               'to': f"{r['area_km2']:,} km²"})
+        out['impact'] = {'title': 'What this change does', 'columns': ['Effect'],
+                         'rows': [[line.strip()] for line in zone_impact.summarise(r, values, zone)]}
+    except Exception:  # noqa: BLE001 - the request is still raised; the impact is a courtesy
+        logger.exception('zone display: impact failed for %s', zone.code)
+    return out
+
+
 def propose_update(actor, zone, changes, *, reason='', http_request=None):
     zone_write_gate(actor, zone)
     reason = _need_reason(reason)
@@ -504,7 +530,8 @@ def propose_update(actor, zone, changes, *, reason='', http_request=None):
     check_world(values, geom, zone)
     payload = {'kind': KIND_UPDATE, 'zone': zone.id, 'zone_code': zone.code,
                'base_version': current_version(zone), 'values': values, 'changed': changed,
-               'area_km2': round(area, 3), 'market_notes': notes}
+               'area_km2': round(area, 3), 'market_notes': notes,
+               'display': update_display(zone, base, values, geom, changed)}
     return _raise(actor, KIND_UPDATE, zone.code, zone, zone.geo_node, payload, reason,
                   http_request, zone.country)
 

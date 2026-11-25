@@ -335,11 +335,25 @@ def list_policies(request):
         rows = rows.filter(country=country)
     if request.query_params.get('history') not in ('1', 'true'):
         rows = rows.filter(is_active=True)
+    # 25 Nov (owner): who can approve what. A checker's role carries approval.check AND the
+    # action's own capability (service._may_check); people are counted, never named here.
+    from servers.admin_access.models import AdminAssignment, AdminRole
+
+    roles = list(AdminRole.objects.filter(is_active=True).only('code', 'name', 'permissions'))
+    held = {}
+    for a in AdminAssignment.objects.filter(is_active=True, admin__is_active=True).values('role_id', 'admin_id'):
+        held.setdefault(a['role_id'], set()).add(a['admin_id'])
+
+    def checkers(capability):
+        out = [r for r in roles if 'approval.check' in (r.permissions or []) and capability in (r.permissions or [])]
+        return [{'role': r.code, 'name': r.name, 'people': len(held.get(r.pk, ()))} for r in out]
+
     return success_response({
         'policies': [p.as_dict() for p in rows.order_by('country', 'action_key', '-version')[:500]],
         'actions': [
             {'key': a.key, 'description': a.description, 'capability': a.capability,
-             'always_checker': a.always_checker, 'has_executor': a.key in registered_actions()}
+             'always_checker': a.always_checker, 'has_executor': a.key in registered_actions(),
+             'checkers': checkers(a.capability)}
             for a in ACTIONS.values()
         ],
     }, status.HTTP_200_OK)

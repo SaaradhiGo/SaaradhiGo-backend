@@ -125,3 +125,12 @@ class TestMySessions:
         c = APIClient()
         c.credentials(HTTP_AUTHORIZATION=f'Bearer {AccessToken.for_user(owner)}', HTTP_X_SG_SESSION='nope')
         assert c.post('/api/v1/auth/sessions/sign-out-others/', {}, format='json').status_code == 409
+
+
+class TestWhoCanApprove:
+    def test_each_action_lists_the_roles_that_may_check_it(self, owner, checker_roles, hyd_checker):
+        data = client(owner).get(f'{API}/policies/').json()['data']
+        refund = next(a for a in data['actions'] if a['key'] == 'support.refund')
+        names = {c['role']: c['people'] for c in refund['checkers']}
+        assert 'support_checker' in names
+        assert 'support_agent' not in names  # no approval.check

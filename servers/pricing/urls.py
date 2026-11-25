@@ -47,6 +47,8 @@ urlpatterns = [
     path('admin/fee-plans/simulate/', fee_plan_views.fee_plan_simulate, name='fee-plans-simulate'),
     path('admin/fee-plans/resolved/', fee_plan_views.fee_plans_resolved, name='fee-plans-resolved'),
     path('admin/fee-plans/<int:plan_id>/', fee_plan_views.fee_plan_detail, name='fee-plan'),
+    path('admin/fee-plans/<int:plan_id>/impact/', fee_plan_views.fee_plan_impact, name='fee-plan-impact'),
+    path('admin/fee-plans/<int:plan_id>/edit/', fee_plan_views.fee_plan_edit, name='fee-plan-edit'),
     path('admin/fee-plans/<int:plan_id>/submit/', fee_plan_views.fee_plan_submit,
          name='fee-plan-submit'),
     path('admin/cost-per-trip/', fee_plan_views.cost_per_trip, name='cost-per-trip'),

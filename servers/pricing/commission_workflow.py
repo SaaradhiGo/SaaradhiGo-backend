@@ -419,6 +419,10 @@ def _request_closed(request, outcome):
     """Rejected, cancelled or expired: the rule goes back to a draft the maker may
     edit and submit again."""
     payload = request.payload or {}
+    if payload.get('kind') == 'driver_fee_plan':
+        from . import fee_plan_workflow
+
+        return fee_plan_workflow.closed(request, outcome)
     if payload.get('kind') != PAYLOAD_RULE:
         return
     rule = CommissionRule.objects.filter(

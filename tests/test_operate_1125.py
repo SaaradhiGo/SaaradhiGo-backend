@@ -48,6 +48,8 @@ class TestTicketFromTrip:
         # The person did not write it: the first message is an internal note, never shown to them.
         assert SupportMessage.everything.get(ticket=t).author_role == 'internal'
         assert t.messages.count() == 0
+        # What the rider sees as the ticket's opening line is not what staff wrote.
+        assert 'fare' not in (t.description or '') and t.description.startswith('Support opened this')
         assert AdminAuditLog.objects.filter(action='support_ticket_opened_from_trip', target_id=str(trip.id)).exists()
 
     def test_for_the_driver_and_refusals(self, geo, trip):

@@ -1484,9 +1484,11 @@ def admin_open_ticket(request, trip_id):
     if person is None:
         return BadInput('NO_DRIVER', 'This trip had no driver.', 'for').response()
     with transaction.atomic():
+        # The description is the person's opening line in their app, so it is in support's words
+        # for them; what staff wrote stays an internal note (the person never sees it).
         ticket = SupportTicket.objects.create(user_id=person, trip_id=trip, issue_type=issue,
-                                              description=description, priority=priority,
-                                              assigned_to=request.user)
+                                              description='Support opened this about your trip. We will reply here.',
+                                              priority=priority, assigned_to=request.user)
         SupportMessage.objects.create(ticket=ticket, author=request.user, author_role='internal',
                                       body=description)
         record_admin_action(request, action='support_ticket_opened_from_trip', target_type=TARGET,

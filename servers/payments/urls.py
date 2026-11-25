@@ -16,6 +16,7 @@ from .admin_finance import (
     finance_unsettled_retry,
     finance_payments, finance_payout_config, finance_payout_detail, finance_payouts,
     finance_reconciliation, finance_reconciliation_items, finance_reconciliation_resolve,
+    finance_reconciliation_rerun,
     finance_settlements,
 )
 
@@ -62,6 +63,7 @@ urlpatterns = [
     path('admin/unsettled/<int:trip_id>/retry/', finance_unsettled_retry),
     path('admin/reconciliation/', finance_reconciliation),
     path('admin/reconciliation/items/', finance_reconciliation_items),
+    path('admin/reconciliation/rerun/', finance_reconciliation_rerun),
     path('admin/reconciliation/items/<int:item_id>/resolve/', finance_reconciliation_resolve),
     path('admin/payout-config/', finance_payout_config),
     path('admin/export/<str:kind>/', finance_export),

@@ -318,6 +318,36 @@ def template_preview(request, template_id):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, TEMPLATE])
+def template_test_send(request, template_id):
+    """POST /notifications/admin/templates/<id>/test-send/  {values?}
+
+    25 Nov (owner): send this template, as written now (a draft too), to YOURSELF only, with the
+    sample values unless others are given. The usual rules apply (consent, quiet hours, an India
+    SMS without its DLT ids cannot go). Audited; the delivery log shows it as a test."""
+    from django.utils import timezone
+
+    from . import dispatcher
+
+    template = template_workflow.lookup(request.user, template_id)
+    if template is None:
+        return _not_found('template')
+    values = _body(request).get('values') or template.sample_values or {}
+    if not isinstance(values, dict):
+        values = {}
+    message = dispatcher.enqueue(
+        request.user, template, values, source='test_send',
+        idempotency_key=f'test-send:{template.pk}:{request.user.pk}:{int(timezone.now().timestamp())}')
+    if message.status == 'queued':
+        dispatcher._schedule(message.pk)
+    record_admin_action(request, action='notification_template_test_sent', target_type='notification_template',
+                        target_id=template.pk, after={'message_id': message.pk, 'status': message.status,
+                                                      'channel': template.channel}, reason='Test send to self')
+    return success_response({'message_id': message.pk, 'status': message.status, 'channel': template.channel,
+                             'error': message.last_error or '', 'to': message.recipient_masked}, status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, TEMPLATE])
 def template_submit(request, template_id):
     template = template_workflow.lookup(request.user, template_id)
     if template is None:

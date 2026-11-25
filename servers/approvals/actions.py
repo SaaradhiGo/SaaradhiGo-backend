@@ -68,6 +68,8 @@ PLATFORM_FLAG_CHANGE = 'platform.flag_change'
 PLATFORM_APP_VERSION = 'platform.app_version'
 PLATFORM_SETTING_CHANGE = 'platform.setting_change'
 PRIVACY_ERASURE = 'privacy.erasure'
+#: 25 Nov (owner): staff change a driver's bank or UPI payout details; always a second person.
+DRIVER_PAYOUT_DETAILS = 'driver.payout_details'
 
 ACTIONS = {
     action.key: action for action in (
@@ -132,6 +134,10 @@ ACTIONS = {
         # A rider's or driver's data erased on request (DPDP / CCPA). Irreversible, so always a
         # checker who also holds privacy.manage: a second Super Admin.
         Action(PRIVACY_ERASURE, 'Erase a rider or driver account on request', 'privacy.manage',
+               always_checker=True),
+        # 25 Nov (owner): where a driver's money goes. Always a second person, who also holds
+        # finance.payout there; the change pauses payouts for 24 hours and tells the driver.
+        Action(DRIVER_PAYOUT_DETAILS, "Change a driver's bank or UPI payout details", 'finance.payout',
                always_checker=True),
     )
 }

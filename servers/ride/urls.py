@@ -12,7 +12,7 @@ from .admin_stale import (
 )
 from .admin_trips import (
     admin_adjust_fare, admin_bulk_trips, admin_cancel_trip, admin_flag_trip,
-    admin_note_trip, admin_refund_trip, admin_resend_pickup_code, admin_unflag_trip,
+    admin_note_trip, admin_open_ticket, admin_trips_export_log, admin_refund_trip, admin_resend_pickup_code, admin_unflag_trip,
 )
 
 from . import zero_tolerance  # noqa: E402
@@ -51,12 +51,14 @@ urlpatterns = [
     path('admin/trips/<int:trip_id>/', admin_trip_detail),
     # Trips module writes (console module 2)
     path('admin/trips/bulk/', admin_bulk_trips),
+    path('admin/trips/export-log/', admin_trips_export_log),
     path('admin/trips/<int:trip_id>/cancel/', admin_cancel_trip),
     path('admin/trips/<int:trip_id>/refund/', admin_refund_trip),
     path('admin/trips/<int:trip_id>/adjust-fare/', admin_adjust_fare),
     path('admin/trips/<int:trip_id>/flag/', admin_flag_trip),
     path('admin/trips/<int:trip_id>/unflag/', admin_unflag_trip),
     path('admin/trips/<int:trip_id>/note/', admin_note_trip),
+    path('admin/trips/<int:trip_id>/ticket/', admin_open_ticket),
     path('admin/trips/<int:trip_id>/resend-pickup-code/', admin_resend_pickup_code),
     path('admin/trips/<int:trip_id>/stale/mark-reviewed/', admin_stale_mark_reviewed),
     path('admin/trips/<int:trip_id>/stale/release-driver/', admin_stale_release_driver),

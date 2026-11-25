@@ -237,6 +237,13 @@ def admin_trip_detail(request, trip_id):
             'read_at': m.read_at.isoformat() if m.read_at else None,
         })
 
+    # ---- masked calls (25 Nov, owner): who called whom, when and for how long; never a number ----
+    calls_payload = [
+        {'id': c.id, 'from_role': c.from_role, 'started_at': c.started_at.isoformat(),
+         'ended_at': c.ended_at.isoformat() if c.ended_at else None, 'duration_seconds': c.duration_seconds}
+        for c in trip.calls.all().order_by('started_at')[:50]
+    ]
+
     # ---- driver cancellations on THIS trip ----
     cancellations_payload = []
     try:
@@ -321,6 +328,7 @@ def admin_trip_detail(request, trip_id):
                 'limit': chat_limit,
                 'messages': chat_messages,
             },
+            'calls': calls_payload,
             'driver_cancellations': cancellations_payload,
             'sos_events': sos_payload,
             'promo': promo_payload,

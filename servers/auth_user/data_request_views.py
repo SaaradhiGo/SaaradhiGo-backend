@@ -121,7 +121,15 @@ def _subject(ref):
         return driver.user_id if driver else None
     if ref.startswith('R-') and ref[2:].isdigit():
         return User.objects.filter(pk=int(ref[2:]), role='rider').first()
-    return None
+    # 25 Nov (owner): the references people see now (R-SG-XTHG, D-HYD-7K2M), from a profile.
+    from servers.driver.models import Driver
+    from servers.rider.models import Rider
+
+    rider = Rider.objects.filter(public_ref=ref).select_related('user_id').first()
+    if rider is not None:
+        return rider.user_id
+    driver = Driver.objects.filter(public_ref=ref).select_related('user_id').first()
+    return driver.user_id if driver is not None else None
 
 
 def _driver_of_pk(pk):

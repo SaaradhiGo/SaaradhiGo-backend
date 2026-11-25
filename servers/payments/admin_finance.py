@@ -39,7 +39,7 @@ from rest_framework.permissions import IsAuthenticated
 from base.countries import COUNTRIES, get_country
 from base.market_dates import clock, weekday_date
 from base.utils import error_response, success_response
-from servers.admin_access.bridge import ScopedPermission
+from servers.admin_access.bridge import ScopedPermission, granted
 from servers.admin_access.masking import mask_last4, mask_payload, mask_upi, policy_for
 from servers.admin_access.scoping import ScopeNotHeld, requested_node
 from servers.admin_audit.services import record_admin_action
@@ -1139,6 +1139,50 @@ def finance_reconciliation_resolve(request, item_id):
     data = item_row(item)
     data['already_resolved'] = not changed
     return success_response(data, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('finance.adjust')])
+def finance_reconciliation_rerun(request):
+    """POST /payments/admin/reconciliation/rerun/ {country, date, reason}
+
+    25 Nov (owner): run one finished local day again for a country (every gateway), after a fix
+    or a late webhook. Compares our own tables only; moves no money. Findings already raised are
+    not raised twice. Needs finance.adjust in that country; audited."""
+    from datetime import date as _date, timedelta as _td
+
+    from base.countries import COUNTRIES
+    from servers.payments.reconciliation import country_timezone
+    from servers.admin_access.models import COUNTRY, GeoNode
+    from servers.payments.reconciliation import gateways_for, run_one
+
+    d = request.data or {}
+    country = str(d.get('country') or '').upper()
+    reason = ' '.join(str(d.get('reason') or '').split())
+    if country not in COUNTRIES:
+        return error_response(code='INVALID_COUNTRY', message='Choose a country.', field='country',
+                              issue='Unknown country', status=status.HTTP_400_BAD_REQUEST)
+    node = GeoNode.objects.filter(kind=COUNTRY, code=country).first()
+    if not granted(request.user, 'finance.adjust', node)[0]:
+        return error_response(code='PERMISSION_DENIED', message='You do not hold finance.adjust in that country.',
+                              field='country', issue='finance.adjust', status=status.HTTP_403_FORBIDDEN)
+    try:
+        day = _date.fromisoformat(str(d.get('date') or ''))
+    except ValueError:
+        return error_response(code='INVALID_DATE', message='Give the day as YYYY-MM-DD.', field='date',
+                              issue='Bad date', status=status.HTTP_400_BAD_REQUEST)
+    today = timezone.now().astimezone(country_timezone(country)).date()
+    if not (today - _td(days=90) <= day < today):
+        return error_response(code='INVALID_DATE', message='Choose a finished day in the last 90 days.',
+                              field='date', issue='Out of range', status=status.HTTP_400_BAD_REQUEST)
+    if len(reason) < 5:
+        return error_response(code='REASON_REQUIRED', message='Say why you are running it again.', field='reason',
+                              issue='Reason required', status=status.HTTP_400_BAD_REQUEST)
+    runs = [run_one(country, gateway, day, force=True) for gateway in gateways_for(country)]
+    out = [{'gateway': r.gateway, 'status': r.status, 'counts': r.counts or {}} for r in runs]
+    record_admin_action(request, action='finance_reconciliation_rerun', target_type='reconciliation',
+                        target_id=f'{country}:{day.isoformat()}', after={'runs': out}, reason=reason)
+    return success_response({'country': country, 'date': day.isoformat(), 'runs': out}, status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------

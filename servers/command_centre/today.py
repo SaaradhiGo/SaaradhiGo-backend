@@ -90,20 +90,27 @@ def today(user, cities, now=None, date_range=None):
             continue
         t['live_cities'] += 1
         payouts = row['queues'].get('withdrawals_pending', {}).get('now', 0) if money else None
+        # 25 Nov (owner): the label follows its count, "1 approval waiting", "2 approvals waiting".
+        def act(key, count, one, many, link, **extra):
+            return {'key': key, 'label': one if count == 1 else many, 'count': count, 'link': link, **extra}
+
+        sos = now_live.get('sos_active', 0)
+        appr = approvals.get(city.id, 0)
+        kyc = now_live.get('kyc_waiting', 0)
+        uploading = now_live.get('kyc_uploading', 0)
+        stuck = now_live.get('stuck_trips', 0)
         actions = [
-            {'key': 'sos', 'label': 'Open SOS', 'count': now_live.get('sos_active', 0),
-             'link': _link('/ops/safety-ops', city.code), 'urgent': True},
-            {'key': 'approvals', 'label': 'Approvals waiting for you', 'count': approvals.get(city.id, 0),
-             'link': _link('/ops/approvals', city.code)} if granted(user, 'approval.check')[0] else None,
-            {'key': 'payouts', 'label': 'Payouts waiting', 'count': payouts,
-             'link': _link('/ops/finance/payouts?status=pending', city.code)} if money else None,
-            {'key': 'kyc', 'label': 'KYC waiting', 'count': now_live.get('kyc_waiting', 0),
-             'link': _link('/ops/kyc', city.code)} if granted(user, 'driver.read')[0] else None,
-            {'key': 'kyc_uploading', 'label': 'drivers still uploading documents',
-             'count': now_live.get('kyc_uploading', 0),
-             'link': _link('/ops/drivers?kyc_state=pending', city.code)} if granted(user, 'driver.read')[0] else None,
-            {'key': 'stuck', 'label': 'Stuck trips', 'count': now_live.get('stuck_trips', 0),
-             'link': _link('/ops/trips?stuck=1', city.code)} if granted(user, 'trip.read')[0] else None,
+            act('sos', sos, 'open SOS', 'open SOS', _link('/ops/safety-ops', city.code), urgent=True),
+            act('approvals', appr, 'approval waiting for you', 'approvals waiting for you',
+                _link('/ops/approvals', city.code)) if granted(user, 'approval.check')[0] else None,
+            act('payouts', payouts, 'payout waiting', 'payouts waiting',
+                _link('/ops/finance/payouts?status=pending', city.code)) if money else None,
+            act('kyc', kyc, 'driver waiting for KYC', 'drivers waiting for KYC',
+                _link('/ops/kyc', city.code)) if granted(user, 'driver.read')[0] else None,
+            act('kyc_uploading', uploading, 'driver still uploading documents', 'drivers still uploading documents',
+                _link('/ops/drivers?kyc_state=pending', city.code)) if granted(user, 'driver.read')[0] else None,
+            act('stuck', stuck, 'stuck trip', 'stuck trips',
+                _link('/ops/trips?stuck=1', city.code)) if granted(user, 'trip.read')[0] else None,
         ]
         actions = [a for a in actions if a is not None]
         out_cities.append({

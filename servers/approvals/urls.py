@@ -1,7 +1,7 @@
 from django.urls import path
 
 from .views import (
-    approve_request, cancel_request, change_policy, list_policies,
+    approve_request, cancel_request, change_policy, list_policies, send_back_request,
     list_requests, reject_request, request_detail, self_approval,
 )
 
@@ -14,6 +14,7 @@ urlpatterns = [
     path('admin/requests/<int:request_id>/approve/', approve_request, name='approvals_approve'),
     path('admin/requests/<int:request_id>/reject/', reject_request, name='approvals_reject'),
     path('admin/requests/<int:request_id>/cancel/', cancel_request, name='approvals_cancel'),
+    path('admin/requests/<int:request_id>/send-back/', send_back_request, name='approvals_send_back'),
     path('admin/policies/', list_policies, name='approvals_policies'),
     path('admin/self-approval/', self_approval, name='approvals_self_approval'),
     path('admin/policies/change/', change_policy, name='approvals_policy_change'),

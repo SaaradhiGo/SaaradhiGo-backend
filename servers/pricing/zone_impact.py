@@ -33,6 +33,7 @@ from django.utils import timezone
 from . import zone_geometry as geo
 from .models import ServiceZone
 from .services import DraftZone, ZoneIndex, _polygon_for_zone, get_active_rate_card
+from base.words import plural
 
 logger = logging.getLogger(__name__)
 
@@ -284,9 +285,10 @@ def summarise(r, values, zone):
         else:
             lines.append(f"Puts {code} into service covering {r['area_km2']:,} km2.")
     if r['trips_moved'] == 0:
-        lines.append(f"No pickup from the last {r['window_days']} days would change zone.")
+        lines.append(f"No pickup from the last {plural(r['window_days'], 'day')} would change zone.")
     else:
-        lines.append(f"{r['trips_moved']:,} of the last {r['window_days']} days' pickups "
+        last = plural(r['window_days'], "day's", "days'")
+        lines.append(f"{r['trips_moved']:,} of the last {last} pickups "
                      f"would change zone ({r['moved_into_zone']:,} into {code}, "
                      f"{r['moved_out_of_zone']:,} out of it).")
         for t in r['transitions'][:5]:

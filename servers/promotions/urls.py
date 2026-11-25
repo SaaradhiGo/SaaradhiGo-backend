@@ -22,6 +22,8 @@ urlpatterns = [
          name='promo_campaign_cancel'),
     path('admin/campaigns/<int:promotion_id>/budget-increase/', views.campaign_budget_increase,
          name='promo_campaign_budget_increase'),
+    path('admin/campaigns/<int:promotion_id>/audience/', views.campaign_audience,
+         name='promo_campaign_audience'),
     path('admin/campaigns/<int:promotion_id>/activity/', views.campaign_activity,
          name='promo_campaign_activity'),
     path('admin/options/', views.options, name='promo_options'),

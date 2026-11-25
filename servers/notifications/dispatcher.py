@@ -160,6 +160,9 @@ def enqueue(user, template, context, *, idempotency_key, source, campaign=None, 
         body = templating.render(template.body, context)
         subject = templating.render(template.subject, context) if template.subject else ''
         title = templating.render(template.title, context) if template.title else ''
+        if template.locale.startswith('en') and not (template.channel == 'sms' and template.country == 'IN'):
+            from base.words import agree  # 25 Nov: "expires in 1 days" -> "1 day"
+            body, subject, title = agree(body), agree(subject), agree(title)
     except templating.MissingVariable as exc:
         return _create(base, Decision(FAILED, '', config.effective_provider(
             template.channel, country)[0]), error=str(exc))

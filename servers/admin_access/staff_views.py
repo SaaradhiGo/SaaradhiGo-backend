@@ -336,3 +336,44 @@ def staff_deactivate(request, pk):
 @permission_classes([IsAuthenticated, ScopedPermission('admin.manage')])
 def staff_reactivate(request, pk):
     return _set_active(request, pk, True)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('admin.manage')])
+def staff_reset_mfa(request, pk):
+    """25 Nov (owner): reset another operator's two-step sign-in (a lost phone). Their
+    authenticator and recovery codes are removed and every session ends; at the next sign-in, after
+    their password, the sign-in screen shows a new QR code to scan. Needs a reason and the caller's own second
+    factor fresh on this session."""
+    refused = _gate(request, write=True)
+    if refused:
+        return refused
+    user = _get_operator(pk)
+    refused = _write_guard(request, user)
+    if refused:
+        return refused
+    if len(_reason(request)) < 10:
+        return _refuse('REASON_REQUIRED', 'Say why, in at least 10 characters (for example, a lost phone).',
+                       field='reason')
+    if not ops_mfa.console_access_allowed(request):
+        return _refuse('AUTH_MFA_REQUIRED', "Clear your own two-step sign-in before resetting someone else's.",
+                       status.HTTP_401_UNAUTHORIZED, field='mfa')
+    from servers.auth_user.session_revocation import revoke_all_refresh_tokens
+
+    devices = ops_mfa.devices_for(user)
+    if not devices:
+        return _refuse('NO_CHANGE', 'This person has no two-step sign-in set up yet.')
+    before = {'authenticator': any(not ops_mfa.is_recovery_device(d) for d in devices),
+              'recovery_codes': ops_mfa.recovery_codes_remaining(user)}
+    with transaction.atomic():
+        # As the break-glass command does (reset_operator_mfa): the factors go, a fresh
+        # authenticator waits unconfirmed, and the sign-in screen shows its QR code after the password.
+        ops_mfa.remove_devices(user)
+        ops_mfa.enroll_totp(user)
+        revoked = revoke_all_refresh_tokens(user)
+        record_admin_action(request, action='staff_mfa_reset', target_type='User', target_id=str(user.pk),
+                            before=before, after={'authenticator': False, 'recovery_codes': 0,
+                                                  'sessions_ended': revoked},
+                            reason=_reason(request))
+    user = _get_operator(pk)
+    return success_response(_person(user, user.admin_assignments.all()), status.HTTP_200_OK)

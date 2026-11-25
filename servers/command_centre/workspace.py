@@ -45,6 +45,7 @@ from servers.admin_access.models import ACTIVE, CITY, COUNTRY, GLOBAL, STATE, Ge
 
 from . import rollups
 from .overview import city_contexts
+from base.words import plural
 
 logger = logging.getLogger(__name__)
 
@@ -452,7 +453,7 @@ def needs_action(request, limit=50, now=None):
             if len(rows) > GROUP_OVER:
                 oldest = max(m for _t, _r, m in rows)
                 items.append(_item(
-                    'stuck_trip', HIGH, f'{len(rows)} trips stuck in {city.name}',
+                    'stuck_trip', HIGH, f"{plural(len(rows), 'trip')} stuck in {city.name}",
                     where=_place(city), at=now - timedelta(minutes=oldest), now=now,
                     link=f'/trips?stuck=1&scope={city.code}', count=len(rows)))
                 continue
@@ -482,7 +483,7 @@ def needs_action(request, limit=50, now=None):
         escalated = [r for r in mine if r.requested_at < late]
         if len(mine) > GROUP_OVER:
             items.append(_item('approval', HIGH if escalated else WAITING,
-                               f'{len(mine)} requests waiting for approval'
+                               f"{plural(len(mine), 'request')} waiting for approval"
                                + (f', {len(escalated)} for over 3 days' if escalated else ''),
                                at=mine[0].requested_at, now=now, link='/approvals', count=len(mine)))
         else:
@@ -552,7 +553,7 @@ def needs_action(request, limit=50, now=None):
         if len(rows) > GROUP_OVER:
             worst = min(rows, key=lambda a: SEVERITY_RANK[sev.get(a.severity, WAITING)])
             items.append(_item('alert', sev.get(worst.severity, WAITING),
-                               f"{city.name if city else 'Unplaced'}: {len(rows)} alerts",
+                               f"{city.name if city else 'Unplaced'}: {plural(len(rows), 'alert')}",
                                where=_place(city), at=min(a.created_at for a in rows), now=now,
                                count=len(rows),
                                link='/dashboard?alerts=1' + (f'&scope={city.code}' if city else '')))

@@ -27,6 +27,7 @@ identical to a missing id.
 
 from django.conf import settings
 from django.db.models import F
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.pagination import PageNumberPagination
@@ -118,6 +119,10 @@ def shown(row, user):
     data['subjects'], data['blockers'] = [], []
     if row.action_key == FINANCE_PAYOUT:
         data['subjects'], data['blockers'] = _withdrawal_facts(row)
+    # 25 Nov (owner): waiting over 3 days escalates to Super Admin.
+    from servers.approvals.models import ESCALATE_AFTER_HOURS
+    data['escalated'] = row.status == REQUESTED and (
+        timezone.now() - row.requested_at).total_seconds() > ESCALATE_AFTER_HOURS * 3600
     if row.status == REQUESTED:
         problem = service.checker_problem(row, user)
         data['can_decide'] = problem is None
@@ -277,6 +282,23 @@ def reject_request(request, request_id):
 
 
 @api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('approval.check')])
+def send_back_request(request, request_id):
+    """25 Nov (owner): back to the maker with comments; nothing runs."""
+    row = _load(request, request_id, 'approval.check')
+    if row is None:
+        return _not_found(request_id)
+    try:
+        row = service.send_back(
+            row, request.user, reason=str(request.data.get('reason', '') or ''),
+            http_request=request,
+        )
+    except service.ApprovalError as exc:
+        return exc.response()
+    return success_response(shown(row, request.user), status.HTTP_200_OK)
+
+
+@api_view(['POST'])
 @permission_classes([IsAuthenticated, ScopedPermission('report.read')])
 def cancel_request(request, request_id):
     """The maker withdraws their own open request."""
@@ -313,11 +335,25 @@ def list_policies(request):
         rows = rows.filter(country=country)
     if request.query_params.get('history') not in ('1', 'true'):
         rows = rows.filter(is_active=True)
+    # 25 Nov (owner): who can approve what. A checker's role carries approval.check AND the
+    # action's own capability (service._may_check); people are counted, never named here.
+    from servers.admin_access.models import AdminAssignment, AdminRole
+
+    roles = list(AdminRole.objects.filter(is_active=True).only('code', 'name', 'permissions'))
+    held = {}
+    for a in AdminAssignment.objects.filter(is_active=True, admin__is_active=True).values('role_id', 'admin_id'):
+        held.setdefault(a['role_id'], set()).add(a['admin_id'])
+
+    def checkers(capability):
+        out = [r for r in roles if 'approval.check' in (r.permissions or []) and capability in (r.permissions or [])]
+        return [{'role': r.code, 'name': r.name, 'people': len(held.get(r.pk, ()))} for r in out]
+
     return success_response({
         'policies': [p.as_dict() for p in rows.order_by('country', 'action_key', '-version')[:500]],
         'actions': [
             {'key': a.key, 'description': a.description, 'capability': a.capability,
-             'always_checker': a.always_checker, 'has_executor': a.key in registered_actions()}
+             'always_checker': a.always_checker, 'has_executor': a.key in registered_actions(),
+             'checkers': checkers(a.capability)}
             for a in ACTIONS.values()
         ],
     }, status.HTTP_200_OK)

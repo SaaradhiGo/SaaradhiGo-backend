@@ -186,6 +186,9 @@ class ApprovalPolicy(models.Model):
 REQUESTED, APPROVED, REJECTED, EXECUTED, FAILED, CANCELLED, EXPIRED = (
     'requested', 'approved', 'rejected', 'executed', 'failed', 'cancelled', 'expired',
 )
+#: 25 Nov (owner): the checker sends it back with comments; nothing runs, and the maker may
+#: raise it again, changed. Closes like a rejection (the key is released).
+RETURNED = 'returned'
 STATUS_CHOICES = [
     (REQUESTED, 'Requested: waiting for a checker'),
     # Transitional: the checker said yes and the executor is running. A row
@@ -197,6 +200,7 @@ STATUS_CHOICES = [
     (FAILED, 'Approved, but execution failed'),
     (CANCELLED, 'Cancelled by the maker'),
     (EXPIRED, 'Expired before a checker acted'),
+    (RETURNED, 'Sent back to the maker with comments'),
 ]
 ALL_STATUSES = frozenset(code for code, _ in STATUS_CHOICES)
 #: States in which the idempotency key is held: the request is still open,
@@ -205,12 +209,15 @@ ALL_STATUSES = frozenset(code for code, _ in STATUS_CHOICES)
 #: rejected payout re-requested after the dispute is settled is a new
 #: request, with a new checker's name on it.
 KEY_HELD_STATUSES = (REQUESTED, APPROVED, EXECUTED)
-TERMINAL_STATUSES = (REJECTED, EXECUTED, FAILED, CANCELLED, EXPIRED)
+TERMINAL_STATUSES = (REJECTED, EXECUTED, FAILED, CANCELLED, EXPIRED, RETURNED)
 
 #: Hours a request waits for a checker before it lapses. Settable because a
 #: payout batch raised on Friday evening should still be approvable on
 #: Monday morning, and a refund request from last quarter should not be.
-DEFAULT_TTL_HOURS = 72
+DEFAULT_TTL_HOURS = 168
+#: 25 Nov (owner): a request waiting this long escalates to Super Admin (an alert, once). Before,
+#: requests lapsed at 72 hours, so the 3-day escalation could never be seen.
+ESCALATE_AFTER_HOURS = 72
 
 
 def request_ttl():

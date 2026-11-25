@@ -18,5 +18,6 @@ urlpatterns = [
     path('staff/<int:pk>/assignments/', staff.staff_grant, name='admin_staff_grant'),
     path('staff/<int:pk>/deactivate/', staff.staff_deactivate, name='admin_staff_deactivate'),
     path('staff/<int:pk>/reactivate/', staff.staff_reactivate, name='admin_staff_reactivate'),
+    path('staff/<int:pk>/reset-mfa/', staff.staff_reset_mfa, name='admin_staff_reset_mfa'),
     path('assignments/<int:pk>/revoke/', staff.assignment_revoke, name='admin_assignment_revoke'),
 ]

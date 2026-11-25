@@ -47,6 +47,7 @@ from . import services
 from .config import active_configs
 from .models import CLOSED, U_ESCALATED, SafetyIncident
 from .scope import responders_for, super_admins
+from base.words import plural
 
 logger = logging.getLogger(__name__)
 
@@ -105,17 +106,17 @@ def escalate_sos(event, config, now):
         if event.incident_id:
             services.add_update(
                 event.incident, U_ESCALATED, label=services.SYSTEM,
-                note=f'SOS not acknowledged after {minutes} minutes: escalated',
+                note=f'SOS not acknowledged after {plural(minutes, "minute")}: escalated',
                 data={'sos_id': event.id, 'minutes': minutes})
         record_admin_action(
             None, action='safety_sos_escalated', target_type='sos_event', target_id=event.id,
             before={'escalated': False}, after={'escalated': True, 'minutes': minutes,
                                                  'config_version': config.version},
-            reason=f'No acknowledgement within {minutes} minutes')
+            reason=f'No acknowledgement within {plural(minutes, "minute")}')
     users = audience(event.anchor_node)
     transaction.on_commit(lambda: notify(
         users, 'SOS still unacknowledged',
-        f'{name} has had no response for {minutes} minutes',
+        f'{name} has had no response for {plural(minutes, "minute")}',
         {'type': 'sos_escalation', 'sos_id': str(event.id)}))
     return True
 
@@ -137,17 +138,17 @@ def escalate_incident(incident, config, now):
             source_type='safety_incident', source_id=incident.id, city=incident.anchor_node)
         services.add_update(
             incident, U_ESCALATED, label=services.SYSTEM,
-            note=f'Critical and unassigned for {minutes} minutes: escalated',
+            note=f'Critical and unassigned for {plural(minutes, "minute")}: escalated',
             data={'minutes': minutes})
         record_admin_action(
             None, action='safety_incident_escalated', target_type='safety_incident',
             target_id=incident.id, before={'escalated': False},
             after={'escalated': True, 'minutes': minutes, 'config_version': config.version},
-            reason=f'Critical incident unassigned for {minutes} minutes')
+            reason=f'Critical incident unassigned for {plural(minutes, "minute")}')
     users = audience(incident.anchor_node)
     transaction.on_commit(lambda: notify(
         users, 'Critical incident unassigned',
-        f'Incident #{incident.id} has had no owner for {minutes} minutes',
+        f'{incident.public_ref or "An incident"} has had no owner for {plural(minutes, "minute")}',
         {'type': 'incident_escalation', 'incident_id': str(incident.id)}))
     return True
 

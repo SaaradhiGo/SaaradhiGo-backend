@@ -82,6 +82,7 @@ def next_step(alert):
         FINANCE_PAYOUT_REVERSED,
         FINANCE_PLATFORM_FUNDED_END,
         FINANCE_PROMO_SETTLEMENT_FAILED,
+        APPROVAL_ESCALATED,
         FRAUD_FLAG_HIGH,
         FRAUD_PAYOUT_HOLD_EXPIRED,
         FRAUD_QUEUE_AGING,
@@ -119,6 +120,8 @@ def next_step(alert):
         return {'text': 'Review the open fraud flags, oldest first', 'link': _scoped('/fraud', alert)}
     if k == FRAUD_PAYOUT_HOLD_EXPIRED:
         return {'text': 'Renew the payout hold or let the payout go', 'link': _scoped('/fraud', alert)}
+    if k == APPROVAL_ESCALATED:
+        return {'text': 'Decide the request or send it back with comments', 'link': '/approvals'}
     if k == KYC_REVIEW_PAST_TARGET:
         return {'text': 'Review the drivers waiting for documents', 'link': _scoped('/kyc', alert)}
     if k in (FINANCE_PAYOUT_REVERSED, FINANCE_PAYOUT_CONFLICT):

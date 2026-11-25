@@ -7,6 +7,7 @@ from base.money import MinorUnitsAmount
 from base.db_indexes import PatternPrefixIndex
 from base.encrypted import EncryptedCharField
 from servers.driver.plates import normalised_plate_expression
+from base.words import plural
 # Create your models here.
 User=get_user_model()
 class Driver(models.Model):
@@ -84,6 +85,9 @@ class Driver(models.Model):
     is_seed=models.BooleanField(default=False)
     active_vehicle=models.ForeignKey('Vehicle',on_delete=models.SET_NULL,null=True,blank=True)
     last_withdrawal_at=models.DateTimeField(null=True,blank=True)
+    #: 25 Nov (owner): who reviews this driver's documents (KYC queue, bulk-assigned). Null: anyone.
+    kyc_reviewer = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL,
+                                     related_name='kyc_assigned_drivers')
     upi_id=models.CharField(max_length=256,blank=True,null=True,help_text='UPI ID for UPI payouts')
     uploaded_timestamp=models.DateTimeField(null=True,blank=True)
     doc_status_updated_at=models.DateTimeField(null=True,blank=True)
@@ -661,7 +665,7 @@ class IncentiveQuest(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.title} ({self.target_trips} trips for {self.reward_amount})"
+        return f"{self.title} ({plural(self.target_trips, 'trip')} for {self.reward_amount})"
 
 
 # ---------------------------------------------------------------------------

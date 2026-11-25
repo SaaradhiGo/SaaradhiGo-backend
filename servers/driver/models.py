@@ -85,6 +85,9 @@ class Driver(models.Model):
     is_seed=models.BooleanField(default=False)
     active_vehicle=models.ForeignKey('Vehicle',on_delete=models.SET_NULL,null=True,blank=True)
     last_withdrawal_at=models.DateTimeField(null=True,blank=True)
+    #: 25 Nov (owner): who reviews this driver's documents (KYC queue, bulk-assigned). Null: anyone.
+    kyc_reviewer = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL,
+                                     related_name='kyc_assigned_drivers')
     upi_id=models.CharField(max_length=256,blank=True,null=True,help_text='UPI ID for UPI payouts')
     uploaded_timestamp=models.DateTimeField(null=True,blank=True)
     doc_status_updated_at=models.DateTimeField(null=True,blank=True)

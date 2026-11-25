@@ -421,6 +421,51 @@ def _changed(driver, method_label, had_details):
         logger.exception('payout details change notice failed driver=%s', driver.pk)
 
 
+def set_upi(driver, upi, *, notify_always=False):
+    """Store a UPI ID (replacing any bank account). A change to existing details pauses payouts
+    for 24 hours and tells the driver; a staff change always does (25 Nov)."""
+    had = DriverBankAccount.objects.filter(driver=driver).exists() or bool((driver.upi_id or '').strip())
+    with transaction.atomic():
+        driver.upi_id = upi
+        driver.save(update_fields=['upi_id'])
+        DriverBankAccount.objects.filter(driver=driver).delete()
+    _changed(driver, 'UPI ID', had or notify_always)
+
+
+def set_bank(driver, holder, number, ifsc, *, notify_always=False):
+    """Store a bank account, validate it with the provider, and say so (see set_upi)."""
+    had = DriverBankAccount.objects.filter(driver=driver).exists() or bool((driver.upi_id or '').strip())
+    found = lookup_ifsc(ifsc)
+    current = DriverBankAccount.objects.filter(driver=driver).first()
+    with transaction.atomic():
+        bank = current or DriverBankAccount(driver=driver)
+        bank.holder_name, bank.account_number, bank.ifsc_code = holder, number, ifsc
+        bank.bank_name = (found or {}).get('bank') or bank.bank_name or 'Bank'
+        bank.branch = (found or {}).get('branch') or ''
+        bank.verification_status = 'pending'
+        bank.save()
+    bank.verification_status = request_bank_validation(bank, driver)
+    bank.save(update_fields=['verification_status', 'verified_name', 'account_fingerprint'])
+    _changed(driver, 'bank account', had or notify_always)
+
+
+def clean_bank(d):
+    """(holder, number, ifsc) from a request, or raise ValueError(code, message, field)."""
+    holder = ' '.join(str(d.get('holder_name') or '').split())[:256]
+    number = re.sub(r'\s', '', str(d.get('account_number') or ''))
+    confirm = re.sub(r'\s', '', str(d.get('account_number_confirm') or ''))
+    ifsc = str(d.get('ifsc') or '').strip().upper()
+    if not holder:
+        raise ValueError('HOLDER_NAME', 'Enter the account holder name.', 'holder_name')
+    if not re.fullmatch(r'\d{9,18}', number):
+        raise ValueError('ACCOUNT_NUMBER', 'Enter an account number of 9 to 18 digits.', 'account_number')
+    if number != confirm:
+        raise ValueError('ACCOUNT_MISMATCH', 'The account numbers do not match.', 'account_number_confirm')
+    if not IFSC_RE.match(ifsc):
+        raise ValueError('IFSC_INVALID', 'Enter an 11-character IFSC, like HDFC0001234.', 'ifsc')
+    return holder, number, ifsc
+
+
 @api_view(['GET', 'PUT'])
 @permission_classes([IsDriver])
 def driver_payout_method(request):
@@ -434,47 +479,24 @@ def driver_payout_method(request):
         return _bad('USE_STRIPE', 'In the USA, set up payouts with Stripe.', 'method')
     d = request.data or {}
     method = d.get('method')
-    had = DriverBankAccount.objects.filter(driver=driver).exists() or bool((driver.upi_id or '').strip())
     if method == 'upi':
         upi = str(d.get('upi_id') or '').strip()
         if not UPI_RE.match(upi):
             return _bad('UPI_INVALID', 'Enter a UPI ID like name@okaxis.', 'upi_id')
         if upi == (driver.upi_id or ''):
             return success_response(payout_method_dict(driver, country), status.HTTP_200_OK)
-        with transaction.atomic():
-            driver.upi_id = upi
-            driver.save(update_fields=['upi_id'])
-            DriverBankAccount.objects.filter(driver=driver).delete()
-        _changed(driver, 'UPI ID', had)
+        set_upi(driver, upi)
         return success_response(payout_method_dict(driver, country), status.HTTP_200_OK)
     if method != 'bank':
         return _bad('METHOD_INVALID', 'Choose a bank account or UPI ID.', 'method')
-    holder = ' '.join(str(d.get('holder_name') or '').split())[:256]
-    number = re.sub(r'\s', '', str(d.get('account_number') or ''))
-    confirm = re.sub(r'\s', '', str(d.get('account_number_confirm') or ''))
-    ifsc = str(d.get('ifsc') or '').strip().upper()
-    if not holder:
-        return _bad('HOLDER_NAME', 'Enter the account holder name.', 'holder_name')
-    if not re.fullmatch(r'\d{9,18}', number):
-        return _bad('ACCOUNT_NUMBER', 'Enter an account number of 9 to 18 digits.', 'account_number')
-    if number != confirm:
-        return _bad('ACCOUNT_MISMATCH', 'The account numbers do not match.', 'account_number_confirm')
-    if not IFSC_RE.match(ifsc):
-        return _bad('IFSC_INVALID', 'Enter an 11-character IFSC, like HDFC0001234.', 'ifsc')
-    found = lookup_ifsc(ifsc)
+    try:
+        holder, number, ifsc = clean_bank(d)
+    except ValueError as exc:
+        return _bad(*exc.args)
     current = DriverBankAccount.objects.filter(driver=driver).first()
     if current and current.account_number == number and current.ifsc_code == ifsc and current.holder_name == holder:
         return success_response(payout_method_dict(driver, country), status.HTTP_200_OK)
-    with transaction.atomic():
-        bank = current or DriverBankAccount(driver=driver)
-        bank.holder_name, bank.account_number, bank.ifsc_code = holder, number, ifsc
-        bank.bank_name = (found or {}).get('bank') or bank.bank_name or 'Bank'
-        bank.branch = (found or {}).get('branch') or ''
-        bank.verification_status = 'pending'
-        bank.save()
-    bank.verification_status = request_bank_validation(bank, driver)
-    bank.save(update_fields=['verification_status', 'verified_name', 'account_fingerprint'])
-    _changed(driver, 'bank account', had)
+    set_bank(driver, holder, number, ifsc)
     return success_response(payout_method_dict(driver, country), status.HTTP_200_OK)
 
 

@@ -29,6 +29,7 @@ import logging
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Avg, Count, Exists, OuterRef, Q
 from django.db.models.functions import Coalesce
@@ -582,13 +583,21 @@ def queue_response(request):
         queryset = for_kyc_view(request.user, scoped_to_request(
             request, Driver.objects.select_related(
                 'user_id', 'home_city', 'active_vehicle',
-                'active_vehicle__vehicle_type_id')))
+                'active_vehicle__vehicle_type_id', 'kyc_reviewer')))
     except ScopeNotHeld as exc:
         return error_response(code='SCOPE_NOT_HELD', message=str(exc), field='scope',
                               issue='Requested scope is outside your assignments',
                               status=status.HTTP_403_FORBIDDEN)
     queryset = (annotate(queryset).filter(kyc_state_q('in_review'))
                 .exclude(active_suspension_q()).order_by('waiting_since', 'id'))
+    # 25 Nov (owner): reviewers. ?reviewer=me | none | <id>
+    who = (request.query_params.get('reviewer') or '').strip().lower()
+    if who == 'me':
+        queryset = queryset.filter(kyc_reviewer=request.user)
+    elif who == 'none':
+        queryset = queryset.filter(kyc_reviewer__isnull=True)
+    elif who.isdigit():
+        queryset = queryset.filter(kyc_reviewer_id=int(who))
     today = _today()
     now = timezone.now()
 
@@ -611,6 +620,9 @@ def queue_response(request):
             from . import requirements as _req
             row['requirements'] = _req.summary(driver)
             row['documents'] = documents_payload(request.user, driver)
+            rv = driver.kyc_reviewer
+            row['reviewer'] = ({'id': rv.pk, 'name': rv.full_name or rv.email or 'Reviewer', 'me': rv.pk == request.user.pk}
+                               if rv is not None else None)
             out.append(row)
         return out
 
@@ -622,6 +634,62 @@ def queue_response(request):
 def admin_kyc_queue(request):
     """GET /driver/admin/kyc-queue/  The KYC Verifier's work list (scoped)."""
     return queue_response(request)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.kyc')])
+def admin_kyc_assign(request):
+    """POST /driver/admin/kyc-queue/assign/  {driver_ids: [..], reviewer: <id> | "me" | "none"}
+
+    25 Nov (owner): bulk-assign reviewers. Every driver must be in the caller's scope with
+    driver.kyc, and the reviewer must hold driver.kyc where each driver is. One audit row each."""
+    from django.contrib.auth import get_user_model
+
+    from servers.approvals.scope import may_act
+
+    ids = request.data.get('driver_ids') or []
+    if not isinstance(ids, list) or not ids or len(ids) > 200 or not all(str(i).isdigit() for i in ids):
+        return BadInput('INVALID_IDS', 'Give between 1 and 200 driver ids.', 'driver_ids').response()
+    target = str(request.data.get('reviewer') or '').strip().lower()
+    reviewer = None
+    if target == 'me':
+        reviewer = request.user
+    elif target.isdigit():
+        reviewer = get_user_model().objects.filter(pk=int(target), is_active=True).first()
+        if reviewer is None:
+            return BadInput('NO_REVIEWER', 'No such reviewer.', 'reviewer').response()
+    elif target != 'none':
+        return BadInput('INVALID_REVIEWER', 'reviewer is a person, me or none.', 'reviewer').response()
+    drivers = list(scoped_or_none_many(request.user, Driver.objects.select_related('home_city'), [int(i) for i in ids]))
+    if len(drivers) != len(set(ids)):
+        return BadInput('NOT_FOUND', 'Some of those drivers are not in your scope.', 'driver_ids').response()
+    for d in drivers:
+        if not may_act(request.user, 'driver.kyc', d.home_city):
+            return BadInput('PERMISSION_DENIED', 'You do not review documents for all of those drivers.',
+                            'driver_ids').response()
+        if reviewer is not None and not may_act(reviewer, 'driver.kyc', d.home_city):
+            return BadInput('REVIEWER_NOT_ALLOWED', 'That person does not review documents where some of '
+                            'these drivers are.', 'reviewer').response()
+    changed = 0
+    with transaction.atomic():
+        for d in drivers:
+            before = d.kyc_reviewer_id
+            new = reviewer.pk if reviewer is not None else None
+            if before == new:
+                continue
+            Driver.objects.filter(pk=d.pk).update(kyc_reviewer_id=new)
+            changed += 1
+            record_admin_action(request, action='driver_kyc_reviewer_assigned', target_type=TARGET, target_id=d.pk,
+                                before={'kyc_reviewer': before}, after={'kyc_reviewer': new},
+                                reason='KYC reviewer assigned')
+    return success_response({'assigned': changed, 'reviewer': reviewer.pk if reviewer else None}, status.HTTP_200_OK)
+
+
+def scoped_or_none_many(user, queryset, ids):
+    """The drivers among `ids` the caller may see (scoped like every driver read)."""
+    from servers.admin_access.scoping import scoped
+
+    return scoped(user, queryset).filter(pk__in=ids)
 
 
 # ---------------------------------------------------------------------------
@@ -1307,6 +1375,53 @@ def _make_room_to_activate(driver, vehicle):
         return False
     Vehicle.objects.filter(driver_id=driver, status='active').exclude(pk=vehicle.pk).update(status='inactive')
     return True
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('driver.write')])
+def admin_add_vehicle(request, driver_id):
+    """POST /driver/admin/<id>/vehicles/add/  {vehicle_type, vehicle_number, brand?, model?, color?, year?, note}
+
+    25 Nov (owner): staff add a vehicle a driver told them about. It is added INACTIVE, beside the
+    driver's current one: the driver uploads its papers in the app, and staff activate it after
+    review (vehicles/<id>/status/). The same identity rules as the driver's own form."""
+    from .models import VehicleType
+    from .vehicle_rules import VehicleProblem, apply_identity
+
+    driver, refusal = _driver_for_write(request, driver_id, 'driver.write')
+    if refusal:
+        return refusal
+    try:
+        vtype = _text(request.data, 'vehicle_type', required=True, limit=20)
+        number = _text(request.data, 'vehicle_number', required=True, limit=20)
+        note = _text(request.data, 'note', limit=2000)
+        if len(note) < 5:
+            raise BadInput('NOTE_REQUIRED', 'Say why you are adding it (at least 5 characters).', 'note')
+    except BadInput as exc:
+        return exc.response()
+    vt = VehicleType.objects.filter(type=vtype).first()
+    if vt is None:
+        return BadInput('INVALID_VEHICLE_TYPE', 'That is not a vehicle class.', 'vehicle_type').response()
+    vehicle = Vehicle(driver_id=driver, vehicle_type_id=vt, vehicle_number=number, status='inactive',
+                      brand=_text(request.data, 'brand', limit=64), model=_text(request.data, 'model', limit=64),
+                      color=_text(request.data, 'color', limit=32), capacity=1)
+    try:
+        apply_identity(driver, vehicle, request.data, vt.type)
+        vehicle.full_clean(validate_constraints=False)
+    except VehicleProblem as exc:
+        return error_response(code=exc.code, message=exc.message, field=exc.field, issue=exc.message,
+                              status=status.HTTP_400_BAD_REQUEST)
+    except ValidationError as exc:
+        return error_response(code='VALIDATION_ERROR', message='Check the vehicle details.', field='vehicle',
+                              issue=str(getattr(exc, 'message_dict', exc.messages)),
+                              status=status.HTTP_400_BAD_REQUEST)
+    with transaction.atomic():
+        vehicle.save()
+        record_admin_action(request, action='driver_vehicle_added', target_type=TARGET, target_id=driver.id,
+                            after={'vehicle_id': vehicle.id, 'vehicle_type': vt.type, 'status': 'inactive'},
+                            reason=note)
+    return success_response({'driver_id': driver.id, 'vehicle_id': vehicle.id, 'status': vehicle.status},
+                            status.HTTP_201_CREATED)
 
 
 @api_view(['POST'])

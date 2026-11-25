@@ -10,7 +10,7 @@ from .onboarding_views import driver_onboarding
 from .admin_drivers import (
     admin_approve_driver, admin_bulk_drivers, admin_kyc_queue, admin_note_driver,
     admin_document_view, admin_driver_records, admin_reinstate_driver, admin_review_document, admin_suspend_driver, admin_vehicle_status,
-    admin_run_verification,
+    admin_run_verification, admin_add_vehicle, admin_kyc_assign,
 )
 from .admin_views import (
     list_drivers_admin, retrieve_driver_admin, driver_full_detail_admin,
@@ -19,6 +19,7 @@ from .admin_views import (
 )
 
 from . import background_views  # noqa: E402
+from . import payout_change  # noqa: E402
 
 urlpatterns = [
     # path('add/', add_driver),
@@ -77,6 +78,7 @@ urlpatterns = [
     path('admin/<int:driver_id>/vehicles/', get_vehicle_details),
     # Drivers & KYC module (console module 3)
     path('admin/kyc-queue/', admin_kyc_queue),
+    path('admin/kyc-queue/assign/', admin_kyc_assign),
     path('admin/bulk/', admin_bulk_drivers),
     path('admin/<int:driver_id>/documents/review/', admin_review_document),
     # One document, on demand, audited (AUDIT 27.78).
@@ -93,6 +95,8 @@ urlpatterns = [
     path('admin/<int:driver_id>/reinstate/', admin_reinstate_driver),
     path('admin/<int:driver_id>/records/', admin_driver_records),
     path('admin/<int:driver_id>/note/', admin_note_driver),
+    path('admin/<int:driver_id>/payout-details/', payout_change.admin_payout_details),
+    path('admin/<int:driver_id>/vehicles/add/', admin_add_vehicle),
     path('admin/<int:driver_id>/vehicles/<int:vehicle_id>/status/', admin_vehicle_status),
     
     # Admin Withdrawal Management

@@ -174,12 +174,50 @@ def _parse(name, value):
     return out
 
 
-def propose_regulation(actor, *, country, state_code='', changes=None, clear=(), note=None,
-                       reason='', http_request=None):
-    """Raise a request to set the fields in `changes` (or unset those in `clear`) on one row."""
-    country, state_code, node = _scope(actor, country, state_code)
-    if not (reason or '').strip():
-        raise InvalidRequest('A reason is required.', code='REASON_REQUIRED', field='reason')
+LABELS = {'cancel_penalty_percent': 'Cancellation fee (% of the fare)', 'cancel_penalty_cap_minor': 'Cancellation fee cap',
+          'cancel_free_seconds': 'Free cancellation window (seconds)', 'max_dynamic_multiplier': 'Highest surge'}
+
+
+def _words(name, value, currency):
+    from base.money import format_money, from_minor
+
+    if value is None or value == '':
+        return 'not set'
+    if name.endswith('_minor'):
+        return format_money(from_minor(int(value), currency), currency)
+    if isinstance(value, bool):
+        return 'Yes' if value else 'No'
+    if isinstance(value, (list, dict)):
+        return ', '.join(map(str, value)) if isinstance(value, list) else ', '.join(f'{k}: {v}' for k, v in value.items())
+    return str(_out(value))
+
+
+def display(country, current, values):
+    """25 Nov (owner): the before/after in words and, for the cancellation rules, what a rider
+    pays to cancel at three fares, today against the change."""
+    from base.countries import get_country
+    from base.money import format_money, from_minor
+
+    cur = get_country(country).currency
+    before = {name: getattr(current, name) if current else None for name in FIELDS}
+    changes = [{'label': LABELS.get(n, n.replace('_', ' ').capitalize()), 'from': _words(n, before[n], cur),
+                'to': _words(n, values[n], cur)} for n in FIELDS if _out(before[n]) != _out(values[n])]
+    out = {'changes': changes, 'effective': 'Applies to trips booked after approval.'}
+    if any(n.startswith('cancel_') for n in FIELDS if _out(before[n]) != _out(values[n])):
+        def fee(vals, fare):
+            pct = Decimal(str(vals.get('cancel_penalty_percent') or 0))
+            amount = int(Decimal(fare) * pct / 100)
+            cap = vals.get('cancel_penalty_cap_minor')
+            return min(amount, int(cap)) if cap not in (None, '') else amount
+        fares = (15000, 30000, 60000) if cur == 'INR' else (1500, 3000, 6000)
+        m = lambda v: format_money(from_minor(v, cur), cur)  # noqa: E731
+        out['impact'] = {'title': 'A late cancellation', 'columns': ['Fare', 'Rider pays today', 'After the change'],
+                         'rows': [[m(f), m(fee(before, f)), m(fee(values, f))] for f in fares],
+                         'note': 'Only after the free window, and only when the cancellation is not justified.'}
+    return out
+
+
+def _proposed(country, state_code, changes, clear):
     current = MarketRegulation.objects.filter(country=country, state_code=state_code).first()
     values = {name: getattr(current, name) if current else None for name in FIELDS}
     for name, value in (changes or {}).items():
@@ -189,10 +227,28 @@ def propose_regulation(actor, *, country, state_code='', changes=None, clear=(),
         if name in values:
             values[name] = None
     values['base_fare_source'] = values['base_fare_source'] or ''
+    return current, values
+
+
+def preview_regulation(actor, *, country, state_code='', changes=None, clear=()):
+    """The Edit preview: the same `display` the request will carry. Writes nothing."""
+    country, state_code, _ = _scope(actor, country, state_code)
+    current, values = _proposed(country, state_code, changes, clear)
+    return display(country, current, values)
+
+
+def propose_regulation(actor, *, country, state_code='', changes=None, clear=(), note=None,
+                       reason='', http_request=None):
+    """Raise a request to set the fields in `changes` (or unset those in `clear`) on one row."""
+    country, state_code, node = _scope(actor, country, state_code)
+    if not (reason or '').strip():
+        raise InvalidRequest('A reason is required.', code='REASON_REQUIRED', field='reason')
+    current, values = _proposed(country, state_code, changes, clear)
     payload = {'kind': KIND_REGULATION, 'country': country, 'state_code': state_code,
                **{name: _out(v) for name, v in values.items()},
                'note': (current.note if current else '') if note is None else str(note)[:255],
                'base_version': current.version if current else 0}
+    payload['display'] = display(country, current, values)
     import hashlib
     import json
     key = 'market_regulation:' + hashlib.sha256(json.dumps(

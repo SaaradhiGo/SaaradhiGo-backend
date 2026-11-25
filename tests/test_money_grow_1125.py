@@ -26,7 +26,10 @@ class TestReconciliationRerun:
 
     def test_refusals(self, geo):
         c, _ = operator('finance', geo, 'IN')
-        today = timezone.now().date().isoformat()
+        from zoneinfo import ZoneInfo
+
+        # India's own date: the server refuses today in the country's time zone (it was UTC's here).
+        today = timezone.now().astimezone(ZoneInfo('Asia/Kolkata')).date().isoformat()
         assert c.post(self.URL, {'country': 'IN', 'date': today, 'reason': 'Late webhook'}, format='json').status_code == 400
         assert c.post(self.URL, {'country': 'US', 'date': '2026-11-01', 'reason': 'Late webhook'},
                       format='json').status_code == 403

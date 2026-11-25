@@ -962,6 +962,36 @@ def write_policy_version(*, country, action_key, limit_kind, currency, maker_lim
     return policy, current
 
 
+POLICY_KIND_WORDS = {'always': 'Always needs a second person', 'money': 'A second person above an amount',
+                     'count': 'A second person above a number of records'}
+
+
+def policy_display(country, action_key, after):
+    """25 Nov (owner): a limit change (refunds, payouts...) in words, today against the change."""
+    from base.money import format_money, from_minor
+
+    current = active_policy(country, action_key)
+    cur = after.get('currency') or (current.currency if current else '') or 'INR'
+
+    def money(v):
+        if v is None:
+            return 'none'
+        if (after.get('limit_kind') or before['limit_kind']) == 'count':
+            return str(v)
+        return format_money(from_minor(int(v), cur), cur)
+    before = {'limit_kind': current.limit_kind if current else None,
+              'maker_limit': current.maker_limit if current else None,
+              'maker_daily_limit': current.maker_daily_limit if current else None,
+              'cumulative_per_target': current.cumulative_per_target if current else False}
+    rows = [('Rule', 'limit_kind', lambda v: POLICY_KIND_WORDS.get(v, v or 'not set')),
+            ('One person may approve up to', 'maker_limit', money),
+            ('A day, per person', 'maker_daily_limit', money),
+            ('Counted per record', 'cumulative_per_target', lambda v: 'Yes' if v else 'No')]
+    return {'changes': [{'label': label, 'from': fmt(before[k]), 'to': fmt(after.get(k))}
+                        for label, k, fmt in rows if before[k] != after.get(k)],
+            'effective': 'Applies to requests raised after approval.'}
+
+
 def propose_policy_change(actor, *, country, action_key, limit_kind, currency=None,
                           maker_limit=None, reason='', http_request=None,
                           maker_daily_limit=None, cumulative_per_target=False, system_label=''):
@@ -989,6 +1019,7 @@ def propose_policy_change(actor, *, country, action_key, limit_kind, currency=No
         'currency': currency, 'maker_limit': maker_limit,
         'maker_daily_limit': maker_daily_limit, 'cumulative_per_target': cumulative_per_target,
     }
+    payload['display'] = policy_display(country, action_key, payload)
     key = (f'policy_change:{country}:{action_key}:{limit_kind}:'
            f'{currency or "-"}:{maker_limit if maker_limit is not None else "none"}'
            f':{maker_daily_limit if maker_daily_limit is not None else "none"}:{int(cumulative_per_target)}')

@@ -1007,6 +1007,17 @@ class TestPayoutConfigEdit:
         assert body['fee_percent'] == 1.5 and body['fee_display'] == '1.5%'
         assert body['minimum_withdrawal'] == 600.0
 
+    def test_the_preview_and_the_request_carry_the_change_and_the_next_payout_25_nov(self, world):
+        maker, _ = world.finance
+        r = post(maker, f'{self.url()}preview/', {'minimum_withdrawal_minor': 60000}, expect=200)
+        shown = body_of(r)
+        assert shown['changes'] == [{'label': 'Minimum payout', 'from': shown['changes'][0]['from'], 'to': '₹600.00'}]
+        assert [row[0] for row in shown['impact']['rows']] == ['Today', 'After the change']
+        r = post(maker, self.url(), {'minimum_withdrawal_minor': 60000, 'reason': 'Q4 review',
+                                     'idempotency_key': 'cfg-display'}, expect=202)
+        req = ApprovalRequest.objects.get(id=body_of(r)['approval_request']['id'])
+        assert req.payload['display']['changes'][0]['to'] == '₹600.00'
+
     def test_a_stale_request_is_refused_not_applied(self, world):
         maker, _ = world.finance
         first = post(maker, self.url(), {'fee_percent': '1.00', 'reason': 'a',

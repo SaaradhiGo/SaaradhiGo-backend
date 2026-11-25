@@ -11,7 +11,8 @@ from servers.pricing.views import (
 
 from . import fee_plan_views
 from .commission_views import (
-    commission_matrix, config_list, config_update, fare_cards_overview, fare_cards_preview,
+    commission_matrix, config_list, config_update, fare_cards_overview, fare_cards_preview, regulation_preview,
+    zone_areas_preview, zone_areas_view,
     regulation_list, regulation_update, state_cap_update,
     rule_detail, rule_preview, rule_submit, rules,
 )
@@ -47,16 +48,21 @@ urlpatterns = [
     path('admin/fee-plans/simulate/', fee_plan_views.fee_plan_simulate, name='fee-plans-simulate'),
     path('admin/fee-plans/resolved/', fee_plan_views.fee_plans_resolved, name='fee-plans-resolved'),
     path('admin/fee-plans/<int:plan_id>/', fee_plan_views.fee_plan_detail, name='fee-plan'),
+    path('admin/fee-plans/<int:plan_id>/impact/', fee_plan_views.fee_plan_impact, name='fee-plan-impact'),
+    path('admin/fee-plans/<int:plan_id>/edit/', fee_plan_views.fee_plan_edit, name='fee-plan-edit'),
     path('admin/fee-plans/<int:plan_id>/submit/', fee_plan_views.fee_plan_submit,
          name='fee-plan-submit'),
     path('admin/cost-per-trip/', fee_plan_views.cost_per_trip, name='cost-per-trip'),
     path('admin/fixed-costs/<str:country>/<str:month>/', fee_plan_views.fixed_cost_update,
          name='fixed-cost'),
+    path('admin/regulation/<str:country>/preview/', regulation_preview, name='regulation-preview'),
     path('admin/regulation/<str:country>/', regulation_update,
          name='regulation-update'),
     path('admin/vehicle-classes/', vehicle_classes, name='vehicle-classes'),
     path('admin/vehicle-classes/<int:pk>/', vehicle_class_detail, name='vehicle-class'),
     path('admin/fare-cards/overview/', fare_cards_overview, name='fare-cards-overview'),
+    path('admin/zones/<int:zone_id>/areas/', zone_areas_view, name='zone-areas'),
+    path('admin/zones/<int:zone_id>/areas/preview/', zone_areas_preview, name='zone-areas-preview'),
     path('admin/fare-cards/preview/', fare_cards_preview, name='fare-cards-preview'),
     path('', include(router.urls)),
 ]

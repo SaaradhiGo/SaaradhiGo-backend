@@ -239,7 +239,7 @@ def admin_trip_detail(request, trip_id):
 
     # ---- masked calls (25 Nov, owner): who called whom, when and for how long; never a number ----
     calls_payload = [
-        {'id': c.id, 'from_role': c.from_role, 'started_at': c.started_at.isoformat(),
+        {'id': c.id, 'from_role': c.from_role, 'to_role': c.to_role, 'started_at': c.started_at.isoformat(),
          'ended_at': c.ended_at.isoformat() if c.ended_at else None, 'duration_seconds': c.duration_seconds}
         for c in trip.calls.all().order_by('started_at')[:50]
     ]

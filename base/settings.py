@@ -674,6 +674,12 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'reports.rebuild_recent',
         'schedule': _crontab(minute='*/30'),
     },
+    'reports-daily-email-hourly': {
+        # 25 Nov (owner ruling): the daily report email, at 08:00 in each city (sent once SES is live).
+        # Runs at :20 so the :00 rollup of yesterday has finished.
+        'task': 'reports.daily_email',
+        'schedule': _crontab(minute=20),
+    },
     'reports-rebuild-week-nightly': {
         # The last 7 local days plus the weekly rider cohorts: a late settlement or refund lands
         # on an earlier day.

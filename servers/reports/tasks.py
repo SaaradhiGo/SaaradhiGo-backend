@@ -46,3 +46,11 @@ def rebuild_recent():
 @shared_task(name='reports.rebuild_week')
 def rebuild_week():
     return _sweep(NIGHTLY_DAYS, 'beat-nightly', cohorts=True)
+
+
+@shared_task(name='reports.daily_email')
+def daily_email():
+    """Hourly: the daily report email for cities where it is 08:00 now (sent once SES is live)."""
+    from .daily_email import send_due
+
+    return send_due()

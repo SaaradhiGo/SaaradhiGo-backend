@@ -461,7 +461,7 @@ def _ids(world):
         'ticket_id': world['ticket'].id, 'macro_id': world['macro'].id, 'sos_id': world['sos'].id,
         'alert_id': world['alert'].id, 'withdrawal_id': world['withdrawal'].id,
         'incident_id': world['sos'].incident_id, 'signal_id': world['signal'].id,
-        'pk': world['hyd_zone'].id, 'request_id': world['approval'].id,
+        'pk': world['hyd_zone'].id, 'zone_id': world['hyd_zone'].id, 'request_id': world['approval'].id,
         'rule_id': world['rule'].id,
         'template_id': world['notify_template'].id, 'campaign_id': world['notify_campaign'].id,
         'message_id': world['notify_message'].id, 'user_id': world['driver_user'].id,
@@ -597,6 +597,9 @@ INVENTORY = {
     # Zones and geofences (module 9): shapes, revisions and pending requests name no person
     # beyond the staff attribution block the renderer leaves alone.
     'api/v1/pricing/admin/zones/pending/': False,
+    'api/v1/pricing/admin/zones/<int:zone_id>/areas/': False,
+    'api/v1/safety/admin/rota/<str:city_code>/': False,
+    'api/v1/reports/admin/daily-email/': False,
     'api/v1/pricing/admin/zones/cities/': False,
     'api/v1/pricing/admin/zones/(?P<pk>[^/.]+)/history/': False,
     # Live Ops map (module 10): dots, trips and alert pins are built from whitelists

@@ -224,3 +224,22 @@ class DriverApplication(models.Model):
 
     def __str__(self):
         return f'driver application city={self.city_id}'
+
+
+class ProviderMode(models.Model):
+    """A provider's mode per type and country, switched from the console (25 Nov; provider_mode.py).
+    One active row per (type, country); a change is a new version through a second person."""
+
+    provider_type = models.CharField(max_length=16)
+    country = models.CharField(max_length=2)
+    mode = models.CharField(max_length=8)
+    is_active = models.BooleanField(default=True, db_index=True)
+    version = models.PositiveIntegerField(default=1)
+    changed_via_request_id = models.BigIntegerField(null=True, blank=True)
+    reason = models.TextField(blank=True, default='')
+    created_by_label = models.CharField(max_length=255, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['provider_type', 'country'], condition=models.Q(is_active=True),
+                                               name='provider_mode_one_active')]

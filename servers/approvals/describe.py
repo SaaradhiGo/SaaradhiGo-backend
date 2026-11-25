@@ -55,6 +55,10 @@ def _fare_card(payload):
     zone = z.name if z else (payload.get('zone_code') or 'a zone')
     if payload.get('kind') == 'rate_card_retire':
         return f'Retire the {vt} fare card in {zone}'
+    # 25 Nov (owner): the change itself, as the editor saw it ("Per km ₹23.00 → ₹23.50").
+    shown = (payload.get('display') or {}).get('changes') or []
+    if shown and payload.get('base_card'):
+        return f"{vt} fare card in {zone}: " + ', '.join(f"{c['label']} {c['from']} → {c['to']}" for c in shown[:4])
     bits = [f'{k.replace("_", " ")} {str(v).removesuffix(".00")}' for k, v in list(values.items())[:4]]
     return f"{vt} fare card in {zone}: {', '.join(bits)}" if bits else f'New {vt} fare card in {zone}'
 

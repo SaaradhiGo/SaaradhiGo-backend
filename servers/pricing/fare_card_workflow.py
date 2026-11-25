@@ -125,11 +125,14 @@ def propose_new_version(actor, *, zone, vehicle_type, values, base_card=None,
             'change on it.', code='NEWER_VERSION_EXISTS', field='card')
     now = timezone.now()
     eff = effective_from or now
+    old_values = card_values(base_card) if base_card else None
     payload = {'kind': KIND_CREATE, 'zone': zone.id, 'zone_code': zone.code,
                'vehicle_type': vehicle_type.id, 'vehicle_type_name': vehicle_type.type,
                'values': jsonable(values), 'effective_from': eff.isoformat(),
                'notes': notes or '', 'base_card': base_card.id if base_card else None,
-               'base_version': base_card.version if base_card else None}
+               'base_version': base_card.version if base_card else None,
+               # 25 Nov (owner): the checker sees what the editor saw.
+               'display': display(zone, old_values, values, eff)}
     return require_approval_or_execute(
         PRICING_CHANGE, actor=actor, country=country_of(zone), scope_node=zone.geo_node,
         target_type='rate_card', target_id=str(base_card.id) if base_card else f'new:{zone.id}',
@@ -149,6 +152,62 @@ def propose_retire(actor, *, card, reason='', http_request=None):
         PRICING_CHANGE, actor=actor, country=country_of(zone), scope_node=zone.geo_node,
         target_type='rate_card', target_id=str(card.id), payload=payload,
         idempotency_key=f'{KIND_RETIRE}:{card.id}', reason=reason, http_request=http_request)
+
+
+FIELD_WORDS = {'base_fare': 'Base fare', 'per_km_fare': 'Per km', 'per_min_fare': 'Per minute',
+               'min_fare': 'Minimum fare', 'night_surge_multiplier': 'Night multiplier',
+               'night_surge_start_hour': 'Night starts (hour)', 'night_surge_end_hour': 'Night ends (hour)',
+               'surge_cap_multiplier': 'Surge cap', 'gst_percent': 'Tax %'}
+
+
+def changes(zone, old_values, new_values):
+    from base.money import format_money
+
+    cur = zone.currency or 'INR'
+
+    def words(k, v):
+        if v is None:
+            return 'none'
+        if k in MONEY_FIELDS:
+            return format_money(Decimal(str(v)), cur)
+        text = str(v)
+        return text.rstrip('0').rstrip('.') if '.' in text else text
+    out = []
+    for k in VALUE_FIELDS:
+        a = (old_values or {}).get(k)
+        b = new_values.get(k)
+        if a is None or Decimal(str(a)) != Decimal(str(b)):
+            out.append({'label': FIELD_WORDS[k], 'from': words(k, a), 'to': words(k, b)})
+    return out
+
+
+def local_midnight(zone, day):
+    """The start of `day` (YYYY-MM-DD) in the zone's own time zone."""
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+
+    from base.countries import get_country
+
+    tz = ZoneInfo(getattr(zone, 'timezone_name', '') or get_country(zone.country).default_timezone)
+    return datetime.combine(date.fromisoformat(str(day)[:10]), datetime.min.time(), tzinfo=tz)
+
+
+def display(zone, old_values, new_values, eff):
+    from base.money import format_money, from_minor
+
+    p = preview_fares(zone, old_values, new_values)
+    cur = p['currency']
+
+    def m(v):
+        return '—' if v is None else format_money(from_minor(v, cur), cur)
+    unit = 'mi' if getattr(zone, 'distance_unit', '') == 'mi' else 'km'
+    rows = [[f"{r['distance_km']} km{' (' + str(round(r['distance_km'] * 0.621371, 1)) + ' mi)' if unit == 'mi' else ''}",
+             'at night' if r['period'] == 'night' else 'off-peak', m(r['old_minor']), m(r['new_minor'])]
+            for r in p['rows']]
+    return {'changes': changes(zone, old_values, new_values),
+            'impact': {'title': 'What a rider pays', 'columns': ['Trip', 'When', 'Today', 'After the change'],
+                       'rows': rows, 'note': f"Assumes {p['assumes']}."},
+            'effective': f"Starts {eff.isoformat()[:16].replace('T', ' ')} (zone time)."}
 
 
 # ---------------------------------------------------------------------------

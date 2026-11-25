@@ -1454,6 +1454,59 @@ def admin_trips_export_log(request):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, ScopedPermission('support.reply')])
+def admin_call(request, trip_id):
+    """POST /ride/admin/trips/<id>/call/  {to: rider|driver, reason}  (owner ruling, 25 Nov)
+
+    Support or Safety calls a trip's rider or driver through the same masked call bridge as the apps
+    (Exotel in India, Twilio in the US; the fake bridge until their keys exist). Neither side sees
+    the other's number. The bridge rings the staff member's own phone first, or returns a number to
+    dial. Audited; it appears in the trip's call log."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from servers.callbridge.models import CallSession
+    from servers.callbridge.providers import CallingUnavailable, get_provider
+
+    def _bad(code, message, field):
+        return error_response(code=code, message=message, field=field, issue=code,
+                              status=status.HTTP_400_BAD_REQUEST)
+
+    trip, refusal = _trip_for_write(request, trip_id, 'support.reply')
+    if refusal:
+        return refusal
+    to = str((request.data or {}).get('to') or '')
+    reason = str((request.data or {}).get('reason') or '').strip()
+    if to not in ('rider', 'driver'):
+        return _bad('INVALID_TO', 'to is rider or driver.', 'to')
+    if len(reason) < 5:
+        return _bad('REASON_REQUIRED', 'Say why you are calling, in a few words.', 'reason')
+    person = trip.user_id if to == 'rider' else (trip.driver_id.user_id if trip.driver_id_id else None)
+    staff_phone = getattr(request.user, 'phone_number', '') or ''
+    if person is None or not getattr(person, 'phone_number', ''):
+        return _bad('NO_NUMBER', f'This trip has no {to} number to call.', 'to')
+    if not staff_phone:
+        return _bad('NO_STAFF_NUMBER', 'Add a phone number to your own account first: the call rings your phone.',
+                    'general')
+    try:
+        provider = get_provider(getattr(trip.zone, 'country', None))
+    except CallingUnavailable:
+        return error_response(code='CALLING_UNAVAILABLE', message='Calling is not available right now.',
+                              field='general', issue='calling off', status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    session = CallSession.objects.create(trip=trip, from_role='staff', to_role=to, staff_id=request.user.pk,
+                                         provider=provider.name, expires_at=timezone.now() + timedelta(minutes=30))
+    bridge = provider.start(session, staff_phone, person.phone_number)
+    session.provider_ref = bridge.ref[:100]
+    session.save(update_fields=['provider_ref'])
+    record_admin_action(request, action='staff_call_started', target_type='trip', target_id=trip.id,
+                        after={'to': to, 'call_session_id': session.id, 'provider': provider.name}, reason=reason)
+    return success_response({'call': {'session_id': session.id, 'to': to, 'kind': bridge.kind,
+                                      'number': bridge.number or None, 'provider': provider.name,
+                                      'test': provider.name == 'fake'}}, status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('support.reply')])
 def admin_open_ticket(request, trip_id):
     """POST /ride/admin/trips/<id>/ticket/  {for: rider|driver, issue_type, description, priority?}
 

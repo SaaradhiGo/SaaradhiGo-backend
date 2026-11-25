@@ -325,6 +325,20 @@ def regulation_list(request):
                             status.HTTP_200_OK)
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, WRITE])
+def regulation_preview(request, country):
+    """POST admin/regulation/<country>/preview/  The Edit preview of a market rule change (25 Nov)."""
+    d = request.data or {}
+    try:
+        body = reg_flow.preview_regulation(
+            request.user, country=country, state_code=d.get('state_code') or '',
+            changes={name: d.get(name) for name in reg_flow.FIELDS if name in d}, clear=tuple(d.get('clear') or ()))
+    except ApprovalError as exc:
+        return exc.response()
+    return success_response(body, status.HTTP_200_OK)
+
+
 @api_view(['PUT'])
 @permission_classes([IsAuthenticated, WRITE])
 def regulation_update(request, country):
@@ -392,22 +406,32 @@ def fare_cards_overview(request):
                  .order_by('-version', '-effective_from')):
         by_key.setdefault((card.zone_id, card.vehicle_type_id), []).append(card)
     out = []
+    from servers.platform_ops.markets import city_of_zone, launch_state
+
+    from . import fee_plans
+    from .regulation import rules_for_zone
     for zone in zones:
         classes = []
+        # 25 Nov (owner): a zone shows its own market's classes; another market's are not "missing".
+        offered = rules_for_zone(zone).get('vehicle_classes') or [vt.type for vt in vts]
+        city = city_of_zone(zone)
+        state = launch_state(city)['launch_state'] if city is not None else 'live'
         for vt in vts:
             history = by_key.get((zone.id, vt.id), [])
             live = next((c for c in history if _card_row(c, now)['state'] == 'live'), None)
             scheduled = next((c for c in history if _card_row(c, now)['state'] == 'scheduled'),
                              None)
             classes.append({
-                'vehicle_type': vt.id, 'vehicle_type_name': vt.type,
+                'vehicle_type': vt.id, 'vehicle_type_name': vt.type, 'offered': vt.type in offered,
                 'live': _card_row(live, now) if live else None,
                 'scheduled': _card_row(scheduled, now) if scheduled else None,
                 'history': [_card_row(c, now) for c in history[:25]],
             })
         out.append({'zone': zone.id, 'code': zone.code, 'name': zone.name,
                     'country': zone.country, 'currency': zone.currency,
-                    'distance_unit': zone.distance_unit, 'classes': classes})
+                    'distance_unit': zone.distance_unit, 'classes': classes,
+                    'offered_classes': offered, 'launch_state': state,
+                    'local_today': fee_plans.local_day(zone.country, zone=zone).isoformat()})
     return success_response({'zones': out}, status.HTTP_200_OK)
 
 
@@ -452,6 +476,56 @@ def fare_cards_preview(request):
         'current_card': current.id if current else None,
         'preview': cards.preview_fares(zone, old, merged),
     }, status.HTTP_200_OK)
+
+
+
+# ---------------------------------------------------------------------------
+# Pickup points, restricted areas, a service area per class (25 Nov)
+# ---------------------------------------------------------------------------
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated, READ])
+def zone_areas_view(request, zone_id):
+    """GET admin/zones/<id>/areas/  The zone's areas. POST {kind, name, polygon_geojson, points?,
+    vehicle_type?, reason} or {remove: <area id>, reason} -> 202: a change for a second person."""
+    from . import zone_areas
+
+    zone = scoped_or_none(request.user, ServiceZone.objects.select_related('geo_node'), pk=zone_id)
+    if zone is None:
+        return _not_found('zone', 'zone')
+    if request.method == 'POST':
+        if not WRITE.has_permission(request, None):
+            return error_response(code='PERMISSION_DENIED', message=WRITE.message, field='general',
+                                  issue='pricing.write', status=status.HTTP_403_FORBIDDEN)
+        d = request.data or {}
+        try:
+            remove = None
+            if d.get('remove'):
+                remove = zone_areas.ZoneArea.objects.filter(pk=d['remove'], zone=zone, is_active=True).first()
+                if remove is None:
+                    return _not_found('area', 'remove')
+            outcome = zone_areas.propose(request.user, zone, d, str(d.get('reason') or ''), remove=remove,
+                                         http_request=request)
+        except ApprovalError as exc:
+            return exc.response()
+        return success_response(_approval_body(outcome), status.HTTP_202_ACCEPTED)
+    rows = zone_areas.ZoneArea.objects.filter(zone=zone).order_by('-is_active', 'kind', 'name')[:200]
+    return success_response({'zone': {'id': zone.id, 'code': zone.code, 'name': zone.name},
+                             'results': [a.as_dict() for a in rows]}, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, WRITE])
+def zone_areas_preview(request, zone_id):
+    from . import zone_areas
+
+    zone = scoped_or_none(request.user, ServiceZone.objects.select_related('geo_node'), pk=zone_id)
+    if zone is None:
+        return _not_found('zone', 'zone')
+    try:
+        return success_response(zone_areas.preview(zone, request.data or {}), status.HTTP_200_OK)
+    except ApprovalError as exc:
+        return exc.response()
 
 
 __all__ = ['DRAFT']

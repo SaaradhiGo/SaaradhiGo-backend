@@ -812,6 +812,8 @@ class TestPolicyChange:
         req_id = resp.json()['data']['approval_request']['id']
         assert resp.json()['data']['approval_request']['action_key'] == POLICY_CHANGE
         assert service.active_policy('IN', 'support.refund').id == before.id
+        shown = resp.json()['data']['approval_request']['payload']['display']
+        assert {'label': 'One person may approve up to', 'to': '₹1,000.00'}.items() <= shown['changes'][0].items()
 
         # Self-approval of one's own threshold change: refused.
         own = client(a).post(f'{API}/requests/{req_id}/approve/', {}, format='json')
@@ -1121,3 +1123,14 @@ def test_a_driver_with_no_payout_details_cannot_withdraw(geo):
     assert balance['payout_details_on_file'] is False
     assert balance['withdrawals_available'] is False
     assert not WithdrawalRequest.objects.filter(driver=d).exists()
+
+
+@pytest.mark.django_db
+def test_a_limit_preview_shows_the_change_in_words_25_nov(geo, policies):
+    a = make_admin('settings.preview@saaradhigo.test')
+    assign(a, 'super_admin', geo['GLOBAL'])
+    resp = client(a).post(f'{API}/policies/preview/', {
+        'country': 'IN', 'action_key': 'support.refund', 'limit_kind': 'money', 'currency': 'INR',
+        'maker_limit': 250_000}, format='json')
+    assert resp.status_code == 200, resp.content
+    assert resp.json()['data']['changes'][0]['to'] == '₹2,500.00'

@@ -230,6 +230,16 @@ def estimate_fare(request):
                 issue='No driver fee is approved for this class in this city',
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # 25 Nov (owner ruling): a class with its own service area is offered only inside it.
+        from servers.pricing.zone_areas import class_offered_at
+
+        if quote_zone is not None and not class_offered_at(quote_zone, vehicle_type, pickup_lat, pickup_long):
+            return error_response(
+                code='CLASS_NOT_OFFERED_HERE',
+                message='This ride type is not available at this pickup. Choose another ride type.',
+                field='vehicle_type', issue='Outside the class service area',
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
     # Server-side distance + duration (authoritative for fare).
     is_valid, validated_km, validated_min, msg = validate_distance(

@@ -400,7 +400,30 @@ def _setting_write(request, key):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, INTEGRATIONS])
 def integrations_status(request):
-    return success_response(integrations.status_page(), status.HTTP_200_OK)
+    from . import provider_mode
+
+    page = integrations.status_page()
+    # 25 Nov (owner ruling): each switchable row carries its approved mode (keys never shown).
+    for row in page.get('rows', []):
+        row['switchable'] = row.get('type') in provider_mode.SWITCHABLE and row.get('country') != 'all'
+        row['console_mode'] = provider_mode.mode_for(row.get('type'), row.get('country')) if row['switchable'] else None
+    return success_response(page, status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, ScopedPermission('platform.settings')])
+def integrations_mode(request):
+    """POST admin/integrations/mode/ {type, country, mode: live|test|off, reason} -> 202 for a second person."""
+    from . import provider_mode
+
+    d = request.data or {}
+    try:
+        outcome = provider_mode.propose(request.user, ptype=str(d.get('type') or ''), country=str(d.get('country') or ''),
+                                        mode=str(d.get('mode') or ''), reason=str(d.get('reason') or ''),
+                                        http_request=request)
+    except approvals.ApprovalError as exc:
+        return _refuse(exc)
+    return _outcome_response(outcome)
 
 
 @api_view(['GET'])

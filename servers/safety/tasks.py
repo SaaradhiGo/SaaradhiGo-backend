@@ -26,5 +26,9 @@ def evaluate_signals():
 def coverage_sweep():
     """Raise / clear `safety_coverage_gap` per live city. Idempotent."""
     from .coverage import sweep
+    from .rota import sweep_gaps
 
-    return sweep()
+    out = sweep()
+    # 25 Nov: nobody on the hourly rota this hour in a live city.
+    out['rota'] = sweep_gaps()
+    return out

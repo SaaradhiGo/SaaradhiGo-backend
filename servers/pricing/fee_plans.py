@@ -28,6 +28,7 @@ from typing import Optional
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
+from base.words import plural
 from .fee_plan_models import (
     ACTIVE, ARCHIVED, DAILY_PASS, FAIR_SHARE, PER_TRIP_FEE, PERCENT_COMMISSION, DriverDailyFee,
     DriverFeePlan,
@@ -241,8 +242,9 @@ def day_fee(plan, vehicle_type, fares_minor, *, day=None, first_trip_day=None, s
     if plan.waiver_first_days and day and first_trip_day and \
             day < first_trip_day + timedelta(days=plan.waiver_first_days):
         until = first_trip_day + timedelta(days=plan.waiver_first_days)
-        return DayFee(0, 'waiver', f'No fee: your first {plan.waiver_first_days} days are free '
-                                   f'(until {day_month(until, plan.country)}).', n, total)
+        first = ('your first day is free' if plan.waiver_first_days == 1
+                 else f'your first {plan.waiver_first_days} days are free')
+        return DayFee(0, 'waiver', f'No fee: {first} (until {day_month(until, plan.country)}).', n, total)
     if plan.earnings_floor_minor and total < plan.earnings_floor_minor:
         when = 'today' if label == 'Today' else f'on {label}'
         return DayFee(0, 'under_floor', f'No fee {when}: earnings under {_money(plan.earnings_floor_minor, cur)}.',
@@ -274,7 +276,7 @@ def day_fee(plan, vehicle_type, fares_minor, *, day=None, first_trip_day=None, s
         fee = sum(per_trip)
         reduced = raw_sum if reduced_any else None
         charged_trips = sum(1 for x in per_trip if x)
-        text = f'{label}: {charged_trips} trips × {_money(unit, cur)} = {_money(fee, cur)}'
+        text = f'{label}: {plural(charged_trips, "trip")} × {_money(unit, cur)} = {_money(fee, cur)}'
     if plan.daily_cap_minor is not None and fee > plan.daily_cap_minor:
         fee = round_minor(plan.daily_cap_minor, cur, ROUND_FLOOR)
         text = f'{text} (cap {_money(plan.daily_cap_minor, cur)})'
@@ -616,7 +618,7 @@ def plan_words(plan, vehicle_type, country=None):
         if plan.daily_cap_minor is not None:
             text += f', at most {_money(plan.daily_cap_minor, cur)} a day'
     if plan.waiver_first_days:
-        text += f'; first {plan.waiver_first_days} days free'
+        text += f'; first {plural(plan.waiver_first_days, "day")} free'
     return text
 
 

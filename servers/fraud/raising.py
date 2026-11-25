@@ -30,6 +30,7 @@ from django.utils import timezone
 from servers.command_centre.models import FRAUD_FLAG_HIGH, FRAUD_QUEUE_AGING, INFO, WARNING
 from servers.command_centre.services import acknowledge, raise_alert
 
+from base.words import plural
 from .models import (
     ACTIVE_STATUSES, DECIDED_STATUSES, EV_HIT, EV_RAISED, HIGH, SEVERITY_RANK, FlagEvent, RiskFlag,
 )
@@ -225,7 +226,7 @@ def check_queue_aging(now=None):
             continue
         where = f' in {node.name}' if node is not None else ''
         raise_alert(
-            FRAUD_QUEUE_AGING, title=f'{count} fraud flags waiting over {AGING_HOURS} hours{where}',
+            FRAUD_QUEUE_AGING, title=f"{plural(count, 'fraud flag')} waiting over {plural(AGING_HOURS, 'hour')}{where}",
             severity=INFO, payload={'aged_flags': count, 'hours': AGING_HOURS,
                                     'path': '/fraud?status=active&older_than_hours=48'},
             source_type='fraud_queue_aging', source_id=source_id, city=node)

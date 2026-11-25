@@ -7,6 +7,7 @@ from base.money import MinorUnitsAmount
 from base.db_indexes import PatternPrefixIndex
 from base.encrypted import EncryptedCharField
 from servers.driver.plates import normalised_plate_expression
+from base.words import plural
 # Create your models here.
 User=get_user_model()
 class Driver(models.Model):
@@ -661,7 +662,7 @@ class IncentiveQuest(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.title} ({self.target_trips} trips for {self.reward_amount})"
+        return f"{self.title} ({plural(self.target_trips, 'trip')} for {self.reward_amount})"
 
 
 # ---------------------------------------------------------------------------

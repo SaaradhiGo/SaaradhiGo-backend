@@ -9,7 +9,7 @@ from servers.pricing.views import (
 )
 
 
-from . import fee_plan_views
+from . import booking_fee_views, fee_plan_views
 from .commission_views import (
     commission_matrix, config_list, config_update, fare_cards_overview, fare_cards_preview, regulation_preview,
     zone_areas_preview, zone_areas_view,
@@ -45,6 +45,9 @@ urlpatterns = [
          name='commission-state-cap-update'),
     path('admin/regulation/', regulation_list, name='regulation'),
     path('admin/fee-plans/', fee_plan_views.fee_plans_list, name='fee-plans'),
+    path('admin/booking-fees/', booking_fee_views.booking_fees_list, name='booking-fees'),
+    path('admin/booking-fees/preview/', booking_fee_views.booking_fees_preview, name='booking-fees-preview'),
+    path('admin/booking-fees/edit/', booking_fee_views.booking_fees_edit, name='booking-fees-edit'),
     path('admin/fee-plans/simulate/', fee_plan_views.fee_plan_simulate, name='fee-plans-simulate'),
     path('admin/fee-plans/resolved/', fee_plan_views.fee_plans_resolved, name='fee-plans-resolved'),
     path('admin/fee-plans/<int:plan_id>/', fee_plan_views.fee_plan_detail, name='fee-plan'),

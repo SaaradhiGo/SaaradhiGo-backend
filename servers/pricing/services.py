@@ -472,21 +472,21 @@ _DEFAULTS = {
 
 
 def _rider_platform_fee(zone, vehicle_type, currency):
-    """The plan's rider platform fee for this class when the flag is on there, else 0."""
+    """The rider booking fee for this class when the flag is on there, else 0."""
     try:
         from base.money import from_minor
         from servers.platform_ops.flags import flag_enabled
         from servers.pricing.commission import city_node_of, country_code_of_zone
-        from servers.pricing.fee_plans import plan_for_zone
 
         if zone is None:
             return Decimal('0.00')
         if not flag_enabled('rider_platform_fee', city=city_node_of(getattr(zone, 'geo_node', None)),
                             country=country_code_of_zone(zone)):
             return Decimal('0.00')
-        # 22 Nov: per class, inherited like the driver fee (a city plan for cars, the state's for autos).
-        plan = plan_for_zone(zone, vehicle_type=vehicle_type)
-        minor = int((plan.amounts_for(vehicle_type).get('rider_platform_fee_minor') or 0)) if plan else 0
+        # 26 Nov (owner): its own setting per place and class; none by default on a daily-fee plan.
+        from servers.pricing.booking_fees import fee_minor_for_zone
+
+        minor = fee_minor_for_zone(zone, vehicle_type)
         return round_fare(from_minor(minor, currency), currency) if minor else Decimal('0.00')
     except Exception:  # noqa: BLE001 - a quote never fails over this line
         logger.exception('rider platform fee lookup failed')
@@ -770,7 +770,7 @@ def quote_fare(
     # and never part of the driver's earning (settlement takes it out again).
     rider_fee = _rider_platform_fee(zone, vehicle_type, currency)
     if rider_fee:
-        adjustments.append({'code': 'rider_platform_fee', 'label': 'Platform fee', 'amount': rider_fee})
+        adjustments.append({'code': 'rider_platform_fee', 'label': 'Booking fee', 'amount': rider_fee})
         total_fare = total_fare + rider_fee
 
     return {

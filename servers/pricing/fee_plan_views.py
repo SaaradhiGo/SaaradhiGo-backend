@@ -150,6 +150,21 @@ def fee_plan_edit(request, plan_id):
     return success_response(_approval_body(outcome), status.HTTP_202_ACCEPTED)
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, WRITE])
+def fee_plan_discard(request, plan_id):
+    """POST /pricing/admin/fee-plans/<id>/discard/ {reason}: a draft is discarded (26 Nov)."""
+    plan = _plan_or_404(plan_id)
+    if plan is None:
+        return error_response(code='NOT_FOUND', message='No such plan', field='id', issue='No such plan',
+                              status=status.HTTP_404_NOT_FOUND)
+    try:
+        flow.discard(request.user, plan, str((request.data or {}).get('reason') or ''))
+    except ApprovalError as exc:
+        return exc.response()
+    return success_response(flow.plan_dict(plan), status.HTTP_200_OK)
+
+
 # ---------------------------------------------------------------------------
 # The simulator
 # ---------------------------------------------------------------------------

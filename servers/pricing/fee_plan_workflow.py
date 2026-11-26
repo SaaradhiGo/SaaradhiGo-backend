@@ -239,3 +239,23 @@ def closed(request, outcome):
     record_admin_action(None, action='driver_fee_plan_returned_to_draft', target_type=KIND,
                         target_id=str(plan.id), after={'approval_request_id': request.id, 'outcome': outcome},
                         reason=request.decision_reason or f'request {outcome}')
+
+
+def discard(actor, plan, reason):
+    """26 Nov (owner): a draft nobody will send is discarded, with a reason (audited). It never was in
+    force, so nothing else changes; it leaves the list and stays in the history as discarded."""
+    from servers.admin_access.bridge import granted
+
+    if plan.status != DRAFT:
+        raise InvalidRequest('Only a draft can be discarded.', code='NOT_A_DRAFT', field='status')
+    if len((reason or '').strip()) < 5:
+        raise InvalidRequest('Say why, in a few words.', code='REASON_REQUIRED', field='reason')
+    node = _node(plan.country, plan.scope_code)
+    if node is None or not granted(actor, 'pricing.write', node)[0]:
+        raise NotPermitted('You do not hold pricing.write here.', code='SCOPE_NOT_HELD', field='scope_code')
+    plan.status = ARCHIVED
+    plan.note = (f'Discarded draft: {reason.strip()}')[:255]
+    plan.save(update_fields=['status', 'note'])
+    record_admin_action(None, action='driver_fee_plan_draft_discarded', target_type=KIND, target_id=str(plan.id),
+                        before={'status': DRAFT}, after={'status': ARCHIVED}, reason=reason.strip())
+    return plan

@@ -77,7 +77,7 @@ def _rider_fee_line(trip):
 
         fp = FarePricing.objects.filter(trip_id=trip).only('rider_platform_fee_minor', 'currency').first()
         if fp and fp.rider_platform_fee_minor:
-            return 'Platform fee (included above)', from_minor(fp.rider_platform_fee_minor, fp.currency or 'INR')
+            return 'Booking fee (included above)', from_minor(fp.rider_platform_fee_minor, fp.currency or 'INR')
     except Exception:  # noqa: BLE001 - a receipt must still render
         logger.exception('rider fee receipt line failed for trip=%s', getattr(trip, 'pk', None))
     return None

@@ -144,7 +144,7 @@ def from_receipt(trip, receipt, fare_pricing, tax_percent, tax_label):
         fee_minor = getattr(fare_pricing, 'rider_platform_fee_minor', 0) or 0
         if fee_minor:
             from base.money import from_minor
-            extras.append(('rider_platform_fee', 'Platform fee', from_minor(fee_minor, currency)))
+            extras.append(('rider_platform_fee', 'Booking fee', from_minor(fee_minor, currency)))
         # 14 Nov (US receipt): the city's flat per-trip fee is its own line, never left in the
         # residual (it read "Minimum fare adjustment"). The trip's snapshot when it has one, else
         # the zone's fee, which is what the quote added.

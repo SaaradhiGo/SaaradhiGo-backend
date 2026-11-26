@@ -105,7 +105,7 @@ class TestFareCardEdit:
         assert r.status_code == 202, r.content[:300]
         req = ApprovalRequest.objects.get(pk=body_of(r)['approval_request']['id'])
         shown = req.payload['display']
-        assert shown['changes'] == [{'label': 'Per km', 'from': '₹12.00', 'to': '₹13.00'}]
+        assert shown['changes'] == [{'label': 'Per km', 'from': '₹12', 'to': '₹13'}]
         assert [row[0] for row in shown['impact']['rows']][::2] == ['3 km', '8 km', '15 km']
         assert req.payload['effective_from'].startswith(f'{day}T00:00:00+05:30')
 
@@ -130,4 +130,17 @@ def test_the_approval_list_says_the_fare_change_in_words(world):  # noqa: F811
     maker, _ = world.super
     r = maker.patch(f'{BASE}/rate-cards/{card.id}/', {'per_km_fare': '13.00', 'reason': 'Fuel price'}, format='json')
     req = ApprovalRequest.objects.get(pk=body_of(r)['approval_request']['id'])
-    assert describe(req, 'title') == 'Sedan fare card in Hyderabad: Per km ₹12.00 → ₹13.00'
+    assert describe(req, 'title') == 'Sedan fare card in Hyderabad: Per km ₹12 → ₹13'
+
+
+def test_a_draft_is_discarded_with_a_reason_and_the_plan_in_force_is_untouched(india):  # noqa: F811
+    maker, _ = india.super
+    r = post(maker, f'{BASE}/fee-plans/', {'country': 'IN', 'plan_type': 'fair_share',
+                                          'amounts': {'sedan': {'per_trip_fee_minor': 900}}, 'reason': 'Try'}, expect=201)
+    draft = body_of(r)['id']
+    assert error_code(post(maker, f'{BASE}/fee-plans/{draft}/discard/', {'reason': ''})) == 'REASON_REQUIRED'
+    post(maker, f'{BASE}/fee-plans/{draft}/discard/', {'reason': 'Leftover test draft'}, expect=200)
+    assert DriverFeePlan.objects.get(pk=draft).status == 'archived'
+    india.plan.refresh_from_db()
+    assert india.plan.status == 'active'
+    assert error_code(post(maker, f'{BASE}/fee-plans/{india.plan.id}/discard/', {'reason': 'Not a draft'})) == 'NOT_A_DRAFT'

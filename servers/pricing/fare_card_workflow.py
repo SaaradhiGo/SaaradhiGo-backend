@@ -169,7 +169,7 @@ def changes(zone, old_values, new_values):
         if v is None:
             return 'none'
         if k in MONEY_FIELDS:
-            return format_money(Decimal(str(v)), cur)
+            return whole(format_money(Decimal(str(v)), cur), cur)
         text = str(v)
         return text.rstrip('0').rstrip('.') if '.' in text else text
     out = []
@@ -179,6 +179,11 @@ def changes(zone, old_values, new_values):
         if a is None or Decimal(str(a)) != Decimal(str(b)):
             out.append({'label': FIELD_WORDS[k], 'from': words(k, a), 'to': words(k, b)})
     return out
+
+
+def whole(text, currency):
+    """26 Nov (owner): INR in whole rupees ("₹45", not "₹45.00"); paise only when there are any."""
+    return text[:-3] if (currency or 'INR').upper() == 'INR' and text.endswith('.00') else text
 
 
 def local_midnight(zone, day):
@@ -199,7 +204,7 @@ def display(zone, old_values, new_values, eff):
     cur = p['currency']
 
     def m(v):
-        return '—' if v is None else format_money(from_minor(v, cur), cur)
+        return '—' if v is None else whole(format_money(from_minor(v, cur), cur), cur)
     unit = 'mi' if getattr(zone, 'distance_unit', '') == 'mi' else 'km'
     rows = [[f"{r['distance_km']} km{' (' + str(round(r['distance_km'] * 0.621371, 1)) + ' mi)' if unit == 'mi' else ''}",
              'at night' if r['period'] == 'night' else 'off-peak', m(r['old_minor']), m(r['new_minor'])]

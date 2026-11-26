@@ -50,6 +50,7 @@ urlpatterns = [
     path('admin/fee-plans/<int:plan_id>/', fee_plan_views.fee_plan_detail, name='fee-plan'),
     path('admin/fee-plans/<int:plan_id>/impact/', fee_plan_views.fee_plan_impact, name='fee-plan-impact'),
     path('admin/fee-plans/<int:plan_id>/edit/', fee_plan_views.fee_plan_edit, name='fee-plan-edit'),
+    path('admin/fee-plans/<int:plan_id>/discard/', fee_plan_views.fee_plan_discard, name='fee-plan-discard'),
     path('admin/fee-plans/<int:plan_id>/submit/', fee_plan_views.fee_plan_submit,
          name='fee-plan-submit'),
     path('admin/cost-per-trip/', fee_plan_views.cost_per_trip, name='cost-per-trip'),

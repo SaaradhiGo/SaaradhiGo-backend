@@ -524,6 +524,10 @@ def propose(actor, country, data, *, http_request=None, system_label=''):
     if actor is not None and not granted(actor, 'pricing.write', node)[0]:
         raise NotPermitted('You do not hold pricing.write here.', code='SCOPE_NOT_HELD', field='scope_code')
     code = body['code']
+    if not code and TripChargeItem.objects.filter(
+            country=country, status=ACTIVE, kind=body['item']['kind'], name__iexact=body['item']['name']).exists():
+        raise InvalidRequest('An item with this name and kind is already in the catalogue: edit that one.',
+                             code='DUPLICATE_ITEM', field='name')
     if not code:
         base = _slug(body['item']['name'])
         taken = set(TripChargeItem.objects.filter(country=country, code__startswith=base)

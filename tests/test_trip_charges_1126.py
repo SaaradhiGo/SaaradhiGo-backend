@@ -267,6 +267,9 @@ class TestTheCatalogueEditor:
             assert r.status_code == 400 and error_code(r) == code, (extra, r.content[:200])
         r = post(maker, f'{BASE}/trip-charges/edit/', self.BODY)
         assert error_code(r) == 'REASON_REQUIRED'
+        airport(applies_on='pickup')
+        r = post(maker, f'{BASE}/trip-charges/edit/', {**self.BODY, 'reason': 'Second copy'})
+        assert error_code(r) == 'DUPLICATE_ITEM'
 
     def test_a_per_km_rate_may_carry_paise_and_production_takes_no_sample(self, world, settings):
         settings.IS_PRODUCTION = True
@@ -284,3 +287,4 @@ class TestTheCatalogueEditor:
         assert row['sample'] and row['amount_words']['sedan'] == '₹100' and row['who_words'].startswith('Rider')
         assert india['toll_checks'] == {'calls_this_month': 0, 'list_cost_usd': '0.0000'}
         assert any(p['scope_code'] == 'IN-TG-HYD' for p in india['places'])
+        assert 'sedan' in india['place_classes']['IN-TG-HYD']

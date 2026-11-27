@@ -1,8 +1,9 @@
 """Trip extra charges (owner brief, 26 Nov): what the planned route crosses, priced before booking.
 
 The quote matches the route against the catalogue (`TripChargeItem`) and adds each charge the rider
-pays as its own line inside the locked total. Extras are passed through: no commission or fee is
-taken on them (settlement removes them from the gross). Values are ops-entered; Google's toll price
+pays as its own line inside the locked total. Tolls, airport and venue fees and permits are passed
+through: no commission or fee is taken on them (settlement removes them from the gross). Waiting is
+not: it is the driver's earnings for the time, so the driver fee or commission applies (review 27 Nov). Values are ops-entered; Google's toll price
 is only a cross-check (`toll_check`). Off unless the `trip_extras` flag is on for the city.
 A catalogue change is a `pricing.change` request (kind `trip_charge_item`): a second person approves.
 """
@@ -18,9 +19,9 @@ from servers.admin_audit.services import record_admin_action
 from servers.approvals.actions import PRICING_CHANGE
 from servers.approvals.service import InvalidRequest, NotPermitted, require_approval_or_execute
 
-from .trip_charge_models import (ACTIVE, AIRPORT, ARCHIVED, DROP, KINDS, PERMIT, PICKUP, PICKUP_OR_DROP,
-                                 RIDER, TOLL_KINDS, TOLL_PLAZA, TOLLED_ROAD, VENUE, WAITING, WHO_PAYS,
-                                 TripChargeItem)
+from .trip_charge_models import (ACTIVE, AIRPORT, ARCHIVED, AT_GATE, COLLECTIONS, DROP, KINDS, PERMIT,
+                                 PICKUP, PICKUP_OR_DROP, PLATFORM_REMITS, RIDER, TOLL_KINDS, TOLL_PLAZA,
+                                 TOLLED_ROAD, VENUE, WAITING, WHO_PAYS, TripChargeItem)
 
 KIND = 'trip_charge_item'
 FLAG = 'trip_extras'
@@ -30,8 +31,35 @@ EARTH_M = 6371008.8
 MIN_TOLLED_KM = Decimal('0.3')
 KIND_WORDS = {TOLL_PLAZA: 'Toll plaza', TOLLED_ROAD: 'Tolled road', AIRPORT: 'Airport', VENUE: 'Venue',
               WAITING: 'Waiting', PERMIT: 'Interstate permit'}
-WHO_WORDS = {RIDER: 'Rider pays (passed through)', 'driver': 'Driver pays (not on the fare)',
+WHO_WORDS = {RIDER: 'Rider pays · passed through', 'driver': 'Driver pays (not on the fare)',
              'platform': 'SaaradhiGo pays (not on the fare)'}
+#: Waiting is the driver's earnings for the time, never a pass-through (review 27 Nov).
+WAITING_WHO_WORDS = 'Rider pays · goes to the driver'
+COLLECTION_WORDS = {AT_GATE: 'Driver pays at the gate (reimbursed)',
+                    PLATFORM_REMITS: 'SaaradhiGo pays the authority (permit)'}
+#: Step 3 (driver reimbursement) live? Until it is, production never charges trip extras: the
+#: flag is held off there and the launch checklist blocks a city that has it on (review 27 Nov).
+DRIVER_REIMBURSEMENT_LIVE = False
+
+
+def who_words(kind, who):
+    if who == RIDER and kind == WAITING:
+        return WAITING_WHO_WORDS
+    return WHO_WORDS.get(who, who)
+
+
+def collection_of(item):
+    """Who pays the authority; items made before the field read as the kind's default."""
+    if item.collection:
+        return item.collection
+    return '' if item.kind == WAITING else PLATFORM_REMITS if item.kind == PERMIT else AT_GATE
+
+
+def production_hold():
+    """True while production must keep `trip_extras` off (driver reimbursement is not live)."""
+    from django.conf import settings
+
+    return bool(getattr(settings, 'IS_PRODUCTION', False)) and not DRIVER_REIMBURSEMENT_LIVE
 APPLIES_WORDS = {PICKUP: 'Pickups inside', DROP: 'Drops inside', PICKUP_OR_DROP: 'Pickups or drops inside'}
 UNIT_WORDS = {TOLLED_ROAD: '/km', WAITING: '/min'}
 #: Typo guards per unit, in whole currency units (not a policy).
@@ -179,11 +207,14 @@ def match(items, points, pickup, drop, vehicle_type, currency):
                       'kind': item.kind, 'label': rider_label(item), 'amount_minor': int(minor),
                       'amount': from_minor(int(minor), currency), 'who_pays': item.who_pays,
                       'estimated': item.kind in TOLL_KINDS, 'sample': item.sample,
-                      'km': str(km) if km is not None else None, 'remit_to': item.remit_to or ''})
+                      'km': str(km) if km is not None else None, 'remit_to': item.remit_to or '',
+                      'collection': collection_of(item)})
     return lines
 
 
 def _enabled(zone):
+    if production_hold():
+        return False
     try:
         from servers.platform_ops.flags import flag_enabled
         from servers.pricing.commission import city_node_of, country_code_of_zone
@@ -263,7 +294,8 @@ def item_dict(r):
             'kind_words': KIND_WORDS.get(r.kind, r.kind), 'name': r.name, 'scope_code': r.scope_code,
             'geometry': r.geometry, 'radius_m': r.radius_m, 'corridor_m': r.corridor_m,
             'applies_on': r.applies_on, 'applies_words': APPLIES_WORDS.get(r.applies_on, ''),
-            'who_pays': r.who_pays, 'who_words': WHO_WORDS.get(r.who_pays, r.who_pays),
+            'who_pays': r.who_pays, 'who_words': who_words(r.kind, r.who_pays),
+            'collection': collection_of(r), 'collection_words': COLLECTION_WORDS.get(collection_of(r), ''),
             'currency': r.currency, 'amounts': r.amounts,
             'amount_words': {vt: amount_words(r.kind, m, r.currency) for vt, m in (r.amounts or {}).items()},
             'free_minutes': r.free_minutes, 'remit_to': r.remit_to, 'sample': r.sample,
@@ -357,7 +389,12 @@ def _clean(country, data, current):
         raise InvalidRequest('Say who pays.', code='INVALID_WHO_PAYS', field='who_pays')
     out = {'kind': kind, 'name': name, 'scope_code': scope_code, 'who_pays': who,
            'geometry': _clean_geometry(kind, data.get('geometry', current.geometry if current else None)),
-           'radius_m': 0, 'corridor_m': 0, 'applies_on': '', 'free_minutes': 0, 'remit_to': ''}
+           'radius_m': 0, 'corridor_m': 0, 'applies_on': '', 'free_minutes': 0, 'remit_to': '', 'collection': ''}
+    if kind == WAITING and who != RIDER:
+        raise InvalidRequest('Waiting is paid by the rider and goes to the driver.', code='INVALID_WHO_PAYS',
+                             field='who_pays')
+    if kind in TOLL_KINDS:
+        out['collection'] = AT_GATE
     if kind == TOLL_PLAZA:
         out['radius_m'] = _num(data.get('radius_m', current.radius_m if current else 60), 'radius_m', 20, 500,
                                'The plaza radius in metres')
@@ -369,10 +406,20 @@ def _clean(country, data, current):
         if out['applies_on'] not in APPLIES_WORDS:
             raise InvalidRequest('Say whether it is charged on pickups, drops or both.', code='INVALID_APPLIES_ON',
                                  field='applies_on')
+        out['collection'] = data.get('collection', (current.collection if current else '') or AT_GATE)
+        if out['collection'] not in COLLECTIONS:
+            raise InvalidRequest('Say who pays the authority: the driver at the gate, or SaaradhiGo (permit).',
+                                 code='INVALID_COLLECTION', field='collection')
+        if out['collection'] == PLATFORM_REMITS:
+            out['remit_to'] = str(data.get('remit_to', current.remit_to if current else '') or '').strip()[:120]
+            if len(out['remit_to']) < 3:
+                raise InvalidRequest('Say which authority SaaradhiGo pays.', code='REMIT_TO_REQUIRED',
+                                     field='remit_to')
     if kind == WAITING:
         out['free_minutes'] = _num(data.get('free_minutes', current.free_minutes if current else 3),
                                    'free_minutes', 0, 30, 'Free waiting minutes')
     if kind == PERMIT:
+        out['collection'] = PLATFORM_REMITS
         out['remit_to'] = str(data.get('remit_to', current.remit_to if current else '') or '').strip()[:120]
         if len(out['remit_to']) < 3:
             raise InvalidRequest('Say who the permit charge is paid to.', code='REMIT_TO_REQUIRED', field='remit_to')
@@ -430,7 +477,8 @@ def _current(country, code):
 
 FIELD_WORDS = (('name', 'Name'), ('who_pays', 'Who pays'), ('applies_on', 'Charged on'),
                ('radius_m', 'Plaza radius (m)'), ('corridor_m', 'Road corridor (m)'),
-               ('free_minutes', 'Free waiting minutes'), ('remit_to', 'Paid to'))
+               ('free_minutes', 'Free waiting minutes'), ('collection', 'Who pays the authority'),
+               ('remit_to', 'Paid to'))
 
 
 def preview(country, data):
@@ -462,9 +510,10 @@ def preview(country, data):
         changes.append({'label': 'New item', 'from': '—', 'to': f"{KIND_WORDS[item['kind']]}: {item['name']}"})
     else:
         for key, word in FIELD_WORDS:
-            before, after = getattr(current, key), item[key]
+            before, after = (collection_of(current) if key == 'collection' else getattr(current, key)), item[key]
             if before != after and (before or after):
-                show = (WHO_WORDS if key == 'who_pays' else APPLIES_WORDS if key == 'applies_on' else {})
+                show = (WHO_WORDS if key == 'who_pays' else APPLIES_WORDS if key == 'applies_on'
+                        else COLLECTION_WORDS if key == 'collection' else {})
                 changes.append({'label': f'{current.name}: {word.lower()}', 'from': str(show.get(before, before)),
                                 'to': str(show.get(after, after))})
         if current.geometry != item['geometry']:
@@ -483,12 +532,17 @@ def preview(country, data):
                             'to': amount_words(item['kind'], after, currency)})
         rows.append([edit_pattern.class_word(vt), amount_words(item['kind'], before, currency),
                      amount_words(item['kind'], after, currency)])
-    payer = WHO_WORDS[item['who_pays']]
+    payer = who_words(item['kind'], item['who_pays'])
     note = ('Passed through on the rider\'s fare as its own line, inside the locked total. '
             'No commission or fee is taken on it.' if item['who_pays'] == RIDER else
             f'{payer}. It is not added to the rider\'s fare.')
     if item['kind'] == WAITING:
-        note = 'Waiting is charged only when the rider keeps the driver waiting past the free minutes.'
+        note = ('Waiting is charged only when the rider keeps the driver waiting past the free minutes. It is '
+                "the driver's earnings for that time: the driver fee or commission applies, as on the fare.")
+    elif item['who_pays'] == RIDER and item['collection'] == PLATFORM_REMITS:
+        note += f" SaaradhiGo pays it to {item['remit_to']}."
+    elif item['who_pays'] == RIDER:
+        note += ' The driver pays it at the gate and is reimbursed in full.'
     return {'op': op, 'code': code, 'changes': changes, 'item': item,
             'impact': {'title': 'What this charges', 'columns': ['Class', 'Today', 'After the change'],
                        'rows': rows, 'note': note},
@@ -580,5 +634,5 @@ def execute(request_row):
     return {'trip_charge_item_id': row.id, 'effective_from': start.isoformat()}
 
 
-__all__ = ['FLAG', 'KIND', 'LINE_CODE', 'catalogue', 'estimate', 'execute', 'history', 'match', 'preview',
+__all__ = ['DRIVER_REIMBURSEMENT_LIVE', 'FLAG', 'production_hold', 'who_words', 'KIND', 'LINE_CODE', 'catalogue', 'estimate', 'execute', 'history', 'match', 'preview',
            'propose', 'stored_lines', 'waiting_terms']

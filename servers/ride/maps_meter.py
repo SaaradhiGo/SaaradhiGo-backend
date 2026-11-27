@@ -26,6 +26,8 @@ TTL_SECONDS = 40 * 24 * 3600
 SKUS = (
     'places_autocomplete_session', 'places_autocomplete', 'places_details',
     'geocoding', 'routes_pro', 'routes_essentials', 'directions_legacy',
+    # 26 Nov: Routes with TOLLS (the trip charges cross-check), billed at a higher tier.
+    'routes_tolls',
 )
 #: Billed on the client but counted here (the web's map loads).
 CLIENT_SKUS = ('dynamic_maps',)

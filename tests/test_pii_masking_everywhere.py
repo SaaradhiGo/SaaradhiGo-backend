@@ -593,6 +593,8 @@ INVENTORY = {
     # Driver fee plans and open books (9 Nov): plan values, the staff label, money totals; no person.
     'api/v1/pricing/admin/fee-plans/': False,
     'api/v1/pricing/admin/booking-fees/': False,
+    'api/v1/pricing/admin/trip-charges/': False,
+    'api/v1/pricing/admin/trip-charges/history/': False,
     'api/v1/pricing/admin/cost-per-trip/': False,
     'api/v1/pricing/admin/fare-cards/overview/': False,
     # Zones and geofences (module 9): shapes, revisions and pending requests name no person

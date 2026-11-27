@@ -50,6 +50,16 @@ def _fare_lines(fare, pickup_lat=None, pickup_lng=None):
         return None
 
 
+def rider_extras(fare):
+    """The trip extras the rider pays, as the apps read them (money as strings)."""
+    from base.money import from_minor
+
+    currency = fare.get('currency') or 'INR'
+    return [{'kind': x['kind'], 'label': x['label'], 'amount': str(from_minor(x['amount_minor'], currency)),
+             'estimated': x['estimated'], 'sample': x['sample'], 'km': x.get('km')}
+            for x in fare.get('trip_extras') or [] if x.get('who_pays') == 'rider']
+
+
 def _money_str(value):
     """Money as a string, or None when there is genuinely no value.
 
@@ -266,6 +276,8 @@ def estimate_fare(request):
         # None for a guest. `estimate_amount` takes it as optional and
         # only uses it to record a demand ping for surge.
         rider_id=getattr(request.user, 'id', None),
+        drop_lat=destination_lat,
+        drop_long=destination_long,
     )
 
     from .pickup_eta import pickup_eta
@@ -349,6 +361,10 @@ def estimate_fare(request):
         # 12 Nov: "How this fare is worked out" -- the lines before tax, the taxable value, the
         # tax and the total, adding up to the paisa, built as the tax invoice builds them.
         'fare_lines': _fare_lines(fare, pickup_lat, pickup_long),
+        # 26 Nov: the tolls, airport fees and permits the rider pays on this route (each already a
+        # `trip_extra` line above, inside estimated_fare), and the waiting rule for the class.
+        'trip_extras': rider_extras(fare),
+        'waiting_terms': fare.get('waiting_terms'),
         'vehicle_type': fare['vehicle_type'],
         'pricing_source': fare['source'],
         'distance_km': distance_km,

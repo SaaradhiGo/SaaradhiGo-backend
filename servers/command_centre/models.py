@@ -137,6 +137,10 @@ FRAUD_PAYOUT_HOLD_EXPIRED = 'fraud.payout_hold_expired'
 #: 25 Nov (owner): an approval request waiting over 3 days escalates to Super Admin, once per
 #: request; cleared when it is decided (approvals/escalation.py).
 APPROVAL_ESCALATED = 'approval.escalated'
+#: 26 Nov (owner): Google's toll price differs from the trip charges catalogue by more than 10% on a
+#: quoted route, or a common route has a toll the catalogue lacks. City Ops, one per route.
+TOLL_MISMATCH = 'pricing.toll_mismatch'
+TOLL_MISSING = 'pricing.toll_missing'
 FRAUD_ALERT_KINDS = frozenset({FRAUD_FLAG_HIGH, FRAUD_QUEUE_AGING, FRAUD_PAYOUT_HOLD_EXPIRED})
 #: Capabilities, besides `ACK_PERMISSION`'s, that may also acknowledge a kind.
 ACK_ALSO = {PROMOTION_BUDGET_EXHAUSTED: ('incentive.write',),
@@ -150,6 +154,8 @@ DATA_INTEGRITY = 'platform.data_integrity'
 SCHEDULER_STOPPED = 'platform.scheduler_stopped'
 PLATFORM_ALERT_KINDS = frozenset({NOTIFY_PROVIDER_FAILING, MAPS_BUDGET, DATA_INTEGRITY, SCHEDULER_STOPPED})
 ACK_PERMISSION = {
+    TOLL_MISMATCH: 'pricing.write',
+    TOLL_MISSING: 'pricing.write',
     APPROVAL_ESCALATED: 'platform.settings',
     NOTIFY_PROVIDER_FAILING: 'platform.settings',
     MAPS_BUDGET: 'platform.settings',

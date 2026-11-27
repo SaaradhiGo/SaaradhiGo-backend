@@ -62,7 +62,7 @@ class TestResolution:
         # The first real flag came with its reader (MVAG 2025, ride.cancellation_penalty).
         # `driver_rebate` is the one exception: the owner asked for it (off) ahead of its reader.
         assert sorted(FeatureFlag.objects.values_list('key', flat=True)) == [
-            'cancellation_penalty', 'driver_rebate', 'rider_platform_fee']
+            'cancellation_penalty', 'driver_rebate', 'rider_platform_fee', 'trip_extras']
 
 
 class TestChangeWithoutAChecker:

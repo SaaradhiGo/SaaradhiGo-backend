@@ -224,6 +224,11 @@ def _rider_platform_fee_minor(trip):
         return 0
 
 
+def trip_extras_minor(trip):
+    """The rider-paid trip extras (tolls, airport fees, permits) locked into this fare; 0 when none."""
+    return int(getattr(trip, 'trip_extras_minor', None) or 0)
+
+
 def settlement_amounts(trip):
     """The settlement's arithmetic for a trip, with no side effects.
 
@@ -248,6 +253,8 @@ def settlement_amounts(trip):
                    else trip.estimated_fare_minor or 0)
     # The rider platform fee (9 Nov, flag off) is the platform's, never part of the earning.
     gross_minor -= _rider_platform_fee_minor(trip)
+    # Trip extras (26 Nov) are passed through: never commissioned, never part of the earning.
+    gross_minor -= trip_extras_minor(trip)
 
     # US (additive-tax) trips: sales tax and the per-trip regulatory fee are PASS-THROUGH (owner
     # ruling, AUDIT 27.62 item 1). They are collected from the rider and remitted by SaaradhiGo,

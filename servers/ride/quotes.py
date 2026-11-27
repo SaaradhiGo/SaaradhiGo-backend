@@ -118,4 +118,12 @@ def public(fare, quote_id, expires_at):
             {'code': a['code'], 'label': a['label'], 'amount': str(a['amount'])}
             for a in fare.get('fare_adjustments', [])
         ],
+        'trip_extras': _rider_extras(fare),
+        'waiting_terms': fare.get('waiting_terms'),
     }
+
+
+def _rider_extras(fare):
+    from servers.ride.views import rider_extras
+
+    return rider_extras(fare)

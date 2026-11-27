@@ -208,8 +208,18 @@ def _is_night_hours():
     return current_hour >= 23 or current_hour < 5
 
 
+def _cached_polyline(pickup_lat, pickup_long, drop_lat, drop_long):
+    """The route already fetched for this quote (validate_distance), or '' (straight line)."""
+    if None in (pickup_lat, pickup_long, drop_lat, drop_long):
+        return ''
+    from servers.ride.route_cache import peek
+
+    route = peek(pickup_lat, pickup_long, drop_lat, drop_long)
+    return (route or {}).get('polyline') or ''
+
+
 def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=None,
-                    pickup_long=None, rider_id=None, record_demand=False):
+                    pickup_long=None, rider_id=None, record_demand=False, drop_lat=None, drop_long=None):
     """Estimate fare for a trip.
 
     Backwards-compatibility wrapper. The fare logic lives in
@@ -235,6 +245,9 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=Non
         rider_id=rider_id,
         # Only a booking marks demand. See quote_fare(record_demand=...).
         record_demand=record_demand,
+        drop_lat=drop_lat,
+        drop_lon=drop_long,
+        route_polyline=_cached_polyline(pickup_lat, pickup_long, drop_lat, drop_long),
     )
     # Preserve the legacy dict shape for existing consumers.
     return {
@@ -268,6 +281,11 @@ def estimate_amount(distance_km, duration_min, vehicle_type=None, pickup_lat=Non
         'tax_amount': fare.get('tax_amount'),
         'per_trip_fee': fare.get('per_trip_fee'),
         'distance_unit': fare.get('distance_unit'),
+        # 26 Nov: tolls, airport fees and permits on this route (every payer), the rider's share in
+        # minor units (inside total_fare), and the waiting rule. Empty unless `trip_extras` is on.
+        'trip_extras': fare.get('trip_extras') or [],
+        'trip_extras_minor': fare.get('trip_extras_minor') or 0,
+        'waiting_terms': fare.get('waiting_terms'),
     }
 
 def get_trip_details(trip_id):

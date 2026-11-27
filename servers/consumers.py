@@ -1205,7 +1205,8 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 if quote is None:
                     fresh = estimate_amount(
                         validated_km, validated_min, vehicle_type=vehicle_type,
-                        pickup_lat=pickup_lat, pickup_long=pickup_lng, rider_id=self.user.id)
+                        pickup_lat=pickup_lat, pickup_long=pickup_lng, rider_id=self.user.id,
+                        drop_lat=destination_lat, drop_long=destination_lng)
                     fresh_id, fresh_expires = quotes.issue(
                         fresh, rider_id=self.user.id,
                         pickup=(pickup_lat, pickup_lng), drop=(destination_lat, destination_lng),
@@ -1231,6 +1232,8 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                 rider_id=self.user.id,
                 # This IS a booking, so it counts toward demand for surge.
                 record_demand=True,
+                drop_lat=destination_lat,
+                drop_long=destination_lng,
             )
             if quote is not None:
                 # Demand was recorded above; the price is the quote's, to the paisa.
@@ -1272,6 +1275,7 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     estimated_duration_min=Decimal(str(dur)) if dur else None,
                     surge_multiplier=fare['surge_multiplier'],
                     requested_vehicle_type=requested_vt,
+                    trip_extras_minor=int(fare.get('trip_extras_minor') or 0) or None,
                     payment_method=payment_method,
                     **commission_snapshot,
                 )
@@ -1281,6 +1285,9 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     trip_id=trip,
                     rider_platform_fee_minor=(_rpf_minor(fare['rider_platform_fee'], fare['currency'])
                                               if fare.get('rider_platform_fee') else None),
+                    # 26 Nov: the trip extras locked with the fare (every payer) and the rider's share.
+                    trip_extras=_stored_extras(fare.get('trip_extras')),
+                    trip_extras_minor=int(fare.get('trip_extras_minor') or 0) or None,
                     base_fare=fare['base_fare'],
                     distance_fare=fare['distance_fare'],
                     time_fare=fare['time_fare'],
@@ -1492,6 +1499,15 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
             send_push_notification(driver.user_id, title, body, data)
         except Exception as e:
             logger.error(f"Failed to send push to driver {driver_id}: {str(e)}")
+
+
+def _stored_extras(lines):
+    """Trip extras as FarePricing keeps them (JSON, minor units), or None when there are none."""
+    if not lines:
+        return None
+    from servers.pricing.trip_charges import stored_lines
+
+    return stored_lines(lines)
 
 
 def _arrival_fields(source):

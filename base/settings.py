@@ -680,6 +680,12 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'reports.daily_email',
         'schedule': _crontab(minute=20),
     },
+    'pricing-toll-sample-nightly': {
+        # 26 Nov (owner): the most common routes checked against Google's toll price, to find tolls
+        # missing from the trip charges catalogue (ops alert). At most TOLL_SAMPLE_ROUTES a country.
+        'task': 'pricing.toll_sample_nightly',
+        'schedule': _crontab(hour=21, minute=40),
+    },
     'reports-rebuild-week-nightly': {
         # The last 7 local days plus the weekly rider cohorts: a late settlement or refund lands
         # on an earlier day.

@@ -355,6 +355,11 @@ def test_the_task_inventory_is_what_the_runbook_says_it_is():
         # charges, is at most one per 6 hours, and Stripe's idempotency key is per trip and attempt,
         # so a doubled run charges once. No retry: the next hour is the retry.
         'payments.collect_unpaid_trips',
+        # Trip charges (26 Nov). No acks_late, no retry: a toll cross-check reads Google and may raise
+        # one ops alert per route (deduplicated by source); the nightly sample is the same check for
+        # the most common routes. A lost run means one check fewer; nothing is charged or settled.
+        'pricing.check_route_tolls',
+        'pricing.toll_sample_nightly',
     }
     actual = set(tasks)
     added = actual - expected

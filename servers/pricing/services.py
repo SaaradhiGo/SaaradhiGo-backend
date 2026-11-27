@@ -493,6 +493,24 @@ def _rider_platform_fee(zone, vehicle_type, currency):
         return Decimal('0.00')
 
 
+def _trip_extras(zone, vehicle_type, pickup_lat, pickup_lon, drop_lat, drop_lon, polyline, currency, at):
+    """The trip charges catalogue's lines for this route; empty on any failure (a quote never fails)."""
+    empty = {'lines': [], 'rider_minor': 0, 'waiting': None, 'crosses_toll': False}
+    if zone is None or None in (pickup_lat, pickup_lon, drop_lat, drop_lon):
+        return empty
+    try:
+        from servers.pricing import toll_check, trip_charges
+
+        pickup, drop = (float(pickup_lat), float(pickup_lon)), (float(drop_lat), float(drop_lon))
+        out = trip_charges.estimate(zone, vehicle_type, pickup, drop, polyline or '', currency, at)
+        if out['crosses_toll']:
+            toll_check.schedule(zone, pickup, drop)
+        return out
+    except Exception:  # noqa: BLE001
+        logger.exception('trip extras lookup failed')
+        return empty
+
+
 def quote_fare(
     distance_km,
     duration_min,
@@ -502,6 +520,9 @@ def quote_fare(
     rider_id: Optional[int] = None,
     at=None,
     record_demand: bool = False,
+    drop_lat=None,
+    drop_lon=None,
+    route_polyline: str = '',
 ) -> dict:
     """Produce a complete fare quote.
 
@@ -773,7 +794,21 @@ def quote_fare(
         adjustments.append({'code': 'rider_platform_fee', 'label': 'Booking fee', 'amount': rider_fee})
         total_fare = total_fare + rider_fee
 
+    # Trip extras (26 Nov, flag `trip_extras`): tolls, airport fees, permits the route meets. The
+    # rider's are passed through as their own lines inside the locked total, after tax (never taxed).
+    extras = _trip_extras(zone, vehicle_type, pickup_lat, pickup_lon, drop_lat, drop_lon, route_polyline,
+                          currency, at)
+    for line in extras['lines']:
+        if line['who_pays'] == 'rider':
+            adjustments.append({'code': 'trip_extra', 'label': line['label'], 'amount': line['amount'],
+                                'item_code': line['item_code'], 'estimated': line['estimated'],
+                                'sample': line['sample']})
+            total_fare = total_fare + line['amount']
+
     return {
+        'trip_extras': extras['lines'],
+        'trip_extras_minor': extras['rider_minor'],
+        'waiting_terms': extras['waiting'],
         'rider_platform_fee': rider_fee,
         'total_fare': total_fare,
         # The market this quote was priced in. Without it a client cannot know

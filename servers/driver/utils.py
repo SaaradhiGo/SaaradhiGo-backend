@@ -224,6 +224,18 @@ def _rider_platform_fee_minor(trip):
         return 0
 
 
+def trip_extras_minor(trip):
+    """The rider-paid trip extras (tolls, airport fees, permits) inside this fare; 0 when none."""
+    try:
+        from servers.ride.models import FarePricing
+
+        fp = FarePricing.objects.filter(trip_id=trip, trip_extras_minor__isnull=False).only(
+            'trip_extras_minor').order_by('id').first()
+        return int(fp.trip_extras_minor or 0) if fp else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def settlement_amounts(trip):
     """The settlement's arithmetic for a trip, with no side effects.
 
@@ -248,6 +260,8 @@ def settlement_amounts(trip):
                    else trip.estimated_fare_minor or 0)
     # The rider platform fee (9 Nov, flag off) is the platform's, never part of the earning.
     gross_minor -= _rider_platform_fee_minor(trip)
+    # Trip extras (26 Nov) are passed through: never commissioned, never part of the earning.
+    gross_minor -= trip_extras_minor(trip)
 
     # US (additive-tax) trips: sales tax and the per-trip regulatory fee are PASS-THROUGH (owner
     # ruling, AUDIT 27.62 item 1). They are collected from the rider and remitted by SaaradhiGo,

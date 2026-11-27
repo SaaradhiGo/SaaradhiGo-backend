@@ -20,7 +20,8 @@ from decimal import ROUND_HALF_UP, Decimal
 from base.money import quantize, round_fare, whole_units
 
 ZERO = Decimal('0.00')
-UNTAXED_CODES = ('rider_platform_fee', 'per_trip_fee')
+#: Passed through or flat: outside the taxable value. `trip_extra`: tolls, airport fees, permits (26 Nov).
+UNTAXED_CODES = ('rider_platform_fee', 'per_trip_fee', 'trip_extra')
 
 
 def _d(value):
@@ -145,6 +146,11 @@ def from_receipt(trip, receipt, fare_pricing, tax_percent, tax_label):
         if fee_minor:
             from base.money import from_minor
             extras.append(('rider_platform_fee', 'Booking fee', from_minor(fee_minor, currency)))
+        for line in (getattr(fare_pricing, 'trip_extras', None) or []):
+            if line.get('who_pays') == 'rider' and line.get('amount_minor'):
+                from base.money import from_minor
+                extras.append(('trip_extra', line.get('label') or 'Trip charge',
+                               from_minor(int(line['amount_minor']), currency)))
         # 14 Nov (US receipt): the city's flat per-trip fee is its own line, never left in the
         # residual (it read "Minimum fare adjustment"). The trip's snapshot when it has one, else
         # the zone's fee, which is what the quote added.

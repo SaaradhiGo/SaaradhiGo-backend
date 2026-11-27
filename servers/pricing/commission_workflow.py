@@ -622,6 +622,10 @@ def execute_pricing_change(request_row):
 
     if kind == booking_fees.KIND:
         return booking_fees.execute(request_row)
+    from . import trip_charges
+
+    if kind == trip_charges.KIND:
+        return trip_charges.execute(request_row)
     raise registry.ExecutionRefused('UNKNOWN_PRICING_CHANGE',
                                     f'Unknown pricing change {kind!r}.')
 

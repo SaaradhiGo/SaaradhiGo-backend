@@ -170,6 +170,16 @@ def _fetch(o_lat, o_lng, d_lat, d_lng, key):
     return route
 
 
+def peek(o_lat, o_lng, d_lat, d_lng, country=''):
+    """The cached route for this pair, or None: never calls Google, never meters (trip extras)."""
+    try:
+        o_lat, o_lng, d_lat, d_lng = (float(v) for v in (o_lat, o_lng, d_lat, d_lng))
+        return (_read(route_cache_key(o_lat, o_lng, d_lat, d_lng, country), country)
+                or _near(o_lat, o_lng, d_lat, d_lng, country))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def get_route(o_lat, o_lng, d_lat, d_lng, country=''):
     """(route, from_cache); route is None when Google has no answer."""
     o_lat, o_lng, d_lat, d_lng = (float(v) for v in (o_lat, o_lng, d_lat, d_lng))

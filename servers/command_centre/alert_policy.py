@@ -98,6 +98,8 @@ def next_step(alert):
         SCHEDULER_STOPPED,
         SETTLEMENT_NO_COMMISSION_RULE,
         SOS_UNANCHORED,
+        TOLL_MISMATCH,
+        TOLL_MISSING,
     )
 
     payload = alert.payload or {}
@@ -122,6 +124,8 @@ def next_step(alert):
         return {'text': 'Renew the payout hold or let the payout go', 'link': _scoped('/fraud', alert)}
     if k == APPROVAL_ESCALATED:
         return {'text': 'Decide the request or send it back with comments', 'link': '/approvals'}
+    if k in (TOLL_MISMATCH, TOLL_MISSING):
+        return {'text': 'Check the toll in the trip charges catalogue', 'link': _scoped('/pricing/trip-charges', alert)}
     if k == KYC_REVIEW_PAST_TARGET:
         return {'text': 'Review the drivers waiting for documents', 'link': _scoped('/kyc', alert)}
     if k in (FINANCE_PAYOUT_REVERSED, FINANCE_PAYOUT_CONFLICT):

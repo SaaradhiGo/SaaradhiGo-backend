@@ -448,6 +448,11 @@ class FarePricing(CurrencyStampedModel, models.Model):
     # The rider platform fee inside this fare (9 Nov; flag `rider_platform_fee`, off). Never the
     # driver's: settlement takes it out of the gross.
     rider_platform_fee_minor = models.BigIntegerField(null=True, blank=True)
+    # Trip extras locked with the fare (26 Nov): tolls, airport fees, permits, every payer, as JSON
+    # lines in minor units; `trip_extras_minor` is the rider's share inside the fare. Passed through:
+    # settlement takes it out of the commission base.
+    trip_extras = models.JSONField(null=True, blank=True)
+    trip_extras_minor = models.BigIntegerField(null=True, blank=True)
     promo = models.ForeignKey(
         'ride.PromoCode', on_delete=models.PROTECT, null=True, blank=True,
         related_name='fare_snapshots',

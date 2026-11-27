@@ -44,3 +44,24 @@ def charge_driver_fees():
     from servers.pricing.fee_plans import charge_yesterday
 
     return charge_yesterday()
+
+
+@shared_task(name='pricing.check_route_tolls', max_retries=0, rate_limit='30/m')
+def check_route_tolls(zone_id, pickup, drop):
+    """One Google toll cross-check for a quoted route (queued at most once per route per 24 h)."""
+    from servers.pricing.models import ServiceZone
+    from servers.pricing.toll_check import check_route
+
+    zone = ServiceZone.objects.filter(id=zone_id).first()
+    return check_route(zone, tuple(pickup), tuple(drop)) if zone is not None else None
+
+
+@shared_task(name='pricing.toll_sample_nightly', max_retries=0)
+def toll_sample_nightly():
+    """The most common routes checked against Google: finds tolls missing from the catalogue."""
+    from servers.pricing.toll_check import nightly_sample
+
+    found = nightly_sample()
+    logger.info('toll_sample_nightly', extra={'event': 'toll_sample_nightly',
+                                              'checked': {c: len(v) for c, v in found.items()}})
+    return {c: [f['status'] for f in v] for c, v in found.items()}

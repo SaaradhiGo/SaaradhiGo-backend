@@ -83,6 +83,9 @@ def trip_charges_list(request):
         row['places'] = _places(country)
         row['classes'] = [{'vehicle_type': vt, 'name': edit_pattern.class_word(vt)}
                           for vt in edit_pattern.offered_classes(country)]
+        # The classes each place sells (an Idaho charge cannot name a class only India sells).
+        row['place_classes'] = {p['scope_code']: edit_pattern.offered_classes(country, p['scope_code'])
+                                for p in row['places']}
         row['requests'] = _requests(country)
         row['toll_checks'] = _toll_checks(country)
         out.append(row)

@@ -72,6 +72,10 @@ class Trip(CurrencyStampedModel, models.Model):
     completed_at=models.DateTimeField(blank=True,null=True, db_index=True)
     # 26 Nov: the rider-paid trip extras locked at booking (minor units), so settlement needs no read.
     trip_extras_minor=models.BigIntegerField(null=True,blank=True)
+    # 27 Nov (step 2): waiting the rider caused, charged at completion past the free minutes. The
+    # driver's earnings (fee or commission applies), inside `final_fare_minor`; never a pass-through.
+    waiting_minutes=models.PositiveSmallIntegerField(null=True,blank=True)
+    waiting_minor=models.BigIntegerField(null=True,blank=True)
     cancelled_at=models.DateTimeField(blank=True,null=True)
 
     # --- Operational liveness -------------------------------------------------
@@ -455,6 +459,8 @@ class FarePricing(CurrencyStampedModel, models.Model):
     # settlement takes it out of the commission base.
     trip_extras = models.JSONField(null=True, blank=True)
     trip_extras_minor = models.BigIntegerField(null=True, blank=True)
+    # 27 Nov (step 2): the waiting terms locked with the fare ({free_minutes, per_minute_minor, words}).
+    waiting_terms = models.JSONField(null=True, blank=True)
     promo = models.ForeignKey(
         'ride.PromoCode', on_delete=models.PROTECT, null=True, blank=True,
         related_name='fare_snapshots',

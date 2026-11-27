@@ -802,7 +802,8 @@ def quote_fare(
         if line['who_pays'] == 'rider':
             adjustments.append({'code': 'trip_extra', 'label': line['label'], 'amount': line['amount'],
                                 'item_code': line['item_code'], 'estimated': line['estimated'],
-                                'sample': line['sample']})
+                                'sample': line['sample'], 'kind': line['kind'],
+                                'collection': line.get('collection', ''), 'remit_to': line.get('remit_to', '')})
             total_fare = total_fare + line['amount']
 
     return {

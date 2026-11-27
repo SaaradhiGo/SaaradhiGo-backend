@@ -55,6 +55,38 @@ def collection_of(item):
     return '' if item.kind == WAITING else PLATFORM_REMITS if item.kind == PERMIT else AT_GATE
 
 
+def on_behalf_note(line):
+    """Whom a rider-paid pass-through line is collected for, in the rider's words (step 2)."""
+    kind = line.get('kind')
+    if kind == WAITING:
+        return ''
+    collection = line.get('collection') or (PLATFORM_REMITS if kind == PERMIT else AT_GATE)
+    if collection == PLATFORM_REMITS and line.get('remit_to'):
+        return f"Collected on behalf of {line['remit_to']}. SaaradhiGo pays it."
+    if kind in TOLL_KINDS:
+        return 'Collected on behalf of the toll operator. Your driver pays it at the plaza.'
+    if kind == VENUE:
+        return 'Collected on behalf of the venue. Your driver pays it at the gate.'
+    return 'Collected on behalf of the airport. Your driver pays it at the gate.'
+
+
+def waiting_charge(terms, reached_at, started_at, currency):
+    """`(billable minutes, minor)` the rider owes for keeping the driver waiting (step 2).
+
+    Whole minutes from the driver's arrival to the start, less the free minutes locked with the fare.
+    Rider-caused, so it is the one thing that may raise the locked total."""
+    from base.money import from_minor, round_fare, to_minor
+
+    if not terms or reached_at is None or started_at is None or started_at <= reached_at:
+        return 0, 0
+    waited = int((started_at - reached_at).total_seconds() // 60)
+    billable = max(0, waited - int(terms.get('free_minutes') or 0))
+    per = int(terms.get('per_minute_minor') or 0)
+    if not billable or not per:
+        return billable, 0
+    return billable, to_minor(round_fare(from_minor(per * billable, currency), currency), currency)
+
+
 def production_hold():
     """True while production must keep `trip_extras` off (driver reimbursement is not live)."""
     from django.conf import settings
@@ -634,5 +666,6 @@ def execute(request_row):
     return {'trip_charge_item_id': row.id, 'effective_from': start.isoformat()}
 
 
-__all__ = ['DRIVER_REIMBURSEMENT_LIVE', 'FLAG', 'production_hold', 'who_words', 'KIND', 'LINE_CODE', 'catalogue', 'estimate', 'execute', 'history', 'match', 'preview',
+__all__ = ['DRIVER_REIMBURSEMENT_LIVE', 'FLAG', 'on_behalf_note', 'production_hold', 'waiting_charge',
+           'who_words', 'KIND', 'LINE_CODE', 'catalogue', 'estimate', 'execute', 'history', 'match', 'preview',
            'propose', 'stored_lines', 'waiting_terms']

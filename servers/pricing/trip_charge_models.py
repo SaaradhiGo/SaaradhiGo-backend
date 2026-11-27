@@ -23,6 +23,12 @@ WHO_PAYS = (RIDER, DRIVER, PLATFORM)
 
 PICKUP, DROP, PICKUP_OR_DROP = 'pickup', 'drop', 'pickup_or_drop'
 
+#: Who hands the money to the authority (review 27 Nov). Tolls and gate fees: the driver pays at the
+#: plaza or gate and is reimbursed. Permits (and an airport run as a permit, e.g. Boise): SaaradhiGo
+#: collects it on the fare and remits it to the authority.
+AT_GATE, PLATFORM_REMITS = 'driver_at_gate', 'platform_remits'
+COLLECTIONS = (AT_GATE, PLATFORM_REMITS)
+
 
 class TripChargeItem(models.Model):
     country = models.CharField(max_length=2)
@@ -44,8 +50,10 @@ class TripChargeItem(models.Model):
     #: {vehicle_type: minor}; per crossing, per km (tolled road) or per minute (waiting).
     amounts = models.JSONField(default=dict)
     free_minutes = models.PositiveSmallIntegerField(default=0)
-    #: Permits: who the collected amount is remitted to.
+    #: Permits and permit-model airports: the authority the collected amount is remitted to.
     remit_to = models.CharField(max_length=120, blank=True, default='')
+    #: AT_GATE or PLATFORM_REMITS (blank for waiting, which is driver earnings).
+    collection = models.CharField(max_length=20, blank=True, default='')
     #: A QA sample value, not a real figure: shown as such everywhere.
     sample = models.BooleanField(default=False)
     effective_from = models.DateField()

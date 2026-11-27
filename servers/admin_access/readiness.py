@@ -339,10 +339,36 @@ def _platform_insurance(node):
             'detail': f"Policy {rules['platform_insurance'].get('policy_number')} is configured."}
 
 
+def _trip_extras(node):
+    """Trip extras stay off on production until driver reimbursement (step 3) is live (review 27 Nov):
+    a rider would pay a toll the driver is never paid back."""
+    from servers.platform_ops.integrations import live_providers_required
+    from servers.pricing import trip_charges
+
+    if trip_charges.DRIVER_REIMBURSEMENT_LIVE:
+        return {'key': 'trip_extras', 'ok': True, 'detail': 'Driver reimbursement is live.'}
+    try:
+        from servers.platform_ops.flags import flag_enabled
+
+        on = flag_enabled(trip_charges.FLAG, city=node, country=node.country.code if node.country else None)
+    except Exception:  # noqa: BLE001 - a readiness check never raises
+        on = False
+    if not on:
+        return {'key': 'trip_extras', 'ok': True,
+                'detail': 'Trip extras are off here. They stay off until driver reimbursement is live.'}
+    if live_providers_required():
+        return {'key': 'trip_extras', 'ok': False,
+                'detail': 'Trip extras are on, but driver reimbursement is not live: riders would pay tolls '
+                          'and fees the driver is never paid back. Turn the trip_extras flag off.'}
+    return {'key': 'trip_extras', 'ok': True, 'status': 'warning',
+            'detail': 'Trip extras are on before driver reimbursement is live. This does not block QA; '
+                      'it blocks production.'}
+
+
 #: Append here. Each is `callable(node) -> {key, ok, detail[, status]}`.
 # 24 Nov (owner): no commission item. Commission is only a fee-plan type; the fee plan is the gate.
 ITEMS = [_safety_coverage, _fare_card, _zone, _payout_config, _approval_policies,
-         _payment_gateway, _sms_provider, _tax, _fee_plan, _platform_insurance]
+         _payment_gateway, _sms_provider, _tax, _fee_plan, _platform_insurance, _trip_extras]
 
 #: What the console shows for each item, and the page that fixes it.
 ITEM_META = {
@@ -357,6 +383,7 @@ ITEM_META = {
     'tax': ('Tax settings', '/pricing'),
     'fee_plan': ('Driver fee plan', '/pricing/fee-plans'),
     'platform_insurance': ('Platform insurance', '/settings'),
+    'trip_extras': ('Trip extras (driver reimbursement)', '/settings/flags'),
 }
 
 
@@ -365,7 +392,7 @@ ITEM_OWNER = {
     'zone': 'City Ops', 'fare_card': 'City Ops', 'commission': 'Finance', 'safety_coverage': 'Safety',
     'payout_config': 'Finance', 'approval_policies': 'Super Admin', 'payment_gateway': 'Engineering',
     'sms_provider': 'Engineering', 'tax': 'Finance', 'fee_plan': 'Finance',
-    'platform_insurance': 'Super Admin',
+    'platform_insurance': 'Super Admin', 'trip_extras': 'Engineering',
 }
 
 

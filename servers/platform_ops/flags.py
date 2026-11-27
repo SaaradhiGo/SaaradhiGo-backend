@@ -252,6 +252,7 @@ def propose_change(actor, key, *, default_enabled=None, overrides=None, reason='
         raise PlatformError('A reason of at least 5 characters is required.',
                             code='REASON_REQUIRED', field='reason')
     default_enabled, overrides = _check_changes(actor, flag, default_enabled, overrides)
+    _hold_trip_extras(key, default_enabled, overrides)
     if default_enabled is None and not overrides:
         raise PlatformError('Nothing to change.', code='NOTHING_TO_CHANGE', field='general')
     if _effective(flag, default_enabled, overrides) == snapshot(flag):
@@ -269,6 +270,17 @@ def propose_change(actor, key, *, default_enabled=None, overrides=None, reason='
         target_type=TARGET, target_id=key, payload=payload,
         idempotency_key=f'platform_flag:{key}:{digest}', reason=reason, http_request=http_request)
     return flag, outcome
+
+
+def _hold_trip_extras(key, default_enabled, overrides):
+    """Production keeps `trip_extras` off until driver reimbursement is live (review 27 Nov)."""
+    from servers.pricing import trip_charges
+
+    if key != trip_charges.FLAG or not trip_charges.production_hold():
+        return
+    if default_enabled is True or any(v is True for v in (overrides or {}).values()):
+        raise PlatformError('Trip extras stay off on production until driver reimbursement is live.',
+                            code='TRIP_EXTRAS_HELD', field='key', status=409)
 
 
 def approvals_anchor(overrides):

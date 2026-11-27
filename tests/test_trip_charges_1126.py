@@ -151,16 +151,13 @@ class TestTheQuote:
     def test_settlement_takes_no_commission_on_extras(self, world):
         from finance_world import make_driver, make_rider, make_trip
         from servers.driver.utils import settlement_amounts
-        from servers.ride.models import FarePricing
         from test_pricing_module import make_rule
 
         make_rule('IN', '20.00', node=world.geo['IN'])
         driver = make_driver(world.geo, 'IN-TG-HYD', 'tc', currency='INR', calling='91')
         trip = make_trip(world.hyd, make_rider('tc', '91'), driver, fare='600')
         before = settlement_amounts(trip)
-        FarePricing.objects.create(trip_id=trip, base_fare=0, distance_fare=0, time_fare=0, surge_multiplier=1,
-                                   total_fare=Decimal('600'), trip_extras_minor=10000,
-                                   trip_extras=[{'item_code': 'rgia', 'amount_minor': 10000, 'who_pays': 'rider'}])
+        trip.trip_extras_minor = 10000
         after = settlement_amounts(trip)
         assert after['gross_minor'] == before['gross_minor'] - 10000
         assert after['commission_minor'] == 10000                     # 20% of ₹500, not of ₹600

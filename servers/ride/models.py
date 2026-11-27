@@ -70,6 +70,8 @@ class Trip(CurrencyStampedModel, models.Model):
     reached_at=models.DateTimeField(blank=True,null=True)
     started_at=models.DateTimeField(blank=True,null=True)
     completed_at=models.DateTimeField(blank=True,null=True, db_index=True)
+    # 26 Nov: the rider-paid trip extras locked at booking (minor units), so settlement needs no read.
+    trip_extras_minor=models.BigIntegerField(null=True,blank=True)
     cancelled_at=models.DateTimeField(blank=True,null=True)
 
     # --- Operational liveness -------------------------------------------------

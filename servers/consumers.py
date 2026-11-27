@@ -1275,6 +1275,7 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     estimated_duration_min=Decimal(str(dur)) if dur else None,
                     surge_multiplier=fare['surge_multiplier'],
                     requested_vehicle_type=requested_vt,
+                    trip_extras_minor=int(fare.get('trip_extras_minor') or 0) or None,
                     payment_method=payment_method,
                     **commission_snapshot,
                 )

@@ -225,15 +225,8 @@ def _rider_platform_fee_minor(trip):
 
 
 def trip_extras_minor(trip):
-    """The rider-paid trip extras (tolls, airport fees, permits) inside this fare; 0 when none."""
-    try:
-        from servers.ride.models import FarePricing
-
-        fp = FarePricing.objects.filter(trip_id=trip, trip_extras_minor__isnull=False).only(
-            'trip_extras_minor').order_by('id').first()
-        return int(fp.trip_extras_minor or 0) if fp else 0
-    except Exception:  # noqa: BLE001
-        return 0
+    """The rider-paid trip extras (tolls, airport fees, permits) locked into this fare; 0 when none."""
+    return int(getattr(trip, 'trip_extras_minor', None) or 0)
 
 
 def settlement_amounts(trip):

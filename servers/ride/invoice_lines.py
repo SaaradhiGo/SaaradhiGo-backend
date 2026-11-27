@@ -62,15 +62,16 @@ def build(*, components, total, tax_amount, tax_mode, tax_percent, tax_label, cu
 
     `components`  [(code, label, gross amount)] before any untaxed extras: base, distance and time,
                   demand, minimum fare, rounding. In an inclusive market they contain the tax.
-    `extras`      [(code, label, amount)] outside the tax: a flat regulatory fee (US) or the rider
-                  platform fee. Listed after the tax.
+    `extras`      [(code, label, amount[, note])] outside the tax: a flat regulatory fee (US), the rider
+                  platform fee, or a trip extra collected on behalf of someone else (27 Nov: `note`
+                  says whom; such lines carry `on_behalf`). Listed after the tax.
     Returns {'lines', 'taxable', 'tax': {...}, 'extras', 'total'} with string amounts, and
     sum(lines) == taxable, taxable + (tax if additive) + extras == total.
     """
     total = _d(total)
     tax = _d(tax_amount)
-    extras = [(c, l, _d(a)) for c, l, a in extras if _d(a)]
-    extras_sum = sum((a for _, _, a in extras), ZERO)
+    extras = [(x[0], x[1], _d(x[2]), x[3] if len(x) > 3 else '') for x in extras if _d(x[2])]
+    extras_sum = sum((x[2] for x in extras), ZERO)
     components = [(c, l, _d(a)) for c, l, a in components]
     inclusive = (tax_mode or 'inclusive') != 'additive'
     taxable = total - extras_sum - tax
@@ -83,7 +84,10 @@ def build(*, components, total, tax_amount, tax_mode, tax_percent, tax_label, cu
         'taxable': str(taxable),
         'tax': {'label': tax_label or 'Tax', 'percent': _percent(tax_percent),
                 'amount': str(tax), 'included': inclusive},
-        'extras': [{'code': c, 'label': l, 'amount': str(a)} for c, l, a in extras],
+        'extras': [{'code': c, 'label': l, 'amount': str(a),
+                    **({'note': n, 'on_behalf': True} if c == 'trip_extra' else {})} for c, l, a, n in extras],
+        **({'on_behalf_title': 'Collected on behalf of others'} if any(x[0] == 'trip_extra' for x in extras)
+           else {}),
         'total': str(total),
         'currency': currency,
     }
@@ -107,7 +111,7 @@ def from_quote(fare):
         if code == 'tax':
             continue
         if code in UNTAXED_CODES:
-            extras.append((code, a.get('label') or code, a.get('amount')))
+            extras.append((code, a.get('label') or code, a.get('amount'), _note(a) if code == 'trip_extra' else ''))
         else:
             components.append((code, a.get('label') or code, a.get('amount')))
     return build(components=components, total=fare.get('total_fare'), tax_amount=fare.get('tax_amount'),
@@ -150,14 +154,22 @@ def from_receipt(trip, receipt, fare_pricing, tax_percent, tax_label):
             if line.get('who_pays') == 'rider' and line.get('amount_minor'):
                 from base.money import from_minor
                 extras.append(('trip_extra', line.get('label') or 'Trip charge',
-                               from_minor(int(line['amount_minor']), currency)))
+                               from_minor(int(line['amount_minor']), currency), _note(line)))
+        # 27 Nov (step 2): waiting the rider caused is part of the fare (the driver's earnings).
+        waiting_minor = getattr(trip, 'waiting_minor', None) or 0
+        if waiting_minor:
+            from base.money import from_minor
+            free = ((getattr(fare_pricing, 'waiting_terms', None) or {}).get('free_minutes'))
+            minutes = getattr(trip, 'waiting_minutes', None) or 0
+            label = f'Waiting ({minutes} min after {free} free)' if free is not None else f'Waiting ({minutes} min)'
+            components.append(('waiting', label, from_minor(int(waiting_minor), currency)))
         # 14 Nov (US receipt): the city's flat per-trip fee is its own line, never left in the
         # residual (it read "Minimum fare adjustment"). The trip's snapshot when it has one, else
         # the zone's fee, which is what the quote added.
         trip_fee = per_trip_fee(fare_pricing, zone, currency)
         if trip_fee:
             extras.append(('per_trip_fee', getattr(zone, 'per_trip_fee_label', '') or 'Regulatory fee', trip_fee))
-        gross = total - sum((_d(a) for _, _, a in extras), ZERO)
+        gross = total - sum((_d(x[2]) for x in extras), ZERO)
         if tax_mode == 'additive':
             gross -= _d(receipt.gst_amount)
         residual = gross - sum((a for _, _, a in components), ZERO)
@@ -169,6 +181,12 @@ def from_receipt(trip, receipt, fare_pricing, tax_percent, tax_label):
         components = [('fare', 'Fare', total)]
     return build(components=components, total=total, tax_amount=receipt.gst_amount, tax_mode=tax_mode,
                  tax_percent=tax_percent, tax_label=tax_label, currency=currency, extras=extras)
+
+
+def _note(line):
+    from servers.pricing.trip_charges import on_behalf_note
+
+    return on_behalf_note(line)
 
 
 def adds_up(invoice):

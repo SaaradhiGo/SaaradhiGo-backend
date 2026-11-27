@@ -1288,6 +1288,7 @@ class RideRequestConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     # 26 Nov: the trip extras locked with the fare (every payer) and the rider's share.
                     trip_extras=_stored_extras(fare.get('trip_extras')),
                     trip_extras_minor=int(fare.get('trip_extras_minor') or 0) or None,
+                    waiting_terms=fare.get('waiting_terms') or None,
                     base_fare=fare['base_fare'],
                     distance_fare=fare['distance_fare'],
                     time_fare=fare['time_fare'],
@@ -2632,6 +2633,10 @@ class TripStatusConsumer(LocationBroadcastMixin, AsyncWebsocketConsumer):
                     )
                 elif status_code == 'completed':
                     trip.completed_at = timezone.now()
+                    # 27 Nov (step 2): waiting the rider caused, the one rider-caused change to the
+                    # locked total, before the payment reads it.
+                    from servers.ride.waiting import apply_waiting
+                    apply_waiting(trip)
                     # Create payment on trip completion within the same transaction
                     self._create_payment_on_complete(trip)
 
